@@ -25,6 +25,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import csv
 from dataclasses import dataclass, asdict
 import hashlib
@@ -361,7 +362,32 @@ def normalize_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         return ""
+    # 防止 SSRF：检查是否为内网/回环地址
+    if not _is_safe_hostname(parsed.hostname):
+        return ""
     return url
+
+
+def _is_safe_hostname(hostname: str | None) -> bool:
+    """检查 hostname 是否为安全的外部地址（防止 SSRF）"""
+    if not hostname:
+        return False
+    # 尝试解析为 IP 地址
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast:
+            return False
+    except ValueError:
+        # 域名：允许（DNS 解析在请求时进行）
+        # 阻止常见的内网域名
+        unsafe_domains = {
+            "localhost", "127.0.0.1", "::1",
+            "metadata.google.internal", "169.254.169.254",
+            "100.100.100.200",  # 阿里云元数据
+        }
+        if hostname.lower() in unsafe_domains:
+            return False
+    return True
 
 
 def looks_like_url(value: str) -> bool:
@@ -493,7 +519,7 @@ def fetch(
                 "Accept": "*/*",
                 **{k: v for k, v in method_headers.items() if k.lower() != "user-agent"},
             }
-            if "Referer" not in {k.lower(): k for k in request_headers}:
+            if "referer" not in {k.lower() for k in request_headers}:
                 request_headers["Referer"] = url
 
             request = Request(url, headers=request_headers)
@@ -684,7 +710,7 @@ def discover_playlist_resources(
                     key_data, _ = fetch(absolute_key_url, timeout, hdrs, retries, None)
                     key_bytes = key_data
                     if key_iv:
-                        iv_bytes = bytes.fromhex(key_iv.lstrip("0x"))
+                        iv_bytes = bytes.fromhex(key_iv.removeprefix("0x"))
                     else:
                         iv_bytes = b"\x00" * 16
                     _log.info("decryption key fetched for %s", playlist_url)
@@ -1500,7 +1526,6 @@ def crawl(args: argparse.Namespace) -> int:
                             _log.warning("decryption failed for %s: %s", resource.url, exc)
                             raise ValueError(f"decryption failed, skipped: {resource.url}")
                 target.write_bytes(write_data)
-                target.write_bytes(write_data)
 
             status = "ok"
             local_discoveries: list[Resource] = []
@@ -1708,7 +1733,7 @@ Examples:
     parser.add_argument("--respect-robots", action="store_true", help="Respect robots.txt crawl rules.")
     parser.add_argument("--timeout", type=int, default=20, help="Request timeout in seconds.")
     parser.add_argument("--retries", type=int, default=1, help="Retries per URL after a failed request.")
-    parser.add_argument("--delay", type=float, default=0.0, help="Delay between requests (per-domain adaptive).")
+    parser.add_argument("--delay", type=float, default=0.5, help="Delay between requests (per-domain adaptive).")
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="Number of concurrent download threads.")
     parser.add_argument("--max-bytes", type=int, default=0, help="Skip files larger than this many bytes; 0 disables.")
     parser.add_argument("--encoding", help="Force text decoding, e.g. utf-8 or gbk.")

@@ -22,10 +22,8 @@ Thumbs.db
 
 # Crawler output
 *.part
-
-# Config
-*.json
-!pyproject.toml
+crawler_output/
+.crawl_state.json
 
 # Logs
 *.log

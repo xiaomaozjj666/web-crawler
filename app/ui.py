@@ -36,6 +36,8 @@ DEFAULT_BLOCK_KEYWORDS = (
     "verify, security-check, bot-detect, botdetect"
 )
 JOBS: dict[str, "JobState"] = {}
+JOBS_LOCK = threading.Lock()
+MAX_JOBS = 50
 
 
 @dataclass
@@ -366,7 +368,7 @@ def build_args(form: dict[str, list[str]]) -> object:
             "--out", output_path(out_val),
             "--max-pages", value("max_pages", "1"),
             "--workers", value("workers", "8"),
-            "--delay", value("delay", "0.3"),
+            "--delay", value("delay", "0.5"),
             "--timeout", value("timeout", "30"),
             "--retries", value("retries", "2"),
             "--max-bytes", value("max_bytes", "0"),
@@ -447,7 +449,14 @@ class Handler(BaseHTTPRequestHandler):
             args = build_args(form)
             job_id = uuid.uuid4().hex[:12]
             job = JobState(id=job_id, args=args, output_dir=str(Path(args.out).resolve()))
-            JOBS[job_id] = job
+            with JOBS_LOCK:
+                JOBS[job_id] = job
+                # 清理已完成的任务，防止内存泄漏
+                if len(JOBS) > MAX_JOBS:
+                    for jid in list(JOBS.keys()):
+                        j = JOBS[jid]
+                        if j.status in ("done", "error", "cancelled"):
+                            del JOBS[jid]
             threading.Thread(target=run_job, args=(job,), daemon=True).start()
             self.respond_json({"id": job_id, "status": "running"})
             return
