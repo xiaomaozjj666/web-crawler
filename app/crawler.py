@@ -47,7 +47,7 @@ from typing import Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urljoin, urlparse, urldefrag
 from urllib.robotparser import RobotFileParser
-from urllib.request import Request, build_opener, HTTPSHandler
+from urllib.request import Request, build_opener, HTTPSHandler, HTTPHandler, ProxyHandler
 from urllib.request import OpenerDirector
 
 
@@ -272,13 +272,16 @@ _opener: OpenerDirector | None = None
 _opener_lock = threading.Lock()
 
 
-def _get_opener() -> OpenerDirector:
+def _get_opener(proxy: str | None = None) -> OpenerDirector:
     global _opener
-    if _opener is None:
-        with _opener_lock:
-            if _opener is None:
-                opener = build_opener(HTTPSHandler())
-                _opener = opener
+    if _opener is None or proxy:
+        handlers = [HTTPSHandler(), HTTPHandler()]
+        if proxy:
+            handlers.append(ProxyHandler({"http": proxy, "https": proxy}))
+        opener = build_opener(*handlers)
+        if not proxy:
+            _opener = opener
+        return opener
     return _opener
 
 
@@ -523,7 +526,8 @@ def fetch(
                 request_headers["Referer"] = url
 
             request = Request(url, headers=request_headers)
-            opener = _get_opener()
+            proxy = getattr(control_args, "proxy", None) if control_args else None
+            opener = _get_opener(proxy)
             response = opener.open(request, timeout=timeout)
 
             content_type = response.headers.get("content-type", "")
@@ -1441,6 +1445,13 @@ def crawl(args: argparse.Namespace) -> int:
         resources = [r for r in resources if same_domain(r.url, args.url)]
     if args.video_only:
         resources = [r for r in resources if is_video_candidate(r)]
+    # URL 正则过滤
+    _include_re = re.compile(args.include_pattern) if args.include_pattern else None
+    _exclude_re = re.compile(args.exclude_pattern) if args.exclude_pattern else None
+    if _include_re:
+        resources = [r for r in resources if _include_re.search(r.url)]
+    if _exclude_re:
+        resources = [r for r in resources if not _exclude_re.search(r.url)]
 
     if not resources:
         _log.info("no resources found")
@@ -1727,6 +1738,9 @@ Examples:
     parser.add_argument("--user-agent", default=DEFAULT_USER_AGENT, help="HTTP User-Agent header.")
     parser.add_argument("--header", action="append", default=[], help="Extra request header, e.g. 'Cookie: name=value' (repeatable).")
     parser.add_argument("--block-keyword", action="append", default=[], help="Skip URLs containing this keyword/domain (repeatable).")
+    parser.add_argument("--include-pattern", help="Only download URLs matching this regex pattern.")
+    parser.add_argument("--exclude-pattern", help="Skip URLs matching this regex pattern.")
+    parser.add_argument("--proxy", help="HTTP/HTTPS proxy address, e.g. http://127.0.0.1:7890")
     parser.add_argument("--resume", action="store_true", help="Resume interrupted downloads using .part files and HTTP Range.")
     parser.add_argument("--organize", action="store_true", help="Save resources into category/page-title folders.")
     parser.add_argument("--dedup", action="store_true", help="Skip downloading files with identical SHA256 content.")
