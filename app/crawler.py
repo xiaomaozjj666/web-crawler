@@ -25,7 +25,6 @@ Examples:
 from __future__ import annotations
 
 import argparse
-import base64
 import csv
 from dataclasses import dataclass, asdict
 import hashlib
@@ -37,16 +36,18 @@ import mimetypes
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 import threading
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_EXCEPTION
-from typing import Iterable, Callable
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_EXCEPTION
+from typing import Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urljoin, urlparse, urldefrag
 from urllib.robotparser import RobotFileParser
-from urllib.request import Request, urlopen, build_opener, install_opener, HTTPSHandler
+from urllib.request import Request, build_opener, HTTPSHandler
+from urllib.request import OpenerDirector
 
 
 # ── Logging ──────────────────────────────────────────────────────────────
@@ -248,6 +249,17 @@ class ContentDedup:
                 self._seen[sha] = url
         return False, sha
 
+    def mark_hash_seen(self, sha256: str) -> None:
+        """Mark a hash as already seen (used when resuming crawl state)."""
+        with self._lock:
+            if sha256 not in self._seen:
+                self._seen[sha256] = ""
+
+    def seen_hashes(self) -> list[str]:
+        """Return list of all seen SHA256 hashes."""
+        with self._lock:
+            return list(self._seen.keys())
+
     def seen_count(self) -> int:
         with self._lock:
             return len(self._seen)
@@ -255,17 +267,16 @@ class ContentDedup:
 
 # ── HTTP opener with connection reuse ────────────────────────────────────
 
-_opener: object = None
+_opener: OpenerDirector | None = None
 _opener_lock = threading.Lock()
 
 
-def _get_opener() -> build_opener:
+def _get_opener() -> OpenerDirector:
     global _opener
     if _opener is None:
         with _opener_lock:
             if _opener is None:
                 opener = build_opener(HTTPSHandler())
-                opener.addheaders = [("Connection", "keep-alive")]
                 _opener = opener
     return _opener
 
@@ -531,20 +542,17 @@ def fetch(
             if attempt < retries and status not in (401, 403, 404):
                 time.sleep(1 + attempt * 2)
 
-        except (URLError, TimeoutError, ValueError) as exc:
+        except (URLError, TimeoutError, ValueError, OSError) as exc:
             last_error = exc
             if attempt < retries:
                 time.sleep(1 + attempt * 2)
-
-        except RuntimeError:
-            raise
 
         finally:
             try:
                 if "file_handle" in locals() and file_handle:
                     file_handle.close()
-            except Exception:
-                pass
+            except Exception as _close_err:
+                _log.warning("file handle close error: %s", _close_err)
 
     assert last_error is not None
     raise last_error
@@ -613,6 +621,9 @@ def output_prefix_for_resource(args: argparse.Namespace, resource: Resource, con
 def safe_segment(value: str) -> str:
     value = value.strip() or "unnamed"
     value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value)
+    # 防止路径遍历（过滤 . 和 ..）
+    value = re.sub(r'\.\.+', "_", value)
+    value = value.strip("._")
     return value[:120]
 
 
@@ -1340,7 +1351,7 @@ def crawl(args: argparse.Namespace) -> int:
                 all_resources.append(Resource(**rdict))
             if dedup and saved.get("sha256_set"):
                 for h in saved["sha256_set"]:
-                    dedup._seen[str(h)] = ""  # url unknown on resume, mark hash as seen
+                    dedup.mark_hash_seen(str(h))
             _log.info("resumed: %d pages seen, %d pages queued, %d resources, %d dedup hashes",
                       len(seen_pages), len(page_queue), len(all_resources), dedup.seen_count() if dedup else 0)
             resumed_scan = True
@@ -1406,7 +1417,7 @@ def crawl(args: argparse.Namespace) -> int:
                                      seen_pages=list(seen_pages),
                                      page_titles=page_titles,
                                      resources=[asdict(r) for r in all_resources],
-                                     sha256_set=list(dedup._seen.keys()) if dedup else [])
+                                     sha256_set=dedup.seen_hashes() if dedup else [])
                 except Exception as exc:
                     _log.warning("failed to save crawl state: %s", exc)
 
@@ -1474,7 +1485,7 @@ def crawl(args: argparse.Namespace) -> int:
             final_target = output_path_for_url(resource.url, output_dir, content_type, prefix=final_prefix)
             if final_target != target and target.exists():
                 final_target.parent.mkdir(parents=True, exist_ok=True)
-                target.replace(final_target)
+                shutil.move(str(target), str(final_target))
                 target = final_target
             target.parent.mkdir(parents=True, exist_ok=True)
             if not getattr(args, "resume", False):
@@ -1487,6 +1498,8 @@ def crawl(args: argparse.Namespace) -> int:
                             _log.info("decrypted segment: %s", resource.url)
                         except Exception as exc:
                             _log.warning("decryption failed for %s: %s", resource.url, exc)
+                            raise ValueError(f"decryption failed, skipped: {resource.url}")
+                target.write_bytes(write_data)
                 target.write_bytes(write_data)
 
             status = "ok"
@@ -1619,8 +1632,6 @@ def crawl(args: argparse.Namespace) -> int:
             if not text:
                 continue
             name = urlparse(page_url).path.strip("/").replace("/", "_") or "index"
-            if not name:
-                name = "index"
             (text_dir / f"{name}.txt").write_text(text, encoding="utf-8")
             count += 1
         _log.info("extracted text: %d pages -> %s", count, text_dir)
@@ -1652,8 +1663,8 @@ def crawl(args: argparse.Namespace) -> int:
         with jsonl_path.open("w", encoding="utf-8") as f:
             for row in manifest_rows:
                 f.write(json.dumps(asdict(row), ensure_ascii=False) + "\n")
-    except Exception:
-        pass
+    except Exception as _jsonl_err:
+        _log.warning("failed to write JSONL manifest: %s", _jsonl_err)
 
     # Clear resume state on successful completion
     if getattr(args, "resume_crawl", False):
