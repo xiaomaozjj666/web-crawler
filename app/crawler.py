@@ -532,7 +532,7 @@ def fetch(
                 mode = "wb"
             total = existing_size
             file_handle = part_path.open(mode) if part_path else None
-            chunks: list[bytes] = []
+            chunks: list[bytes] | None = [] if not file_handle else None
             while True:
                 wait_if_paused(control_args)
                 if should_stop(control_args):
@@ -545,7 +545,8 @@ def fetch(
                     raise ValueError(f"file exceeds --max-bytes ({max_bytes})")
                 if file_handle:
                     file_handle.write(chunk)
-                chunks.append(chunk)
+                elif chunks is not None:
+                    chunks.append(chunk)
 
             if file_handle:
                 file_handle.close()
@@ -554,7 +555,9 @@ def fetch(
 
             if rate_limiter:
                 rate_limiter.record_request(url)
-            return b"".join(chunks), content_type
+            if chunks is not None:
+                return b"".join(chunks), content_type
+            return b"", content_type
 
         except HTTPError as exc:
             status = exc.code
@@ -1104,34 +1107,29 @@ FIELD_NAMES = [
 ]
 
 
-def write_manifests(output_dir: Path, rows: list[ManifestRow]) -> None:
-    csv_path = output_dir / "resources_manifest.csv"
+def _write_manifest_pair(output_dir: Path, rows: list[ManifestRow], prefix: str) -> int:
+    """通用清单写入：生成 CSV + JSON 文件对。返回行数。"""
+    csv_path = output_dir / f"{prefix}.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=FIELD_NAMES)
         writer.writeheader()
         for row in rows:
             writer.writerow(asdict(row))
-    json_path = output_dir / "resources_manifest.json"
+    json_path = output_dir / f"{prefix}.json"
     json_path.write_text(
         json.dumps([asdict(row) for row in rows], ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    return len(rows)
+
+
+def write_manifests(output_dir: Path, rows: list[ManifestRow]) -> None:
+    _write_manifest_pair(output_dir, rows, "resources_manifest")
 
 
 def write_video_manifests(output_dir: Path, rows: list[ManifestRow]) -> int:
     video_rows = [row for row in rows if is_video_resource(row)]
-    csv_path = output_dir / "video_manifest.csv"
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELD_NAMES)
-        writer.writeheader()
-        for row in video_rows:
-            writer.writerow(asdict(row))
-    json_path = output_dir / "video_manifest.json"
-    json_path.write_text(
-        json.dumps([asdict(row) for row in video_rows], ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    return len(video_rows)
+    return _write_manifest_pair(output_dir, video_rows, "video_manifest") if video_rows else 0
 
 
 def is_failed_row(row: ManifestRow) -> bool:
@@ -1140,18 +1138,7 @@ def is_failed_row(row: ManifestRow) -> bool:
 
 def write_failed_manifests(output_dir: Path, rows: list[ManifestRow]) -> int:
     failed_rows = [row for row in rows if is_failed_row(row)]
-    csv_path = output_dir / "failed_resources.csv"
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELD_NAMES)
-        writer.writeheader()
-        for row in failed_rows:
-            writer.writerow(asdict(row))
-    json_path = output_dir / "failed_resources.json"
-    json_path.write_text(
-        json.dumps([asdict(row) for row in failed_rows], ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    return len(failed_rows)
+    return _write_manifest_pair(output_dir, failed_rows, "failed_resources") if failed_rows else 0
 
 
 def write_summary(output_dir: Path, rows: list[ManifestRow], pages_scanned: int) -> None:
