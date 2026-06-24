@@ -1,23 +1,17 @@
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
 [project]
-name = "web-resource-crawler"
-version = "3.0.0"
-description = "网页资源采集器 — 并发下载网页中的图片/CSS/JS/视频/字体等资源"
-readme = "README.md"
-license = { text = "MIT" }
-authors = [{ name = "web-crawler contributors" }]
+name = "web-crawler"
+version = "0.1.0"
+description = "A configurable web crawler."
 requires-python = ">=3.10"
-dependencies = [
-    # 纯标准库实现，无需外部依赖
-]
-optional-dependencies = { crypto = ["pycryptodome>=3.20"] }
+readme = "README.md"
 
-[project.scripts]
-web-crawler = "app.crawler:main"
-web-crawler-ui = "app.ui:main"
+[tool.ruff]
+line-length = 100
+target-version = "py310"
 
-[tool.setuptools.packages.find]
-include = ["app*"]
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
