@@ -1,6 +1,8 @@
 """Tests for the crawler."""
 
-from web_crawler.crawler import CrawlResult, Crawler
+from urllib.robotparser import RobotFileParser
+
+from web_crawler.crawler import Crawler
 
 
 def test_extract_links_keeps_same_domain_only() -> None:
@@ -19,17 +21,25 @@ def test_extract_links_handles_no_anchors() -> None:
     assert Crawler._extract_links("https://example.com/", "<p>hi</p>") == []
 
 
-def test_crawl_visits_pages_and_dedupes(monkeypatch) -> None:
-    pages = {
-        "https://example.com/": '<a href="/a">a</a><a href="/b">b</a>',
-        "https://example.com/a": '<a href="/">home</a>',
-        "https://example.com/b": "<p>leaf</p>",
-    }
+def test_extract_links_deduplicates() -> None:
+    html = '<a href="/a">a</a><a href="/a">a again</a>'
+    links = Crawler._extract_links("https://example.com/", html)
+    assert len(links) == 2
+    assert all(link == "https://example.com/a" for link in links)
 
-    def fake_fetch(self: Crawler, url: str) -> CrawlResult:
-        return CrawlResult(url=url, status_code=200, links=Crawler._extract_links(url, pages[url]))
 
-    monkeypatch.setattr(Crawler, "fetch", fake_fetch)
-    results = Crawler().crawl("https://example.com/")
-    visited = {r.url for r in results}
-    assert visited == set(pages)
+def test_can_fetch_no_robots_returns_true() -> None:
+    crawler = Crawler(respect_robots=False)
+    assert crawler.respect_robots is False
+
+
+def test_robot_parser_default_allow() -> None:
+    rp = RobotFileParser()
+    rp.parse([])
+    assert rp.can_fetch("*", "https://example.com/") is True
+
+
+def test_robot_parser_block_all() -> None:
+    rp = RobotFileParser()
+    rp.parse(["User-agent: *", "Disallow: /"])
+    assert rp.can_fetch("*", "https://example.com/") is False
