@@ -4,23 +4,22 @@
 from __future__ import annotations
 
 import contextlib
-from dataclasses import dataclass, field
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
 import os
-from pathlib import Path
 import sys
 import threading
 import time
-from urllib.parse import parse_qs, urlparse
 import uuid
 import webbrowser
+from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 sys.dont_write_bytecode = True
 
-import crawler as web_resource_crawler
-
+import crawler as web_resource_crawler  # noqa: E402  # 需先设 sys.dont_write_bytecode 再导入
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -35,7 +34,7 @@ DEFAULT_BLOCK_KEYWORDS = (
     "recaptcha, captcha, hcaptcha, turnstile, challenge, verification, "
     "verify, security-check, bot-detect, botdetect"
 )
-JOBS: dict[str, "JobState"] = {}
+JOBS: dict[str, JobState] = {}
 JOBS_LOCK = threading.Lock()
 MAX_JOBS = 50
 
@@ -68,7 +67,9 @@ class JobState:
     def progress(self, payload: dict[str, object]) -> None:
         with self.lock:
             self.total_resources = int(payload.get("total_resources", self.total_resources) or 0)
-            self.processed_resources = int(payload.get("processed_resources", self.processed_resources) or 0)
+            self.processed_resources = int(
+                payload.get("processed_resources", self.processed_resources) or 0
+            )
             self.current_url = str(payload.get("current_url", self.current_url) or "")
             self.pages_scanned = int(payload.get("pages_scanned", self.pages_scanned) or 0)
 
@@ -228,6 +229,7 @@ PAGE = """<!doctype html>
         <label class="check"><input type="checkbox" name="smart_extract"> 智能数据提取</label>
         <label class="check"><input type="checkbox" name="resume_crawl"> 断点续爬</label>
         <label class="check"><input type="checkbox" name="extract_text"> 正文提取</label>
+        <label class="check"><input type="checkbox" name="stealth"> 隐身抓取（TLS 指纹）</label>
       </div>
 
       <div class="buttons">
@@ -364,15 +366,24 @@ def build_args(form: dict[str, list[str]]) -> object:
         out_val = DEFAULT_OUTPUT
     args = web_resource_crawler.build_parser().parse_args(
         [
-            "--url", value("url"),
-            "--out", output_path(out_val),
-            "--max-pages", value("max_pages", "1"),
-            "--workers", value("workers", "8"),
-            "--delay", value("delay", "0.5"),
-            "--timeout", value("timeout", "30"),
-            "--retries", value("retries", "2"),
-            "--max-bytes", value("max_bytes", "0"),
-            "--block-keyword", value("block_keywords", DEFAULT_BLOCK_KEYWORDS),
+            "--url",
+            value("url"),
+            "--out",
+            output_path(out_val),
+            "--max-pages",
+            value("max_pages", "1"),
+            "--workers",
+            value("workers", "8"),
+            "--delay",
+            value("delay", "0.5"),
+            "--timeout",
+            value("timeout", "30"),
+            "--retries",
+            value("retries", "2"),
+            "--max-bytes",
+            value("max_bytes", "0"),
+            "--block-keyword",
+            value("block_keywords", DEFAULT_BLOCK_KEYWORDS),
         ]
     )
     args.header = header_values(form)
@@ -394,6 +405,7 @@ def build_args(form: dict[str, list[str]]) -> object:
     args.rewrite_html = checked("strip_overlays")
     args.crawl_pages = checked("crawl_pages")
     args.respect_robots = checked("respect_robots")
+    args.stealth = checked("stealth")
     args.save_config = ""
     args.load_config = ""
     return args
@@ -409,7 +421,13 @@ def run_job(job: JobState) -> None:
             code = web_resource_crawler.crawl(job.args)
         job.exit_code = code
         job.status = "cancelled" if job.stop_event.is_set() else "done"
+        report_html = Path(job.output_dir) / "run_report.html"
+        report_md = Path(job.output_dir) / "run_report.md"
         job.append(f"\n完成，退出码：{code}\n输出目录：{job.output_dir}\n")
+        if report_html.exists():
+            job.append(f"可视化报告：{report_html}\n")
+        if report_md.exists():
+            job.append(f"Markdown 报告：{report_md}\n")
     except Exception as exc:
         job.exit_code = 1
         job.status = "error"
@@ -429,7 +447,11 @@ def wait_for_resume(job: JobState) -> None:
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path in {"/", "/index.html"}:
-            self.respond(200, PAGE.replace("{block_keywords}", DEFAULT_BLOCK_KEYWORDS).encode("utf-8"), "text/html; charset=utf-8")
+            self.respond(
+                200,
+                PAGE.replace("{block_keywords}", DEFAULT_BLOCK_KEYWORDS).encode("utf-8"),
+                "text/html; charset=utf-8",
+            )
             return
         if self.path.startswith("/status"):
             query = parse_qs(urlparse(self.path).query)
@@ -495,7 +517,11 @@ class Handler(BaseHTTPRequestHandler):
         return parse_qs(body)
 
     def respond_json(self, payload: dict[str, object]) -> None:
-        self.respond(200, json.dumps(payload, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+        self.respond(
+            200,
+            json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            "application/json; charset=utf-8",
+        )
 
     def respond(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
@@ -510,6 +536,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     import argparse as _ap
+
     _parser = _ap.ArgumentParser(description="Web Resource Crawler UI")
     _parser.add_argument("--open", action="store_true", help="Automatically open browser")
     _parser.add_argument("--port", type=int, default=PORT, help=f"Server port (default: {PORT})")

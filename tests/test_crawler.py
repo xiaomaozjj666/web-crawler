@@ -22,10 +22,20 @@ def test_extract_links_handles_no_anchors() -> None:
 
 
 def test_extract_links_deduplicates() -> None:
+    """同一 href 重复出现时只保留一次。"""
     html = '<a href="/a">a</a><a href="/a">a again</a>'
     links = Crawler._extract_links("https://example.com/", html)
-    assert len(links) == 2
-    assert all(link == "https://example.com/a" for link in links)
+    assert links == ["https://example.com/a"]
+
+
+def test_extract_links_deduplicates_absolute_and_relative() -> None:
+    """相对路径与绝对路径指向同一 URL 时去重。"""
+    html = (
+        '<a href="/page">relative</a>'
+        '<a href="https://example.com/page">absolute</a>'
+    )
+    links = Crawler._extract_links("https://example.com/", html)
+    assert links == ["https://example.com/page"]
 
 
 def test_can_fetch_no_robots_returns_true() -> None:
