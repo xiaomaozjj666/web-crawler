@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import logging
 import os
 import sys
 import threading
@@ -18,6 +19,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 sys.dont_write_bytecode = True
+_log = logging.getLogger(__name__)
 
 import crawler as web_resource_crawler  # noqa: E402  # 需先设 sys.dont_write_bytecode 再导入
 
@@ -225,6 +227,7 @@ PAGE = """<!doctype html>
         <label class="check"><input type="checkbox" name="dedup" checked> 内容去重（SHA256）</label>
         <label class="check"><input type="checkbox" name="sitemap"> 从 Sitemap 发现页面</label>
         <label class="check"><input type="checkbox" name="strip_overlays" checked> 移除遮挡层</label>
+        <label class="check"><input type="checkbox" name="rewrite_html"> 离线重写 HTML</label>
         <label class="check"><input type="checkbox" name="decrypt"> AES 解密</label>
         <label class="check"><input type="checkbox" name="smart_extract"> 智能数据提取</label>
         <label class="check"><input type="checkbox" name="resume_crawl"> 断点续爬</label>
@@ -398,7 +401,7 @@ def build_args(form: dict[str, list[str]]) -> object:
     args.dedup = checked("dedup")
     args.sitemap = checked("sitemap")
     args.strip_overlays = checked("strip_overlays")
-    args.decrypt = checked("decrypt")
+    args.rewrite_html = checked("rewrite_html")
     args.smart_extract = checked("smart_extract")
     args.resume_crawl = checked("resume_crawl")
     args.extract_text = checked("extract_text")
@@ -547,12 +550,12 @@ def main() -> None:
     url = f"http://{HOST}:{port}"
     if _args.open:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
-    print(f"Web UI started: {url}")
-    print("Press Ctrl+C to stop.")
+    _log.info("Web UI started: %s", url)
+    _log.info("Press Ctrl+C to stop.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down...")
+        _log.info("Shutting down...")
         server.server_close()
 
 

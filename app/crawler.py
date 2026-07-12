@@ -2396,7 +2396,7 @@ def crawl(args: argparse.Namespace) -> int:
     try:
         extra_headers = parse_headers(args.header)
     except ValueError as exc:
-        print(exc, file=sys.stderr)
+        _log.error("header parse error: %s", exc)
         return 2
 
     headers = {"User-Agent": args.user_agent, **extra_headers}

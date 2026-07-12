@@ -45,18 +45,24 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "lxml>=5.1",
     "cssselect>=1.2",
-    "curl_cffi>=0.7",
-    "playwright>=1.40",
 ]
 
 [project.urls]
-Homepage = "https://github.com/Xiaomao/web-crawler"
-Repository = "https://github.com/Xiaomao/web-crawler"
-Documentation = "https://github.com/Xiaomao/web-crawler#readme"
-Changelog = "https://github.com/Xiaomao/web-crawler/blob/main/CHANGELOG.md"
-Issues = "https://github.com/Xiaomao/web-crawler/issues"
+Homepage = "https://github.com/xiaomaozjj666/web-crawler"
+Repository = "https://github.com/xiaomaozjj666/web-crawler"
+Documentation = "https://github.com/xiaomaozjj666/web-crawler#readme"
+Changelog = "https://github.com/xiaomaozjj666/web-crawler/blob/main/CHANGELOG.md"
+Issues = "https://github.com/xiaomaozjj666/web-crawler/issues"
+
+[project.scripts]
+web-crawler = "app.crawler:main"
+crawler-ui = "app.ui:main"
 
 [project.optional-dependencies]
+all = [
+    "curl_cffi>=0.7",
+    "playwright>=1.40",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
