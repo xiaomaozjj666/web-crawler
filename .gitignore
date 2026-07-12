@@ -32,3 +32,12 @@ htmlcov/
 
 # OS
 .DS_Store
+Thumbs.db
+
+# Runtime generated files
+*.log
+state.json
+resources_manifest.*
+run_report.*
+summary.txt
+crawler_output/

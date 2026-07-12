@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-07-12
+
+### Fixed
+- UI: `rewrite_html` now has its own checkbox (was incorrectly wired to `strip_overlays`)
+- `app/crawler.py`: `print()` → `_log.error()` for header parse errors
+- `app/ui.py`: startup messages now use `logging` instead of `print()`
+
+### Changed
+- `playwright` and `curl_cffi` moved to `[project.optional-dependencies] all` — no longer forced dependencies
+- Added `[project.scripts]` entry points: `web-crawler` and `crawler-ui`
+- Updated LICENSE copyright to `xiaomaozjj666`
+- Expanded `.gitignore` to cover runtime-generated files
+
 ## [0.2.0] — 2026-06-27
 
 ### Added
