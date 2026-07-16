@@ -22,14 +22,25 @@ A Scrapling-aligned stealth web scraping library for Python: **adaptive selector
 
 ## Installation
 
+Recommended: editable install via the packaged entry points.
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements-dev.txt
+pip install -e ".[dev]"          # or `pip install -e ".[all,dev]"` for curl_cffi + playwright
 playwright install chromium      # only needed for DynamicFetcher / StealthyFetcher
 ```
 
-Run with `PYTHONPATH=src` so the `src/web_crawler/` package is importable.
+This installs the `web_crawler` package plus the `web-crawler` and `crawler-ui` console commands,
+so no `PYTHONPATH` tweaking is needed.
+
+Alternatively, install just the pinned dev requirements and run from the source tree:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+In that case run with `PYTHONPATH=src` so the `src/web_crawler/` package is importable.
 
 ## Architecture
 
@@ -54,7 +65,7 @@ src/web_crawler/          # Scrapling-aligned core library
 app/                      # application layer
   crawler.py              # resource downloader (concurrent, resume, dedup, UI-driven)
   ui.py                   # local web UI
-tests/                    # pytest suite (167 tests)
+tests/                    # pytest suite (177 tests)
 benchmarks.py             # parser/fetcher micro-benchmarks
 CHANGELOG.md              # version history
 ```
