@@ -98,6 +98,41 @@ def test_fetcher_retries_on_server_error(monkeypatch, local_server: str) -> None
         assert f.retries == 2
 
 
+def test_parse_retry_after_seconds() -> None:
+    from web_crawler.fetchers.fetcher import _parse_retry_after
+
+    assert _parse_retry_after("120") == 120.0
+    assert _parse_retry_after("0") == 0.0
+
+
+def test_parse_retry_after_caps_at_300() -> None:
+    from web_crawler.fetchers.fetcher import _parse_retry_after
+
+    # 超过 5 分钟上限会被截断
+    assert _parse_retry_after("9999") == 300.0
+
+
+def test_parse_retry_after_none_or_invalid() -> None:
+    from web_crawler.fetchers.fetcher import _parse_retry_after
+
+    assert _parse_retry_after(None) is None
+    assert _parse_retry_after("") is None
+    assert _parse_retry_after("garbage") is None
+
+
+def test_parse_retry_after_http_date() -> None:
+    from datetime import datetime, timedelta, timezone
+    from email.utils import format_datetime
+
+    from web_crawler.fetchers.fetcher import _parse_retry_after
+
+    future = datetime.now(timezone.utc) + timedelta(seconds=60)
+    value = format_datetime(future, usegmt=True)
+    result = _parse_retry_after(value)
+    assert result is not None
+    assert 50 <= result <= 70
+
+
 def test_fetcher_default_headers_are_realistic() -> None:
     with Fetcher() as f:
         headers = f._default_headers()

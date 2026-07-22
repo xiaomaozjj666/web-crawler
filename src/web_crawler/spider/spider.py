@@ -15,7 +15,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -395,6 +395,87 @@ class Spider:
         elif path.exists():
             path.unlink()
         return items
+
+    async def stream(
+        self,
+        *,
+        max_requests: int | None = None,
+        state_file: str | Path | None = None,
+        resume: bool = False,
+    ) -> AsyncIterator[Any]:
+        """异步流式产出抓取到的 item，适合长爬取与实时管道。
+
+        用法::
+
+            async for item in spider.stream():
+                process(item)
+
+        与 :meth:`async_run` 不同，不把所有 item 缓存在内存里，而是
+        每抓到一条就 ``yield`` 出去。
+        """
+        if self.fetcher is None:
+            raise SpiderError("Spider.stream requires a fetcher")
+
+        path = self._state_path(state_file)
+        if resume:
+            queue, restored = self._load_state(path)
+            if restored:
+                logger.info("resumed spider %s with %d queued requests", self.name, len(queue))
+        else:
+            queue = sorted(self.start_requests(), key=lambda r: -r.priority)
+            for r in queue:
+                self._seen.add(r.url)
+
+        sem = asyncio.Semaphore(self.max_concurrency)
+        self.stats.start_time = time.monotonic()
+        self._paused = False
+
+        async def worker(request: Request) -> list[Any]:
+            async with sem:
+                self.stats.requests_scheduled += 1
+                try:
+                    response = await self._fetch_async(request)
+                except Exception as exc:  # noqa: BLE001
+                    self.stats.requests_failed += 1
+                    logger.warning("request failed: %s (%s)", request.url, exc)
+                    return []
+                self.stats.pages_crawled += 1
+                if self.download_delay:
+                    await asyncio.sleep(self.download_delay)
+                try:
+                    return self._dispatch(response, request)
+                except Exception as exc:
+                    raise SpiderError(
+                        f"callback {request.callback!r} raised on {request.url}: {exc}"
+                    ) from exc
+
+        while queue and not self._paused:
+            if max_requests is not None and self.stats.pages_crawled >= max_requests:
+                break
+            remaining = (
+                max_requests - self.stats.pages_crawled if max_requests is not None else len(queue)
+            )
+            batch_size = min(self.max_concurrency, len(queue), max(0, remaining))
+            if batch_size <= 0:
+                break
+            batch = [queue.pop(0) for _ in range(batch_size)]
+            results = await asyncio.gather(*[worker(r) for r in batch])
+            for outputs in results:
+                for out in outputs:
+                    if isinstance(out, Request):
+                        if self._filter(out):
+                            queue.append(out)
+                            queue.sort(key=lambda r: -r.priority)
+                        continue
+                    self.stats.items_scraped += 1
+                    yield out
+
+        self.stats.end_time = time.monotonic()
+        if self._paused or queue:
+            self._dump_state(queue, path)
+            logger.info("state saved to %s (%d requests remaining)", path, len(queue))
+        elif path.exists():
+            path.unlink()
 
 
 __all__ = ["Request", "Spider", "SpiderError", "SpiderStats"]

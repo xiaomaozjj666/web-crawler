@@ -48,6 +48,38 @@ def _load_httpx_backend() -> Any:
     return httpx
 
 
+def _parse_retry_after(value: str | None) -> float | None:
+    """解析 HTTP ``Retry-After`` 响应头，返回等待秒数。
+
+    支持两种形式（RFC 7231）：
+    - 整数秒：``Retry-After: 120``
+    - HTTP 日期：``Retry-After: Wed, 21 Oct 2026 07:28:00 GMT``
+    无法解析时返回 ``None``。
+    """
+    if not value:
+        return None
+    value = value.strip()
+    # 尝试整数秒
+    try:
+        seconds = float(value)
+        if seconds >= 0:
+            return min(seconds, 300.0)  # 上限 5 分钟，避免过长阻塞
+    except ValueError:
+        pass
+    # 尝试 HTTP 日期
+    from email.utils import parsedate_to_datetime
+
+    try:
+        dt = parsedate_to_datetime(value)
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        delta = (dt - now).total_seconds()
+        return max(0.0, min(delta, 300.0))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 class _FetcherCore(BaseFetcher):
     """Shared session/retry/header logic for :class:`Fetcher` and :class:`AsyncFetcher`.
 
@@ -278,6 +310,7 @@ class _FetcherCore(BaseFetcher):
         retry_errors = self._retry_errors()
         last_exc: BaseException | None = None
         for attempt in range(self.retries + 1):
+            backoff = min(2.0**attempt, 10.0) + random.random() * 0.25
             try:
                 raw = await self._send_once_async(
                     method,
@@ -291,13 +324,23 @@ class _FetcherCore(BaseFetcher):
                     allow_redirects,
                     verify,
                 )
-                if raw.status_code < 500 or attempt == self.retries:
-                    return self._to_response(raw, merged_headers)
             except retry_errors as exc:
                 last_exc = exc
                 if attempt == self.retries:
                     raise
-            await asyncio.sleep(min(2.0**attempt, 10.0) + random.random() * 0.25)
+                await asyncio.sleep(backoff)
+                continue
+            # 5xx 与 429（被限流）均重试；其余直接返回
+            should_retry = raw.status_code >= 500 or raw.status_code == 429
+            if not should_retry or attempt == self.retries:
+                return self._to_response(raw, merged_headers)
+            # 429 视为封锁信号：若有代理池则标记当前代理失败并换下一个
+            if raw.status_code == 429 and isinstance(self.proxy, ProxyPool) and proxy:
+                self.proxy.mark_failed(proxy)
+                proxy = self._resolve_proxy()
+            # 429 时尊重 Retry-After；否则指数退避
+            delay = _parse_retry_after(raw.headers.get("Retry-After")) or backoff
+            await asyncio.sleep(delay)
         if last_exc is not None:
             raise last_exc
         raise RuntimeError(f"request to {url} failed without a captured exception")
@@ -392,6 +435,7 @@ class Fetcher(_FetcherCore):
         retry_errors = self._retry_errors()
         last_exc: BaseException | None = None
         for attempt in range(self.retries + 1):
+            backoff = min(2.0**attempt, 10.0) + random.random() * 0.25
             try:
                 raw = self._send_once_sync(
                     method,
@@ -405,13 +449,23 @@ class Fetcher(_FetcherCore):
                     allow_redirects,
                     verify,
                 )
-                if raw.status_code < 500 or attempt == self.retries:
-                    return self._to_response(raw, merged_headers)
             except retry_errors as exc:
                 last_exc = exc
                 if attempt == self.retries:
                     raise
-            time.sleep(min(2.0**attempt, 10.0) + random.random() * 0.25)
+                time.sleep(backoff)
+                continue
+            # 5xx 与 429（被限流）均重试；其余直接返回
+            should_retry = raw.status_code >= 500 or raw.status_code == 429
+            if not should_retry or attempt == self.retries:
+                return self._to_response(raw, merged_headers)
+            # 429 视为封锁信号：若有代理池则标记当前代理失败并换下一个
+            if raw.status_code == 429 and isinstance(self.proxy, ProxyPool) and proxy:
+                self.proxy.mark_failed(proxy)
+                proxy = self._resolve_proxy()
+            # 429 时尊重 Retry-After；否则指数退避
+            delay = _parse_retry_after(raw.headers.get("Retry-After")) or backoff
+            time.sleep(delay)
         if last_exc is not None:
             raise last_exc
         raise RuntimeError(f"request to {url} failed without a captured exception")
