@@ -273,3 +273,45 @@ def test_spider_stats_as_dict() -> None:
     assert d["pages_crawled"] == 2
     assert d["items_scraped"] == 3
     assert d["elapsed_seconds"] >= 0
+
+
+def test_spider_stream_yields_items() -> None:
+    spider = ItemSpider(fetcher=FakeFetcher(PAGES))
+
+    async def collect() -> list[Any]:
+        items = []
+        async for item in spider.stream():
+            items.append(item)
+        return items
+
+    items = asyncio.run(collect())
+    names = [it["name"] for it in items]
+    assert names == ["A", "B", "C"]
+    assert spider.stats.pages_crawled == 2
+    assert spider.stats.items_scraped == 3
+
+
+def test_spider_stream_requires_fetcher() -> None:
+    spider = ItemSpider()
+
+    async def go() -> None:
+        async for _ in spider.stream():
+            pass
+
+    with pytest.raises(SpiderError, match="fetcher"):
+        asyncio.run(go())
+
+
+def test_spider_stream_respects_max_requests() -> None:
+    spider = ItemSpider(fetcher=FakeFetcher(PAGES))
+
+    async def collect() -> list[Any]:
+        items = []
+        async for item in spider.stream(max_requests=1):
+            items.append(item)
+        return items
+
+    items = asyncio.run(collect())
+    assert spider.stats.pages_crawled == 1
+    # 第一页有 2 个 item
+    assert len(items) == 2

@@ -6,7 +6,9 @@ and fetchers return rich, consistent objects instead of bare strings.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterable, Iterator
+from pathlib import Path
 from typing import Any, Generic, TypeVar, cast
 
 T = TypeVar("T")
@@ -151,6 +153,39 @@ class ResultList(list, Generic[T]):
     def length(self) -> int:
         """Scrapling-style alias for ``len(self)``."""
         return len(self)
+
+    # -- Scrapling-style export -------------------------------------------
+    @staticmethod
+    def _coerce(item: Any) -> Any:
+        """把元素转为 JSON 可序列化的形式。"""
+        # dataclass / pydantic / 普通 dict / 自定义 as_dict()
+        if hasattr(item, "as_dict") and callable(item.as_dict):
+            return item.as_dict()
+        if hasattr(item, "__dict__"):
+            return {k: v for k, v in vars(item).items() if not k.startswith("_")}
+        return item
+
+    def to_json(self, path: str | Path | None = None, *, indent: int = 2) -> str:
+        """将元素列表导出为 JSON 字符串，可选写入文件。
+
+        >>> items.to_json("results.json")
+        """
+        data = [self._coerce(i) for i in self]
+        text = json.dumps(data, ensure_ascii=False, indent=indent, default=str)
+        if path is not None:
+            Path(path).write_text(text, encoding="utf-8")
+        return text
+
+    def to_jsonl(self, path: str | Path | None = None) -> str:
+        """将元素列表导出为 JSON Lines（每行一个 JSON 对象）。
+
+        >>> items.to_jsonl("results.jsonl")
+        """
+        lines = [json.dumps(self._coerce(i), ensure_ascii=False, default=str) for i in self]
+        text = "\n".join(lines)
+        if path is not None:
+            Path(path).write_text(text + "\n", encoding="utf-8")
+        return text
 
     # -- slice-safe typing -------------------------------------------------
     def __getitem__(self, index: int | slice) -> Any:  # type: ignore[override]
