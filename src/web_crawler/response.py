@@ -31,6 +31,7 @@ class Response:
         request_headers: dict[str, str] | None = None,
         storage: AdaptiveStorage | None = None,
         adaptive: bool = False,
+        screenshots: list[dict[str, Any]] | None = None,
     ) -> None:
         self.url = url
         self.status = status
@@ -43,6 +44,8 @@ class Response:
         self._selector: Selector | None = None
         # Free-form bag for spider callbacks to pass state across requests.
         self.meta: dict[str, Any] = {}
+        # PixelRAG-style screenshot tiles (populated by DynamicFetcher).
+        self.screenshots: list[dict[str, Any]] | None = screenshots
 
     # -- text / parsing ----------------------------------------------------
     @property

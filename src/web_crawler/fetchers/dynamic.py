@@ -8,10 +8,15 @@ per fetch to avoid cookie/state leakage between requests.
 The class exposes small protected hook methods (``_setup_page``,
 ``_post_load``) so the stealthy subclass can inject stealth scripts and
 humanized behavior without duplicating the rendering flow.
+
+PixelRAG-inspired: ``screenshot_tiles()`` renders a page and slices it into
+fixed-height screenshot tiles, ready for visual embedding or VLM extraction.
 """
 
 from __future__ import annotations
 
+import base64
+import math
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -281,6 +286,205 @@ class DynamicFetcher(BaseFetcher):
             return await self._render_page_async(browser, url, proxy_settings)
         except Exception as exc:
             raise RuntimeError(f"dynamic async fetch of {url} failed: {exc}") from exc
+
+    # -- screenshot tiling (PixelRAG-style) ----------------------------------
+
+    def screenshot_tiles(
+        self,
+        url: str,
+        *,
+        tile_height: int = 1024,
+        viewport_width: int = 875,
+        format: str = "png",
+        quality: int = 80,
+    ) -> list[dict[str, Any]]:
+        """Render ``url`` and slice the full page into fixed-height screenshot tiles.
+
+        PixelRAG-style visual chunking: instead of extracting text from HTML,
+        capture the rendered page as screenshot tiles that can be fed directly
+        to a vision-language model for content extraction or visual embedding.
+
+        Parameters
+        ----------
+        url:
+            The page URL to render and screenshot.
+        tile_height:
+            Height of each tile in CSS pixels (default 1024, matching PixelRAG).
+        viewport_width:
+            Browser viewport width in CSS pixels (default 875, matching PixelRAG).
+        format:
+            Screenshot image format: ``"png"`` or ``"jpeg"``.
+        quality:
+            JPEG quality (1-100), ignored for PNG.
+
+        Returns
+        -------
+        list[dict]
+            Each tile as ``{index, total, b64: str, width, height}`` where
+            ``b64`` is a base64-encoded image string suitable for VLM input.
+        """
+        browser = self._ensure_browser()
+        proxy = self._resolve_proxy()
+        proxy_settings = self._parse_proxy(proxy)
+
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+        context = browser.new_context(
+            user_agent=self.user_agent,
+            locale="en-US",
+            viewport={"width": viewport_width, "height": 768},
+            extra_http_headers=self.extra_headers or None,
+            proxy=proxy_settings,
+            ignore_https_errors=not self.verify,
+        )
+        try:
+            page = context.new_page()
+            self._setup_page(page)
+
+            referer = "https://www.google.com/" if self.google_search else None
+            page.goto(url, wait_until="domcontentloaded", referer=referer, timeout=self.timeout * 1000)
+            self._post_load(page)
+
+            if self.wait_selector:
+                page.wait_for_selector(self.wait_selector, timeout=self.wait_timeout * 1000)
+            if self.page_action is not None:
+                self.page_action(page)
+            if self.network_idle:
+                try:
+                    page.wait_for_load_state("networkidle", timeout=self.wait_timeout * 1000)
+                except PlaywrightTimeoutError:
+                    pass
+
+            # Get full page dimensions
+            dims: dict[str, float] = page.evaluate("""() => ({
+                width: Math.max(
+                    document.documentElement.scrollWidth,
+                    document.documentElement.clientWidth,
+                    document.body?.scrollWidth || 0
+                ),
+                height: Math.max(
+                    document.documentElement.scrollHeight,
+                    document.documentElement.clientHeight,
+                    document.body?.scrollHeight || 0
+                ),
+            })""")
+            page_width = int(dims["width"])
+            page_height = int(dims["height"])
+            num_tiles = max(1, math.ceil(page_height / tile_height))
+
+            clip_format = "jpeg" if format == "jpeg" else "png"
+
+            tiles: list[dict[str, Any]] = []
+            for i in range(num_tiles):
+                y_start = i * tile_height
+                y_end = min(y_start + tile_height, page_height)
+                clip_height = y_end - y_start
+                if clip_height <= 0:
+                    break
+
+                screenshot_bytes = page.screenshot(
+                    clip={"x": 0, "y": y_start, "width": page_width, "height": clip_height},
+                    type=clip_format,
+                    quality=quality if format == "jpeg" else None,
+                    full_page=False,  # type: ignore[arg-type]
+                )
+                tiles.append({
+                    "index": i,
+                    "total": num_tiles,
+                    "b64": base64.b64encode(screenshot_bytes).decode("ascii"),
+                    "width": page_width,
+                    "height": clip_height,
+                })
+
+            return tiles
+        finally:
+            context.close()
+
+    async def async_screenshot_tiles(
+        self,
+        url: str,
+        *,
+        tile_height: int = 1024,
+        viewport_width: int = 875,
+        format: str = "png",
+        quality: int = 80,
+    ) -> list[dict[str, Any]]:
+        """Async version of :meth:`screenshot_tiles`."""
+        browser = await self._ensure_async_browser()
+        proxy = self._resolve_proxy()
+        proxy_settings = self._parse_proxy(proxy)
+
+        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+        context = await browser.new_context(
+            user_agent=self.user_agent,
+            locale="en-US",
+            viewport={"width": viewport_width, "height": 768},
+            extra_http_headers=self.extra_headers or None,
+            proxy=proxy_settings,
+            ignore_https_errors=not self.verify,
+        )
+        try:
+            page = await context.new_page()
+            await self._setup_page_async(page)
+
+            referer = "https://www.google.com/" if self.google_search else None
+            await page.goto(url, wait_until="domcontentloaded", referer=referer, timeout=self.timeout * 1000)
+            await self._post_load_async(page)
+
+            if self.wait_selector:
+                await page.wait_for_selector(self.wait_selector, timeout=self.wait_timeout * 1000)
+            if self.page_action is not None:
+                self.page_action(page)
+            if self.network_idle:
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=self.wait_timeout * 1000)
+                except PlaywrightTimeoutError:
+                    pass
+
+            dims: dict[str, float] = await page.evaluate("""() => ({
+                width: Math.max(
+                    document.documentElement.scrollWidth,
+                    document.documentElement.clientWidth,
+                    document.body?.scrollWidth || 0
+                ),
+                height: Math.max(
+                    document.documentElement.scrollHeight,
+                    document.documentElement.clientHeight,
+                    document.body?.scrollHeight || 0
+                ),
+            })""")
+            page_width = int(dims["width"])
+            page_height = int(dims["height"])
+            num_tiles = max(1, math.ceil(page_height / tile_height))
+
+            clip_format = "jpeg" if format == "jpeg" else "png"
+
+            tiles: list[dict[str, Any]] = []
+            for i in range(num_tiles):
+                y_start = i * tile_height
+                y_end = min(y_start + tile_height, page_height)
+                clip_height = y_end - y_start
+                if clip_height <= 0:
+                    break
+
+                screenshot_bytes = await page.screenshot(
+                    clip={"x": 0, "y": y_start, "width": page_width, "height": clip_height},
+                    type=clip_format,
+                    quality=quality if format == "jpeg" else None,
+                    full_page=False,  # type: ignore[arg-type]
+                )
+                tiles.append({
+                    "index": i,
+                    "total": num_tiles,
+                    "b64": base64.b64encode(screenshot_bytes).decode("ascii"),
+                    "width": page_width,
+                    "height": clip_height,
+                })
+
+            return tiles
+        finally:
+            await context.close()
 
     # -- lifecycle -----------------------------------------------------------
     def close(self) -> None:

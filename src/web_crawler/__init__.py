@@ -54,6 +54,8 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "ProxyPool": ("web_crawler.fetchers.proxy", "ProxyPool"),
     # response
     "Response": ("web_crawler.response", "Response"),
+    # visual extraction (PixelRAG-style)
+    "VisualExtractor": ("web_crawler.parser.visual", "VisualExtractor"),
     # spider
     "Request": ("web_crawler.spider.spider", "Request"),
     "Spider": ("web_crawler.spider.spider", "Spider"),
@@ -78,6 +80,8 @@ __all__ = [
     "ProxyPool",
     # response
     "Response",
+    # visual extraction (PixelRAG-style)
+    "VisualExtractor",
     # spider
     "Request",
     "Spider",
@@ -118,6 +122,7 @@ if TYPE_CHECKING:
     from .fetchers.stealthy import StealthyFetcher
     from .parser.adaptive import AdaptiveStorage, compute_fingerprint, similarity_score
     from .parser.selector import Adaptors, Selector
+    from .parser.visual import VisualExtractor
     from .response import Response
     from .spider.spider import Request, Spider, SpiderError, SpiderStats
 

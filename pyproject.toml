@@ -59,6 +59,9 @@ web-crawler = "app.crawler:main"
 crawler-ui = "app.ui:main"
 
 [project.optional-dependencies]
+visual = [
+    "Pillow>=10.0",
+]
 all = [
     "curl_cffi>=0.7",
     "playwright>=1.40",
