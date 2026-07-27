@@ -57,6 +57,8 @@ Issues = "https://github.com/xiaomaozjj666/web-crawler/issues"
 [project.scripts]
 web-crawler = "app.crawler:main"
 crawler-ui = "app.ui:main"
+web-crawler-mcp = "web_crawler.mcp.server:main"
+web-crawler-reverse = "web_crawler.mcp.cli:main"
 
 [project.optional-dependencies]
 visual = [
@@ -65,6 +67,13 @@ visual = [
 all = [
     "curl_cffi>=0.7",
     "playwright>=1.40",
+]
+camoufox = [
+    "camoufox[geoip]>=0.4",
+]
+mcp = [
+    "mcp>=1.0",
+    "camoufox[geoip]>=0.4",
 ]
 dev = [
     "pytest>=8.0",
@@ -81,6 +90,15 @@ target-version = "py310"
 
 [tool.ruff.lint]
 extend-select = ["I", "UP", "B"]
+ignore = [
+    "S110",   # try-except-pass 是 best-effort 清理的合理模式
+    "S112",   # try-except-continue 同上
+    "BLE001", # blind except 已有模式
+    "RUF012", # mutable class default 是 dataclass 风格的合理用法
+    "PYI034", # __enter__ 返回 Self 不兼容 3.10
+    "PYI046", # 未使用的 Protocol 不影响功能
+    "SIM102", # 嵌套 if 可读性更好
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

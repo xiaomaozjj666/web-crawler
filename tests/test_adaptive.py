@@ -66,7 +66,7 @@ def test_best_match_returns_best_above_threshold() -> None:
 def test_best_match_returns_none_below_threshold() -> None:
     stored = compute_fingerprint(_el('<a class="product">Product 1</a>'))
     candidates = [_el("<div>totally different</div>")]
-    best, score = best_match(candidates, stored, threshold=0.9)
+    best, _score = best_match(candidates, stored, threshold=0.9)
     assert best is None
 
 

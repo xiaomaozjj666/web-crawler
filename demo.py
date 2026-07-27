@@ -15,7 +15,7 @@ from pathlib import Path
 # 自动把项目 src/ 加入模块搜索路径，双击 .py 或 .bat 都能直接运行
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from web_crawler import (  # noqa: E402
+from web_crawler import (
     Fetcher,
     ProxyPool,
     Request,

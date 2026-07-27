@@ -549,7 +549,7 @@ class Selector:
         return self._element is not None
 
 
-__all__ = ["Selector", "Adaptors"]
+__all__ = ["Adaptors", "Selector"]
 
 # Scrapling 向后兼容别名：Adaptor 指向主选择器类 Selector
 Adaptor = Selector

@@ -22,6 +22,8 @@ import time
 import warnings
 from typing import TYPE_CHECKING, Any
 
+from typing_extensions import Self
+
 from ..compat import HAS_CURL_CFFI, HAS_HTTPX
 from ._base import BaseFetcher
 from .proxy import ProxyPool
@@ -531,7 +533,7 @@ class Fetcher(_FetcherCore):
         if self._session is not None:
             try:
                 self._session.close()
-            except Exception:  # noqa: BLE001 - best-effort cleanup
+            except Exception:
                 pass
             self._session = None
         # 异步 session 不在这里强行关闭，避免在无事件循环时抛 RuntimeError
@@ -549,23 +551,23 @@ class Fetcher(_FetcherCore):
         if self._session is not None:
             try:
                 self._session.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             self._session = None
         if self._async_session is not None:
             try:
                 await self._async_session.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             self._async_session = None
 
-    def __enter__(self) -> Fetcher:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> None:
         self.close()
 
-    async def __aenter__(self) -> Fetcher:
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *exc: object) -> None:
@@ -630,21 +632,21 @@ class AsyncFetcher(_FetcherCore):
         if self._session is not None:
             try:
                 self._session.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             self._session = None
         if self._async_session is not None:
             try:
                 await self._async_session.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             self._async_session = None
 
-    async def __aenter__(self) -> AsyncFetcher:
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *exc: object) -> None:
         await self.aclose()
 
 
-__all__ = ["Fetcher", "AsyncFetcher"]
+__all__ = ["AsyncFetcher", "Fetcher"]

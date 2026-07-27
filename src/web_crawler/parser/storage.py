@@ -14,6 +14,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from typing_extensions import Self
+
 DEFAULT_DB_PATH = Path.home() / ".web_crawler" / "adaptive.sqlite3"
 
 _SCHEMA = """
@@ -105,11 +107,11 @@ class AdaptiveStorage:
         with self._lock:
             self._conn.close()
 
-    def __enter__(self) -> AdaptiveStorage:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> None:
         self.close()
 
 
-__all__ = ["AdaptiveStorage", "DEFAULT_DB_PATH"]
+__all__ = ["DEFAULT_DB_PATH", "AdaptiveStorage"]

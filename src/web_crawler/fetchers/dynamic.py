@@ -21,6 +21,8 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from typing_extensions import Self
+
 from ..compat import require_playwright
 from ._base import BaseFetcher
 from .proxy import ProxyPool
@@ -492,13 +494,13 @@ class DynamicFetcher(BaseFetcher):
         if self._browser is not None:
             try:
                 self._browser.close()
-            except Exception:  # noqa: BLE001 - best-effort cleanup
+            except Exception:
                 pass
             self._browser = None
         if self._pw is not None:
             try:
                 self._pw.stop()
-            except Exception:  # noqa: BLE001 - best-effort cleanup
+            except Exception:
                 pass
             self._pw = None
         # 异步 browser 无法在同步 close 中安全关闭，请使用 aclose() 或 async with
@@ -508,35 +510,35 @@ class DynamicFetcher(BaseFetcher):
         if self._browser is not None:
             try:
                 self._browser.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             self._browser = None
         if self._pw is not None:
             try:
                 self._pw.stop()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             self._pw = None
         if self._async_browser is not None:
             try:
                 await self._async_browser.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             self._async_browser = None
         if self._async_pw is not None:
             try:
                 await self._async_pw.stop()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             self._async_pw = None
 
-    def __enter__(self) -> DynamicFetcher:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *exc: object) -> None:
         self.close()
 
-    async def __aenter__(self) -> DynamicFetcher:
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *exc: object) -> None:

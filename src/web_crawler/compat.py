@@ -31,6 +31,14 @@ try:
 except ImportError:  # pragma: no cover
     HAS_HTTPX = False
 
+try:
+    import camoufox  # noqa: F401
+    from camoufox.sync_api import Camoufox  # noqa: F401
+
+    HAS_CAMOUFOX = True
+except ImportError:  # pragma: no cover - exercised only without camoufox
+    HAS_CAMOUFOX = False
+
 
 def require_curl_cffi() -> None:
     """Raise an informative error if ``curl_cffi`` is not installed."""
@@ -50,10 +58,21 @@ def require_playwright() -> None:
         )
 
 
+def require_camoufox() -> None:
+    """Raise an informative error if ``camoufox`` is not installed."""
+    if not HAS_CAMOUFOX:
+        raise ImportError(
+            "camoufox is required for the anti-fingerprint Firefox fetcher. "
+            "Install it with: pip install camoufox[geoip] && camoufox fetch"
+        )
+
+
 __all__ = [
+    "HAS_CAMOUFOX",
     "HAS_CURL_CFFI",
-    "HAS_PLAYWRIGHT",
     "HAS_HTTPX",
+    "HAS_PLAYWRIGHT",
+    "require_camoufox",
     "require_curl_cffi",
     "require_playwright",
 ]
