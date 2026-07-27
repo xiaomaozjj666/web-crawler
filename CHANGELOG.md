@@ -28,6 +28,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CLI** (`web-crawler-reverse`) with 10 subcommands plus an interactive REPL.
 - New `[project.optional-dependencies]`: `camoufox`, `mcp`.
 - New entry points: `web-crawler-mcp`, `web-crawler-reverse`.
+- **Mainstream-agent alignment modules** (browser-use / Skyvern / PentAGI
+  feature parity), all individually toggleable via `ReverseAgentConfig`:
+  - `web_crawler.ai.dom_pruner.DomPruner` — DOM focus pruning (rule + LLM
+    rerank, ≈80% token cut, Skyvern/browser-use style).
+  - `web_crawler.ai.checkpoint.CheckpointManager` — step-end state
+    persisted; resume after crash or interrupt (`CheckpointStore` keeps the
+    last N snapshots, atomic writes).
+  - `web_crawler.ai.budget.BudgetTracker` — per-step / per-call / global
+    token caps with COMPRESS / DOWNGRADE / STOP policies; raises
+    `BudgetExceeded` when hard-stop is configured.
+  - `web_crawler.ai.confidence.ConfidenceScorer` — rule + LLM dual-path
+    scoring; low-confidence actions trigger fallback.
+  - `web_crawler.ai.guardrails.ActionGuard` — domain whitelist, blocks
+    localhost / non-HTTPS / cross-origin / dangerous scripts; supports
+    custom `GuardrailRule` and CONFIRM callbacks.
+  - `ReverseAgent` now wires DomPruner / Checkpoint / Budget / Confidence /
+    Guard into both sync `run` and async `arun` loops; `ContextCompressor`
+    gains `force_compress` / `force_compress_async` for budget-driven compaction.
 
 ### Changed
 - `pyproject.toml`: bumped `[tool.mypy].python_version` to `"3.12"` (modern
@@ -35,8 +53,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `>=3.10`; runtime compat is verified by the test suite.
 - Removed `requirements.txt` / `requirements-dev.txt` — install via
   `pip install -e ".[dev]"` (or `.[mcp,dev]`, `.[all,dev]`). CI updated.
-- README: refreshed architecture tree, updated test count to 224, added the JS
-  reverse-agent / MCP / CLI sections, documented all installation extras.
+- README: refreshed architecture tree, added a "Mainstream-agent alignment"
+  capability matrix, documented all installation extras.
+- `web_crawler.ai.__init__` now lazily exports 15 alignment symbols
+  (`DomPruner`, `PrunedDom`, `Checkpoint`, `CheckpointManager`,
+  `CheckpointStore`, `BudgetTracker`, `TokenBudget`, `BudgetPolicy`,
+  `BudgetExceeded`, `ConfidenceScorer`, `ConfidenceResult`, `ActionGuard`,
+  `GuardrailResult`, `GuardrailAction`, `GuardrailRule`).
+
 
 ## [0.2.1] — 2026-07-12
 

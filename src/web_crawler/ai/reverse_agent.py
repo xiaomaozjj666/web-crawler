@@ -39,9 +39,31 @@ from typing_extensions import Self
 
 from ..fetchers.camoufox import CamoufoxFetcher
 from .analyzer import AnalysisResult, JSAnalyzer, JSFragment
+from .budget import BudgetTracker, TokenBudget
 from .captcha import CaptchaManager, CaptchaType
+from .checkpoint import Checkpoint, CheckpointManager, CheckpointStore
+from .confidence import ConfidenceResult, ConfidenceScorer
+from .dom_pruner import DomPruner, PrunedDom
+from .guardrails import ActionGuard, GuardrailResult
 from .hooks import collect_hook_data, generate_combined_script
+from .judge import JudgeResult, TaskJudge
 from .llm import DEFAULT_MODEL, DeepSeekProvider, LLMMessage, LLMProvider
+from .loop import ContextCompressor, LoopDetector
+from .planner import Plan, Planner
+from .recorder import RunRecorder
+from .schema import SchemaValidator
+from .watchdog import (
+    EVENT_ACTION,
+    EVENT_DONE,
+    EVENT_OBSERVATION,
+    EVENT_OBSERVE_ERROR,
+    EVENT_STEP_END,
+    EVENT_STEP_START,
+    EVENT_THINK_ERROR,
+    CrashRecovery,
+    EventBus,
+    Heartbeat,
+)
 
 # ---------------------------------------------------------------------------
 # 常量与 Prompt
@@ -161,6 +183,44 @@ class ReverseAgentConfig:
     target_params: list[str] | None = None
     proxy: str | None = None
     os_name: str = "windows"
+    # Planner：周期重规划间隔（步），None 表示禁用 Planner
+    planner_interval: int | None = 5
+    # LoopDetector：触发循环的重复次数阈值
+    loop_threshold: int = 3
+    # ContextCompressor：历史压缩阈值（步）
+    max_history: int = 25
+    # Judge：是否启用 done 二次验证
+    enable_judge: bool = True
+    # Judge：严格模式（缺任一目标参数直接判失败）
+    judge_strict: bool = True
+    # Recorder：是否启用成功路径编译
+    enable_recorder: bool = True
+    # Watchdog：步进心跳超时（秒），超过即视为卡死
+    heartbeat_timeout: float = 120.0
+    # Watchdog：崩溃重试次数
+    max_retries: int = 2
+    # DomPruner：DOM 焦点裁剪字符上限，0 表示禁用
+    dom_prune_max_chars: int = 0
+    # DomPruner：是否启用 LLM 重要性评分
+    dom_prune_llm_rank: bool = False
+    # Checkpoint：是否启用断点续跑
+    enable_checkpoint: bool = False
+    # Checkpoint：保存间隔（步）
+    checkpoint_interval: int = 1
+    # Checkpoint：滚动保留数量
+    checkpoint_keep: int = 5
+    # Budget：全局 token 上限，None 表示不限制
+    budget_total: int | None = 100_000
+    # Budget：单步 token 上限
+    budget_per_step: int | None = 8_000
+    # Confidence：动作置信度阈值，低于此值触发 fallback（0-1）
+    min_confidence: float = 0.4
+    # Confidence：是否启用 LLM 评分
+    confidence_llm_score: bool = False
+    # Guard：是否启用危险动作护栏
+    enable_guard: bool = True
+    # Guard：允许导航的域名白名单（None 不限制）
+    allowed_domains: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +241,8 @@ class ReverseAgent:
         config: ReverseAgentConfig | None = None,
         provider: LLMProvider | None = None,
         analyzer: JSAnalyzer | None = None,
+        *,
+        event_bus: EventBus | None = None,
     ) -> None:
         self.config = config or ReverseAgentConfig()
         self.provider = provider or DeepSeekProvider(model=DEFAULT_MODEL)
@@ -194,6 +256,121 @@ class ReverseAgent:
         # 最近一次观察的 hook 数据缓存，供 _try_extract_param 复用
         self._hook_data_cache: dict = {"records": [], "count": 0}
 
+        # -- 双脑分离组件 ----------------------------------------------------
+        # Planner 用与 Actor 相同 provider；外部可注入更强模型做 planner。
+        self.planner: Planner | None = (
+            Planner(self.provider, planner_interval=self.config.planner_interval)
+            if self.config.planner_interval
+            else None
+        )
+        self._current_plan: Plan | None = None
+
+        # -- 循环检测 + 上下文压缩 -------------------------------------------
+        self.loop_detector = LoopDetector(threshold=self.config.loop_threshold)
+        self.context_compressor = ContextCompressor(
+            self.provider,
+            max_history=self.config.max_history,
+        )
+
+        # -- 任务完成二次验证 ------------------------------------------------
+        self.judge: TaskJudge | None = (
+            TaskJudge(self.provider, strict=self.config.judge_strict)
+            if self.config.enable_judge
+            else None
+        )
+        self._last_judge_result: JudgeResult | None = None
+
+        # -- 成功路径编译 ----------------------------------------------------
+        self.recorder: RunRecorder | None = RunRecorder() if self.config.enable_recorder else None
+        # 最近一次编译产出的脚本源码（run 结束后可用）
+        self._compiled_script: str = ""
+
+        # -- 事件总线 + 心跳 + 崩溃恢复 -------------------------------------
+        self.event_bus = event_bus or EventBus()
+        self.heartbeat = Heartbeat(
+            max_interval=self.config.heartbeat_timeout,
+            on_stall=self._on_stall,
+        )
+        self.crash_recovery = CrashRecovery(
+            max_retries=self.config.max_retries,
+            bus=self.event_bus,
+        )
+
+        # -- 结构化抽取 schema 验证 -----------------------------------------
+        # 默认 schema 为目标参数表（dict[str, str]），可在 extract 时启用
+        self.schema_validator: SchemaValidator | None = None
+
+        # -- DOM 焦点裁剪（Skyvern/browser-use 风格） ----------------------
+        # 仅当 dom_prune_max_chars > 0 时启用
+        self.dom_pruner: DomPruner | None = (
+            DomPruner(
+                max_chars=self.config.dom_prune_max_chars,
+                enable_llm_rank=self.config.dom_prune_llm_rank,
+                provider=self.provider,
+            )
+            if self.config.dom_prune_max_chars > 0
+            else None
+        )
+        # 最近一次裁剪结果（便于上游调试与事件订阅）
+        self._last_pruned_dom: PrunedDom | None = None
+
+        # -- 断点续跑 --------------------------------------------------------
+        self.checkpoint_manager: CheckpointManager = CheckpointManager(
+            enable=self.config.enable_checkpoint,
+            save_interval=self.config.checkpoint_interval,
+            store=CheckpointStore(keep=self.config.checkpoint_keep),
+        )
+        # 最近一次 resume 加载的 checkpoint（None 表示非 resume 启动）
+        self._resume_from: Checkpoint | None = None
+
+        # -- Token 预算管理 --------------------------------------------------
+        self.budget_tracker: BudgetTracker = BudgetTracker(
+            budget=TokenBudget(
+                total=self.config.budget_total,
+                per_step=self.config.budget_per_step,
+            )
+        )
+
+        # -- 动作置信度评分 -------------------------------------------------
+        self.confidence_scorer: ConfidenceScorer = ConfidenceScorer(
+            min_confidence=self.config.min_confidence,
+            enable_llm_score=self.config.confidence_llm_score,
+            provider=self.provider,
+        )
+        self._last_confidence: ConfidenceResult | None = None
+
+        # -- 危险动作护栏 ---------------------------------------------------
+        self.guard: ActionGuard | None = (
+            ActionGuard(allowed_domains=self.config.allowed_domains)
+            if self.config.enable_guard
+            else None
+        )
+        self._last_guard_result: GuardrailResult | None = None
+
+        # -- Budget / Confidence 共享的 LLM 调用缓存 ---------------------
+        # _think 内部更新这两个字段，主循环用它们做 token 估算
+        self._last_think_prompt: str = ""
+        self._last_think_completion: str = ""
+        # provider 返回的真实 usage dict（若有），优先用于 budget 记账
+        self._last_llm_usage: dict[str, Any] | None = None
+
+    # ------------------------------------------------------------------
+    # 事件总线便捷方法
+    # ------------------------------------------------------------------
+
+    def _emit(self, type_: str, *, step: int = 0, **payload: Any) -> None:
+        """便捷：通过事件总线发布事件。"""
+        self.event_bus.emit(type_, step=step, **payload)
+
+    def _on_stall(self, step: int, elapsed: float) -> None:
+        """Heartbeat 触发卡死时的回调。"""
+        self._emit(
+            "stall",
+            step=step,
+            elapsed=elapsed,
+            message=f"no step progress for {elapsed:.1f}s",
+        )
+
     # ------------------------------------------------------------------
     # 主入口（同步）
     # ------------------------------------------------------------------
@@ -206,35 +383,198 @@ class ReverseAgent:
             proxy=self.config.proxy,
             network_idle=False,
         )
+        # 重置所有有状态组件
+        self.loop_detector.reset()
+        self.context_compressor.reset()
+        self.heartbeat.reset()
+        self.crash_recovery.reset()
+        if self.recorder is not None:
+            self.recorder.reset()
+            self.recorder.set_target(url)
+        self._current_plan = None
+        self._last_judge_result = None
+        self._compiled_script = ""
+        # 重置新组件
+        self.budget_tracker = BudgetTracker(
+            budget=TokenBudget(
+                total=self.config.budget_total,
+                per_step=self.config.budget_per_step,
+            )
+        )
+        self._last_pruned_dom = None
+        self._last_confidence = None
+        self._last_guard_result = None
+
         history: list[dict] = []
         target_params_found: dict[str, str] = {}
         analysis: AnalysisResult | None = None
+        last_observation: Observation | None = None
+
+        # 尝试加载断点续跑
+        if self.config.enable_checkpoint:
+            self._resume_from = self.checkpoint_manager.load_latest()
+            if self._resume_from is not None:
+                cp = self._resume_from
+                history = list(cp.history)
+                target_params_found = dict(cp.target_params_found)
+                # 还原累积摘要（直接写内部字段，因为 property 是只读的）
+                self.context_compressor._cumulative_summary = cp.cumulative_summary
+                self._emit(
+                    "checkpoint.resume",
+                    step=cp.step,
+                    url=cp.url,
+                    target_params_found=list(target_params_found.keys()),
+                )
 
         try:
             context, page = self._create_page(self.config.hooks)
             self._context = context
             self._page = page
 
+            # resume 时导航回上次 URL，否则导航到入口 url
+            nav_url = self._resume_from.url if self._resume_from and self._resume_from.url else url
             try:
-                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                page.goto(nav_url, wait_until="domcontentloaded", timeout=30000)
             except Exception as exc:
                 history.append({"step": 0, "event": "navigate_error", "error": str(exc)})
             time.sleep(self.config.wait_after_navigate)
 
-            for step in range(1, self.config.max_steps + 1):
+            # resume 时重新注入已记录的 hooks
+            if self._resume_from and self._resume_from.hooks:
+                self._inject_hooks(page, self._resume_from.hooks)
+
+            # resume 时跳过已完成的步号
+            start_step = (self._resume_from.step + 1) if self._resume_from else 1
+            if start_step > self.config.max_steps:
+                self._emit(EVENT_DONE, step=0, success=True, reason="resume已完成所有步骤")
+            for step in range(start_step, self.config.max_steps + 1):
+                self._emit(EVENT_STEP_START, step=step)
                 try:
                     observation = self._observe(page)
+                    last_observation = observation
+                    self._emit(
+                        EVENT_OBSERVATION,
+                        step=step,
+                        url=observation.url,
+                        hook_count=observation.hook_data.get("count", 0),
+                        network_count=len(observation.network_requests),
+                        script_count=len(observation.scripts),
+                    )
                 except Exception as exc:
                     history.append({"step": step, "event": "observe_error", "error": str(exc)})
-                    if self._try_recover_page(url):
+                    self._emit(EVENT_OBSERVE_ERROR, step=step, error=str(exc))
+                    # 崩溃恢复策略：CrashRecovery 控制重试次数
+                    should_continue = self.crash_recovery.attempt(
+                        lambda: self._try_recover_page(url),
+                        step=step,
+                        error=exc,
+                    )
+                    if should_continue:
                         continue
                     break
 
+                # -- 循环检测：触发即重规划 -----------------------------
+                loop_result = self.loop_detector.observe(observation, step=step)
+                if loop_result.detected:
+                    self._emit(
+                        "loop.detected",
+                        step=step,
+                        repeated_count=loop_result.repeated_count,
+                    )
+                    if self.planner is not None:
+                        # 强制重规划
+                        self._current_plan = self.planner.make_plan(
+                            task,
+                            observation,
+                            step=step,
+                            history_summary=self.context_compressor.cumulative_summary,
+                            target_params=self.config.target_params,
+                        )
+                        self._emit(
+                            "plan",
+                            step=step,
+                            trigger="loop",
+                            subgoals=[sg.to_dict() for sg in self._current_plan.subgoals],
+                        )
+                        self.loop_detector.reset()
+
+                # -- 周期重规划 -----------------------------------------
+                if self.planner is not None and (
+                    self._current_plan is None
+                    or self._current_plan.is_complete
+                    or (step - (self._current_plan.created_at_step or 0))
+                    >= self.planner.planner_interval
+                ):
+                    self._current_plan = self.planner.make_plan(
+                        task,
+                        observation,
+                        step=step,
+                        history_summary=self.context_compressor.cumulative_summary,
+                        target_params=self.config.target_params,
+                    )
+                    self._emit(
+                        "plan",
+                        step=step,
+                        trigger="interval",
+                        subgoals=[sg.to_dict() for sg in self._current_plan.subgoals],
+                    )
+
+                # -- 上下文压缩 -----------------------------------------
+                history, compressed = self.context_compressor.maybe_compress(history)
+                if compressed:
+                    self._emit("context.compressed", step=step)
+
                 try:
-                    action = self._think(observation, task, history)
+                    action = self._think(observation, task, history, plan=self._current_plan)
+                    # Token 预算记账：用 think prompt 估算 + completion 估算
+                    self.budget_tracker.record_call(
+                        step=step,
+                        prompt_text=self._last_think_prompt or "",
+                        completion_text=self._last_think_completion or "",
+                        usage=self._last_llm_usage,
+                    )
+                    self._emit(
+                        EVENT_ACTION,
+                        step=step,
+                        action_type=action.action_type,
+                        reasoning=action.reasoning,
+                    )
                 except Exception as exc:
                     history.append({"step": step, "event": "think_error", "error": str(exc)})
+                    self._emit(EVENT_THINK_ERROR, step=step, error=str(exc))
                     action = self._fallback_action(observation)
+
+                # -- Confidence 评分：低分动作触发 fallback ----------------
+                conf_result = self.confidence_scorer.score(
+                    action,
+                    task=task,
+                    target_params=self.config.target_params,
+                    history=history,
+                )
+                self._last_confidence = conf_result
+                if conf_result.score < self.config.min_confidence:
+                    self._emit(
+                        "confidence.low",
+                        step=step,
+                        score=conf_result.score,
+                        reasons=conf_result.reasons,
+                    )
+                    action = self._fallback_action(observation)
+
+                # -- Token 预算检查 ----------------------------------------
+                if self.budget_tracker.should_compress():
+                    self._emit("budget.compress", step=step, **self.budget_tracker.summary())
+                    history, _ = self.context_compressor.force_compress(history)
+                if self.budget_tracker.should_stop():
+                    self._emit("budget.exceeded", step=step, **self.budget_tracker.summary())
+                    history.append(
+                        {
+                            "step": step,
+                            "event": "budget_exceeded",
+                            "summary": self.budget_tracker.summary(),
+                        }
+                    )
+                    break
 
                 history.append(
                     {
@@ -249,16 +589,98 @@ class ReverseAgent:
                             "script_count": len(observation.scripts),
                             "captcha_type": observation.captcha_type.value,
                         },
+                        "current_subgoal": (
+                            self._current_plan.current_subgoal.description
+                            if self._current_plan and self._current_plan.current_subgoal
+                            else None
+                        ),
+                        "confidence": conf_result.score,
                     }
                 )
 
+                # -- 心跳：步进成功 -----------------------------------
+                self.heartbeat.tick(step)
+
+                # -- 危险动作护栏：DENY 时跳过执行 ----------------------
+                guard_result: GuardrailResult | None = None
+                if self.guard is not None:
+                    guard_result = self.guard.check(
+                        action,
+                        context={"url": observation.url, "task": task, "step": step},
+                    )
+                    self._last_guard_result = guard_result
+                    if guard_result.denied:
+                        self._emit(
+                            "guard.deny",
+                            step=step,
+                            matched_rules=guard_result.matched_rules,
+                            details=guard_result.details,
+                        )
+                        history.append(
+                            {
+                                "step": step,
+                                "event": "guard_denied",
+                                "matched_rules": guard_result.matched_rules,
+                                "details": guard_result.details,
+                            }
+                        )
+                        # 跳过本步执行，直接进入下一步
+                        self._emit(EVENT_STEP_END, step=step)
+                        continue
+
                 if action.action_type == "done":
-                    break
+                    # -- Judge：done 动作二次验证 -------------------------
+                    if self.judge is not None and last_observation is not None:
+                        judge_result = self.judge.validate(
+                            action=action,
+                            observation=last_observation,
+                            target_params_found=target_params_found,
+                            task=task,
+                            target_params=self.config.target_params,
+                        )
+                        self._last_judge_result = judge_result
+                        self._emit(
+                            "judge.result",
+                            step=step,
+                            verified=judge_result.verified,
+                            missing=judge_result.missing,
+                        )
+                        if not judge_result.verified:
+                            # 验证失败：覆盖 done 动作为 fallback，继续循环
+                            history.append(
+                                {
+                                    "step": step,
+                                    "event": "judge_failed",
+                                    "missing": judge_result.missing,
+                                    "reasoning": judge_result.reasoning,
+                                }
+                            )
+                            action = self._fallback_action(observation)
+                        else:
+                            self._emit(EVENT_DONE, step=step, success=True)
+                            break
+                    else:
+                        self._emit(EVENT_DONE, step=step)
+                        break
 
                 try:
                     result = self._act(page, action)
+                    # -- Recorder：记录成功路径 -------------------------
+                    if self.recorder is not None:
+                        self.recorder.record(
+                            step=step,
+                            action_type=action.action_type,
+                            params=action.params,
+                            result_value=(
+                                str(result) if action.action_type == "extract" and result else None
+                            ),
+                            success=True,
+                        )
                     if action.action_type == "inject_hook" and result is False:
                         history.append({"step": step, "event": "inject_hook_failed"})
+                        if self.recorder is not None:
+                            # 标记本步失败，编译时跳过
+                            self.recorder._records[-1].success = False
                     elif action.action_type == "extract" and result:
                         param_name = action.params.get("param_name", "")
                         if param_name:
@@ -267,11 +689,46 @@ class ReverseAgent:
                         analysis = result
                 except Exception as exc:
                     history.append({"step": step, "event": "act_error", "error": str(exc)})
+                    self._emit("act.error", step=step, error=str(exc))
+                    if self.recorder is not None and self.recorder._records:
+                        self.recorder._records[-1].success = False
+
+                self._emit(EVENT_STEP_END, step=step)
+
+                # -- Checkpoint：步末保存断点 ----------------------------------
+                if self.config.enable_checkpoint:
+                    cp = self.checkpoint_manager.build_checkpoint(
+                        step=step,
+                        url=last_observation.url if last_observation else "",
+                        task=task,
+                        target_params_found=target_params_found,
+                        target_params=self.config.target_params,
+                        hooks=self.config.hooks,
+                        history=history,
+                        cumulative_summary=self.context_compressor.cumulative_summary,
+                        metadata={
+                            "confidence": conf_result.score,
+                            "budget": self.budget_tracker.summary(),
+                            "guard_denied": bool(guard_result and guard_result.denied),
+                        },
+                    )
+                    self.checkpoint_manager.save(cp)
 
             final_hook_data = self._read_hook_data(page)
             success = bool(target_params_found)
             if self.config.target_params:
                 success = all(p in target_params_found for p in self.config.target_params)
+            # Judge 验证过的成功才是真成功
+            if self.judge is not None and self._last_judge_result is not None:
+                success = success and self._last_judge_result.verified
+
+            # -- Recorder：编译成功路径为脚本 -----------------------------
+            if self.recorder is not None and success:
+                try:
+                    self._compiled_script = self.recorder.compile_script()
+                except Exception as exc:
+                    self._emit("recorder.compile_error", step=0, error=str(exc))
+                    self._compiled_script = ""
 
             return {
                 "success": success,
@@ -280,6 +737,11 @@ class ReverseAgent:
                 "hook_data": final_hook_data,
                 "steps": len(history),
                 "history": history,
+                "plan": self._current_plan.to_dict() if self._current_plan else None,
+                "judge_result": (
+                    self._last_judge_result.to_dict() if self._last_judge_result else None
+                ),
+                "compiled_script": self._compiled_script or None,
             }
         finally:
             self._cleanup_sync()
@@ -289,42 +751,214 @@ class ReverseAgent:
     # ------------------------------------------------------------------
 
     async def arun(self, url: str, task: str = "") -> dict:
-        """异步版本的主循环。"""
+        """异步版本的主循环。与 :meth:`run` 行为一致，但所有 IO 都走 async。"""
         self.fetcher = CamoufoxFetcher(
             headless=self.config.headless,
             os=self.config.os_name,
             proxy=self.config.proxy,
             network_idle=False,
         )
+        # 重置所有有状态组件
+        self.loop_detector.reset()
+        self.context_compressor.reset()
+        self.heartbeat.reset()
+        self.crash_recovery.reset()
+        if self.recorder is not None:
+            self.recorder.reset()
+            self.recorder.set_target(url)
+        self._current_plan = None
+        self._last_judge_result = None
+        self._compiled_script = ""
+        # 重置新组件
+        self.budget_tracker = BudgetTracker(
+            budget=TokenBudget(
+                total=self.config.budget_total,
+                per_step=self.config.budget_per_step,
+            )
+        )
+        self._last_pruned_dom = None
+        self._last_confidence = None
+        self._last_guard_result = None
+        self._last_think_prompt = ""
+        self._last_think_completion = ""
+        self._last_llm_usage = None
+
         history: list[dict] = []
         target_params_found: dict[str, str] = {}
         analysis: AnalysisResult | None = None
+        last_observation: Observation | None = None
+
+        # 尝试加载断点续跑
+        if self.config.enable_checkpoint:
+            self._resume_from = self.checkpoint_manager.load_latest()
+            if self._resume_from is not None:
+                cp = self._resume_from
+                history = list(cp.history)
+                target_params_found = dict(cp.target_params_found)
+                self.context_compressor._cumulative_summary = cp.cumulative_summary
+                self._emit(
+                    "checkpoint.resume",
+                    step=cp.step,
+                    url=cp.url,
+                    target_params_found=list(target_params_found.keys()),
+                )
 
         try:
             context, page = await self._create_page_async(self.config.hooks)
             self._context = context
             self._page = page
 
+            # resume 时导航回上次 URL，否则导航到入口 url
+            nav_url = self._resume_from.url if self._resume_from and self._resume_from.url else url
             try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await page.goto(nav_url, wait_until="domcontentloaded", timeout=30000)
             except Exception as exc:
                 history.append({"step": 0, "event": "navigate_error", "error": str(exc)})
             await asyncio.sleep(self.config.wait_after_navigate)
 
-            for step in range(1, self.config.max_steps + 1):
+            # resume 时重新注入已记录的 hooks
+            if self._resume_from and self._resume_from.hooks:
+                await self._inject_hooks_async(page, self._resume_from.hooks)
+
+            # resume 时跳过已完成的步号
+            start_step = (self._resume_from.step + 1) if self._resume_from else 1
+            if start_step > self.config.max_steps:
+                self._emit(EVENT_DONE, step=0, success=True, reason="resume已完成所有步骤")
+            for step in range(start_step, self.config.max_steps + 1):
+                self._emit(EVENT_STEP_START, step=step)
                 try:
                     observation = await self._observe_async(page)
+                    last_observation = observation
+                    self._emit(
+                        EVENT_OBSERVATION,
+                        step=step,
+                        url=observation.url,
+                        hook_count=observation.hook_data.get("count", 0),
+                        network_count=len(observation.network_requests),
+                        script_count=len(observation.scripts),
+                    )
                 except Exception as exc:
                     history.append({"step": step, "event": "observe_error", "error": str(exc)})
-                    if await self._try_recover_page_async(url):
+                    self._emit(EVENT_OBSERVE_ERROR, step=step, error=str(exc))
+                    # 异步崩溃恢复：CrashRecovery 同步控制器，但调用异步恢复函数
+                    # 已 await 完成恢复；用默认参数绑定避免 B023 闭包陷阱。
+                    recovered = await self._try_recover_page_async(url)
+
+                    def _recovered_fn(_r: bool = recovered) -> bool:
+                        return _r
+
+                    should_continue = self.crash_recovery.attempt(
+                        _recovered_fn,
+                        step=step,
+                        error=exc,
+                    )
+                    if should_continue:
                         continue
                     break
 
+                # -- 循环检测 ------------------------------------------
+                loop_result = self.loop_detector.observe(observation, step=step)
+                if loop_result.detected:
+                    self._emit(
+                        "loop.detected",
+                        step=step,
+                        repeated_count=loop_result.repeated_count,
+                    )
+                    if self.planner is not None:
+                        self._current_plan = await self.planner.make_plan_async(
+                            task,
+                            observation,
+                            step=step,
+                            history_summary=self.context_compressor.cumulative_summary,
+                            target_params=self.config.target_params,
+                        )
+                        self._emit(
+                            "plan",
+                            step=step,
+                            trigger="loop",
+                            subgoals=[sg.to_dict() for sg in self._current_plan.subgoals],
+                        )
+                        self.loop_detector.reset()
+
+                # -- 周期重规划 ----------------------------------------
+                if self.planner is not None and (
+                    self._current_plan is None
+                    or self._current_plan.is_complete
+                    or (step - (self._current_plan.created_at_step or 0))
+                    >= self.planner.planner_interval
+                ):
+                    self._current_plan = await self.planner.make_plan_async(
+                        task,
+                        observation,
+                        step=step,
+                        history_summary=self.context_compressor.cumulative_summary,
+                        target_params=self.config.target_params,
+                    )
+                    self._emit(
+                        "plan",
+                        step=step,
+                        trigger="interval",
+                        subgoals=[sg.to_dict() for sg in self._current_plan.subgoals],
+                    )
+
+                # -- 上下文压缩（异步） --------------------------------
+                history, compressed = await self.context_compressor.maybe_compress_async(history)
+                if compressed:
+                    self._emit("context.compressed", step=step)
+
                 try:
-                    action = await self._think_async(observation, task, history)
+                    action = await self._think_async(
+                        observation, task, history, plan=self._current_plan
+                    )
+                    # Token 预算记账
+                    self.budget_tracker.record_call(
+                        step=step,
+                        prompt_text=self._last_think_prompt or "",
+                        completion_text=self._last_think_completion or "",
+                        usage=self._last_llm_usage,
+                    )
+                    self._emit(
+                        EVENT_ACTION,
+                        step=step,
+                        action_type=action.action_type,
+                        reasoning=action.reasoning,
+                    )
                 except Exception as exc:
                     history.append({"step": step, "event": "think_error", "error": str(exc)})
+                    self._emit(EVENT_THINK_ERROR, step=step, error=str(exc))
                     action = self._fallback_action(observation)
+
+                # -- Confidence 评分：低分动作触发 fallback ----------------
+                conf_result = await self.confidence_scorer.score_async(
+                    action,
+                    task=task,
+                    target_params=self.config.target_params,
+                    history=history,
+                )
+                self._last_confidence = conf_result
+                if conf_result.score < self.config.min_confidence:
+                    self._emit(
+                        "confidence.low",
+                        step=step,
+                        score=conf_result.score,
+                        reasons=conf_result.reasons,
+                    )
+                    action = self._fallback_action(observation)
+
+                # -- Token 预算检查 ----------------------------------------
+                if self.budget_tracker.should_compress():
+                    self._emit("budget.compress", step=step, **self.budget_tracker.summary())
+                    history, _ = await self.context_compressor.force_compress_async(history)
+                if self.budget_tracker.should_stop():
+                    self._emit("budget.exceeded", step=step, **self.budget_tracker.summary())
+                    history.append(
+                        {
+                            "step": step,
+                            "event": "budget_exceeded",
+                            "summary": self.budget_tracker.summary(),
+                        }
+                    )
+                    break
 
                 history.append(
                     {
@@ -339,16 +973,92 @@ class ReverseAgent:
                             "script_count": len(observation.scripts),
                             "captcha_type": observation.captcha_type.value,
                         },
+                        "current_subgoal": (
+                            self._current_plan.current_subgoal.description
+                            if self._current_plan and self._current_plan.current_subgoal
+                            else None
+                        ),
+                        "confidence": conf_result.score,
                     }
                 )
 
+                self.heartbeat.tick(step)
+
+                # -- 危险动作护栏：DENY 时跳过执行 ----------------------
+                guard_result: GuardrailResult | None = None
+                if self.guard is not None:
+                    guard_result = await self.guard.check_async(
+                        action,
+                        context={"url": observation.url, "task": task, "step": step},
+                    )
+                    self._last_guard_result = guard_result
+                    if guard_result.denied:
+                        self._emit(
+                            "guard.deny",
+                            step=step,
+                            matched_rules=guard_result.matched_rules,
+                            details=guard_result.details,
+                        )
+                        history.append(
+                            {
+                                "step": step,
+                                "event": "guard_denied",
+                                "matched_rules": guard_result.matched_rules,
+                                "details": guard_result.details,
+                            }
+                        )
+                        self._emit(EVENT_STEP_END, step=step)
+                        continue
+
                 if action.action_type == "done":
-                    break
+                    if self.judge is not None and last_observation is not None:
+                        judge_result = await self.judge.validate_async(
+                            action=action,
+                            observation=last_observation,
+                            target_params_found=target_params_found,
+                            task=task,
+                            target_params=self.config.target_params,
+                        )
+                        self._last_judge_result = judge_result
+                        self._emit(
+                            "judge.result",
+                            step=step,
+                            verified=judge_result.verified,
+                            missing=judge_result.missing,
+                        )
+                        if not judge_result.verified:
+                            history.append(
+                                {
+                                    "step": step,
+                                    "event": "judge_failed",
+                                    "missing": judge_result.missing,
+                                    "reasoning": judge_result.reasoning,
+                                }
+                            )
+                            action = self._fallback_action(observation)
+                        else:
+                            self._emit(EVENT_DONE, step=step, success=True)
+                            break
+                    else:
+                        self._emit(EVENT_DONE, step=step)
+                        break
 
                 try:
                     result = await self._act_async(page, action)
+                    if self.recorder is not None:
+                        self.recorder.record(
+                            step=step,
+                            action_type=action.action_type,
+                            params=action.params,
+                            result_value=(
+                                str(result) if action.action_type == "extract" and result else None
+                            ),
+                            success=True,
+                        )
                     if action.action_type == "inject_hook" and result is False:
                         history.append({"step": step, "event": "inject_hook_failed"})
+                        if self.recorder is not None:
+                            self.recorder._records[-1].success = False
                     elif action.action_type == "extract" and result:
                         param_name = action.params.get("param_name", "")
                         if param_name:
@@ -357,11 +1067,44 @@ class ReverseAgent:
                         analysis = result
                 except Exception as exc:
                     history.append({"step": step, "event": "act_error", "error": str(exc)})
+                    self._emit("act.error", step=step, error=str(exc))
+                    if self.recorder is not None and self.recorder._records:
+                        self.recorder._records[-1].success = False
+
+                self._emit(EVENT_STEP_END, step=step)
+
+                # -- Checkpoint：步末保存断点 ----------------------------------
+                if self.config.enable_checkpoint:
+                    cp = self.checkpoint_manager.build_checkpoint(
+                        step=step,
+                        url=last_observation.url if last_observation else "",
+                        task=task,
+                        target_params_found=target_params_found,
+                        target_params=self.config.target_params,
+                        hooks=self.config.hooks,
+                        history=history,
+                        cumulative_summary=self.context_compressor.cumulative_summary,
+                        metadata={
+                            "confidence": conf_result.score,
+                            "budget": self.budget_tracker.summary(),
+                            "guard_denied": bool(guard_result and guard_result.denied),
+                        },
+                    )
+                    self.checkpoint_manager.save(cp)
 
             final_hook_data = await self._read_hook_data_async(page)
             success = bool(target_params_found)
             if self.config.target_params:
                 success = all(p in target_params_found for p in self.config.target_params)
+            if self.judge is not None and self._last_judge_result is not None:
+                success = success and self._last_judge_result.verified
+
+            if self.recorder is not None and success:
+                try:
+                    self._compiled_script = self.recorder.compile_script()
+                except Exception as exc:
+                    self._emit("recorder.compile_error", step=0, error=str(exc))
+                    self._compiled_script = ""
 
             return {
                 "success": success,
@@ -370,6 +1113,11 @@ class ReverseAgent:
                 "hook_data": final_hook_data,
                 "steps": len(history),
                 "history": history,
+                "plan": self._current_plan.to_dict() if self._current_plan else None,
+                "judge_result": (
+                    self._last_judge_result.to_dict() if self._last_judge_result else None
+                ),
+                "compiled_script": self._compiled_script or None,
             }
         finally:
             await self._cleanup_async()
@@ -393,9 +1141,16 @@ class ReverseAgent:
         except Exception:
             page_title = ""
         try:
-            dom_summary = page.content()
+            dom_raw = page.content()
         except Exception:
-            dom_summary = ""
+            dom_raw = ""
+        # 启用 DomPruner 时把全文裁剪为精简结构，节省下游 LLM token
+        if self.dom_pruner is not None and dom_raw:
+            pruned = self.dom_pruner.prune(dom_raw)
+            self._last_pruned_dom = pruned
+            dom_summary = pruned.text or dom_raw[:2000]
+        else:
+            dom_summary = dom_raw[:2000]
         return Observation(
             url=url,
             hook_data=hook_data,
@@ -403,7 +1158,7 @@ class ReverseAgent:
             scripts=scripts,
             captcha_type=captcha_type,
             page_title=page_title,
-            dom_summary=dom_summary[:2000],
+            dom_summary=dom_summary,
         )
 
     async def _observe_async(self, page: Any) -> Observation:
@@ -432,9 +1187,15 @@ class ReverseAgent:
         except Exception:
             page_title = ""
         try:
-            dom_summary = await page.content()
+            dom_raw = await page.content()
         except Exception:
-            dom_summary = ""
+            dom_raw = ""
+        if self.dom_pruner is not None and dom_raw:
+            pruned = await self.dom_pruner.prune_async(dom_raw)
+            self._last_pruned_dom = pruned
+            dom_summary = pruned.text or dom_raw[:2000]
+        else:
+            dom_summary = dom_raw[:2000]
         return Observation(
             url=url,
             hook_data=hook_data,
@@ -442,28 +1203,52 @@ class ReverseAgent:
             scripts=scripts,
             captcha_type=captcha_type,
             page_title=page_title,
-            dom_summary=dom_summary[:2000],
+            dom_summary=dom_summary,
         )
 
     # ------------------------------------------------------------------
     # 思考
     # ------------------------------------------------------------------
 
-    def _think(self, observation: Observation, task: str, history: list) -> Action:
+    def _think(
+        self,
+        observation: Observation,
+        task: str,
+        history: list,
+        *,
+        plan: Plan | None = None,
+    ) -> Action:
         """调 DeepSeek 分析当前状态，决定下一步。"""
-        prompt = self._build_think_prompt(observation, task, history)
+        prompt = self._build_think_prompt(observation, task, history, plan=plan)
+        # 暂存 prompt / completion 供 BudgetTracker 记账使用
+        self._last_think_prompt = prompt
+        self._last_think_completion = ""
         messages = [LLMMessage("system", _THINK_SYSTEM_PROMPT), LLMMessage("user", prompt)]
         resp = self.provider.chat(messages, temperature=0.0)
+        self._last_think_completion = resp.content or ""
+        # 暂存 LLM 真实用量（若 provider 返回）
+        self._last_llm_usage = getattr(resp, "usage", None)
         return self._parse_action(resp.content or "")
 
-    async def _think_async(self, observation: Observation, task: str, history: list) -> Action:
+    async def _think_async(
+        self,
+        observation: Observation,
+        task: str,
+        history: list,
+        *,
+        plan: Plan | None = None,
+    ) -> Action:
         """异步调 DeepSeek 分析当前状态。"""
-        prompt = self._build_think_prompt(observation, task, history)
+        prompt = self._build_think_prompt(observation, task, history, plan=plan)
+        self._last_think_prompt = prompt
+        self._last_think_completion = ""
         messages = [LLMMessage("system", _THINK_SYSTEM_PROMPT), LLMMessage("user", prompt)]
         if hasattr(self.provider, "achat"):
             resp = await self.provider.achat(messages, temperature=0.0)
         else:
             resp = self.provider.chat(messages, temperature=0.0)
+        self._last_think_completion = resp.content or ""
+        self._last_llm_usage = getattr(resp, "usage", None)
         return self._parse_action(resp.content or "")
 
     def _parse_action(self, content: str) -> Action:
@@ -867,12 +1652,14 @@ class ReverseAgent:
         observation: Observation,
         task: str,
         history: list,
+        *,
+        plan: Plan | None = None,
     ) -> str:
         """构建喂给 DeepSeek 的思考 prompt。"""
         target_params = (
             ", ".join(self.config.target_params) if self.config.target_params else "(未指定)"
         )
-        return _THINK_USER_TEMPLATE.format(
+        base = _THINK_USER_TEMPLATE.format(
             task=task or "(未指定)",
             url=observation.url,
             page_title=observation.page_title,
@@ -887,6 +1674,19 @@ class ReverseAgent:
             history_summary=self._format_history_summary(history),
             target_params=target_params,
         )
+        # Planner 产出的当前子目标作为额外约束注入到 prompt 末尾
+        if plan is not None and plan.current_subgoal is not None:
+            sg = plan.current_subgoal
+            base += (
+                f"\n\n## 当前子目标（来自 Planner）\n{sg.description}\n"
+                f"完成判据：{sg.success_criteria or '(未指定)'}\n"
+                "你的下一步动作应服务于完成此子目标；若已完成，"
+                "请输出 done 并说明成果。"
+            )
+        # 上下文压缩的累积摘要也作为额外背景注入
+        if self.context_compressor.cumulative_summary:
+            base += f"\n\n## 历史摘要（已压缩）\n{self.context_compressor.cumulative_summary}"
+        return base
 
     @staticmethod
     def _format_hook_summary(hook_data: dict) -> str:
@@ -1038,3 +1838,12 @@ __all__ = [
     "ReverseAgent",
     "ReverseAgentConfig",
 ]
+
+# 运行后可通过 ReverseAgent 实例访问的扩展属性：
+# - agent.event_bus: EventBus — 订阅事件做日志/指标
+# - agent.planner: Planner | None
+# - agent.judge: TaskJudge | None
+# - agent.recorder: RunRecorder | None
+# - agent._current_plan: Plan | None
+# - agent._last_judge_result: JudgeResult | None
+# - agent._compiled_script: str (成功路径编译产物)

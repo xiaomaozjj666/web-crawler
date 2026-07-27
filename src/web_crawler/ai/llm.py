@@ -12,6 +12,9 @@ Design notes
   registered with :func:`register_provider` without touching call sites.
 - ``httpx`` is imported lazily inside :meth:`OpenAICompatibleProvider.chat` to
   keep ``import web_crawler`` cheap, matching the library's lazy-import style.
+- Each provider exposes a :class:`ProviderCapabilities` snapshot so callers
+  can negotiate features (vision / json_mode / tools / streaming) without
+  try/except'ing the model name.
 
 Quick start
 -----------
@@ -74,13 +77,67 @@ MessageLike = "str | LLMMessage | dict[str, str]"
 
 @dataclass
 class LLMMessage:
-    """A single chat message (``role`` is one of system/user/assistant)."""
+    """A single chat message (``role`` is one of system/user/assistant).
+
+    ``content`` 可以是纯文本字符串，也可以是 OpenAI 多模态消息内容列表
+    （``[{"type": "text", "text": "..."}, {"type": "image_url", "image_url": {...}}]``），
+    用于 Vision-LLM 场景。``to_dict`` 透传该结构。
+    """
 
     role: str
-    content: str
+    content: str | list[dict[str, Any]]
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         return {"role": self.role, "content": self.content}
+
+    @classmethod
+    def text(cls, role: str, text: str) -> LLMMessage:
+        """便捷构造纯文本消息。"""
+        return cls(role=role, content=text)
+
+    @classmethod
+    def vision(
+        cls,
+        role: str,
+        text: str,
+        image_b64: str,
+        *,
+        mime: str = "image/png",
+        detail: str = "auto",
+    ) -> LLMMessage:
+        """便捷构造带图片的多模态消息（OpenAI vision 格式）。
+
+        ``image_b64`` 是不带 ``data:`` 前缀的 base64 字符串。
+        """
+        return cls(
+            role=role,
+            content=[
+                {"type": "text", "text": text},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime};base64,{image_b64}",
+                        "detail": detail,
+                    },
+                },
+            ],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderCapabilities:
+    """声明某 LLM 提供商支持的能力，供上层做能力协商。
+
+    字段默认值都是"最保守假设"，新提供商按真实支持情况显式覆盖。
+    """
+
+    vision: bool = False
+    json_mode: bool = False
+    tools: bool = False
+    streaming: bool = False
+    max_output_tokens: int = 4096
+    # 已知此 provider 支持的模型名前缀（用于自动协商），空列表表示不做前缀校验
+    known_models: tuple[str, ...] = ()
 
 
 @dataclass
@@ -106,6 +163,7 @@ class LLMProvider(Protocol):
     """Structural type every provider satisfies."""
 
     model: str
+    capabilities: ProviderCapabilities
 
     def chat(
         self,
@@ -116,15 +174,16 @@ class LLMProvider(Protocol):
 
 def _normalize_messages(
     messages: Sequence[str | LLMMessage | dict[str, str]] | str,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     """Coerce assorted message forms into the OpenAI ``messages`` list.
 
-    Accepts a bare string (treated as a single user turn), ``LLMMessage``
-    instances, or raw ``{"role", "content"}`` dicts.
+    接受纯字符串（视为单条 user 消息）、``LLMMessage`` 实例（支持纯文本与
+    多模态 vision 列表）、或原始 ``{"role", "content"}`` dict。``content``
+    可以是字符串或 OpenAI 多模态内容数组。
     """
     if isinstance(messages, str):
         return [{"role": "user", "content": messages}]
-    out: list[dict[str, str]] = []
+    out: list[dict[str, Any]] = []
     for m in messages:
         if isinstance(m, LLMMessage):
             out.append(m.to_dict())
@@ -156,6 +215,9 @@ class OpenAICompatibleProvider:
 
     name = "openai-compatible"
 
+    # 子类可覆盖：默认按保守假设，能力都不支持
+    capabilities: ProviderCapabilities = ProviderCapabilities()
+
     def __init__(
         self,
         *,
@@ -165,6 +227,7 @@ class OpenAICompatibleProvider:
         timeout: float = 60.0,
         api_key_env: str = "LLM_API_KEY",
         default_headers: dict[str, str] | None = None,
+        capabilities: ProviderCapabilities | None = None,
     ) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")
@@ -174,6 +237,9 @@ class OpenAICompatibleProvider:
             _load_dotenv_once()
         self.api_key = api_key or os.environ.get(api_key_env, "")
         self.default_headers = default_headers or {}
+        # 允许实例级覆盖类级 capabilities，便于按模型名动态协商
+        if capabilities is not None:
+            self.capabilities = capabilities
 
     # -- helpers ------------------------------------------------------------
     def _headers(self) -> dict[str, str]:
@@ -284,6 +350,17 @@ class DeepSeekProvider(OpenAICompatibleProvider):
 
     name = "deepseek"
 
+    # DeepSeek-V4-Pro 支持 JSON 模式与流式输出；vision 由调用方按模型名
+    # 通过 capabilities 覆盖（DeepSeek-Vision 系列）。
+    capabilities = ProviderCapabilities(
+        vision=False,
+        json_mode=True,
+        tools=False,
+        streaming=True,
+        max_output_tokens=8192,
+        known_models=("deepseek-v4-pro", "deepseek-vision"),
+    )
+
     def __init__(
         self,
         *,
@@ -301,12 +378,135 @@ class DeepSeekProvider(OpenAICompatibleProvider):
             api_key_env="DEEPSEEK_API_KEY",
             default_headers=default_headers,
         )
+        # deepseek-vision-* 视为支持 vision
+        if "vision" in model.lower():
+            self.capabilities = ProviderCapabilities(
+                vision=True,
+                json_mode=True,
+                tools=False,
+                streaming=True,
+                max_output_tokens=8192,
+                known_models=self.capabilities.known_models,
+            )
+
+
+class OpenAIProvider(OpenAICompatibleProvider):
+    """OpenAI 官方预置。默认模型 ``gpt-4o``，支持 vision / json_mode / tools。
+
+    从 ``OPENAI_API_KEY`` 读密钥；如需指向 Azure 等兼容端点，传 ``base_url``。
+    """
+
+    name = "openai"
+
+    capabilities = ProviderCapabilities(
+        vision=True,
+        json_mode=True,
+        tools=True,
+        streaming=True,
+        max_output_tokens=16384,
+        known_models=("gpt-4o", "gpt-4-turbo", "gpt-4-vision", "gpt-4.1", "o1", "o3"),
+    )
+
+    def __init__(
+        self,
+        *,
+        model: str = "gpt-4o",
+        api_key: str | None = None,
+        base_url: str = "https://api.openai.com/v1",
+        timeout: float = 60.0,
+        default_headers: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            api_key_env="OPENAI_API_KEY",
+            default_headers=default_headers,
+        )
+
+
+class AnthropicProvider(OpenAICompatibleProvider):
+    """Anthropic Claude 预置（通过 Anthropic 的 OpenAI 兼容端点）。
+
+    默认模型 ``claude-sonnet-4-5``，支持 vision；从 ``ANTHROPIC_API_KEY``
+    读密钥。Anthropic 也提供 OpenAI 兼容端点 ``/v1/openai/v1/chat/completions``，
+    本预置走该路径以便复用 :class:`OpenAICompatibleProvider` 的实现。
+    """
+
+    name = "anthropic"
+
+    capabilities = ProviderCapabilities(
+        vision=True,
+        json_mode=False,
+        tools=True,
+        streaming=True,
+        max_output_tokens=8192,
+        known_models=("claude-sonnet-4-5", "claude-opus-4", "claude-haiku-4"),
+    )
+
+    def __init__(
+        self,
+        *,
+        model: str = "claude-sonnet-4-5",
+        api_key: str | None = None,
+        base_url: str = "https://api.anthropic.com/v1",
+        timeout: float = 60.0,
+        default_headers: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            api_key_env="ANTHROPIC_API_KEY",
+            default_headers=default_headers,
+        )
+
+
+class QwenProvider(OpenAICompatibleProvider):
+    """阿里通义千问 DashScope 兼容预置。
+
+    默认模型 ``qwen-vl-max``（支持 vision），从 ``DASHSCOPE_API_KEY`` 读密钥。
+    """
+
+    name = "qwen"
+
+    capabilities = ProviderCapabilities(
+        vision=True,
+        json_mode=True,
+        tools=False,
+        streaming=True,
+        max_output_tokens=8192,
+        known_models=("qwen-vl", "qwen-max", "qwen-plus", "qwen-turbo"),
+    )
+
+    def __init__(
+        self,
+        *,
+        model: str = "qwen-vl-max",
+        api_key: str | None = None,
+        base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        timeout: float = 60.0,
+        default_headers: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            api_key_env="DASHSCOPE_API_KEY",
+            default_headers=default_headers,
+        )
 
 
 # -- registry ---------------------------------------------------------------
 _PROVIDERS: dict[str, Callable[..., LLMProvider]] = {
+    "anthropic": AnthropicProvider,
     "deepseek": DeepSeekProvider,
+    "openai": OpenAIProvider,
     "openai-compatible": OpenAICompatibleProvider,
+    "qwen": QwenProvider,
 }
 
 
@@ -318,6 +518,58 @@ def register_provider(name: str, factory: Callable[..., LLMProvider]) -> None:
 def available_providers() -> list[str]:
     """Return the registered provider names."""
     return sorted(_PROVIDERS)
+
+
+def select_provider(
+    *,
+    vision: bool = False,
+    json_mode: bool = False,
+    tools: bool = False,
+    streaming: bool = False,
+    prefer: str | None = None,
+    **kwargs: Any,
+) -> LLMProvider:
+    """按任务需求协商选择 LLM 提供商。
+
+    优先级：
+    1. ``prefer`` 指定的 provider 若已注册且满足全部需求 → 直接用；
+    2. 否则在已注册 provider 中按 capabilities 过滤，第一个全满足的胜出；
+    3. 都不满足时抛 ``ValueError``，附带哪些 provider 缺哪些能力。
+    """
+    demands = {
+        "vision": vision,
+        "json_mode": json_mode,
+        "tools": tools,
+        "streaming": streaming,
+    }
+    order: list[str] = []
+    if prefer:
+        order.append(prefer.lower())
+    order.extend(p for p in _PROVIDERS if p != (prefer or "").lower())
+    order = list(dict.fromkeys(order))  # 去重保序
+
+    failures: list[str] = []
+    for name in order:
+        factory = _PROVIDERS.get(name)
+        if factory is None:
+            continue
+        try:
+            provider = factory(**kwargs)
+        except TypeError:
+            # 构造参数不匹配，跳过
+            continue
+        caps = getattr(provider, "capabilities", None)
+        if caps is None:
+            continue
+        ok = all(getattr(caps, k) == v or (v is False) for k, v in demands.items())
+        if ok:
+            return provider
+        missing = [k for k, v in demands.items() if v and not getattr(caps, k)]
+        failures.append(f"{name}: missing {missing}")
+
+    raise ValueError(
+        f"no registered provider satisfies all demands; checked={order}, failures={failures}"
+    )
 
 
 def get_provider(name: str = "deepseek", **kwargs: Any) -> LLMProvider:
@@ -335,12 +587,17 @@ def get_provider(name: str = "deepseek", **kwargs: Any) -> LLMProvider:
 __all__ = [
     "DEEPSEEK_BASE_URL",
     "DEFAULT_MODEL",
+    "AnthropicProvider",
     "DeepSeekProvider",
     "LLMMessage",
     "LLMProvider",
     "LLMResponse",
     "OpenAICompatibleProvider",
+    "OpenAIProvider",
+    "ProviderCapabilities",
+    "QwenProvider",
     "available_providers",
     "get_provider",
     "register_provider",
+    "select_provider",
 ]
