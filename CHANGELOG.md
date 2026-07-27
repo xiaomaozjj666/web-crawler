@@ -4,6 +4,40 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **JS reverse-engineering agent** (`web_crawler.ai.reverse_agent.ReverseAgent`):
+  Camoufox-driven browser observe→think→act loop powered by DeepSeek-V4-Pro.
+  Injects JS hooks (fetch / XHR / cookie / `crypto.subtle` / webpack / console),
+  captures network traffic, splits webpack bundles, then asks the LLM to
+  deobfuscate and reimplement signing algorithms in Python.
+- **JS Hook library** (`web_crawler.ai.hooks.HookLibrary`) with 6 hooks and a
+  combined-script generator; `collect_hook_data` sync/async helpers.
+- **JSAnalyzer** (`web_crawler.ai.analyzer`) — webpack module extraction,
+  signing-flow tracing, AI deobfuscation and algorithm reimplementation.
+- **CaptchaManager** (`web_crawler.ai.captcha`) — detects Turnstile / hCaptcha /
+  reCAPTCHA v2&v3 / 极验 GeeTest; only simulates normal user interaction (入口
+  click / token-wait / humanized drag). Image challenges hand off to human.
+- **CamoufoxFetcher** (`web_crawler.fetchers.camoufox`) — fingerprint-resistant
+  Firefox via Camoufox + Playwright, with hook-injection and network-capture
+  helpers.
+- **MCP server** (`web_crawler.mcp.server.ReverseMCPServer`) — exposes 9 tools
+  over JSON-RPC/stdio for AI clients (Claude Desktop / Cursor). Falls back to a
+  manual stdio implementation when the `mcp` SDK is missing.
+- **CLI** (`web-crawler-reverse`) with 10 subcommands plus an interactive REPL.
+- New `[project.optional-dependencies]`: `camoufox`, `mcp`.
+- New entry points: `web-crawler-mcp`, `web-crawler-reverse`.
+
+### Changed
+- `pyproject.toml`: bumped `[tool.mypy].python_version` to `"3.12"` (modern
+  stubs like numpy 2.5 use PEP 695 `type` statements). `requires-python` still
+  `>=3.10`; runtime compat is verified by the test suite.
+- Removed `requirements.txt` / `requirements-dev.txt` — install via
+  `pip install -e ".[dev]"` (or `.[mcp,dev]`, `.[all,dev]`). CI updated.
+- README: refreshed architecture tree, updated test count to 224, added the JS
+  reverse-agent / MCP / CLI sections, documented all installation extras.
+
 ## [0.2.1] — 2026-07-12
 
 ### Fixed

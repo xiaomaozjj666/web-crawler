@@ -1,4 +1,5 @@
 """JSAnalyzer 纯解析逻辑测试（不调用真实 LLM，不触网）。"""
+
 from __future__ import annotations
 
 from typing import Any

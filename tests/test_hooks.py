@@ -1,4 +1,5 @@
 """HookLibrary / generate_combined_script / collect_hook_data 单元测试。"""
+
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, is_dataclass

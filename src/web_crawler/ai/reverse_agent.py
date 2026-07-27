@@ -236,19 +236,21 @@ class ReverseAgent:
                     history.append({"step": step, "event": "think_error", "error": str(exc)})
                     action = self._fallback_action(observation)
 
-                history.append({
-                    "step": step,
-                    "action": action.action_type,
-                    "params": action.params,
-                    "reasoning": action.reasoning,
-                    "observation": {
-                        "url": observation.url,
-                        "hook_count": observation.hook_data.get("count", 0),
-                        "network_count": len(observation.network_requests),
-                        "script_count": len(observation.scripts),
-                        "captcha_type": observation.captcha_type.value,
-                    },
-                })
+                history.append(
+                    {
+                        "step": step,
+                        "action": action.action_type,
+                        "params": action.params,
+                        "reasoning": action.reasoning,
+                        "observation": {
+                            "url": observation.url,
+                            "hook_count": observation.hook_data.get("count", 0),
+                            "network_count": len(observation.network_requests),
+                            "script_count": len(observation.scripts),
+                            "captcha_type": observation.captcha_type.value,
+                        },
+                    }
+                )
 
                 if action.action_type == "done":
                     break
@@ -324,19 +326,21 @@ class ReverseAgent:
                     history.append({"step": step, "event": "think_error", "error": str(exc)})
                     action = self._fallback_action(observation)
 
-                history.append({
-                    "step": step,
-                    "action": action.action_type,
-                    "params": action.params,
-                    "reasoning": action.reasoning,
-                    "observation": {
-                        "url": observation.url,
-                        "hook_count": observation.hook_data.get("count", 0),
-                        "network_count": len(observation.network_requests),
-                        "script_count": len(observation.scripts),
-                        "captcha_type": observation.captcha_type.value,
-                    },
-                })
+                history.append(
+                    {
+                        "step": step,
+                        "action": action.action_type,
+                        "params": action.params,
+                        "reasoning": action.reasoning,
+                        "observation": {
+                            "url": observation.url,
+                            "hook_count": observation.hook_data.get("count", 0),
+                            "network_count": len(observation.network_requests),
+                            "script_count": len(observation.scripts),
+                            "captcha_type": observation.captcha_type.value,
+                        },
+                    }
+                )
 
                 if action.action_type == "done":
                     break
@@ -406,14 +410,17 @@ class ReverseAgent:
         """异步收集页面状态。"""
         url = self._safe_page_url(page)
         # 异步版 collect_hook_data：内联 evaluate 以支持 await
-        records = await page.evaluate(
-            """() => {
+        records = (
+            await page.evaluate(
+                """() => {
                 const data = window.__hook_data__ || [];
                 const snapshot = data.slice();
                 try { window.__hook_data__ = []; } catch (e) {}
                 return snapshot;
             }"""
-        ) or []
+            )
+            or []
+        )
         hook_data = {"records": list(records), "count": len(records)}
         self._hook_data_cache = hook_data
         network_requests = list(self._network_log)
@@ -572,24 +579,30 @@ class ReverseAgent:
     def _collect_scripts(self, page: Any) -> list[str]:
         """收集页面所有 JS URL。"""
         try:
-            return page.evaluate("""
+            return (
+                page.evaluate("""
                 () => {
                     const scripts = document.querySelectorAll('script[src]');
                     return Array.from(scripts).map(s => s.src).filter(Boolean);
                 }
-            """) or []
+            """)
+                or []
+            )
         except Exception:
             return []
 
     async def _collect_scripts_async(self, page: Any) -> list[str]:
         """异步收集页面所有 JS URL。"""
         try:
-            return await page.evaluate("""
+            return (
+                await page.evaluate("""
                 () => {
                     const scripts = document.querySelectorAll('script[src]');
                     return Array.from(scripts).map(s => s.src).filter(Boolean);
                 }
-            """) or []
+            """)
+                or []
+            )
         except Exception:
             return []
 
@@ -620,12 +633,14 @@ class ReverseAgent:
                 )
                 if resp.status_code == 200 and resp.text:
                     text = resp.text
-                    fragments.append(JSFragment(
-                        source=text,
-                        url=url,
-                        size=len(text),
-                        is_minified=len(text.splitlines()) < 5,
-                    ))
+                    fragments.append(
+                        JSFragment(
+                            source=text,
+                            url=url,
+                            size=len(text),
+                            is_minified=len(text.splitlines()) < 5,
+                        )
+                    )
             except Exception:
                 continue
 
@@ -756,13 +771,15 @@ class ReverseAgent:
 
         def on_request(req: Any) -> None:
             try:
-                self._network_log.append({
-                    "url": req.url,
-                    "method": req.method,
-                    "resource_type": req.resource_type,
-                    "headers": dict(req.headers),
-                    "post_data": req.post_data,
-                })
+                self._network_log.append(
+                    {
+                        "url": req.url,
+                        "method": req.method,
+                        "resource_type": req.resource_type,
+                        "headers": dict(req.headers),
+                        "post_data": req.post_data,
+                    }
+                )
             except Exception:
                 pass
 
@@ -812,9 +829,7 @@ class ReverseAgent:
     async def _read_hook_data_async(self, page: Any) -> dict:
         """异步非破坏性读取 Hook 数据。"""
         try:
-            records = await page.evaluate(
-                "() => (window.__hook_data__ || []).slice()"
-            ) or []
+            records = await page.evaluate("() => (window.__hook_data__ || []).slice()") or []
             return {"records": list(records), "count": len(records)}
         except Exception:
             return {"records": [], "count": 0}
@@ -835,9 +850,7 @@ class ReverseAgent:
         """异步读取 Hook 记录列表。"""
         records: list[dict] = []
         try:
-            fresh = await page.evaluate(
-                "() => (window.__hook_data__ || []).slice()"
-            ) or []
+            fresh = await page.evaluate("() => (window.__hook_data__ || []).slice()") or []
             records.extend(fresh)
         except Exception:
             pass

@@ -105,7 +105,10 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 
 [tool.mypy]
-python_version = "3.10"
+# 类型检查目标 Python 3.12（CI 镜像与本地均 >=3.12，且现代 stub 如 numpy 2.5
+# 已使用 PEP 695 type 语句，python_version<3.12 会触发 syntax 错误）。
+# requires-python 仍保持 ">=3.10"，运行期兼容性由测试套件保障。
+python_version = "3.12"
 ignore_missing_imports = true
 
 [build-system]

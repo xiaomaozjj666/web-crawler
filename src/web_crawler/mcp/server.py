@@ -48,6 +48,10 @@ except ImportError:  # pragma: no cover
     _HAS_REVERSE_AGENT = False
 
 # MCP SDK 为可选依赖；缺失时走手动 stdio 实现的降级路径。
+# 类型注解用 Any 以容纳 ImportError 降级路径下的 None 赋值（mypy strict 友好）。
+Server: Any
+stdio_server: Any
+types: Any
 try:  # pragma: no cover - 取决于是否安装了 mcp 包
     from mcp import types
     from mcp.server import Server
@@ -73,6 +77,7 @@ _PREVIEW_LIMIT = 10
 
 # -- 序列化辅助 --------------------------------------------------------------
 
+
 def _json_default(obj: Any) -> Any:
     """dataclass / Enum 等对象的 JSON 序列化兜底。"""
     if is_dataclass(obj) and not isinstance(obj, type):
@@ -97,6 +102,7 @@ def _error(error: str, **extra: Any) -> str:
 
 
 # -- MCP 服务器 --------------------------------------------------------------
+
 
 class ReverseMCPServer:
     """通过 MCP 协议暴露 JS 逆向 Agent 能力的服务器。"""
@@ -274,7 +280,11 @@ class ReverseMCPServer:
                     "type": "object",
                     "properties": {
                         "code": {"type": "string", "description": "JS 加密逻辑代码"},
-                        "language": {"type": "string", "default": "python", "description": "目标语言"},
+                        "language": {
+                            "type": "string",
+                            "default": "python",
+                            "description": "目标语言",
+                        },
                     },
                     "required": ["code"],
                 },
@@ -397,9 +407,7 @@ class ReverseMCPServer:
             return _error("浏览器操作失败", details=str(exc))
 
         note = (
-            "ReverseAgent 模块不可用，仅返回基本采集结果"
-            if self.agent is None
-            else fallback_note
+            "ReverseAgent 模块不可用，仅返回基本采集结果" if self.agent is None else fallback_note
         )
         return _to_json(
             {
@@ -499,9 +507,7 @@ class ReverseMCPServer:
             reimplemented = self.analyzer.suggest_reimplementation(code, language=language)
         except Exception as exc:
             return _error("LLM call failed", details=str(exc))
-        return _to_json(
-            {"language": language, "code": reimplemented, "length": len(reimplemented)}
-        )
+        return _to_json({"language": language, "code": reimplemented, "length": len(reimplemented)})
 
     def _tool_solve_captcha(self, args: dict) -> str:
         url = args["url"]
@@ -632,9 +638,7 @@ class ReverseMCPServer:
             sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
             sys.stdout.flush()
 
-    def _handle_jsonrpc(
-        self, method: str | None, params: dict, req_id: Any
-    ) -> dict | None:
+    def _handle_jsonrpc(self, method: str | None, params: dict, req_id: Any) -> dict | None:
         """处理单条 JSON-RPC 请求，返回响应 dict（通知返回 None）。"""
         # 通知（无 id）不需要回复
         if req_id is None:
@@ -695,12 +699,11 @@ class ReverseMCPServer:
 
 # -- 入口函数 ----------------------------------------------------------------
 
+
 def main() -> None:
     """独立入口：读取环境变量，创建服务器并启动。"""
     if not os.environ.get("DEEPSEEK_API_KEY"):
-        sys.stderr.write(
-            "warning: DEEPSEEK_API_KEY 环境变量未设置，LLM 相关工具将不可用。\n"
-        )
+        sys.stderr.write("warning: DEEPSEEK_API_KEY 环境变量未设置，LLM 相关工具将不可用。\n")
         sys.stderr.flush()
     server = ReverseMCPServer()
     try:
