@@ -18,7 +18,7 @@ from pathlib import Path
 # Ensure src/ is importable when running from a source checkout.
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from web_crawler import Selector, compute_fingerprint, similarity_score  # noqa: E402
+from web_crawler import Selector, compute_fingerprint, similarity_score
 
 # A ~50 KB synthetic product-listing page — enough elements to stress the
 # parser without dominating the runtime in I/O.

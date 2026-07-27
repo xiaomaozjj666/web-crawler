@@ -51,6 +51,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "AsyncFetcher": ("web_crawler.fetchers.fetcher", "AsyncFetcher"),
     "DynamicFetcher": ("web_crawler.fetchers.dynamic", "DynamicFetcher"),
     "StealthyFetcher": ("web_crawler.fetchers.stealthy", "StealthyFetcher"),
+    "CamoufoxFetcher": ("web_crawler.fetchers.camoufox", "CamoufoxFetcher"),
     "ProxyPool": ("web_crawler.fetchers.proxy", "ProxyPool"),
     # response
     "Response": ("web_crawler.response", "Response"),
@@ -61,33 +62,86 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "Spider": ("web_crawler.spider.spider", "Spider"),
     "SpiderError": ("web_crawler.spider.spider", "SpiderError"),
     "SpiderStats": ("web_crawler.spider.spider", "SpiderStats"),
+    # ai (pluggable LLM layer + AI-assisted extraction; default DeepSeek-V4-Pro)
+    "get_provider": ("web_crawler.ai.llm", "get_provider"),
+    "register_provider": ("web_crawler.ai.llm", "register_provider"),
+    "available_providers": ("web_crawler.ai.llm", "available_providers"),
+    "LLMMessage": ("web_crawler.ai.llm", "LLMMessage"),
+    "LLMResponse": ("web_crawler.ai.llm", "LLMResponse"),
+    "LLMProvider": ("web_crawler.ai.llm", "LLMProvider"),
+    "OpenAICompatibleProvider": ("web_crawler.ai.llm", "OpenAICompatibleProvider"),
+    "DeepSeekProvider": ("web_crawler.ai.llm", "DeepSeekProvider"),
+    "AIExtractor": ("web_crawler.ai.extractor", "AIExtractor"),
+    "ExtractionResult": ("web_crawler.ai.extractor", "ExtractionResult"),
+    "AIScrapeAgent": ("web_crawler.ai.agent", "AIScrapeAgent"),
+    "ScrapeResult": ("web_crawler.ai.agent", "ScrapeResult"),
+    "RobotsPolicy": ("web_crawler.ai.agent", "RobotsPolicy"),
+    "detect_block": ("web_crawler.ai.agent", "detect_block"),
+    # ai — JS 逆向 Agent 套件
+    "HookLibrary": ("web_crawler.ai.hooks", "HookLibrary"),
+    "generate_combined_script": ("web_crawler.ai.hooks", "generate_combined_script"),
+    "JSAnalyzer": ("web_crawler.ai.analyzer", "JSAnalyzer"),
+    "JSFragment": ("web_crawler.ai.analyzer", "JSFragment"),
+    "CaptchaType": ("web_crawler.ai.captcha", "CaptchaType"),
+    "CaptchaManager": ("web_crawler.ai.captcha", "CaptchaManager"),
+    "ReverseAgent": ("web_crawler.ai.reverse_agent", "ReverseAgent"),
+    "ReverseAgentConfig": ("web_crawler.ai.reverse_agent", "ReverseAgentConfig"),
+    # mcp server
+    "ReverseMCPServer": ("web_crawler.mcp.server", "ReverseMCPServer"),
 }
 
 __all__ = [
-    # parser / adaptive
-    "Selector",
-    "Adaptors",
-    "Adaptor",
+    "AIExtractor",
+    "AIScrapeAgent",
     "AdaptiveStorage",
-    "compute_fingerprint",
-    "similarity_score",
+    "Adaptor",
+    "Adaptors",
+    "AsyncFetcher",
     # fetchers
     "BaseFetcher",
-    "Fetcher",
-    "AsyncFetcher",
+    "CamoufoxFetcher",
+    "CaptchaManager",
+    "CaptchaType",
+    "DeepSeekProvider",
     "DynamicFetcher",
-    "StealthyFetcher",
+    "ExtractionResult",
+    "Fetcher",
+    # ai — JS 逆向 Agent 套件
+    "HookLibrary",
+    "JSAnalyzer",
+    "JSFragment",
+    "LLMMessage",
+    "LLMProvider",
+    "LLMResponse",
+    "OpenAICompatibleProvider",
     "ProxyPool",
-    # response
-    "Response",
-    # visual extraction (PixelRAG-style)
-    "VisualExtractor",
     # spider
     "Request",
+    # response
+    "Response",
+    "ReverseAgent",
+    "ReverseAgentConfig",
+    # mcp server
+    "ReverseMCPServer",
+    "RobotsPolicy",
+    "ScrapeResult",
+    # parser / adaptive
+    "Selector",
     "Spider",
     "SpiderError",
     "SpiderStats",
+    "StealthyFetcher",
+    # visual extraction (PixelRAG-style)
+    "VisualExtractor",
     "__version__",
+    "available_providers",
+    "compute_fingerprint",
+    "detect_block",
+    "generate_combined_script",
+    # ai
+    "get_provider",
+    "register_provider",
+    "similarity_score",
 ]
 
 
@@ -115,7 +169,20 @@ def __dir__() -> list[str]:
 
 # For type checkers, resolve the real symbols so IDE/mypy see full signatures.
 if TYPE_CHECKING:
+    from .ai.agent import AIScrapeAgent, RobotsPolicy, ScrapeResult
+    from .ai.extractor import AIExtractor, ExtractionResult
+    from .ai.llm import (
+        DeepSeekProvider,
+        LLMMessage,
+        LLMProvider,
+        LLMResponse,
+        OpenAICompatibleProvider,
+        available_providers,
+        get_provider,
+        register_provider,
+    )
     from .fetchers._base import BaseFetcher
+    from .fetchers.camoufox import CamoufoxFetcher
     from .fetchers.dynamic import DynamicFetcher
     from .fetchers.fetcher import AsyncFetcher, Fetcher
     from .fetchers.proxy import ProxyPool

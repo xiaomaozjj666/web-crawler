@@ -6,10 +6,10 @@ from .adaptive import AdaptiveStorage, compute_fingerprint, similarity_score
 from .selector import Adaptor, Adaptors, Selector
 
 __all__ = [
-    "Selector",
+    "AdaptiveStorage",
     "Adaptor",
     "Adaptors",
-    "AdaptiveStorage",
+    "Selector",
     "compute_fingerprint",
     "similarity_score",
 ]

@@ -147,7 +147,7 @@ def best_match(
 
 __all__ = [
     "AdaptiveStorage",
+    "best_match",
     "compute_fingerprint",
     "similarity_score",
-    "best_match",
 ]

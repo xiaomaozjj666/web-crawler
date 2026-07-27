@@ -27,7 +27,7 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *args: object) -> None:  # silence test noise
         pass
 
-    def do_GET(self) -> None:  # noqa: N802 - http.server API
+    def do_GET(self) -> None:
         if self.path == "/":
             body = b"""<!DOCTYPE html>
 <html><head><title>Home</title></head>

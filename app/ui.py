@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, urlparse
 sys.dont_write_bytecode = True
 _log = logging.getLogger(__name__)
 
-import crawler as web_resource_crawler  # noqa: E402  # 需先设 sys.dont_write_bytecode 再导入
+import crawler as web_resource_crawler  # 需先设 sys.dont_write_bytecode 再导入
 
 HOST = "127.0.0.1"
 PORT = 8765

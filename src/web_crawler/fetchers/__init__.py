@@ -30,15 +30,17 @@ from .proxy import ProxyPool
 _LAZY: dict[str, tuple[str, str]] = {
     "DynamicFetcher": ("web_crawler.fetchers.dynamic", "DynamicFetcher"),
     "StealthyFetcher": ("web_crawler.fetchers.stealthy", "StealthyFetcher"),
+    "CamoufoxFetcher": ("web_crawler.fetchers.camoufox", "CamoufoxFetcher"),
 }
 
 __all__ = [
-    "BaseFetcher",
-    "Fetcher",
     "AsyncFetcher",
+    "BaseFetcher",
+    "CamoufoxFetcher",
     "DynamicFetcher",
-    "StealthyFetcher",
+    "Fetcher",
     "ProxyPool",
+    "StealthyFetcher",
 ]
 
 
@@ -59,5 +61,6 @@ def __dir__() -> list[str]:
 
 
 if TYPE_CHECKING:
+    from .camoufox import CamoufoxFetcher
     from .dynamic import DynamicFetcher
     from .stealthy import StealthyFetcher

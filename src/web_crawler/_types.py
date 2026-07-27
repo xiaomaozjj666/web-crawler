@@ -51,7 +51,7 @@ class Attrs(dict):
         if not isinstance(key, str):
             return False
         lowered = key.lower()
-        return any(k.lower() == lowered for k in super().keys())
+        return any(k.lower() == lowered for k in super().__iter__())
 
 
 class ResultList(list, Generic[T]):
@@ -212,10 +212,10 @@ def iter_chunks(seq: list[T], size: int) -> Iterator[list[T]]:
 
 
 __all__ = [
-    "TextHandler",
     "Attrs",
+    "Callable",
     "ResultList",
+    "TextHandler",
     "ensure_list",
     "iter_chunks",
-    "Callable",
 ]

@@ -499,9 +499,7 @@ def looks_like_url(value: str) -> bool:
 
 def looks_like_downloadable(value: str) -> bool:
     value = value.strip()
-    if not value or value.startswith(("data:", "javascript:", "mailto:", "tel:", "#")):
-        return False
-    return True
+    return not (not value or value.startswith(("data:", "javascript:", "mailto:", "tel:", "#")))
 
 
 def looks_like_resource_url(url: str) -> bool:
@@ -1405,7 +1403,7 @@ def write_failed_manifests(output_dir: Path, rows: list[ManifestRow]) -> int:
     return _write_manifest_pair(output_dir, failed_rows, "failed_resources") if failed_rows else 0
 
 
-def _format_bytes(n: int | float) -> str:
+def _format_bytes(n: float) -> str:
     value = float(n)
     if value < 1024:
         # 字节级用整数显示更自然（0 B / 500 B），带小数时才保留一位

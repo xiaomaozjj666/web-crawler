@@ -289,7 +289,7 @@ class Spider:
             self.stats.requests_scheduled += 1
             try:
                 response = self._fetch_sync(request)
-            except Exception as exc:  # noqa: BLE001 - surface as failed, keep crawling
+            except Exception as exc:
                 self.stats.requests_failed += 1
                 logger.warning("request failed: %s (%s)", request.url, exc)
                 continue
@@ -352,7 +352,7 @@ class Spider:
                 self.stats.requests_scheduled += 1
                 try:
                     response = await self._fetch_async(request)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     self.stats.requests_failed += 1
                     logger.warning("request failed: %s (%s)", request.url, exc)
                     return []
@@ -435,7 +435,7 @@ class Spider:
                 self.stats.requests_scheduled += 1
                 try:
                     response = await self._fetch_async(request)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     self.stats.requests_failed += 1
                     logger.warning("request failed: %s (%s)", request.url, exc)
                     return []

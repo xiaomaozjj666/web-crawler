@@ -118,7 +118,7 @@ class StealthyFetcher(DynamicFetcher):
         try:
             page.mouse.move(random.uniform(100, 800), random.uniform(100, 600))
             time.sleep(random.uniform(0.5, 2.0))
-        except Exception:  # noqa: BLE001 - 人类行为模拟为 best-effort
+        except Exception:
             pass
 
     def _solve_cloudflare_sync(self, page: Any) -> None:
@@ -151,13 +151,13 @@ class StealthyFetcher(DynamicFetcher):
                     if checkbox is not None:
                         checkbox.click()
                         break
-                except Exception:  # noqa: BLE001 - 逐 frame 尝试，忽略失败
+                except Exception:
                     continue
             try:
                 page.wait_for_load_state("networkidle", timeout=deadline_ms)
             except PlaywrightTimeoutError:
                 pass
-        except Exception:  # noqa: BLE001 - Cloudflare 处理为 best-effort，不阻断抓取
+        except Exception:
             pass
 
     # -- async hooks ---------------------------------------------------------
@@ -175,7 +175,7 @@ class StealthyFetcher(DynamicFetcher):
         try:
             await page.mouse.move(random.uniform(100, 800), random.uniform(100, 600))
             await asyncio.sleep(random.uniform(0.5, 2.0))
-        except Exception:  # noqa: BLE001 - 人类行为模拟为 best-effort
+        except Exception:
             pass
 
     async def _solve_cloudflare_async(self, page: Any) -> None:
@@ -207,13 +207,13 @@ class StealthyFetcher(DynamicFetcher):
                     if checkbox is not None:
                         await checkbox.click()
                         break
-                except Exception:  # noqa: BLE001 - 逐 frame 尝试，忽略失败
+                except Exception:
                     continue
             try:
                 await page.wait_for_load_state("networkidle", timeout=deadline_ms)
             except PlaywrightTimeoutError:
                 pass
-        except Exception:  # noqa: BLE001 - Cloudflare 处理为 best-effort，不阻断抓取
+        except Exception:
             pass
 
     # -- public API (delegates to parent, which invokes the stealth hooks) --
