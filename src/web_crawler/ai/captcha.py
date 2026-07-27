@@ -163,9 +163,8 @@ class CaptchaDetector:
         src = iframe.get_attribute("src") or ""
         # v3 通常带 render=<sitekey> 或路径含 /enterprise/，且无 anchor；
         # v2 入口 iframe 路径含 /anchor。
-        is_v3 = (
-            ("/enterprise/" in src and "/anchor" not in src)
-            or ("render=" in src and "render=explicit" not in src)
+        is_v3 = ("/enterprise/" in src and "/anchor" not in src) or (
+            "render=" in src and "render=explicit" not in src
         )
         if is_v3:
             site_key = _sitekey_from_url(src, "render", "k")

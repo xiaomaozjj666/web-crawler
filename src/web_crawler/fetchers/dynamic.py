@@ -344,7 +344,9 @@ class DynamicFetcher(BaseFetcher):
             self._setup_page(page)
 
             referer = "https://www.google.com/" if self.google_search else None
-            page.goto(url, wait_until="domcontentloaded", referer=referer, timeout=self.timeout * 1000)
+            page.goto(
+                url, wait_until="domcontentloaded", referer=referer, timeout=self.timeout * 1000
+            )
             self._post_load(page)
 
             if self.wait_selector:
@@ -390,13 +392,15 @@ class DynamicFetcher(BaseFetcher):
                     quality=quality if format == "jpeg" else None,
                     full_page=False,  # type: ignore[arg-type]
                 )
-                tiles.append({
-                    "index": i,
-                    "total": num_tiles,
-                    "b64": base64.b64encode(screenshot_bytes).decode("ascii"),
-                    "width": page_width,
-                    "height": clip_height,
-                })
+                tiles.append(
+                    {
+                        "index": i,
+                        "total": num_tiles,
+                        "b64": base64.b64encode(screenshot_bytes).decode("ascii"),
+                        "width": page_width,
+                        "height": clip_height,
+                    }
+                )
 
             return tiles
         finally:
@@ -431,7 +435,9 @@ class DynamicFetcher(BaseFetcher):
             await self._setup_page_async(page)
 
             referer = "https://www.google.com/" if self.google_search else None
-            await page.goto(url, wait_until="domcontentloaded", referer=referer, timeout=self.timeout * 1000)
+            await page.goto(
+                url, wait_until="domcontentloaded", referer=referer, timeout=self.timeout * 1000
+            )
             await self._post_load_async(page)
 
             if self.wait_selector:
@@ -476,13 +482,15 @@ class DynamicFetcher(BaseFetcher):
                     quality=quality if format == "jpeg" else None,
                     full_page=False,  # type: ignore[arg-type]
                 )
-                tiles.append({
-                    "index": i,
-                    "total": num_tiles,
-                    "b64": base64.b64encode(screenshot_bytes).decode("ascii"),
-                    "width": page_width,
-                    "height": clip_height,
-                })
+                tiles.append(
+                    {
+                        "index": i,
+                        "total": num_tiles,
+                        "b64": base64.b64encode(screenshot_bytes).decode("ascii"),
+                        "width": page_width,
+                        "height": clip_height,
+                    }
+                )
 
             return tiles
         finally:

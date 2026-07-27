@@ -105,13 +105,15 @@ class VisualExtractor:
         for i, tile in enumerate(tiles):
             b64_data = tile["b64"]
             mime = "image/png"
-            image_contents.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:{mime};base64,{b64_data}",
-                    "detail": "auto",
-                },
-            })
+            image_contents.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime};base64,{b64_data}",
+                        "detail": "auto",
+                    },
+                }
+            )
             # If sending multiple tiles, annotate each
             if len(tiles) > 1:
                 image_contents.insert(
@@ -137,12 +139,14 @@ class VisualExtractor:
 
     def _call_api(self, messages: list[dict[str, Any]], temperature: float) -> str:
         """Make an OpenAI-compatible chat completion request."""
-        body = json.dumps({
-            "model": self.model,
-            "messages": messages,
-            "max_tokens": self.max_tokens,
-            "temperature": temperature,
-        }).encode("utf-8")
+        body = json.dumps(
+            {
+                "model": self.model,
+                "messages": messages,
+                "max_tokens": self.max_tokens,
+                "temperature": temperature,
+            }
+        ).encode("utf-8")
 
         url = f"{self.base_url}/chat/completions"
         req = Request(
@@ -208,10 +212,12 @@ class VisualExtractor:
         for i, tile in enumerate(tiles):
             b64_data = tile["b64"]
             mime = "image/png"
-            image_contents.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{b64_data}", "detail": "auto"},
-            })
+            image_contents.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{b64_data}", "detail": "auto"},
+                }
+            )
             if len(tiles) > 1:
                 image_contents.insert(
                     len(image_contents) - 1,
