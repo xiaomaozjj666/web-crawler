@@ -1,4 +1,5 @@
 """验证码检测/处理模块测试（mock page，不启动浏览器）。"""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock

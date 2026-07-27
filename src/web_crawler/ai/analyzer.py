@@ -449,17 +449,17 @@ class JSAnalyzer:
         candidates = [mod for mod in modules if mod.id not in depended] or list(modules)
 
         def score(mod: WebpackModule) -> tuple[int, int]:
-            has_esm_mark = 1 if (
-                "__webpack_require__.r" in mod.source or re.search(r"\w+\.r\(", mod.source)
-            ) else 0
+            has_esm_mark = (
+                1
+                if ("__webpack_require__.r" in mod.source or re.search(r"\w+\.r\(", mod.source))
+                else 0
+            )
             return (has_esm_mark, len(mod.dependencies))
 
         candidates.sort(key=score, reverse=True)
         return candidates[0].id
 
-    def trace_signing_flow(
-        self, modules: list[WebpackModule], target_param: str
-    ) -> list[int]:
+    def trace_signing_flow(self, modules: list[WebpackModule], target_param: str) -> list[int]:
         """追踪某个签名参数的生成流程，返回相关模块 ID 链（依赖在前，产出者在后）。"""
         by_id = {mod.id: mod for mod in modules}
         # 命中目标参数名的模块视为产出者

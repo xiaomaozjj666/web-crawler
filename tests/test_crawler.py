@@ -30,10 +30,7 @@ def test_extract_links_deduplicates() -> None:
 
 def test_extract_links_deduplicates_absolute_and_relative() -> None:
     """相对路径与绝对路径指向同一 URL 时去重。"""
-    html = (
-        '<a href="/page">relative</a>'
-        '<a href="https://example.com/page">absolute</a>'
-    )
+    html = '<a href="/page">relative</a><a href="https://example.com/page">absolute</a>'
     links = Crawler._extract_links("https://example.com/", html)
     assert links == ["https://example.com/page"]
 

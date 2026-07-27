@@ -52,6 +52,7 @@ def _split_attr_pseudo(selector: str) -> tuple[str, str | None]:
         return selector[: m.start()].rstrip(), m.group(1)
     return selector, None
 
+
 # Module-level default storage (lazily created so importing the module is cheap).
 _default_storage: AdaptiveStorage | None = None
 
@@ -190,9 +191,7 @@ class Selector:
 
     @property
     def children(self) -> ResultList[Selector]:
-        return ResultList(
-            self._wrap(c) for c in self._element if isinstance(c.tag, str)
-        )
+        return ResultList(self._wrap(c) for c in self._element if isinstance(c.tag, str))
 
     # -- DOM traversal (Scrapling parity) ----------------------------------
     @property
