@@ -332,6 +332,190 @@ class ReverseMCPServer:
             },
         ]
 
+    # -- Prompts / Resources / Progress --------------------------------------
+
+    def get_prompts(self) -> list[dict]:
+        """返回 MCP prompts 列表（预定义 prompt 模板）。"""
+        return [
+            {
+                "name": "reverse_engineer_url",
+                "description": (
+                    "逆向分析指定 URL 的加密参数。返回一段可直接交给 Agent 执行的"
+                    "任务描述，包含 URL、目标参数列表与执行约束。"
+                ),
+                "arguments": [
+                    {
+                        "name": "url",
+                        "description": "目标页面 URL",
+                        "required": True,
+                    },
+                    {
+                        "name": "target_params",
+                        "description": "重点关注的加密参数名（逗号分隔，如 Anti-Content,X-Bogus）",
+                        "required": False,
+                    },
+                    {
+                        "name": "max_steps",
+                        "description": "Agent 最大执行步数（默认 20）",
+                        "required": False,
+                    },
+                ],
+            },
+            {
+                "name": "deobfuscate_js",
+                "description": "反混淆 JS 代码片段，返回可读的等价版本与算法说明。",
+                "arguments": [
+                    {
+                        "name": "code",
+                        "description": "待反混淆的 JS 代码（可多行）",
+                        "required": True,
+                    },
+                    {
+                        "name": "focus_param",
+                        "description": "重点关注的参数名（可选，用于定向反混淆）",
+                        "required": False,
+                    },
+                ],
+            },
+            {
+                "name": "reimplement_algorithm",
+                "description": "把 JS 加密逻辑等价改写为指定语言（默认 Python）。",
+                "arguments": [
+                    {
+                        "name": "code",
+                        "description": "JS 加密逻辑代码",
+                        "required": True,
+                    },
+                    {
+                        "name": "language",
+                        "description": "目标语言（python / go / node / rust）",
+                        "required": False,
+                    },
+                ],
+            },
+        ]
+
+    def render_prompt(self, name: str, arguments: dict) -> str:
+        """渲染 prompt 模板，返回拼好的字符串。"""
+        if name == "reverse_engineer_url":
+            url = arguments.get("url", "")
+            params = arguments.get("target_params", "")
+            max_steps = arguments.get("max_steps", "20")
+            param_list = [p.strip() for p in params.split(",") if p.strip()] if params else []
+            param_str = "、".join(param_list) if param_list else "(自动识别)"
+            return (
+                f"请对以下 URL 做加密参数逆向分析：\n\n"
+                f"- URL: {url}\n"
+                f"- 目标参数: {param_str}\n"
+                f"- 最大步数: {max_steps}\n\n"
+                "执行约束：\n"
+                "1. 优先注入 fetch_hook / xhr_hook / cookie_hook / crypto_subtle_hook，"
+                "确保捕获所有出站请求与加密入参；\n"
+                "2. 若发现 webpack 打包痕迹，提取入口模块并定位签名函数；\n"
+                "3. 若出现验证码，先检测类型再尝试模拟用户交互（不破解图片挑战）；\n"
+                "4. 任务完成时给出 success=true 与每个目标参数的取值，并说明来源 hook 记录。"
+            )
+        if name == "deobfuscate_js":
+            code = arguments.get("code", "")
+            focus = arguments.get("focus_param", "")
+            focus_line = f"\n重点关注参数：{focus}" if focus else ""
+            return (
+                "请反混淆以下 JS 代码片段，输出可读的等价版本，并简要说明其中"
+                "包含的加密算法（如 AES / RSA / HMAC / 自定义签名）。\n"
+                f"{focus_line}\n\n"
+                f"```\n{code}\n```"
+            )
+        if name == "reimplement_algorithm":
+            code = arguments.get("code", "")
+            language = arguments.get("language", "python")
+            return (
+                f"请把以下 JS 加密逻辑等价改写为 {language} 代码，"
+                "要求可独立运行、依赖尽量少、保留原算法的输入输出语义：\n\n"
+                f"```\n{code}\n```"
+            )
+        return f"unknown prompt: {name}"
+
+    def get_resources(self) -> list[dict]:
+        """返回 MCP resources 列表（动态资源模板）。"""
+        return [
+            {
+                "uri": "agent://state",
+                "name": "agent_state",
+                "description": "当前 Agent 状态：是否已加载 ReverseAgent、provider 名、模型名",
+                "mimeType": "application/json",
+            },
+            {
+                "uri": "agent://history",
+                "name": "agent_history",
+                "description": "最近一次 reverse_engineer_url 调用的执行历史（step / action / observation）",
+                "mimeType": "application/json",
+            },
+            {
+                "uri": "hooks://library",
+                "name": "hooks_library",
+                "description": "可用的 Hook 名称列表与说明",
+                "mimeType": "application/json",
+            },
+            {
+                "uri": "schema://extracted_params",
+                "name": "extracted_params_schema",
+                "description": "ExtractedParams Pydantic schema 的 JSON Schema 定义",
+                "mimeType": "application/json",
+            },
+        ]
+
+    def read_resource(self, uri: str) -> str:
+        """读取资源内容，返回 JSON 字符串。"""
+        if uri == "agent://state":
+            return _to_json(
+                {
+                    "has_reverse_agent": self.agent is not None,
+                    "provider": getattr(self.provider, "name", str(self.provider)),
+                    "model": getattr(self.provider, "model", ""),
+                    "browser_reused": self._fetcher is not None,
+                    "closed": self._closed,
+                }
+            )
+        if uri == "agent://history":
+            # 最近一次 reverse_engineer_url 调用历史；当前未持久化时返回空
+            return _to_json({"history": [], "note": "history is per-call, not persisted"})
+        if uri == "hooks://library":
+            return _to_json({"hooks": HookLibrary.names()})
+        if uri == "schema://extracted_params":
+            try:
+                from ..ai.schema import ExtractedParams
+
+                if hasattr(ExtractedParams, "model_json_schema"):
+                    return _to_json(ExtractedParams.model_json_schema())
+                return _to_json({"note": "pydantic not available, schema unavailable"})
+            except Exception as exc:
+                return _error("schema unavailable", details=str(exc))
+        return _error(f"unknown resource uri: {uri}")
+
+    def make_progress_token(self, tool_name: str, total: int = 1) -> dict:
+        """构造一个 progress token，供 MCP 客户端跟踪长任务进度。
+
+        返回的 dict 形如 ``{"progressToken": "tool_name-<ts>", "total": total}``，
+        调用方在工具执行过程中通过 :meth:`report_progress` 推送进度。
+        """
+        import time as _time
+
+        return {
+            "progressToken": f"{tool_name}-{int(_time.time() * 1000)}",
+            "total": total,
+        }
+
+    def report_progress(self, token: str, current: int, total: int, *, message: str = "") -> None:
+        """发送进度通知（仅在 mcp SDK 可用时生效；否则写入 stderr 日志）。"""
+        if not _HAS_MCP:
+            sys.stderr.write(f"[progress] {token}: {current}/{total} {message}\n")
+            sys.stderr.flush()
+            return
+        # mcp SDK 的进度通知需要 server.run() 的上下文，这里仅做记录；
+        # 真正发送由 _run_mcp 内的 progress 闭包负责（见 _run_mcp）。
+        sys.stderr.write(f"[progress] {token}: {current}/{total} {message}\n")
+        sys.stderr.flush()
+
     # -- 工具调用分发 --------------------------------------------------------
 
     def handle_tool(self, name: str, arguments: dict) -> str:
@@ -373,12 +557,27 @@ class ReverseMCPServer:
         # 优先使用 ReverseAgent 走完整逆向流程
         if self.agent is not None:
             try:
-                result = self.agent.run(
-                    task=task,
-                    url=url,
+                # ReverseAgent.run 签名为 run(url, task="")，max_steps 与
+                # target_params 通过 config 注入；这里 clone config 再覆盖。
+                from ..ai.reverse_agent import ReverseAgentConfig
+
+                base_config = self.agent.config
+                run_config = ReverseAgentConfig(
                     max_steps=max_steps,
-                    target_params=target_params,
+                    hooks=list(base_config.hooks) if base_config.hooks else None,
+                    headless=base_config.headless,
+                    wait_after_navigate=base_config.wait_after_navigate,
+                    target_params=list(target_params) if target_params else None,
+                    proxy=base_config.proxy,
+                    os_name=base_config.os_name,
                 )
+                # 用同一 provider/analyzer 复用，避免重复加载模型配置
+                run_agent = type(self.agent)(
+                    config=run_config,
+                    provider=self.agent.provider,
+                    analyzer=self.agent.analyzer,
+                )
+                result = run_agent.run(url=url, task=task)
                 return _to_json({"result": result, "agent": True})
             except Exception as exc:
                 fallback_note = f"ReverseAgent 执行失败：{exc}，降级为基本采集"
@@ -597,6 +796,55 @@ class ReverseMCPServer:
             result = self.handle_tool(name, arguments or {})
             return [types.TextContent(type="text", text=result)]
 
+        # prompts：预定义 prompt 模板，供 MCP 客户端按场景渲染
+        @server.list_prompts()
+        async def _list_prompts() -> list[Any]:
+            return [
+                types.Prompt(
+                    name=p["name"],
+                    description=p.get("description", ""),
+                    arguments=[
+                        types.PromptArgument(
+                            name=a["name"],
+                            description=a.get("description", ""),
+                            required=a.get("required", False),
+                        )
+                        for a in p.get("arguments", [])
+                    ],
+                )
+                for p in self.get_prompts()
+            ]
+
+        @server.get_prompt()
+        async def _get_prompt(name: str, arguments: dict | None) -> Any:
+            rendered = self.render_prompt(name, arguments or {})
+            return types.GetPromptResult(
+                description=f"prompt {name}",
+                messages=[
+                    types.PromptMessage(
+                        role="user",
+                        content=types.TextContent(type="text", text=rendered),
+                    )
+                ],
+            )
+
+        # resources：暴露 Agent 状态、历史、Hook 列表、schema 定义
+        @server.list_resources()
+        async def _list_resources() -> list[Any]:
+            return [
+                types.Resource(
+                    uri=r["uri"],
+                    name=r["name"],
+                    description=r.get("description", ""),
+                    mimeType=r.get("mimeType", "application/json"),
+                )
+                for r in self.get_resources()
+            ]
+
+        @server.read_resource()
+        async def _read_resource(uri: str) -> str:
+            return self.read_resource(uri)
+
         async with stdio_server() as (read_stream, write_stream):
             await server.run(
                 read_stream,
@@ -650,7 +898,11 @@ class ReverseMCPServer:
                 "id": req_id,
                 "result": {
                     "protocolVersion": _PROTOCOL_VERSION,
-                    "capabilities": {"tools": {}},
+                    "capabilities": {
+                        "tools": {},
+                        "prompts": {},
+                        "resources": {},
+                    },
                     "serverInfo": {
                         "name": _SERVER_NAME,
                         "version": _SERVER_VERSION,
@@ -684,6 +936,62 @@ class ReverseMCPServer:
                 "result": {
                     "content": [{"type": "text", "text": result}],
                     "isError": False,
+                },
+            }
+
+        if method == "prompts/list":
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"prompts": self.get_prompts()},
+            }
+
+        if method == "prompts/get":
+            prompt_name = params.get("name")
+            if not isinstance(prompt_name, str):
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {
+                        "code": -32602,
+                        "message": "invalid params: missing or invalid 'name'",
+                    },
+                }
+            arguments = params.get("arguments") or {}
+            rendered = self.render_prompt(prompt_name, arguments)
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "description": f"prompt {prompt_name}",
+                    "messages": [{"role": "user", "content": {"type": "text", "text": rendered}}],
+                },
+            }
+
+        if method == "resources/list":
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"resources": self.get_resources()},
+            }
+
+        if method == "resources/read":
+            uri = params.get("uri")
+            if not isinstance(uri, str):
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {
+                        "code": -32602,
+                        "message": "invalid params: missing or invalid 'uri'",
+                    },
+                }
+            content = self.read_resource(uri)
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "contents": [{"uri": uri, "mimeType": "application/json", "text": content}]
                 },
             }
 

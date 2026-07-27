@@ -67,6 +67,7 @@ visual = [
 all = [
     "curl_cffi>=0.7",
     "playwright>=1.40",
+    "pydantic>=2.5",
 ]
 camoufox = [
     "camoufox[geoip]>=0.4",
@@ -74,6 +75,7 @@ camoufox = [
 mcp = [
     "mcp>=1.0",
     "camoufox[geoip]>=0.4",
+    "pydantic>=2.5",
 ]
 dev = [
     "pytest>=8.0",
@@ -82,6 +84,7 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
     "types-beautifulsoup4>=4.12",
+    "pydantic>=2.5",
 ]
 
 [tool.ruff]

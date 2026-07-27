@@ -78,6 +78,18 @@ src/web_crawler/          # Scrapling-aligned core library
     analyzer.py           # JSAnalyzer (webpack module extraction + AI deobfuscation)
     captcha.py            # CaptchaManager (detect + humanize-only solve)
     reverse_agent.py      # ReverseAgent (observe→think→act loop)
+    vision.py             # VisionObserver (Vision-LLM 截图感知双模态)
+    planner.py            # Planner/Actor 双脑分离 + 周期重规划
+    loop.py               # LoopDetector + ContextCompressor (循环检测 + 历史压缩)
+    judge.py               # TaskJudge (done 二次验证，防止 LLM 幻觉)
+    watchdog.py           # EventBus + Heartbeat + CrashRecovery (崩溃自愈)
+    recorder.py           # RunRecorder (成功路径编译为确定性脚本)
+    schema.py             # SchemaValidator (结构化抽取 Pydantic 校验)
+    dom_pruner.py         # DomPruner (DOM 焦点裁剪，Skyvern/browser-use 风格)
+    checkpoint.py         # CheckpointManager (断点续跑 + 状态持久化)
+    budget.py             # BudgetTracker (Token 预算管理，单步/全局/单次)
+    confidence.py         # ConfidenceScorer (动作置信度评分，规则 + LLM 双路径)
+    guardrails.py         # ActionGuard (危险动作护栏，白名单 + 跨域拦截)
   mcp/                    # MCP server + CLI exposing the reverse-agent tools
     server.py             # ReverseMCPServer (JSON-RPC over stdio)
     cli.py                # web-crawler-reverse command-line interface
@@ -85,7 +97,7 @@ src/web_crawler/          # Scrapling-aligned core library
 app/                      # application layer
   crawler.py              # resource downloader (concurrent, resume, dedup, UI-driven)
   ui.py                   # local web UI
-tests/                    # pytest suite (224 tests)
+tests/                    # pytest suite
 benchmarks.py             # parser/fetcher micro-benchmarks
 demo.py / demo.bat        # interactive usage demo
 start.bat                 # launch the local web UI
@@ -234,6 +246,33 @@ web-crawler-reverse interactive                  # REPL: type `tools` to list
 not crack image-based captchas, forge login credentials, or bypass paywalls.
 When a page is blocked (401/403) or shows a captcha it cannot solve, it stops
 and returns a "hand-off to human" status.
+
+### Mainstream-agent alignment
+
+Beyond the base observe→think→act loop, `ReverseAgent` integrates the
+following capabilities commonly seen in production agent frameworks
+(browser-use / Skyvern / PentAGI / LangGraph):
+
+| Capability | Module | Purpose |
+| --- | --- | --- |
+| DOM focus pruning | `ai.dom_pruner.DomPruner` | Rule + LLM rerank, keeps only encryption-related elements (≈80% token cut) |
+| Checkpoint / resume | `ai.checkpoint.CheckpointManager` | Step-end state persisted; resume after crash or interrupt |
+| Token budget | `ai.budget.BudgetTracker` | Per-step / per-call / global caps with COMPRESS/DOWNGRADE/STOP policies |
+| Action confidence | `ai.confidence.ConfidenceScorer` | Rule + LLM dual-path scoring; low-confidence actions trigger fallback |
+| Action guardrails | `ai.guardrails.ActionGuard` | Domain whitelist, blocks localhost/non-HTTPS/cross-origin/dangerous scripts |
+| Planner / Actor split | `ai.planner.Planner` | High-level sub-goal planning + periodic replanning |
+| Loop detection | `ai.loop.LoopDetector` | Page-state fingerprint; auto-replan on repeated states |
+| Context compression | `ai.loop.ContextCompressor` | Rolling summary of history; `force_compress` on budget overflow |
+| Task judge | `ai.judge.TaskJudge` | Independent LLM verifies `done` to prevent hallucinated success |
+| Success recorder | `ai.recorder.RunRecorder` | Compile a successful trace into a deterministic Python script |
+| Event bus + watchdog | `ai.watchdog` | Pub/sub events, heartbeat stall detection, browser crash auto-recovery |
+| Structured schema | `ai.schema.SchemaValidator` | Pydantic-based result validation with auto-repair hints |
+| Vision observer | `ai.vision.VisionObserver` | Vision-LLM screenshots for DOM-obfuscated / Canvas-rendered pages |
+
+All capabilities are optional and individually toggleable via
+`ReverseAgentConfig` fields (e.g. `enable_checkpoint=True`,
+`budget_total=100_000`, `min_confidence=0.4`, `enable_guard=True`).
+
 
 ## Development
 
