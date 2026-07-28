@@ -60,6 +60,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CheckpointStore`, `BudgetTracker`, `TokenBudget`, `BudgetPolicy`,
   `BudgetExceeded`, `ConfidenceScorer`, `ConfidenceResult`, `ActionGuard`,
   `GuardrailResult`, `GuardrailAction`, `GuardrailRule`).
+- **Single-model strategy**: `ReverseAgent` and every sub-component
+  (Planner / Actor / Judge / DomPruner / ConfidenceScorer / JSAnalyzer)
+  share the same `DeepSeekProvider(model="deepseek-v4-pro")` instance.
+  The Web UI no longer exposes "LLM rerank" / "LLM scoring" toggles (they
+  would imply a second model and contradict the single-model policy).
+  `BudgetPolicy.DOWNGRADE` is documented as a no-op under this strategy;
+  use `COMPRESS` (default) or `STOP` for budget overruns.
 
 
 ## [0.2.1] — 2026-07-12

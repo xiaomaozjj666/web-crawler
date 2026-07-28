@@ -44,11 +44,17 @@ class BudgetExceeded(Exception):
 
 
 class BudgetPolicy(str, Enum):
-    """超预算时的处理策略。"""
+    """超预算时的处理策略。
+
+    注意：本项目采用单一模型策略（DeepSeek V4 Pro），所有子组件
+    Planner / Actor / Judge / DomPruner / ConfidenceScorer 共享同一
+    provider 实例，因此 ``DOWNGRADE`` 策略实际不适用——超预算请使用
+    ``COMPRESS``（强制压缩历史）或 ``STOP``（直接停止）。
+    """
 
     STOP = "stop"  # 直接停止 Agent 主循环
     COMPRESS = "compress"  # 触发 ContextCompressor 强制压缩历史
-    DOWNGRADE = "downgrade"  # 切换到更便宜的模型（如 deepseek-chat）
+    DOWNGRADE = "downgrade"  # 切换到更便宜的模型（单一模型策略下不适用）
 
 
 @dataclass
