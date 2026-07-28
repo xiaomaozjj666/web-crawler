@@ -76,6 +76,9 @@ captcha = [
     "ddddocr>=1.4",
     "numpy>=1.26",
 ]
+crypto = [
+    "pycryptodome>=3.20",
+]
 mcp = [
     "mcp>=1.0",
     "camoufox[geoip]>=0.4",
