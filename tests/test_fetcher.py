@@ -145,3 +145,99 @@ def test_fetcher_build_response_carries_adaptive() -> None:
     with Fetcher(adaptive=True) as f:
         resp = f._build_response("https://x.example", 200, b"<a id='p'>x</a>", {})
     assert resp.selector.adaptive is True
+
+
+# -- JA4 指纹定制 ----------------------------------------------------------
+
+
+def test_fetcher_ja4_fingerprint_stored() -> None:
+    """ja4_fingerprint 参数应被存储到 self.ja4_fingerprint。"""
+    ja4 = "t13d1516h2_8daaf6152771_b0da82dd1658"
+    with Fetcher(ja4_fingerprint=ja4) as f:
+        assert f.ja4_fingerprint == ja4
+
+
+def test_fetcher_ja4_fingerprint_default_none() -> None:
+    """默认 ja4_fingerprint 为 None（不定制）。"""
+    with Fetcher() as f:
+        assert f.ja4_fingerprint is None
+
+
+def test_fetcher_ja4_passed_to_curl_sync_session(monkeypatch) -> None:
+    """ja4_fingerprint 应通过 ja3 参数透传到 curl_cffi Session（同步）。"""
+    captured: dict[str, object] = {}
+
+    class _StubSession:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    from web_crawler.fetchers import fetcher as fetcher_mod
+
+    class _Ver:
+        V1_1 = "v1_1"
+
+    monkeypatch.setattr(
+        fetcher_mod,
+        "_load_curl_backend",
+        lambda: (_Ver, _StubSession, _StubSession, Exception),
+    )
+
+    ja4 = "t13d1516h2_8daaf6152771_b0da82dd1658"
+    with Fetcher(ja4_fingerprint=ja4, http2=True) as f:
+        session = f._build_curl_sync_session()
+    assert isinstance(session, _StubSession)
+    assert captured["ja3"] == ja4
+    assert captured["impersonate"] == "chrome131"
+    # http2=True 时不写 http_version
+    assert "http_version" not in captured
+
+
+def test_fetcher_ja4_passed_to_curl_async_session(monkeypatch) -> None:
+    """ja4_fingerprint 应通过 ja3 参数透传到 curl_cffi AsyncSession（异步）。"""
+    captured: dict[str, object] = {}
+
+    class _StubAsyncSession:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    from web_crawler.fetchers import fetcher as fetcher_mod
+
+    class _Ver:
+        V1_1 = "v1_1"
+
+    monkeypatch.setattr(
+        fetcher_mod,
+        "_load_curl_backend",
+        lambda: (_Ver, _StubAsyncSession, _StubAsyncSession, Exception),
+    )
+
+    ja4 = "t13d1516h2_8daaf6152771_b0da82dd1658"
+    with Fetcher(ja4_fingerprint=ja4) as f:
+        session = f._build_curl_async_session()
+    assert isinstance(session, _StubAsyncSession)
+    assert captured["ja3"] == ja4
+
+
+def test_fetcher_ja4_not_passed_when_none(monkeypatch) -> None:
+    """ja4_fingerprint=None 时不应向 curl_cffi Session 传 ja3 参数。"""
+    captured: dict[str, object] = {}
+
+    class _StubSession:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    from web_crawler.fetchers import fetcher as fetcher_mod
+
+    class _Ver:
+        V1_1 = "v1_1"
+
+    monkeypatch.setattr(
+        fetcher_mod,
+        "_load_curl_backend",
+        lambda: (_Ver, _StubSession, _StubSession, Exception),
+    )
+
+    with Fetcher(ja4_fingerprint=None) as f:
+        session = f._build_curl_sync_session()
+    assert isinstance(session, _StubSession)
+    assert "ja3" not in captured, "ja4=None 时不应传 ja3 参数"

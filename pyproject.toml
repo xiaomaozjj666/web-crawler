@@ -86,6 +86,11 @@ dev = [
     "types-beautifulsoup4>=4.12",
     "pydantic>=2.5",
 ]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.26",
+]
 
 [tool.ruff]
 line-length = 100
@@ -106,6 +111,9 @@ ignore = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
 
 [tool.mypy]
 # 类型检查目标 Python 3.12（CI 镜像与本地均 >=3.12，且现代 stub 如 numpy 2.5
