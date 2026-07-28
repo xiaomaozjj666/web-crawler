@@ -255,6 +255,8 @@ class ReverseAgentConfig:
     enable_screenshot: bool = True
     # Humanize：是否启用人类化输入轨迹模拟（click 先 hover 再点击、type 逐字符随机延迟）
     humanize_input: bool = True
+    # ImageCaptcha：是否启用图片验证码自动识别（OCR/滑块/点选），需 provider 支持 vision
+    enable_image_captcha: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +283,15 @@ class ReverseAgent:
         self.config = config or ReverseAgentConfig()
         self.provider = provider or DeepSeekProvider(model=DEFAULT_MODEL)
         self.analyzer = analyzer or JSAnalyzer(provider=self.provider)
-        self.captcha_manager = CaptchaManager()
+        # 验证码管理器：若启用 image_captcha，注入 ImageCaptchaSolver，
+        # 让图片挑战出现时自动用 LLM Vision / 本地 OCR 识别
+        if self.config.enable_image_captcha:
+            from .image_captcha import ImageCaptchaSolver
+
+            image_solver = ImageCaptchaSolver(provider=self.provider)
+        else:
+            image_solver = None
+        self.captcha_manager = CaptchaManager(image_solver=image_solver)
         self.fetcher: CamoufoxFetcher | None = None
         self._context: Any = None
         self._page: Any = None

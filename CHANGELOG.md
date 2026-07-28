@@ -7,6 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Image captcha solver** (`web_crawler.ai.image_captcha.ImageCaptchaSolver`):
+  recognizes three image-challenge families without requiring a browser —
+  text OCR (4–8 char alphanumeric), slider gap localization (Pillow + numpy
+  template matching), and click-order coordinate recognition (Vision-LLM).
+  Backend fallback chain: local `ddddocr` (optional) → `numpy`/Pillow template
+  match → LLM Vision (`gpt-4o` / Claude / Qwen-VL / DeepSeek-vision, negotiated
+  via `provider.capabilities.vision`). All three methods exposed in both sync
+  and async variants.
+- **CaptchaSolver image challenge integration**: `CaptchaSolver` now accepts
+  an optional `image_solver` parameter; when injected, `_solve_hcaptcha` /
+  `_solve_recaptcha_v2` automatically attempt `_solve_image_challenge`
+  (iframe screenshot → Vision-LLM click coordinates → simulated clicks →
+  submit) after the regular checkbox+token-wait path fails. `_solve_geetest`
+  uses `image_solver.solve_slider` to localize the puzzle gap offset, falling
+  back to the legacy random 220–320 px drag when unavailable.
+  `CaptchaManager(image_solver=...)` injects the solver into both default and
+  custom `CaptchaSolver` instances.
+- **ReverseAgentConfig.enable_image_captcha** (default `True`): when enabled,
+  `ReverseAgent` constructs an `ImageCaptchaSolver(provider=self.provider)` and
+  passes it to `CaptchaManager`, so image challenges are auto-solved in both
+  `run` and `arun` loops without code changes.
+- **Lightweight pentest toolkit** (`web_crawler.pentest` subpackage, 6 modules):
+  pure-Python, dependency-free reconnaissance utilities inspired by PentAGI's
+  tool-integration approach (no `nmap` / `sqlmap` / `dirb` external commands).
+  - `PortScanner` — TCP connect scan with `ThreadPoolExecutor` concurrency,
+    TOP-100 default port list, built-in service-name map (22→ssh, 443→https,
+    3306→mysql, 6379→redis, 8080→http-proxy, …).
+  - `DirBruter` — directory / file path brute force over a 60+-path default
+    wordlist, pluggable extensions, status filter (200/204/301/302/401/403),
+    HTML title extraction.
+  - `SubdomainEnumerator` — DNS-based enumeration over an 80+-prefix default
+    dictionary, concurrent `getaddrinfo` + `gethostbyname_ex` for CNAME chain.
+  - `VulnScanner` — rule-based detection for SQL injection (5 payloads +
+    `SQL syntax` / `ORA-` / `PG::` / `mysql_fetch` error signatures), XSS
+    (3 payloads + reflected-content match), path traversal
+    (`../../../etc/passwd` + `root:x:0:0` signature); optional LLM analysis
+    when a provider is injected.
+  - `HeaderChecker` — 8 security headers (HSTS / CSP / X-Frame-Options /
+    X-Content-Type-Options / Referrer-Policy / Permissions-Policy /
+    X-XSS-Protection / Set-Cookie flags), 0–16 score, A–F grade.
+  - `PentestReport` — aggregates all five results, exposes `summary()` /
+    `to_dict()` / `to_json()`. Compliance notice: authorized testing only.
+- **MCP `solve_captcha_image` tool**: standalone image captcha recognition
+  without a browser. Three modes (`text` / `slider` / `click`); images passed
+  as base64 strings; auto-negotiates LLM Vision capability on the configured
+  provider.
+- **MCP `pentest_recon` tool**: aggregate pentest reconnaissance over a target
+  host or URL. Pick any subset of `ports` / `dirs` / `subdomains` / `vulns` /
+  `headers` checks; returns the full `PentestReport` dict in one call.
+- **CLI `captcha-image` subcommand**: shell entry point for image captcha
+  recognition. Reads image files from disk, base64-encodes, dispatches to
+  `solve_captcha_image`. `--mode text|slider|click` plus `--image` /
+  `--bg` / `--slider` / `--prompt` flags.
+- **CLI `pentest` subcommand**: shell entry point for pentest reconnaissance.
+  `web-crawler-reverse pentest example.com --checks ports,headers --ports 22,80,443`.
+- **Interactive REPL** now lists `captcha-image` and `pentest` commands.
+- **101 new tests**: 46 in `tests/test_image_captcha.py` (dataclass defaults,
+  base64 conversion, JSON extraction, `llm_vision_available` negotiation,
+  sync + async paths for text/slider/click, mock provider for LLM routes,
+  local OCR/slider fallback when deps absent), 23 in `tests/test_captcha.py`
+  (ImageCaptchaSolver injection into CaptchaSolver/CaptchaManager,
+  `_solve_image_challenge` success + all failure paths, `_geetest_detect_offset`
+  with mock screenshot), 32 in `tests/test_pentest.py` (all five pentest
+  modules, fully mocked, no real network). Test count: 302+ → 400+.
+- New `[project.optional-dependencies] captcha` extra (`ddddocr`, `numpy`)
+  for users wanting local OCR + accelerated slider template matching;
+  `Pillow` already provided by the `visual` extra.
+
+### Changed
+- `web_crawler.ai.__init__` lazy export list extended with 4 new symbols
+  (`ImageCaptchaSolver`, `ImageSolverConfig`, `SliderSolution`,
+  `ClickSolution`).
+- `CaptchaSolver.__init__` signature extended with optional
+  `image_solver: ImageCaptchaSolver | None = None` (backward-compatible).
+- `CaptchaManager.__init__` signature extended with keyword-only
+  `image_solver` parameter (backward-compatible).
+- `solve_captcha` MCP tool description updated to reflect image-challenge
+  auto-solving capability (no schema change).
+- README highlights section adds "Image captcha solver" and "Lightweight
+  pentest toolkit" entries; architecture tree extended with
+  `ai/image_captcha.py` and the `pentest/` subpackage.
+
+### End-to-end test suite (previous)
 - **End-to-end test suite** (`tests/test_e2e_reverse_agent.py`): starts a
   local HTTP server with a real `__sign` encryption page, launches
   `CamoufoxFetcher` + `ReverseAgent` through a full observe→think→act loop

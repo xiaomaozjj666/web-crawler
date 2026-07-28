@@ -1,12 +1,22 @@
 """验证码检测与处理模块。
 
 检测页面上常见的几类验证码（hCaptcha / Cloudflare Turnstile / Google
-reCAPTCHA v2 & v3 / 极验 GeeTest），并尝试以"模拟正常用户交互"的方式处理：
-仅做入口点击、自动通过等待与滑块轨迹模拟，绝不破解图片验证码。遇到需要
-图片识别的挑战，主动返回 ``False`` 表示需要人工介入。
+reCAPTCHA v2 & v3 / 极验 GeeTest），并尝试以下两类方式处理：
 
-设计参考了 BrowserAct 的"卡住即移交人工"思路：本模块只覆盖能够通过模拟
-正常用户交互完成的部分，其他场景一律交人工，不尝试任何绕过。
+1. **模拟正常用户交互**：入口点击、自动通过等待、滑块贝塞尔轨迹模拟
+2. **图片验证码自动识别**（可选，需注入 :class:`ImageCaptchaSolver`）：
+   - hCaptcha / reCAPTCHA v2 图片选择挑战：截图 iframe → Vision-LLM 识别
+     点击坐标 → 模拟点击 → 等待 token
+   - 极验拼图：截图面板 → Pillow/numpy 模板匹配 或 Vision-LLM 识别
+     缺口 x 偏移 → 拖拽滑块
+   - 文本字符 OCR（独立调用 :meth:`ImageCaptchaSolver.solve_text`）
+
+未注入 ``image_solver`` 时，遇到图片挑战主动返回 ``False`` 表示需要人工
+介入（兼容旧版行为）。
+
+设计参考了 BrowserAct 的"卡住即移交人工"思路：本模块默认只覆盖能够通过
+模拟正常用户交互完成的部分，其他场景一律交人工，不尝试任何绕过；
+``image_solver`` 是可选增强，调用方按合规策略决定是否启用。
 
 page 对象约定为 Playwright 的 sync_api.Page，但为了避免强依赖 playwright
 （其作为可选依赖存在），类型标注使用 ``Any``，仅在 ``TYPE_CHECKING`` 下导入。
@@ -24,6 +34,8 @@ from urllib.parse import parse_qs, urlparse
 
 if TYPE_CHECKING:
     from typing import Any
+
+    from .image_captcha import ImageCaptchaSolver
 
 
 class CaptchaType(Enum):
@@ -205,15 +217,22 @@ class CaptchaDetector:
 
 
 class CaptchaSolver:
-    """验证码处理策略：仅做入口点击 / 自动通过等待 / 滑块模拟。
+    """验证码处理策略：入口点击 / 自动通过等待 / 滑块模拟 + 可选图片识别。
 
-    遇到图片选择类挑战，绝不尝试识别图片，直接返回 ``False`` 表示需要
-    人工介入。
+    未注入 ``image_solver`` 时，遇到图片选择类挑战直接返回 ``False`` 表示
+    需要人工介入（兼容旧版行为）；注入后，会在常规路径失败后尝试用
+    :class:`ImageCaptchaSolver` 截图识别 + 模拟点击/拖拽。
     """
 
-    def __init__(self, max_wait: float = 30.0, humanize: bool = True) -> None:
+    def __init__(
+        self,
+        max_wait: float = 30.0,
+        humanize: bool = True,
+        image_solver: ImageCaptchaSolver | None = None,
+    ) -> None:
         self.max_wait = max_wait
         self.humanize = humanize
+        self.image_solver = image_solver
 
     def solve(self, page: Any, info: CaptchaInfo) -> bool:
         """按类型分发处理策略，返回是否成功通过。"""
@@ -254,28 +273,36 @@ class CaptchaSolver:
         return self._wait_for_token(page, info, timeout=half)
 
     def _solve_hcaptcha(self, page: Any, info: CaptchaInfo) -> bool:
-        # 仅点击入口复选框；若出现图片选择挑战，交人工
+        # 仅点击入口复选框；若出现图片选择挑战，尝试 image_solver
         checkbox = self._find_hcaptcha_checkbox(page)
         if checkbox is None:
             return False
         self._humanize_click(page, checkbox)
-        # token 未出现：很可能弹出了图片选择挑战，本模块不破解图片，
-        # 一律返回 False 表示需要人工介入
-        return self._wait_for_token(page, info, timeout=self.max_wait)
+        # 先等半段时间看是否自动通过
+        if self._wait_for_token(page, info, timeout=self.max_wait * 0.5):
+            return True
+        # 出现图片挑战：尝试 image_solver 截图识别 + 点击
+        if self.image_solver is not None and self._solve_image_challenge(page, info):
+            return self._wait_for_token(page, info, timeout=self.max_wait * 0.5)
+        return False
 
     def _solve_recaptcha_v2(self, page: Any, info: CaptchaInfo) -> bool:
         anchor = self._find_recaptcha_anchor(page)
         if anchor is None:
             return False
         self._humanize_click(page, anchor)
-        return self._wait_for_token(page, info, timeout=self.max_wait)
+        if self._wait_for_token(page, info, timeout=self.max_wait * 0.5):
+            return True
+        if self.image_solver is not None and self._solve_image_challenge(page, info):
+            return self._wait_for_token(page, info, timeout=self.max_wait * 0.5)
+        return False
 
     def _solve_recaptcha_v3(self, page: Any, info: CaptchaInfo) -> bool:
         # reCAPTCHA v3 是无感的，直接等 token
         return self._wait_for_token(page, info, timeout=self.max_wait)
 
     def _solve_geetest(self, page: Any, info: CaptchaInfo) -> bool:
-        # 极验：检测滑块按钮，模拟人类拖拽
+        # 极验：检测滑块按钮，模拟人类拖拽；优先用 image_solver 识别缺口
         slider = _first_query(
             page,
             (
@@ -293,11 +320,157 @@ class CaptchaSolver:
         if box is None:
             return False
         start = (box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-        # 极验滑块一般向右拖 220~320px
-        offset = random.uniform(220.0, 320.0)
+        # 优先用 image_solver 识别缺口 x 偏移；失败兜底用随机值
+        offset = self._geetest_detect_offset(page)
+        if offset is None:
+            offset = random.uniform(220.0, 320.0)
         end = (start[0] + offset, start[1])
         self._humanize_drag(page, start, end)
         return self._wait_for_token(page, info, timeout=self.max_wait * 0.5)
+
+    def _geetest_detect_offset(self, page: Any) -> float | None:
+        """用 image_solver 识别极验拼图缺口 x 偏移；失败返回 None。"""
+        if self.image_solver is None:
+            return None
+        panel = _first_query(page, _GEETEST_SELECTORS)
+        if panel is None:
+            return None
+        try:
+            bg_bytes = panel.screenshot()
+        except Exception:
+            return None
+        slider_el = _first_query(
+            page,
+            (".geetest_slider_button", ".geetest_btn_slide", ".geetest_slider"),
+        )
+        if slider_el is None:
+            return None
+        try:
+            slider_bytes = slider_el.screenshot()
+        except Exception:
+            return None
+        try:
+            sol = self.image_solver.solve_slider(bg_bytes, slider_bytes)
+        except Exception:
+            return None
+        if sol is None:
+            return None
+        return float(sol.x)
+
+    def _solve_image_challenge(self, page: Any, info: CaptchaInfo) -> bool:
+        """处理图片选择挑战：截图 iframe → 识别点击坐标 → 模拟点击。
+
+        成功识别并点击后返回 True；token 等待由调用方负责。
+        失败原因（无 image_solver / 无 iframe / 识别失败 / 截图失败）
+        都返回 False，调用方交人工兜底。
+        """
+        if self.image_solver is None:
+            return False
+        frame_handle = self._find_challenge_frame(page, info)
+        if frame_handle is None:
+            return False
+        try:
+            box = frame_handle.bounding_box()
+        except Exception:
+            box = None
+        if box is None:
+            return False
+        offset_x = float(box.get("x", 0.0))
+        offset_y = float(box.get("y", 0.0))
+        try:
+            img_bytes = frame_handle.screenshot()
+        except Exception:
+            return False
+        prompt = self._read_challenge_prompt(page, info) or "请按提示点击对应元素"
+        try:
+            sol = self.image_solver.solve_click(img_bytes, prompt)
+        except Exception:
+            return False
+        if sol is None or not sol.points:
+            return False
+        for px, py in sol.points:
+            try:
+                page.mouse.click(offset_x + px, offset_y + py)
+            except Exception:
+                return False
+            if self.humanize:
+                time.sleep(random.uniform(0.3, 0.8))
+        # 尝试点击提交按钮（hCaptcha 的 .button.submit / reCaptcha 的
+        # rc-imageselect-submit），失败静默（很多验证码点完会自动提交）
+        self._submit_challenge(page, info)
+        return True
+
+    @staticmethod
+    def _find_challenge_frame(page: Any, info: CaptchaInfo) -> Any | None:
+        """定位图片挑战 iframe 的 ElementHandle。"""
+        if info.container_selector is None:
+            return None
+        try:
+            return page.query_selector(info.container_selector)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _read_challenge_prompt(page: Any, info: CaptchaInfo) -> str:
+        """尽力读取挑战提示文字（hCaptcha/reCaptcha 的 .prompt-text 等）。"""
+        selector_map: dict[CaptchaType, tuple[str, ...]] = {
+            CaptchaType.HCAPTCHA: (
+                ".prompt-text",
+                ".h-captcha-challenge-prompt",
+            ),
+            CaptchaType.RECAPTCHA_V2: (
+                ".rc-imageselect-desc",
+                ".rc-imageselect-desc-no-canvas",
+            ),
+        }
+        selectors = selector_map.get(info.type)
+        if selectors is None:
+            return ""
+        # 通过 frame_locator 进入 iframe 内部读取
+        if info.container_selector is None:
+            return ""
+        try:
+            frame = page.frame_locator(info.container_selector)
+            for sel in selectors:
+                try:
+                    loc = frame.locator(sel).first
+                    text = loc.text_content(timeout=1500)
+                except Exception:
+                    text = None
+                if text:
+                    return str(text).strip()
+        except Exception:
+            return ""
+        return ""
+
+    @staticmethod
+    def _submit_challenge(page: Any, info: CaptchaInfo) -> None:
+        """尽力点击提交按钮；失败静默。"""
+        selector_map: dict[CaptchaType, tuple[str, ...]] = {
+            CaptchaType.HCAPTCHA: (
+                ".button.submit",
+                ".submit",
+                'div[class*="button"]',
+            ),
+            CaptchaType.RECAPTCHA_V2: (
+                "#recaptcha-verify-button",
+                ".rc-button-submit",
+            ),
+        }
+        selectors = selector_map.get(info.type)
+        if selectors is None or info.container_selector is None:
+            return
+        try:
+            frame = page.frame_locator(info.container_selector)
+            for sel in selectors:
+                try:
+                    btn = frame.locator(sel).first
+                    btn.click(timeout=2000)
+                    return
+                except Exception:
+                    continue
+        except Exception:
+            return
 
     def _solve_unknown(self, page: Any, info: CaptchaInfo) -> bool:
         return False
@@ -465,9 +638,22 @@ class CaptchaSolver:
 class CaptchaManager:
     """组合检测 + 处理：一条龙服务。"""
 
-    def __init__(self, solver: CaptchaSolver | None = None) -> None:
+    def __init__(
+        self,
+        solver: CaptchaSolver | None = None,
+        *,
+        image_solver: ImageCaptchaSolver | None = None,
+    ) -> None:
         self.detector = CaptchaDetector()
-        self.solver = solver or CaptchaSolver()
+        # image_solver 优先注入到现有 solver；若同时传 solver 则只接受 solver 内的
+        if solver is not None:
+            self.solver = solver
+            # 显式注入 image_solver 到已传入的 solver（覆盖）
+            if image_solver is not None:
+                self.solver.image_solver = image_solver
+        else:
+            self.solver = CaptchaSolver(image_solver=image_solver)
+        self.image_solver = image_solver
 
     def handle(self, page: Any) -> bool:
         """检测并处理当前页面上的验证码。
