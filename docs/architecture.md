@@ -35,7 +35,6 @@ src/web_crawler/          # 核心库
     captcha.py            # CaptchaManager（检测 + 仅人类化处理）
     image_captcha.py     # ImageCaptchaSolver（OCR / slider 缺口 / click 点选，LLM Vision + ddddocr/Pillow 降级）
     reverse_agent.py      # ReverseAgent（observe→think→act 循环）
-    vision.py             # VisionObserver（Vision-LLM 截图感知双模态）
     planner.py            # Planner/Actor 双脑分离 + 周期重规划
     loop.py               # LoopDetector + ContextCompressor（循环检测 + 历史压缩）
     judge.py              # TaskJudge（done 二次验证，防止 LLM 幻觉）
@@ -121,7 +120,6 @@ demo.py / demo.bat        # 交互式使用 demo
 - **`HookLibrary`** 6 个 JS Hook：fetch / XHR / cookie / `crypto.subtle` / webpack / console
 - **`JSAnalyzer`** webpack 模块抽取、签名流追踪、AI 反混淆与算法重写
 - **`CaptchaManager`** 检测 Turnstile / hCaptcha / reCAPTCHA v2&v3 / 极验 GeeTest；仅模拟正常用户
-- **`VisionObserver`** Vision-LLM 截图感知，处理 DOM 混淆 / Canvas 渲染页面
 
 ##### 主流 Agent 能力对齐
 
@@ -132,7 +130,6 @@ demo.py / demo.bat        # 交互式使用 demo
 | --- | --- | --- |
 | DOM 焦点裁剪 | `DomPruner` | 规则 + LLM 重排，仅保留加密相关元素（≈80% token 削减） |
 | 断点续跑 | `CheckpointManager` | 步末状态持久化；崩溃/中断后从最近 checkpoint 恢复 |
-| Token 预算 | `BudgetTracker` | 单步/单次/全局上限，COMPRESS/DOWNGRADE/STOP 策略 |
 | 动作置信度 | `ConfidenceScorer` | 规则 + LLM 双路径评分；低置信触发 fallback |
 | 动作护栏 | `ActionGuard` | 域名白名单，拦截 localhost/非 HTTPS/跨域/危险脚本 |
 | Planner/Actor 分离 | `Planner` | 高层子目标规划 + 周期重规划 |
@@ -161,7 +158,6 @@ demo.py / demo.bat        # 交互式使用 demo
 
 `ReverseAgent` 与所有子组件共享同一个 `DeepSeekProvider(model="deepseek-v4-pro")` 实例。
 不存在按组件路由模型、不存在 LLM-as-judge 重排、不存在能力协商切换 provider。
-`BudgetPolicy.DOWNGRADE` 在单模型策略下为 no-op；超预算用 `COMPRESS`（默认）或 `STOP`。
 
 ## 数据流
 

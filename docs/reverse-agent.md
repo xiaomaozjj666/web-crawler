@@ -40,7 +40,7 @@ web-crawler-mcp                       # 通过 stdio 跑 JSON-RPC
 ```
 
 `reverse_engineer_url` 工具一次调用返回完整运行时状态：
-`analysis`、`compiled_script`、`judge_result`，外加 `budget_summary`、
+`analysis`、`compiled_script`、`judge_result`，外加
 `last_confidence`、`checkpoints`、`screenshots`、`error_screenshot`。
 
 ### CLI（脚本与交互式 REPL）
@@ -88,7 +88,6 @@ config = ReverseAgentConfig(
     humanize_input=True,
     enable_screenshot=True,
     enable_checkpoint=True,
-    budget_total=100_000,
 )
 provider = DeepSeekProvider(model="deepseek-v4-pro")
 agent = ReverseAgent(config=config, provider=provider)
@@ -159,7 +158,6 @@ finally:
 | --- | --- | --- | --- |
 | DOM 焦点裁剪 | `dom_prune_max_chars` | `0`（禁用） | 规则 + LLM 重排，仅保留加密相关元素 |
 | 断点续跑 | `enable_checkpoint` | `False` | 步末状态持久化；崩溃后从最近 checkpoint 恢复 |
-| Token 预算 | `budget_total` / `budget_per_step` | `None`（禁用） | 单步/全局上限，COMPRESS/STOP 策略 |
 | 动作置信度 | `min_confidence` | `0.4` | 规则 + LLM 双路径评分；低置信触发 fallback |
 | 动作护栏 | `enable_guard` | `True` | 域名白名单，拦截 localhost/非 HTTPS/跨域/危险脚本 |
 | Planner/Actor | `planner_interval` | `5` | 高层子目标规划 + 周期重规划 |
@@ -188,4 +186,3 @@ Agent 仅模拟正常用户交互；**不**破解图片验证码、**不**伪造
 `ReverseAgent` 与所有子组件（Planner / Actor / Judge / DomPruner /
 ConfidenceScorer / JSAnalyzer）共享同一个 `DeepSeekProvider(model="deepseek-v4-pro")` 实例。
 不存在按组件路由模型、不存在 LLM-as-judge 重排、不存在能力协商切换 provider。
-`BudgetPolicy.DOWNGRADE` 在单模型策略下为 no-op；超预算用 `COMPRESS`（默认）或 `STOP`。

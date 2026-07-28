@@ -268,8 +268,6 @@ def cmd_run(args: argparse.Namespace) -> int:
         proxy=args.proxy or None,
         os_name=args.os,
         enable_checkpoint=args.enable_checkpoint,
-        budget_total=args.budget_total,
-        budget_per_step=args.budget_per_step,
         min_confidence=args.min_confidence,
         enable_guard=args.enable_guard,
         allowed_domains=allowed_domains,
@@ -569,8 +567,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="启用断点续跑",
     )
-    p.add_argument("--budget-total", type=int, default=100_000, help="全局 token 上限")
-    p.add_argument("--budget-per-step", type=int, default=8_000, help="单步 token 上限")
     p.add_argument(
         "--min-confidence",
         type=float,
