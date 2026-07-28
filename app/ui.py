@@ -834,7 +834,9 @@ PAGE = """<!doctype html>
 
     function renderStep(s) {
       var colorMap = { navigate: '#3b82f6', inject_hook: '#a855f7', analyze_js: '#f97316',
-                       wait: '#6b7280', extract: '#22c55e', solve_captcha: '#eab308', done: '#16a34a' };
+                       wait: '#6b7280', extract: '#22c55e', solve_captcha: '#eab308', done: '#16a34a',
+                       click: '#06b6d4', type: '#8b5cf6', scroll: '#64748b',
+                       press: '#f59e0b', hover: '#ec4899', select_option: '#14b8a6' };
       var color = colorMap[s.action_type] || '#6b7280';
       var confColor = '#6b7280';
       if (s.confidence != null) {
@@ -1005,14 +1007,18 @@ PAGE = """<!doctype html>
       };
     }
 
-    /* 自适应轮询：根据状态动态调整间隔 */
+    /* 自适应轮询：根据状态动态调整间隔（仅作 SSE 不可用时的降级方案） */
     function startReversePolling() {
       if (reverseTimer) clearInterval(reverseTimer);
+      /* 优先尝试 SSE 实时推送 */
+      if (typeof EventSource !== 'undefined' && currentReverseJobId) {
+        startReverseSSE();
+        return;
+      }
+      /* 降级：HTTP 轮询 */
       reverseTimer = setInterval(function() {
         pollReverse().then(function() {
-          /* 如果 timer 已被清除（任务结束），不再重启 */
           if (!reverseTimer) return;
-          /* 根据当前状态调整间隔：运行中快，其他状态慢 */
           var statusEl = document.getElementById('rev-status');
           var currentStatus = statusEl.textContent || '';
           var expectedInterval = (currentStatus === 'running') ? REVERSE_POLL_RUNNING : REVERSE_POLL_IDLE;
@@ -1029,6 +1035,132 @@ PAGE = """<!doctype html>
         });
       }, REVERSE_POLL_RUNNING);
       reverseTimer._interval = REVERSE_POLL_RUNNING;
+    }
+
+    /* SSE 实时推送 */
+    var reverseSSE = null;
+    function startReverseSSE() {
+      if (reverseSSE) { reverseSSE.close(); reverseSSE = null; }
+      if (reverseTimer) { clearInterval(reverseTimer); reverseTimer = null; }
+      reverseSSE = new EventSource('/reverse/stream?id=' + encodeURIComponent(currentReverseJobId));
+      /* 快照事件：更新整个 UI */
+      reverseSSE.addEventListener('snapshot', function(e) {
+        try {
+          var data = JSON.parse(e.data);
+          updateReverseUI(data);
+        } catch(err) {}
+      });
+      /* 单步事件：增量更新轨迹 */
+      reverseSSE.addEventListener('step', function(e) {
+        try {
+          var evt = JSON.parse(e.data);
+          appendReverseEvent(evt);
+        } catch(err) {}
+      });
+      /* 终态事件：关闭 SSE */
+      reverseSSE.addEventListener('final', function(e) {
+        try {
+          var data = JSON.parse(e.data);
+          updateReverseUI(data);
+        } catch(err) {}
+        if (reverseSSE) { reverseSSE.close(); reverseSSE = null; }
+      });
+      reverseSSE.onerror = function() {
+        /* SSE 断开，降级为轮询 */
+        if (reverseSSE) { reverseSSE.close(); reverseSSE = null; }
+        if (!reverseTimer && currentReverseJobId) {
+          reverseTimer = setInterval(pollReverse, REVERSE_POLL_RUNNING);
+          reverseTimer._interval = REVERSE_POLL_RUNNING;
+        }
+      };
+    }
+
+    /* SSE 增量事件：追加到轨迹（不重画整个 UI） */
+    function appendReverseEvent(evt) {
+      var traceEl = document.getElementById('rev-trace');
+      if (!traceEl) return;
+      if (evt.type === 'step.end' || evt.type === 'action' || evt.type === 'browser.action') {
+        var s = evt.payload || {};
+        var step = evt.step || s.step || 0;
+        var actionType = s.action_type || s.action || 'step';
+        var reasoning = s.reasoning || '';
+        var conf = s.confidence;
+        var card = document.createElement('div');
+        card.className = 'trace-step';
+        var colorMap = {navigate:'#3b82f6',inject_hook:'#a855f7',analyze_js:'#f97316',wait:'#6b7280',extract:'#22c55e',solve_captcha:'#eab308',done:'#16a34a',click:'#06b6d4',type:'#8b5cf6',scroll:'#64748b',press:'#f59e0b',hover:'#ec4899',select_option:'#14b8a6'};
+        var color = colorMap[actionType] || '#6b7280';
+        card.style.borderLeftColor = color;
+        var html = '<div class="step-header"><span class="step-num">Step ' + step + '</span>' +
+          '<span class="action-badge" style="background:' + color + '">' + escapeHtml(actionType) + '</span>';
+        if (s.duration_ms) html += '<span class="step-meta">' + s.duration_ms + 'ms</span>';
+        if (conf !== undefined) {
+          var cc = conf >= 0.7 ? '#22c55e' : conf >= 0.4 ? '#eab308' : '#ef4444';
+          html += '<span class="step-conf" style="color:' + cc + '">conf ' + Number(conf).toFixed(2) + '</span>';
+        }
+        html += '</div><div class="step-reasoning">' + escapeHtml(reasoning) + '</div>';
+        card.innerHTML = html;
+        /* 移除空状态提示 */
+        var empty = traceEl.querySelector('.trace-empty');
+        if (empty) empty.remove();
+        traceEl.appendChild(card);
+        traceEl.scrollTop = traceEl.scrollHeight;
+      }
+    }
+
+    /* 抽取 UI 更新逻辑供 SSE 复用 */
+    function updateReverseUI(data) {
+      if (!data) return;
+      document.getElementById('rev-current-step').textContent = data.current_step || 0;
+      document.getElementById('rev-max-steps').textContent = data.max_steps || 20;
+      var statusBadge = document.getElementById('rev-status');
+      statusBadge.textContent = data.status || '--';
+      statusBadge.className = 'status-badge ' + (data.status || '');
+      document.getElementById('rev-stat-steps').textContent = data.current_step || 0;
+      document.getElementById('rev-stat-avg-ms').textContent = Math.round(data.avg_step_ms || 0) + ' ms';
+      var elapsed = Math.max(0, Math.floor((Date.now() / 1000) - (data.created_at || 0)));
+      document.getElementById('rev-stat-elapsed').textContent = elapsed + 's';
+      document.getElementById('rev-stat-hooks').textContent = data.hook_count || 0;
+      document.getElementById('rev-stat-net').textContent = (data.network_requests || []).length;
+      if (data.last_confidence && data.last_confidence.score !== undefined) {
+        var score = data.last_confidence.score;
+        var confColor = score >= 0.7 ? '#22c55e' : score >= 0.4 ? '#eab308' : '#ef4444';
+        document.getElementById('rev-confidence-meter').style.background =
+          'conic-gradient(' + confColor + ' ' + (score * 360) + 'deg, var(--bar-bg) ' + (score * 360) + 'deg)';
+        document.getElementById('rev-confidence-value').textContent = Number(score).toFixed(2);
+        document.getElementById('rev-confidence-value').style.color = confColor;
+        var reasonsHtml = (data.last_confidence.reasons || []).map(function(r) {
+          return '<div class="reason-item">' + escapeHtml(r) + '</div>';
+        }).join('');
+        document.getElementById('rev-confidence-reasons').innerHTML = reasonsHtml || '无';
+      }
+      var guardHtml = (data.guard_blocks || []).map(function(g) {
+        return '<div class="guard-item">' + escapeHtml(g.rule) + ': ' + escapeHtml(g.detail) + '</div>';
+      }).join('');
+      document.getElementById('rev-guard-blocks').innerHTML = guardHtml || '无';
+      var cpHtml = (data.checkpoints || []).map(function(c) {
+        return '<div class="checkpoint-item">Step ' + c.step + ' - ' + escapeHtml(String(c.url || c.path || '').slice(0, 50)) + '</div>';
+      }).join('');
+      document.getElementById('rev-checkpoints').innerHTML = cpHtml || '无';
+      var tpHtml = (data.target_params || []).map(function(p) {
+        var found = data.target_params_found && data.target_params_found[p];
+        return '<div class="param-item ' + (found ? 'found' : '') + '">' + (found ? '[OK] ' : '[..] ') + escapeHtml(p) + (found ? ': ' + escapeHtml(found) : '') + '</div>';
+      }).join('');
+      document.getElementById('rev-target-params').innerHTML = tpHtml || '--';
+      document.getElementById('rev-hook-count').textContent = data.hook_count || 0;
+      var hookHtml = (data.hook_records || []).slice(-10).map(function(h) {
+        return '<div class="hook-item">' + escapeHtml(JSON.stringify(h)) + '</div>';
+      }).join('');
+      document.getElementById('rev-hooks').innerHTML = hookHtml || '无数据';
+      var traceEl = document.getElementById('rev-trace');
+      var stepsHtml = (data.steps || []).map(function(s) { return renderStep(s); }).join('');
+      traceEl.innerHTML = stepsHtml || '<div class="trace-empty">等待数据...</div>';
+      traceEl.scrollTop = traceEl.scrollHeight;
+      updateStats(data);
+      if (['done', 'error', 'cancelled'].includes(data.status)) {
+        if (reverseSSE) { reverseSSE.close(); reverseSSE = null; }
+        if (reverseTimer) { clearInterval(reverseTimer); reverseTimer = null; }
+        showReverseResult(data);
+      }
     }
 
     /* ========== 历史任务加载 ========== */
@@ -1702,6 +1834,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.respond_json(rjob.snapshot())
             return
+        if self.path.startswith("/reverse/stream"):
+            # SSE 实时推送：建立长连接，把事件增量推给前端
+            query = parse_qs(urlparse(self.path).query)
+            rjob = REVERSE_JOBS.get(query.get("id", [""])[0])
+            if not rjob:
+                self.respond_json({"error": "任务不存在"})
+                return
+            self._stream_reverse_sse(rjob)
+            return
         if self.path.startswith("/reverse/jobs"):
             # 返回所有历史任务列表（按创建时间倒序）
             with REVERSE_JOBS_LOCK:
@@ -1921,6 +2062,62 @@ class Handler(BaseHTTPRequestHandler):
             "application/json; charset=utf-8",
         )
 
+    def _stream_reverse_sse(self, rjob: ReverseJobState) -> None:
+        """SSE 长连接：把任务事件增量推给前端，直到任务结束。
+
+        端点 ``GET /reverse/stream?id=<job_id>``，响应 ``text/event-stream``。
+        每 800ms 检查一次事件流，把 ``ts > since`` 的事件以 SSE 格式推送。
+        任务进入终态（done/error/cancelled）后发送一个 final 事件并关闭连接。
+        """
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream; charset=utf-8")
+        self.send_header("cache-control", "no-cache")
+        self.send_header("connection", "keep-alive")
+        self.end_headers()
+
+        import time as _time
+
+        last_ts = 0.0
+        deadline = _time.time() + 3600  # 单连接最多 1 小时，避免泄漏
+        try:
+            while _time.time() < deadline:
+                # 任务终态：先发 final，再退出
+                if rjob.status in {"done", "error", "cancelled"}:
+                    payload = rjob.snapshot()
+                    payload["events_since"] = last_ts
+                    self.wfile.write(
+                        b"event: final\ndata: "
+                        + json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                        + b"\n\n"
+                    )
+                    self.wfile.flush()
+                    return
+                # 推送增量事件
+                with rjob.events_lock:
+                    new_events = [e for e in rjob.events if e.get("ts", 0) > last_ts]
+                    if new_events:
+                        last_ts = new_events[-1].get("ts", last_ts)
+                for evt in new_events:
+                    self.wfile.write(
+                        b"event: step\ndata: "
+                        + json.dumps(evt, ensure_ascii=False).encode("utf-8")
+                        + b"\n\n"
+                    )
+                if new_events:
+                    self.wfile.flush()
+                # 同时推一次完整快照（前端用于更新统计卡片）
+                snap = rjob.snapshot()
+                self.wfile.write(
+                    b"event: snapshot\ndata: "
+                    + json.dumps(snap, ensure_ascii=False).encode("utf-8")
+                    + b"\n\n"
+                )
+                self.wfile.flush()
+                _time.sleep(0.8)
+        except (BrokenPipeError, ConnectionResetError):
+            # 客户端关闭连接
+            return
+
     def respond(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
         self.send_header("content-type", content_type)
@@ -1937,12 +2134,12 @@ def main() -> None:
 
     _parser = _ap.ArgumentParser(description="Web Resource Crawler UI")
     _parser.add_argument("--open", action="store_true", help="Automatically open browser")
+    _parser.add_argument("--host", default=HOST, help=f"Server host (default: {HOST})")
     _parser.add_argument("--port", type=int, default=PORT, help=f"Server port (default: {PORT})")
     _args = _parser.parse_args()
 
-    port = _args.port
-    server = ThreadingHTTPServer((HOST, port), Handler)
-    url = f"http://{HOST}:{port}"
+    server = ThreadingHTTPServer((_args.host, _args.port), Handler)
+    url = f"http://{_args.host}:{_args.port}"
     if _args.open:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     _log.info("Web UI started: %s", url)

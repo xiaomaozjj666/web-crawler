@@ -47,6 +47,13 @@ _VALID_ACTIONS: frozenset[str] = frozenset(
         "extract",
         "solve_captcha",
         "done",
+        # 浏览器交互动作（click / type / scroll / press / hover / select_option）
+        "click",
+        "type",
+        "scroll",
+        "press",
+        "hover",
+        "select_option",
     }
 )
 
@@ -277,6 +284,13 @@ class ConfidenceScorer:
             "extract": {"param_name": str},
             "solve_captcha": {},
             "done": {},
+            # 浏览器交互动作的必填参数校验
+            "click": {"selector": str},
+            "type": {"selector": str, "text": str},
+            "scroll": {},  # x / y 均有默认值，不强校验
+            "press": {"key": str},
+            "hover": {"selector": str},
+            "select_option": {"selector": str, "value": str},
         }
         req: dict[str, type | tuple[type, ...]] = required.get(at, {})
         if not req:

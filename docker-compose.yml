@@ -1,0 +1,11 @@
+services:
+  web-crawler:
+    build: .
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./crawler_output:/app/crawler_output
+      - ./reverse_screenshots:/app/reverse_screenshots
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+    restart: unless-stopped

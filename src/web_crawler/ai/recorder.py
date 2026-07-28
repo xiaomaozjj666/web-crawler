@@ -135,6 +135,13 @@ class ScriptCompiler:
         "analyze_js": "_compile_analyze_js",
         "solve_captcha": "_compile_solve_captcha",
         "done": "_compile_done",
+        # 浏览器交互动作
+        "click": "_compile_click",
+        "type": "_compile_type",
+        "scroll": "_compile_scroll",
+        "press": "_compile_press",
+        "hover": "_compile_hover",
+        "select_option": "_compile_select_option",
     }
 
     def compile(
@@ -217,7 +224,7 @@ class ScriptCompiler:
                 )
                 page = context.new_page()
                 try:
-            {textwrap.indent(body, "            ")}
+{textwrap.indent(body, "                ")}
                 finally:
                     try:
                         context.close()
@@ -327,6 +334,90 @@ class ScriptCompiler:
     @staticmethod
     def _compile_done(rec: ActionRecord, **_: Any) -> list[str]:
         return [f"    # step {rec.step}: done"]
+
+    # -- 浏览器交互动作的编译器 ----------------------------------------------
+
+    @staticmethod
+    def _compile_click(rec: ActionRecord, **_: Any) -> list[str]:
+        selector = str(rec.params.get("selector", ""))
+        button = str(rec.params.get("button", "left"))
+        selector_literal = _py_string_literal(selector)
+        return [
+            f"    # step {rec.step}: click {selector}",
+            f"    page.click({selector_literal}, button={button!r}, timeout=10000)",
+            f"    history.append({{'step': {rec.step}, 'action': 'click', 'selector': {selector_literal}}})",
+        ]
+
+    @staticmethod
+    def _compile_type(rec: ActionRecord, **_: Any) -> list[str]:
+        selector = str(rec.params.get("selector", ""))
+        text = str(rec.params.get("text", ""))
+        clear = bool(rec.params.get("clear", True))
+        selector_literal = _py_string_literal(selector)
+        text_literal = _py_string_literal(text)
+        lines: list[str] = [f"    # step {rec.step}: type into {selector}"]
+        if clear:
+            lines.append(f'    page.fill({selector_literal}, "", timeout=10000)')
+        lines.append(f"    page.type({selector_literal}, {text_literal}, timeout=10000)")
+        lines.append(
+            f"    history.append({{'step': {rec.step}, 'action': 'type', 'selector': {selector_literal}}})"
+        )
+        return lines
+
+    @staticmethod
+    def _compile_scroll(rec: ActionRecord, **_: Any) -> list[str]:
+        selector = rec.params.get("selector")
+        x = int(rec.params.get("x", 0))
+        y = int(rec.params.get("y", 800))
+        lines: list[str] = [f"    # step {rec.step}: scroll"]
+        if selector:
+            # selector 嵌入 JS 字符串：用 json.dumps 生成合法 JS 字符串字面量
+            sel_js = json.dumps(str(selector))
+            lines.append(
+                f"    page.evaluate('document.querySelector({sel_js})?.scrollBy({x}, {y})')"
+            )
+        else:
+            lines.append(f"    page.evaluate('window.scrollBy({x}, {y})')")
+        lines.append(
+            f"    history.append({{'step': {rec.step}, 'action': 'scroll', 'x': {x}, 'y': {y}}})"
+        )
+        return lines
+
+    @staticmethod
+    def _compile_press(rec: ActionRecord, **_: Any) -> list[str]:
+        key = str(rec.params.get("key", "Enter"))
+        selector = rec.params.get("selector")
+        lines: list[str] = [f"    # step {rec.step}: press {key}"]
+        if selector:
+            sel_literal = _py_string_literal(str(selector))
+            lines.append(f"    page.focus({sel_literal}, timeout=10000)")
+        lines.append(f"    page.press({key!r})")
+        lines.append(
+            f"    history.append({{'step': {rec.step}, 'action': 'press', 'key': {key!r}}})"
+        )
+        return lines
+
+    @staticmethod
+    def _compile_hover(rec: ActionRecord, **_: Any) -> list[str]:
+        selector = str(rec.params.get("selector", ""))
+        selector_literal = _py_string_literal(selector)
+        return [
+            f"    # step {rec.step}: hover {selector}",
+            f"    page.hover({selector_literal}, timeout=10000)",
+            f"    history.append({{'step': {rec.step}, 'action': 'hover', 'selector': {selector_literal}}})",
+        ]
+
+    @staticmethod
+    def _compile_select_option(rec: ActionRecord, **_: Any) -> list[str]:
+        selector = str(rec.params.get("selector", ""))
+        value = str(rec.params.get("value", ""))
+        selector_literal = _py_string_literal(selector)
+        value_literal = _py_string_literal(value)
+        return [
+            f"    # step {rec.step}: select_option {selector}={value}",
+            f"    page.select_option({selector_literal}, {value_literal}, timeout=10000)",
+            f"    history.append({{'step': {rec.step}, 'action': 'select_option', 'selector': {selector_literal}}})",
+        ]
 
 
 class ReplayRunner:

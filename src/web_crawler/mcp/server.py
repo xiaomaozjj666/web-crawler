@@ -558,12 +558,16 @@ class ReverseMCPServer:
         task = args.get("task") or f"分析 {url} 的加密参数"
         max_steps = args.get("max_steps", 20)
 
+        # 构造 progress token，让 MCP 客户端可订阅长任务进度
+        progress = self.make_progress_token("reverse_engineer_url", total=max_steps)
+
         # 优先使用 ReverseAgent 走完整逆向流程
         if self.agent is not None:
             try:
                 # ReverseAgent.run 签名为 run(url, task="")，max_steps 与
                 # target_params 通过 config 注入；这里 clone config 再覆盖。
                 from ..ai.reverse_agent import ReverseAgentConfig
+                from ..ai.watchdog import EventBus
 
                 base_config = self.agent.config
                 run_config = ReverseAgentConfig(
@@ -576,12 +580,29 @@ class ReverseMCPServer:
                     os_name=base_config.os_name,
                 )
                 # 用同一 provider/analyzer 复用，避免重复加载模型配置
+                # 注入独立 EventBus，订阅 step.end 事件推送 MCP progress
+                progress_bus = EventBus()
+
+                def _on_step_end(evt: Any) -> None:
+                    step = getattr(evt, "step", 0) or 0
+                    self.report_progress(
+                        progress["progressToken"],
+                        step,
+                        max_steps,
+                        message=f"step {step}/{max_steps}: {getattr(evt, 'type', '')}",
+                    )
+
+                progress_bus.subscribe(_on_step_end)
                 run_agent = type(self.agent)(
                     config=run_config,
                     provider=self.agent.provider,
                     analyzer=self.agent.analyzer,
+                    event_bus=progress_bus,
                 )
                 result = run_agent.run(url=url, task=task)
+                self.report_progress(
+                    progress["progressToken"], max_steps, max_steps, message="done"
+                )
                 return _to_json({"result": result, "agent": True})
             except Exception as exc:
                 fallback_note = f"ReverseAgent 执行失败：{exc}，降级为基本采集"
