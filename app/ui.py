@@ -519,7 +519,7 @@ PAGE = """<!doctype html>
                   <label class="check"><input type="checkbox" name="dom_prune" value="1"> 启用 DOM 裁剪</label>
                   <label>max_chars</label>
                   <input name="dom_prune_max_chars" type="number" value="4000">
-                  <label class="check"><input type="checkbox" name="dom_prune_llm_rank" value="1"> LLM 重排</label>
+                  <div class="hint">单一模型策略：规则打分，不调用 LLM 重排</div>
                 </fieldset>
 
                 <fieldset>
@@ -543,7 +543,7 @@ PAGE = """<!doctype html>
                   <legend>动作置信度</legend>
                   <label>最低阈值（0-1）</label>
                   <input name="min_confidence" type="number" value="0.4" step="0.1" min="0" max="1">
-                  <label class="check"><input type="checkbox" name="confidence_llm_score" value="1"> LLM 评分</label>
+                  <div class="hint">单一模型策略：规则评分，不调用 LLM 评分</div>
                 </fieldset>
 
                 <fieldset>
@@ -1061,14 +1061,13 @@ class ReverseAgentRunner:
                 proxy=cfg_dict.get("proxy") or None,
                 os_name=str(cfg_dict.get("os_name", "windows")),
                 dom_prune_max_chars=int(cfg_dict.get("dom_prune_max_chars", 0)),
-                dom_prune_llm_rank=bool(cfg_dict.get("dom_prune_llm_rank", False)),
+                # 单一模型策略：DomPruner/Confidence 都用规则路径，不调用 LLM 重排/评分
                 enable_checkpoint=bool(cfg_dict.get("enable_checkpoint", False)),
                 checkpoint_interval=int(cfg_dict.get("checkpoint_interval", 1)),
                 checkpoint_keep=int(cfg_dict.get("checkpoint_keep", 5)),
                 budget_total=int(cfg_dict.get("budget_total", 100_000)),
                 budget_per_step=int(cfg_dict.get("budget_per_step", 8_000)),
                 min_confidence=float(cfg_dict.get("min_confidence", 0.4)),
-                confidence_llm_score=bool(cfg_dict.get("confidence_llm_score", False)),
                 enable_guard=bool(cfg_dict.get("enable_guard", True)),
                 allowed_domains=cfg_dict.get("allowed_domains") or None,
             )

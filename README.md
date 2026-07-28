@@ -273,6 +273,16 @@ All capabilities are optional and individually toggleable via
 `ReverseAgentConfig` fields (e.g. `enable_checkpoint=True`,
 `budget_total=100_000`, `min_confidence=0.4`, `enable_guard=True`).
 
+### Single-model strategy
+
+`ReverseAgent` uses a **single DeepSeek V4 Pro** instance shared by every
+sub-component — Planner, Actor, Judge, DomPruner, ConfidenceScorer,
+JSAnalyzer all reuse the same `DeepSeekProvider(model="deepseek-v4-pro")`.
+There is no per-component model routing, no LLM-as-judge rerank, no
+capability-based provider selection, and `BudgetPolicy.DOWNGRADE` is a
+no-op under this strategy. Override only if you bring your own multi-model
+setup; the defaults assume DeepSeek V4 Pro everywhere.
+
 
 ## Development
 
