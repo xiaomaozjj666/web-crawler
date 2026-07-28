@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **End-to-end test suite** (`tests/test_e2e_reverse_agent.py`): starts a
+  local HTTP server with a real `__sign` encryption page, launches
+  `CamoufoxFetcher` + `ReverseAgent` through a full observe→think→act loop
+  using a `StubProvider` (no real LLM API key required). Validates Hook
+  injection, network capture, and `sign` parameter extraction. Two
+  `@pytest.mark.slow` tests auto-skip when Camoufox is absent; a third
+  unit test verifies the `StubProvider` reply sequence without a browser.
+- **Humanized input trajectory** (`ReverseAgentConfig.humanize_input`,
+  default `True`): `click` now `hover`s the selector first, waits a random
+  50–200 ms, then clicks; `type` `focus`es the selector, waits 100–300 ms,
+  then types with a per-keystroke `delay=30–150 ms`. Both sync and async
+  paths; mock objects that reject `delay=` auto-degrade via `TypeError`.
+- **Multi-tab management** — 3 new actions: `new_tab` (open + navigate +
+  switch active page; registers the original page as `"main"`),
+  `switch_tab` (by `name` or `index`; calls `bring_to_front`), `close_tab`
+  (closes; falls back to `main` if the active tab was closed). Both sync
+  and async paths emit `browser.action` events. LLM prompt extended with
+  the three action descriptions.
+- **JA4 fingerprint customization** (`Fetcher.ja4_fingerprint` /
+  `AsyncFetcher.ja4_fingerprint`): passes a JA3/JA4 TLS extension string
+  through to `curl_cffi`'s `ja3` parameter, overriding the `impersonate`
+  preset's default TLS fingerprint for fine-grained ClientHello control.
+  Silently ignored under the httpx fallback. Both sync and async sessions
+  honor the parameter.
+- **API documentation site** (`mkdocs.yml` + `docs/`): MkDocs Material +
+  mkdocstrings configuration with four pages — `index.md` (home / quick
+  start), `architecture.md` (module tree + per-layer responsibilities +
+  data flow), `reverse-agent.md` (full agent guide, all actions, all
+  config fields), `api-reference.md` (auto-generated API docs for
+  `Fetcher`, `Selector`, `ReverseAgent`, `Spider`, LLM providers). New
+  `[project.optional-dependencies] docs` extra (`mkdocs`,
+  `mkdocs-material`, `mkdocstrings[python]`).
+- **Performance regression baseline** (`benchmarks.py`): built-in
+  `BASELINE` dict of ms/op thresholds; new `--check-regression` flag
+  (CI mode, exits 1 when any benchmark exceeds 1.2× the baseline),
+  `--baseline PATH` (compare against a saved JSON baseline),
+  `--save-baseline PATH` (persist current results). `check_regression`
+  and `save_baseline` / `load_baseline` helpers exposed for programmatic
+  use. `tests/test_benchmark_regression.py` smoke-tests the regression
+  logic without asserting absolute numbers.
+- **Slow test marker** registered in `pyproject.toml`
+  (`markers = ["slow: ..."]`); the Camoufox e2e suite is marked
+  `@pytest.mark.slow` so CI can deselect it via `-m "not slow"`.
+- **16 new tests**: 5 JA4 fingerprint customization, 8 multi-tab
+  management, 5 humanized input trajectory (sync + async), plus
+  benchmark regression smoke tests. Total test count: 286 → 302+.
+
+### Changed
+- `_FakeBrowserPage` / `_FakeAsyncBrowserPage` test mocks extended with
+  `goto` / `bring_to_front` / `close` / `on` methods to support the new
+  multi-tab and humanize tests.
+- `Fetcher` docstring updated to mention `ja4_fingerprint`.
+- README adds "Multi-tab management & humanized input", "JA4 fingerprint
+  customization", and "Documentation" sections; `--check-regression`
+  flag documented under Development.
+- `.gitlab-ci.yml` adds a `bench` stage (runs
+  `python benchmarks.py --check-regression`) and a `docs` stage (runs
+  `mkdocs build --strict`); `test` stage now runs
+  `pytest -m "not slow"` to skip the Camoufox e2e suite.
+
+### Added (previous)
 - **Browser interaction actions**: `ReverseAgent` now supports 6 real
   Playwright browser actions — `click`, `type`, `scroll`, `press`, `hover`,
   `select_option` — in both sync `run` and async `arun` paths. All actions
