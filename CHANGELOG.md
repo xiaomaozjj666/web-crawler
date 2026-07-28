@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Screenshot capture** (`ReverseAgent.enable_screenshot`): every observation
+  step and every think/act error path now saves a PNG to
+  `reverse_screenshots/<task_id>_step<N>[_error].png`. Failures are swallowed
+  (empty path returned) so the main loop never crashes on a screenshot error.
+  Both sync `run` and async `arun` paths covered; `_screenshots` list and
+  `_last_error_screenshot` are exposed in the result dict.
+- **CLI `run` subcommand** (`web-crawler-reverse run`): one-shot agent
+  execution that bypasses MCP and calls `ReverseAgent.run` directly. Supports
+  `--enable-screenshot` / `--no-enable-screenshot`, `--save-script`,
+  `--output`, and all budget/guard/checkpoint flags.
+- **MCP `reverse_engineer_url`** now returns `budget_summary`,
+  `last_confidence`, `checkpoints`, `screenshots`, and `error_screenshot`
+  fields so upstream AI clients get full runtime state in one call.
+- **Web UI enhancements** (app/ui.py):
+  - Historical task list panel (`GET /reverse/jobs`) with click-to-load.
+  - Screenshot gallery with click-to-zoom modal (`GET /reverse/screenshot`).
+  - Task template buttons (Anti-Content / X-Bogus / _signature / generic).
+  - Config import/export (`POST /reverse/config/export`,
+    `POST /reverse/config/import`) with field normalization.
+  - Clear-runtime-data button (`POST /reverse/clear`).
+  - Adaptive polling: 800 ms while running, 3 s when idle.
+  - Statistics cards (steps, avg step time, token rate, hook count, param
+    hit rate).
+  - Incremental event query (`GET /reverse/events?since=TS`).
+  - Script download with Content-Disposition (`GET /reverse/script`).
+  - `ReverseJobState` extended with `screenshots`, `error_screenshot`,
+    `step_durations`, `events_since()`, `clear_runtime()`, `job_summary()`.
+- **10 new tests**: screenshot success/disabled/error/failure/none-page/async
+  (mock page.screenshot), CLI run arg parsing, defaults, mocked execution,
+  save-script-to-file.
+
+### Added
 - **JS reverse-engineering agent** (`web_crawler.ai.reverse_agent.ReverseAgent`):
   Camoufox-driven browser observe→think→act loop powered by DeepSeek-V4-Pro.
   Injects JS hooks (fetch / XHR / cookie / `crypto.subtle` / webpack / console),
