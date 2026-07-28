@@ -157,6 +157,13 @@ class ReverseJobState:
     compiled_script: str = ""
     judge_result: dict = field(default_factory=dict)
 
+    # 截图列表（每项含 step/path/ts；错误截图标记 error=True）
+    screenshots: list[dict] = field(default_factory=list)
+    # 最近一次错误截图路径（供前端高亮展示）
+    error_screenshot: str = ""
+    # 每步耗时（秒），与 steps 列表对齐
+    step_durations: list[float] = field(default_factory=list)
+
     # 控制
     stop_event: threading.Event = field(default_factory=threading.Event)
     exit_code: int | None = None
@@ -172,10 +179,36 @@ class ReverseJobState:
             if len(self.events) > 200:
                 self.events = self.events[-200:]
 
+    def events_since(self, ts: float) -> list[dict]:
+        """返回 ts 之后的所有事件（增量查询用）。"""
+        with self.events_lock:
+            return [e for e in self.events if e.get("ts", 0) > ts]
+
+    def clear_runtime(self) -> None:
+        """清空运行时事件/步骤/快照（保留最终结果）。"""
+        with self.events_lock:
+            self.events = []
+        self.steps = []
+        self.current_observation = {}
+        self.guard_blocks = []
+        self.hook_records = []
+        self.hook_count = 0
+        self.network_requests = []
+        self.checkpoints = []
+        self.screenshots = []
+        self.error_screenshot = ""
+        self.step_durations = []
+        self._step_starts = {}
+
     def snapshot(self) -> dict[str, object]:
         """返回可 JSON 序列化的完整状态快照。"""
         with self.events_lock:
             events_copy = list(self.events)
+        # 计算平均步时（毫秒）与 token 速率（tokens/sec）
+        durations_ms = [d * 1000.0 for d in self.step_durations if d >= 0]
+        avg_step_ms = sum(durations_ms) / len(durations_ms) if durations_ms else 0.0
+        total_elapsed = max(0.001, time.time() - self.created_at)
+        tokens_per_sec = self.budget_used / total_elapsed if self.budget_used > 0 else 0.0
         return {
             "id": self.id,
             "url": self.url,
@@ -203,8 +236,26 @@ class ReverseJobState:
             "analysis": self.analysis,
             "compiled_script": self.compiled_script,
             "judge_result": dict(self.judge_result),
+            "screenshots": list(self.screenshots),
+            "error_screenshot": self.error_screenshot,
+            "step_durations": list(self.step_durations),
+            "avg_step_ms": round(avg_step_ms, 1),
+            "tokens_per_sec": round(tokens_per_sec, 2),
             "exit_code": self.exit_code,
             "error": self.error,
+        }
+
+    def job_summary(self) -> dict[str, object]:
+        """返回任务列表所需的最小字段（用于 /reverse/jobs）。"""
+        return {
+            "id": self.id,
+            "url": self.url,
+            "task": self.task,
+            "status": self.status,
+            "created_at": self.created_at,
+            "current_step": self.current_step,
+            "max_steps": self.max_steps,
+            "success": self.success,
         }
 
 
@@ -364,6 +415,48 @@ PAGE = """<!doctype html>
     .result-grid strong { color: var(--text); }
     .reverse-bottom pre { background: var(--log-bg); color: var(--log-text); padding: 12px; border-radius: 6px; font-size: 12px; max-height: 300px; overflow: auto; }
 
+    /* ========== 历史任务面板 ========== */
+    .history-panel { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 14px; box-shadow: var(--shadow); }
+    .history-panel summary { cursor: pointer; font-weight: 700; font-size: 13px; color: var(--text); padding: 4px 0; }
+    .history-list { margin-top: 10px; max-height: 220px; overflow-y: auto; }
+    .history-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; border: 1px solid transparent; transition: background .12s, border-color .12s; }
+    .history-item:hover { background: var(--bg); border-color: var(--border); }
+    .history-item.active { background: rgba(37,99,235,.08); border-color: var(--primary); }
+    .history-url { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-family: Consolas, monospace; }
+    .history-step { color: var(--muted); font-size: 11px; flex-shrink: 0; }
+    .history-empty { color: var(--muted); text-align: center; padding: 12px 0; font-size: 12px; }
+
+    /* ========== 任务模板按钮 ========== */
+    .template-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+    .template-btn { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 12px; font-weight: 600; cursor: pointer; color: var(--text); transition: background .12s, border-color .12s, color .12s; }
+    .template-btn:hover { background: var(--primary); color: white; border-color: var(--primary); }
+
+    /* ========== 截图展示区 ========== */
+    .screenshot-section { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+    .screenshot-section h3 { margin: 0 0 8px; }
+    .screenshot-wrap { display: flex; gap: 10px; flex-wrap: wrap; }
+    .screenshot-card { position: relative; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; box-shadow: var(--shadow); cursor: pointer; transition: transform .2s; background: var(--bg); }
+    .screenshot-card:hover { transform: scale(1.03); }
+    .screenshot-card img { display: block; max-width: 100%; width: 200px; height: auto; object-fit: cover; }
+    .screenshot-card.error { border-color: var(--accent-red); }
+    .screenshot-card.error img { outline: 2px solid var(--accent-red); }
+    .screenshot-label { position: absolute; top: 4px; left: 4px; background: rgba(0,0,0,.65); color: white; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 3px; }
+    .screenshot-empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+    .screenshot-modal { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: none; align-items: center; justify-content: center; z-index: 1000; cursor: zoom-out; padding: 20px; }
+    .screenshot-modal.show { display: flex; }
+    .screenshot-modal img { max-width: 95%; max-height: 95%; border-radius: 6px; box-shadow: 0 4px 20px rgba(0,0,0,.4); }
+
+    /* ========== 统计信息卡片 ========== */
+    .stat-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 12px; }
+    .stat-card { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; transition: border-color .15s, box-shadow .15s; }
+    .stat-card:hover { border-color: var(--primary); box-shadow: 0 2px 8px rgba(37,99,235,.1); }
+    .stat-card .stat-label { font-size: 11px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .5px; }
+    .stat-card .stat-value { font-size: 18px; font-weight: 700; color: var(--text); }
+
+    /* ========== 配置导入导出按钮 ========== */
+    .config-io-bar { display: flex; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+    .config-io-bar button { flex: 1; padding: 8px 10px; font-size: 12px; }
+
     /* 滚动条美化 */
     ::-webkit-scrollbar { width: 8px; height: 8px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -480,7 +573,22 @@ PAGE = """<!doctype html>
         <div class="reverse-grid">
           <!-- 左栏：任务配置 -->
           <aside class="reverse-left">
+            <!-- 历史任务面板（可折叠） -->
+            <details class="history-panel" id="rev-history-panel">
+              <summary>历史任务（<span id="rev-history-count">0</span>）</summary>
+              <div class="history-list" id="rev-history-list">
+                <div class="history-empty">暂无历史任务</div>
+              </div>
+            </details>
+
             <h3>任务配置</h3>
+            <!-- 任务模板按钮 -->
+            <div class="template-bar">
+              <button type="button" class="template-btn" data-template="anti_content">Anti-Content 提取</button>
+              <button type="button" class="template-btn" data-template="x_bogus">X-Bogus 提取</button>
+              <button type="button" class="template-btn" data-template="signature">_signature 提取</button>
+              <button type="button" class="template-btn" data-template="generic">通用加密参数</button>
+            </div>
             <form id="reverse-form">
               <label>目标 URL</label>
               <input name="url" type="text" placeholder="https://example.com" required>
@@ -513,7 +621,7 @@ PAGE = """<!doctype html>
               </div>
 
               <details>
-                <summary>高级配置（DomPruner / Checkpoint / Budget / Confidence / Guard）</summary>
+                <summary>高级配置（DomPruner / Checkpoint / Budget / Confidence / Guard / Screenshot）</summary>
                 <fieldset>
                   <legend>DOM 焦点裁剪</legend>
                   <label class="check"><input type="checkbox" name="dom_prune" value="1"> 启用 DOM 裁剪</label>
@@ -552,11 +660,23 @@ PAGE = """<!doctype html>
                   <label>允许域名白名单（逗号分隔，留空不限制）</label>
                   <input name="allowed_domains" type="text" placeholder="example.com, cdn.example.com">
                 </fieldset>
+
+                <fieldset>
+                  <legend>截图</legend>
+                  <label class="check"><input type="checkbox" name="enable_screenshot" value="1" checked> 启用每步截图</label>
+                  <div class="hint">观察末尾与异常路径均保存 PNG；失败不抛异常</div>
+                </fieldset>
               </details>
 
               <div class="buttons">
                 <button type="submit" class="btn-primary">启动 Agent</button>
                 <button type="button" id="reverse-stop" class="btn-danger" disabled>停止</button>
+                <button type="button" id="reverse-clear-log" class="btn-secondary">清空日志</button>
+              </div>
+              <div class="config-io-bar">
+                <button type="button" id="rev-config-export" class="btn-secondary">导出配置</button>
+                <button type="button" id="rev-config-import-btn" class="btn-secondary">导入配置</button>
+                <input type="file" id="rev-config-file" accept="application/json,.json" style="display:none">
               </div>
             </form>
           </aside>
@@ -609,8 +729,17 @@ PAGE = """<!doctype html>
           </aside>
         </div>
 
-        <!-- 底部：结果汇总 -->
+        <!-- 底部：统计卡片 + 结果汇总 + 截图 -->
         <section class="reverse-bottom" id="rev-result-section" style="display:none">
+          <h3>统计概览</h3>
+          <div class="stat-cards" id="rev-stats-grid">
+            <div class="stat-card"><div class="stat-label">总步数</div><div class="stat-value" id="rev-stat-steps">0</div></div>
+            <div class="stat-card"><div class="stat-label">平均步时</div><div class="stat-value" id="rev-stat-avg-ms">0 ms</div></div>
+            <div class="stat-card"><div class="stat-label">Token 速率</div><div class="stat-value" id="rev-stat-tps">0 tok/s</div></div>
+            <div class="stat-card"><div class="stat-label">Token 用量</div><div class="stat-value" id="rev-stat-tokens">0</div></div>
+            <div class="stat-card"><div class="stat-label">Hook 命中</div><div class="stat-value" id="rev-stat-hooks">0</div></div>
+            <div class="stat-card"><div class="stat-label">参数命中</div><div class="stat-value" id="rev-stat-params">0/0</div></div>
+          </div>
           <h3>任务结果</h3>
           <div class="result-grid">
             <div><strong>状态</strong>: <span id="rev-result-status">--</span></div>
@@ -621,7 +750,17 @@ PAGE = """<!doctype html>
             <summary>完整 Analysis</summary>
             <pre id="rev-analysis">--</pre>
           </details>
+          <div class="screenshot-section" id="rev-screenshot-section">
+            <h3>每步截图 <span id="rev-screenshot-count" class="count-badge">0</span></h3>
+            <div class="screenshot-wrap" id="rev-screenshots">
+              <div class="screenshot-empty">等待截图数据...</div>
+            </div>
+          </div>
         </section>
+        <!-- 截图放大弹窗 -->
+        <div class="screenshot-modal" id="rev-screenshot-modal">
+          <img id="rev-screenshot-modal-img" src="" alt="截图预览">
+        </div>
       </div>
     </div>
   </main>
@@ -708,8 +847,12 @@ PAGE = """<!doctype html>
     /* ========== JS 逆向 Agent 逻辑 ========== */
     var reverseForm = document.getElementById('reverse-form');
     var reverseStopBtn = document.getElementById('reverse-stop');
+    var reverseClearLogBtn = document.getElementById('reverse-clear-log');
     var currentReverseJobId = null;
     var reverseTimer = null;
+    /* 自适应轮询间隔：running=800ms，done/error/cancelled=停止 */
+    var REVERSE_POLL_RUNNING = 800;
+    var REVERSE_POLL_IDLE = 3000;
 
     function escapeHtml(s) {
       return String(s == null ? '' : s).replace(/[<>&"]/g, function(c) {
@@ -736,6 +879,61 @@ PAGE = """<!doctype html>
         '<div class="step-reasoning">' + escapeHtml(s.reasoning || '') + '</div>' +
         '</div>';
     }
+
+    /* 更新统计卡片 */
+    function updateStats(data) {
+      document.getElementById('rev-stat-steps').textContent = data.current_step || 0;
+      document.getElementById('rev-stat-avg-ms').textContent = (data.avg_step_ms || 0) + ' ms';
+      document.getElementById('rev-stat-tps').textContent = (data.tokens_per_sec || 0) + ' tok/s';
+      document.getElementById('rev-stat-tokens').textContent = data.budget_used || 0;
+      document.getElementById('rev-stat-hooks').textContent = data.hook_count || 0;
+      var tp = data.target_params || [];
+      var tpFound = data.target_params_found || {};
+      var foundCount = tp.filter(function(p) { return tpFound[p]; }).length;
+      document.getElementById('rev-stat-params').textContent = foundCount + '/' + tp.length;
+    }
+
+    /* 渲染截图卡片 */
+    function renderScreenshots(screenshots, errorScreenshot, jobId) {
+      var wrap = document.getElementById('rev-screenshots');
+      var countEl = document.getElementById('rev-screenshot-count');
+      if (!screenshots || !screenshots.length) {
+        wrap.innerHTML = '<div class="screenshot-empty">等待截图数据...</div>';
+        countEl.textContent = '0';
+        return;
+      }
+      countEl.textContent = screenshots.length;
+      var html = screenshots.map(function(s) {
+        var isError = s.error || (errorScreenshot && s.path === errorScreenshot);
+        var imgUrl = '/reverse/screenshot?id=' + encodeURIComponent(jobId) + '&step=' + s.step + (isError ? '&error=1' : '');
+        var label = 'Step ' + s.step + (isError ? ' (错误)' : '');
+        return '<div class="screenshot-card' + (isError ? ' error' : '') + '" data-src="' + imgUrl + '">' +
+          '<img src="' + imgUrl + '" alt="' + escapeHtml(label) + '" loading="lazy">' +
+          '<div class="screenshot-label">' + escapeHtml(label) + '</div>' +
+          '</div>';
+      }).join('');
+      wrap.innerHTML = html;
+      /* 点击放大 */
+      wrap.querySelectorAll('.screenshot-card').forEach(function(card) {
+        card.onclick = function() {
+          var src = card.getAttribute('data-src');
+          openScreenshotModal(src);
+        };
+      });
+    }
+
+    /* 截图放大弹窗 */
+    var screenshotModal = document.getElementById('rev-screenshot-modal');
+    var screenshotModalImg = document.getElementById('rev-screenshot-modal-img');
+    function openScreenshotModal(src) {
+      screenshotModalImg.src = src;
+      screenshotModal.classList.add('show');
+    }
+    function closeScreenshotModal() {
+      screenshotModal.classList.remove('show');
+      screenshotModalImg.src = '';
+    }
+    screenshotModal.onclick = closeScreenshotModal;
 
     async function pollReverse() {
       if (!currentReverseJobId) return;
@@ -780,7 +978,7 @@ PAGE = """<!doctype html>
       document.getElementById('rev-guard-blocks').innerHTML = guardHtml || '无';
 
       var cpHtml = (data.checkpoints || []).map(function(c) {
-        return '<div class="checkpoint-item">Step ' + c.step + ' - ' + escapeHtml(String(c.url || '').slice(0, 50)) + '</div>';
+        return '<div class="checkpoint-item">Step ' + c.step + ' - ' + escapeHtml(String(c.url || c.path || '').slice(0, 50)) + '</div>';
       }).join('');
       document.getElementById('rev-checkpoints').innerHTML = cpHtml || '无';
 
@@ -801,11 +999,18 @@ PAGE = """<!doctype html>
       traceEl.innerHTML = stepsHtml || '<div class="trace-empty">等待数据...</div>';
       traceEl.scrollTop = traceEl.scrollHeight;
 
+      /* 更新统计卡片与截图 */
+      updateStats(data);
+      renderScreenshots(data.screenshots, data.error_screenshot, currentReverseJobId);
+
+      /* 自适应轮询：运行中快轮询，结束时停止 */
       if (['done', 'error', 'cancelled'].indexOf(data.status) >= 0) {
         if (reverseTimer) { clearInterval(reverseTimer); reverseTimer = null; }
         reverseForm.querySelector('button[type=submit]').disabled = false;
         reverseStopBtn.disabled = true;
         showReverseResult(data);
+        /* 任务结束后刷新历史列表 */
+        loadReverseHistory();
       }
     }
 
@@ -826,19 +1031,199 @@ PAGE = """<!doctype html>
       var dlBtn = document.getElementById('rev-download-script');
       dlBtn.onclick = function() {
         if (!data.compiled_script) { alert('无可用脚本'); return; }
-        var blob = new Blob([data.compiled_script], { type: 'text/x-python' });
-        var a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = 'reverse_agent_script.py';
-        a.click();
-        URL.revokeObjectURL(a.href);
+        /* 优先走后端 /reverse/script 接口下载（含 Content-Disposition）*/
+        window.location.href = '/reverse/script?id=' + encodeURIComponent(currentReverseJobId);
       };
     }
 
+    /* 自适应轮询：根据状态动态调整间隔 */
     function startReversePolling() {
       if (reverseTimer) clearInterval(reverseTimer);
-      reverseTimer = setInterval(pollReverse, 800);
+      reverseTimer = setInterval(function() {
+        pollReverse().then(function() {
+          /* 如果 timer 已被清除（任务结束），不再重启 */
+          if (!reverseTimer) return;
+          /* 根据当前状态调整间隔：运行中快，其他状态慢 */
+          var statusEl = document.getElementById('rev-status');
+          var currentStatus = statusEl.textContent || '';
+          var expectedInterval = (currentStatus === 'running') ? REVERSE_POLL_RUNNING : REVERSE_POLL_IDLE;
+          if (reverseTimer && reverseTimer._interval !== expectedInterval) {
+            clearInterval(reverseTimer);
+            reverseTimer = setInterval(function() {
+              pollReverse();
+              var s = document.getElementById('rev-status').textContent || '';
+              var interval = (s === 'running') ? REVERSE_POLL_RUNNING : REVERSE_POLL_IDLE;
+              if (reverseTimer) { reverseTimer._interval = interval; }
+            }, expectedInterval);
+            reverseTimer._interval = expectedInterval;
+          }
+        });
+      }, REVERSE_POLL_RUNNING);
+      reverseTimer._interval = REVERSE_POLL_RUNNING;
     }
+
+    /* ========== 历史任务加载 ========== */
+    async function loadReverseHistory() {
+      try {
+        var response = await fetch('/reverse/jobs');
+        var data = await response.json();
+      } catch(e) { return; }
+      var list = document.getElementById('rev-history-list');
+      var countEl = document.getElementById('rev-history-count');
+      var jobs = data.jobs || [];
+      countEl.textContent = jobs.length;
+      if (!jobs.length) {
+        list.innerHTML = '<div class="history-empty">暂无历史任务</div>';
+        return;
+      }
+      var html = jobs.map(function(j) {
+        var statusClass = j.status === 'done' ? 'done' : j.status === 'error' ? 'error' : 'running';
+        var isActive = j.id === currentReverseJobId ? ' active' : '';
+        var ts = new Date((j.created_at || 0) * 1000);
+        var tsStr = ts.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        var successMark = j.success ? ' [OK]' : '';
+        return '<div class="history-item' + isActive + '" data-job-id="' + escapeHtml(j.id) + '">' +
+          '<span class="history-status status-badge ' + statusClass + '">' + escapeHtml(j.status) + '</span>' +
+          '<span class="history-url" title="' + escapeHtml(j.url) + '">' + escapeHtml(j.url) + escapeHtml(successMark) + '</span>' +
+          '<span class="history-step">' + tsStr + ' S' + (j.current_step || 0) + '/' + (j.max_steps || 0) + '</span>' +
+          '</div>';
+      }).join('');
+      list.innerHTML = html;
+      /* 点击历史任务：加载该任务状态 */
+      list.querySelectorAll('.history-item').forEach(function(item) {
+        item.onclick = function() {
+          var jobId = item.getAttribute('data-job-id');
+          if (jobId) { selectHistoryJob(jobId); }
+        };
+      });
+    }
+
+    /* 选中历史任务：加载其状态到面板 */
+    async function selectHistoryJob(jobId) {
+      currentReverseJobId = jobId;
+      try {
+        var response = await fetch('/reverse/status?id=' + encodeURIComponent(jobId));
+        var data = await response.json();
+      } catch(e) { return; }
+      if (!data) return;
+      /* 更新面板 */
+      await pollReverse();
+      /* 高亮当前选中的历史项 */
+      document.querySelectorAll('.history-item').forEach(function(el) {
+        el.classList.toggle('active', el.getAttribute('data-job-id') === jobId);
+      });
+    }
+
+    /* ========== 任务模板 ========== */
+    var TEMPLATES = {
+      anti_content: { task: '提取 Anti-Content 加密参数', target_params: 'anti_content' },
+      x_bogus: { task: '提取 X-Bogus 加密参数', target_params: 'X-Bogus' },
+      signature: { task: '提取 _signature 加密参数', target_params: '_signature' },
+      generic: { task: '提取页面所有加密参数', target_params: 'anti_content, sign, X-Bogus' }
+    };
+    document.querySelectorAll('.template-btn').forEach(function(btn) {
+      btn.onclick = function() {
+        var key = btn.getAttribute('data-template');
+        var tpl = TEMPLATES[key];
+        if (!tpl) return;
+        reverseForm.querySelector('[name=task]').value = tpl.task;
+        reverseForm.querySelector('[name=target_params]').value = tpl.target_params;
+      };
+    });
+
+    /* ========== 配置导入导出 ========== */
+    document.getElementById('rev-config-export').onclick = function() {
+      var formData = new FormData(reverseForm);
+      fetch('/reverse/config/export', { method: 'POST', body: formData })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.error) { alert(data.error); return; }
+          var blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+          var a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = 'reverse_config.json';
+          a.click();
+          URL.revokeObjectURL(a.href);
+        })
+        .catch(function(e) { alert('导出失败: ' + e.message); });
+    };
+
+    document.getElementById('rev-config-import-btn').onclick = function() {
+      document.getElementById('rev-config-file').click();
+    };
+    document.getElementById('rev-config-file').onchange = function(e) {
+      var file = e.target.files[0];
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function(ev) {
+        try {
+          var config = JSON.parse(ev.target.result);
+        } catch(err) {
+          alert('配置文件格式错误: ' + err.message);
+          return;
+        }
+        fetch('/reverse/config/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config)
+        })
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            if (data.error) { alert(data.error); return; }
+            applyConfigToForm(data.config || {});
+            alert('配置已导入');
+          })
+          .catch(function(err) { alert('导入失败: ' + err.message); });
+      };
+      reader.readAsText(file);
+      /* 重置 input 以便再次选择同一文件 */
+      e.target.value = '';
+    };
+
+    /* 把配置 dict 回填到表单 */
+    function applyConfigToForm(cfg) {
+      var fields = {
+        max_steps: 'max_steps', target_params: 'target_params', proxy: 'proxy',
+        os_name: 'os_name', budget_total: 'budget_total', budget_per_step: 'budget_per_step',
+        min_confidence: 'min_confidence', allowed_domains: 'allowed_domains',
+        checkpoint_interval: 'checkpoint_interval', checkpoint_keep: 'checkpoint_keep',
+        dom_prune_max_chars: 'dom_prune_max_chars'
+      };
+      Object.keys(fields).forEach(function(key) {
+        var el = reverseForm.querySelector('[name="' + fields[key] + '"]');
+        if (el && cfg[key] !== undefined && cfg[key] !== null) {
+          el.value = Array.isArray(cfg[key]) ? cfg[key].join(', ') : String(cfg[key]);
+        }
+      });
+      /* 复选框 */
+      var checkboxes = {
+        enable_checkpoint: 'enable_checkpoint', enable_guard: 'enable_guard',
+        enable_screenshot: 'enable_screenshot', dom_prune: 'dom_prune'
+      };
+      Object.keys(checkboxes).forEach(function(key) {
+        var el = reverseForm.querySelector('[name="' + checkboxes[key] + '"]');
+        if (el) { el.checked = !!cfg[key]; }
+      });
+      /* headless 下拉 */
+      var headlessEl = reverseForm.querySelector('[name=headless]');
+      if (headlessEl && cfg.headless !== undefined) {
+        headlessEl.value = cfg.headless ? 'true' : 'false';
+      }
+    }
+
+    /* ========== 清空日志 ========== */
+    reverseClearLogBtn.onclick = async function() {
+      if (!currentReverseJobId) {
+        document.getElementById('rev-trace').innerHTML = '<div class="trace-empty">已清空</div>';
+        return;
+      }
+      try {
+        await fetch('/reverse/clear?id=' + encodeURIComponent(currentReverseJobId), { method: 'POST' });
+        document.getElementById('rev-trace').innerHTML = '<div class="trace-empty">已清空运行时数据</div>';
+        document.getElementById('rev-screenshots').innerHTML = '<div class="screenshot-empty">已清空</div>';
+        document.getElementById('rev-screenshot-count').textContent = '0';
+      } catch(e) { /* 忽略 */ }
+    };
 
     reverseForm.addEventListener('submit', async function(event) {
       event.preventDefault();
@@ -853,6 +1238,8 @@ PAGE = """<!doctype html>
           currentReverseJobId = result.id;
           startReversePolling();
           await pollReverse();
+          /* 启动后刷新历史列表 */
+          loadReverseHistory();
         } else {
           submitBtn.disabled = false;
           reverseStopBtn.disabled = true;
@@ -872,6 +1259,9 @@ PAGE = """<!doctype html>
         await pollReverse();
       } catch(e) {}
     };
+
+    /* 页面加载时拉取历史任务列表 */
+    loadReverseHistory();
   </script>
 </body>
 </html>
@@ -1035,7 +1425,68 @@ def build_reverse_config(form: dict[str, list[str]]) -> dict[str, object]:
         "confidence_llm_score": checked("confidence_llm_score"),
         "enable_guard": checked("enable_guard"),
         "allowed_domains": allowed_domains,
+        "enable_screenshot": checked("enable_screenshot"),
     }
+
+
+# 配置导入时识别的字段及其默认值/类型转换器
+_CONFIG_FIELD_SPECS: tuple[tuple[str, type, object], ...] = (
+    ("max_steps", int, 20),
+    ("target_params", list, []),
+    ("headless", bool, False),
+    ("proxy", str, None),
+    ("os_name", str, "windows"),
+    ("dom_prune_max_chars", int, 0),
+    ("dom_prune_llm_rank", bool, False),
+    ("enable_checkpoint", bool, False),
+    ("checkpoint_interval", int, 1),
+    ("checkpoint_keep", int, 5),
+    ("budget_total", int, 100_000),
+    ("budget_per_step", int, 8_000),
+    ("min_confidence", float, 0.4),
+    ("confidence_llm_score", bool, False),
+    ("enable_guard", bool, True),
+    ("allowed_domains", list, None),
+    ("enable_screenshot", bool, True),
+)
+
+
+def _normalize_imported_config(data: dict[str, object]) -> dict[str, object]:
+    """把导入的 JSON 配置标准化为 build_reverse_config 兼容的 dict。
+
+    - 仅保留已知字段（剔除未知键）
+    - 按字段类型做安全转换（int/float/bool/list/str）
+    - 缺失字段补默认值
+    """
+    result: dict[str, object] = {}
+    for name, ftype, default in _CONFIG_FIELD_SPECS:
+        raw = data.get(name, default)
+        if raw is None or raw == "":
+            result[name] = default
+            continue
+        try:
+            if ftype is int:
+                result[name] = int(raw)  # type: ignore[arg-type]
+            elif ftype is float:
+                result[name] = float(raw)  # type: ignore[arg-type]
+            elif ftype is bool:
+                # 字符串 "true"/"false" / 数字 1/0 都支持
+                if isinstance(raw, str):
+                    result[name] = raw.lower() in ("true", "1", "yes", "on")
+                else:
+                    result[name] = bool(raw)
+            elif ftype is list:
+                if isinstance(raw, str):
+                    result[name] = [s.strip() for s in raw.split(",") if s.strip()]
+                elif isinstance(raw, list):
+                    result[name] = [str(x) for x in raw]
+                else:
+                    result[name] = []
+            else:
+                result[name] = str(raw)
+        except (TypeError, ValueError):
+            result[name] = default
+    return result
 
 
 class ReverseAgentRunner:
@@ -1070,6 +1521,7 @@ class ReverseAgentRunner:
                 min_confidence=float(cfg_dict.get("min_confidence", 0.4)),
                 enable_guard=bool(cfg_dict.get("enable_guard", True)),
                 allowed_domains=cfg_dict.get("allowed_domains") or None,
+                enable_screenshot=bool(cfg_dict.get("enable_screenshot", True)),
             )
 
             # 创建独立 EventBus 并订阅
@@ -1167,6 +1619,17 @@ class ReverseAgentRunner:
                         "type": "resume",
                     }
                 )
+            elif evt_type == "screenshot":
+                # 截图事件：追加到 screenshots 列表（含 step/path/error/ts）
+                shot_entry = {
+                    "step": evt_step,
+                    "path": evt_payload.get("path", ""),
+                    "error": bool(evt_payload.get("error", False)),
+                    "ts": ts,
+                }
+                job.screenshots.append(shot_entry)
+                if shot_entry["error"]:
+                    job.error_screenshot = shot_entry["path"]
         except Exception:
             # 静默吞掉订阅者异常，不能影响 agent 主循环
             pass
@@ -1197,8 +1660,12 @@ class ReverseAgentRunner:
         """step.end 时计算耗时、token、置信度，完成步骤卡片。"""
         entry = self._update_step(job, step)
         start_ts = job._step_starts.pop(step, None)
+        step_duration_sec = 0.0
         if start_ts is not None:
-            entry["duration_ms"] = int((time.time() - start_ts) * 1000)
+            step_duration_sec = max(0.0, time.time() - start_ts)
+            entry["duration_ms"] = int(step_duration_sec * 1000)
+        # 记录每步耗时（秒），与 steps 列表对齐
+        job.step_durations.append(step_duration_sec)
 
         # 从 agent 读取最新置信度与预算
         try:
@@ -1292,6 +1759,83 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.respond_json(rjob.snapshot())
             return
+        if self.path.startswith("/reverse/jobs"):
+            # 返回所有历史任务列表（按创建时间倒序）
+            with REVERSE_JOBS_LOCK:
+                jobs = [rj.job_summary() for rj in REVERSE_JOBS.values()]
+            jobs.sort(key=lambda j: j.get("created_at", 0), reverse=True)
+            self.respond_json({"jobs": jobs, "count": len(jobs)})
+            return
+        if self.path.startswith("/reverse/script"):
+            # 下载成功路径脚本：返回 JSON，含 Content-Disposition
+            query = parse_qs(urlparse(self.path).query)
+            rjob = REVERSE_JOBS.get(query.get("id", [""])[0])
+            if not rjob:
+                self.respond_json({"error": "任务不存在"})
+                return
+            script = rjob.compiled_script or ""
+            if not script:
+                self.respond_json({"error": "无可用脚本"})
+                return
+            filename = f"reverse_{rjob.id}.py"
+            body = json.dumps(
+                {"script": script, "filename": filename},
+                ensure_ascii=False,
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "application/json; charset=utf-8")
+            self.send_header("content-length", str(len(body)))
+            self.send_header("content-disposition", f'attachment; filename="{filename}"')
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path.startswith("/reverse/screenshot"):
+            # 返回 PNG 截图：?id=...&step=N[&error=1]
+            query = parse_qs(urlparse(self.path).query)
+            rjob = REVERSE_JOBS.get(query.get("id", [""])[0])
+            if not rjob:
+                self.send_error(404, "任务不存在")
+                return
+            try:
+                step_num = int(query.get("step", ["0"])[0])
+            except ValueError:
+                step_num = 0
+            want_error = query.get("error", ["0"])[0] == "1"
+            # 在 screenshots 列表中查找匹配的截图路径
+            shot_path = ""
+            for s in rjob.screenshots:
+                if s.get("step") == step_num and bool(s.get("error")) == want_error:
+                    shot_path = s.get("path", "")
+                    break
+            # 回退：取该 step 的任一截图
+            if not shot_path:
+                for s in rjob.screenshots:
+                    if s.get("step") == step_num:
+                        shot_path = s.get("path", "")
+                        break
+            if not shot_path:
+                self.send_error(404, "截图不存在")
+                return
+            try:
+                png = Path(shot_path).read_bytes()
+            except OSError:
+                self.send_error(404, "截图文件丢失")
+                return
+            self.respond(200, png, "image/png")
+            return
+        if self.path.startswith("/reverse/events"):
+            # 增量事件查询：?id=...&since=TS
+            query = parse_qs(urlparse(self.path).query)
+            rjob = REVERSE_JOBS.get(query.get("id", [""])[0])
+            if not rjob:
+                self.respond_json({"error": "任务不存在"})
+                return
+            try:
+                since = float(query.get("since", ["0"])[0])
+            except ValueError:
+                since = 0.0
+            self.respond_json({"events": rjob.events_since(since), "id": rjob.id})
+            return
         self.send_error(404)
 
     def do_POST(self) -> None:
@@ -1380,12 +1924,54 @@ class Handler(BaseHTTPRequestHandler):
                 rstop.status = "cancelled"
             self.respond_json({"ok": True})
             return
+        if path == "/reverse/clear":
+            # 清空指定任务的运行时数据（保留最终结果）
+            rjob = REVERSE_JOBS.get(query.get("id", [""])[0])
+            if not rjob:
+                self.respond_json({"ok": False, "message": "任务不存在"})
+                return
+            rjob.clear_runtime()
+            self.respond_json({"ok": True, "id": rjob.id})
+            return
+        if path == "/reverse/config/export":
+            # 接收表单，返回 JSON 配置文件下载
+            form = self.read_form()
+            config = build_reverse_config(form)
+            body = json.dumps(config, ensure_ascii=False, indent=2).encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "application/json; charset=utf-8")
+            self.send_header("content-length", str(len(body)))
+            self.send_header("content-disposition", 'attachment; filename="reverse_config.json"')
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if path == "/reverse/config/import":
+            # 接收 JSON 配置，返回标准化后的 config dict（前端用来回填表单）
+            data = self.read_json_body()
+            if not isinstance(data, dict):
+                self.respond_json({"error": "配置文件必须是 JSON 对象"})
+                return
+            # 标准化：补全缺失字段，剔除未知字段，类型转换
+            normalized = _normalize_imported_config(data)
+            self.respond_json({"config": normalized})
+            return
         self.send_error(404)
 
     def read_form(self) -> dict[str, list[str]]:
         length = int(self.headers.get("content-length", "0"))
         body = self.rfile.read(length).decode("utf-8", errors="replace")
         return parse_qs(body)
+
+    def read_json_body(self) -> object:
+        """读取请求体并解析为 JSON；解析失败返回 None。"""
+        length = int(self.headers.get("content-length", "0"))
+        body = self.rfile.read(length).decode("utf-8", errors="replace")
+        if not body:
+            return None
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError:
+            return None
 
     def respond_json(self, payload: dict[str, object]) -> None:
         self.respond(

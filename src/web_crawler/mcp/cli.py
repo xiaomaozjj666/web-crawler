@@ -181,6 +181,67 @@ def cmd_scripts(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_run(args: argparse.Namespace) -> int:
+    """一键运行完整 JS 逆向 Agent（直接调用 ReverseAgent.run，不走 MCP）。
+
+    与 ``reverse`` 子命令的区别：``reverse`` 走 MCP server 的工具调用链路，
+    ``run`` 直接构造 :class:`ReverseAgent` 并调用 ``run()``，参数更丰富，
+    可保存成功路径脚本到指定文件。
+    """
+    # 延迟导入：避免 CLI 启动时加载 camoufox 等重依赖
+    from web_crawler.ai.llm import DEFAULT_MODEL, DeepSeekProvider
+    from web_crawler.ai.reverse_agent import ReverseAgent, ReverseAgentConfig
+
+    target_params: list[str] = []
+    if args.target_params:
+        target_params = [p.strip() for p in args.target_params.split(",") if p.strip()]
+
+    allowed_domains: list[str] | None = None
+    if args.allowed_domains:
+        allowed_domains = [d.strip() for d in args.allowed_domains.split(",") if d.strip()]
+
+    config = ReverseAgentConfig(
+        max_steps=args.max_steps,
+        target_params=target_params or None,
+        headless=args.headless,
+        proxy=args.proxy or None,
+        os_name=args.os,
+        enable_checkpoint=args.enable_checkpoint,
+        budget_total=args.budget_total,
+        budget_per_step=args.budget_per_step,
+        min_confidence=args.min_confidence,
+        enable_guard=args.enable_guard,
+        allowed_domains=allowed_domains,
+        enable_screenshot=args.enable_screenshot,
+    )
+
+    provider = DeepSeekProvider(model=args.model or DEFAULT_MODEL)
+    agent = ReverseAgent(config=config, provider=provider)
+    try:
+        result = agent.run(url=args.url, task=args.task or "")
+    finally:
+        agent.close()
+
+    # 保存成功路径脚本
+    if args.save_script and result.get("compiled_script"):
+        try:
+            Path(args.save_script).write_text(str(result["compiled_script"]), encoding="utf-8")
+            print(f"成功路径脚本已保存：{args.save_script}", file=sys.stderr)
+        except OSError as exc:
+            print(f"保存脚本失败：{exc}", file=sys.stderr)
+
+    # 输出 JSON 结果
+    if args.output and args.output != "-":
+        Path(args.output).write_text(
+            json.dumps(result, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+        print(f"结果已写入：{args.output}", file=sys.stderr)
+    else:
+        _print_json(result)
+    return 0
+
+
 def cmd_interactive(args: argparse.Namespace) -> int:
     """交互式 REPL 模式。"""
     server = _make_server(args.model)
@@ -338,6 +399,70 @@ def build_parser() -> argparse.ArgumentParser:
     # interactive
     p = sub.add_parser("interactive", aliases=["repl"], help="交互式 REPL 模式")
     p.set_defaults(func=cmd_interactive)
+
+    # run — 一键运行完整 ReverseAgent（不走 MCP，直接调用 agent.run）
+    p = sub.add_parser(
+        "run",
+        help="一键运行完整 JS 逆向 Agent（直接调用 ReverseAgent.run）",
+    )
+    p.add_argument("--url", required=True, help="目标 URL（必填）")
+    p.add_argument("--task", default="", help="自然语言任务描述")
+    p.add_argument(
+        "--target-params",
+        default="",
+        help="目标加密参数名（逗号分隔，如 anti_content,sign）",
+    )
+    p.add_argument("--max-steps", type=int, default=20, help="最大步数（默认 20）")
+    p.add_argument(
+        "--headless",
+        action="store_true",
+        default=False,
+        help="无头模式（默认 False，可见浏览器）",
+    )
+    p.add_argument("--proxy", default="", help="代理（如 http://u:p@host:port）")
+    p.add_argument("--os", default="windows", help="OS 指纹（默认 windows）")
+    p.add_argument(
+        "--enable-checkpoint",
+        action="store_true",
+        default=False,
+        help="启用断点续跑",
+    )
+    p.add_argument("--budget-total", type=int, default=100_000, help="全局 token 上限")
+    p.add_argument("--budget-per-step", type=int, default=8_000, help="单步 token 上限")
+    p.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.4,
+        help="动作置信度阈值（0-1，默认 0.4）",
+    )
+    p.add_argument(
+        "--enable-guard",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="启用危险动作护栏（默认开，用 --no-enable-guard 禁用）",
+    )
+    p.add_argument(
+        "--allowed-domains",
+        default="",
+        help="允许导航的域名白名单（逗号分隔，留空不限制）",
+    )
+    p.add_argument(
+        "--enable-screenshot",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="启用每步截图（默认开，用 --no-enable-screenshot 禁用）",
+    )
+    p.add_argument(
+        "--output",
+        default="-",
+        help="输出文件路径（默认 - 表示 stdout，输出 JSON 结果）",
+    )
+    p.add_argument(
+        "--save-script",
+        default="",
+        help="保存成功路径脚本到指定文件",
+    )
+    p.set_defaults(func=cmd_run)
 
     return parser
 
