@@ -24,6 +24,12 @@ A Scrapling-aligned stealth web scraping library for Python: **adaptive selector
 
 ## Installation
 
+Install from PyPI:
+
+```bash
+pip install web-crawler
+```
+
 Recommended: editable install via the packaged entry points.
 
 ```bash
@@ -46,6 +52,19 @@ Alternatively, run from the source tree without installing:
 ```bash
 pip install httpx beautifulsoup4 lxml cssselect pytest pytest-asyncio ruff mypy
 PYTHONPATH=src pytest
+```
+
+## Docker
+
+```bash
+# 构建镜像
+docker build -t web-crawler .
+
+# 运行容器
+docker run -p 8765:8765 -e DEEPSEEK_API_KEY=your-key web-crawler
+
+# 或用 docker-compose
+docker-compose up -d
 ```
 
 ## Architecture

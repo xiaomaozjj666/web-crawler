@@ -93,7 +93,7 @@ _THINK_USER_TEMPLATE = (
     "## 目标参数\n{target_params}\n\n"
     "请决定下一步动作，仅输出一个 JSON 对象（不要任何额外文字，不要 Markdown 代码块标记），格式如下：\n"
     "{{\n"
-    '  "action_type": "navigate | inject_hook | analyze_js | wait | extract | solve_captcha | done",\n'
+    '  "action_type": "navigate | inject_hook | analyze_js | wait | extract | solve_captcha | done | click | type | scroll | press | hover | select_option",\n'
     '  "params": {{...}},\n'
     '  "reasoning": "你的推理过程"\n'
     "}}\n\n"
@@ -105,6 +105,12 @@ _THINK_USER_TEMPLATE = (
     '- extract: 尝试从 Hook 数据中提取目标参数，params: {{"param_name": "..."}}\n'
     "- solve_captcha: 处理验证码，params: {}\n"
     '- done: 任务完成，params: {{"success": true/false, "summary": "..."}}\n'
+    '- click: 点击元素，params: {{"selector": "button#submit", "button": "left"}}\n'
+    '- type: 输入文本（默认先清空），params: {{"selector": "input#username", "text": "user123", "clear": true}}\n'
+    '- scroll: 滚动页面或元素，params: {{"x": 0, "y": 800}} 或 {{"selector": ".list", "y": 500}}\n'
+    '- press: 按键，params: {{"key": "Enter"}} 或 {{"selector": "input", "key": "Enter"}}\n'
+    '- hover: 鼠标悬停，params: {{"selector": ".menu-item"}}\n'
+    '- select_option: 下拉选择，params: {{"selector": "select#country", "value": "CN"}}\n'
 )
 
 # JSON / 代码块解析正则
@@ -116,6 +122,23 @@ _DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
+
+
+def _js_str(value: str) -> str:
+    """把字符串转成 JS 双引号字符串字面量，用于安全注入到 evaluate 表达式。
+
+    对反斜杠、双引号、换行等做转义，避免 selector / 文本中包含特殊字符时
+    破坏 JS 字符串结构或被注入攻击。
+    """
+    escaped = (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("`", "\\`")
+    )
+    return f'"{escaped}"'
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -680,7 +703,7 @@ class ReverseAgent:
                         break
 
                 try:
-                    result = self._act(page, action)
+                    result = self._act(page, action, step=step)
                     # -- Recorder：记录成功路径 -------------------------
                     if self.recorder is not None:
                         self.recorder.record(
@@ -1081,7 +1104,7 @@ class ReverseAgent:
                         break
 
                 try:
-                    result = await self._act_async(page, action)
+                    result = await self._act_async(page, action, step=step)
                     if self.recorder is not None:
                         self.recorder.record(
                             step=step,
@@ -1333,7 +1356,7 @@ class ReverseAgent:
     # 行动
     # ------------------------------------------------------------------
 
-    def _act(self, page: Any, action: Action) -> Any:
+    def _act(self, page: Any, action: Action, *, step: int = 0) -> Any:
         """执行动作。"""
         atype = action.action_type
         if atype == "navigate":
@@ -1360,9 +1383,27 @@ class ReverseAgent:
             return self._try_extract_param(page, param_name)
         if atype == "solve_captcha":
             return self.captcha_manager.handle(page)
+        if atype == "click":
+            self._do_click(page, action, step=step)
+            return None
+        if atype == "type":
+            self._do_type(page, action, step=step)
+            return None
+        if atype == "scroll":
+            self._do_scroll(page, action, step=step)
+            return None
+        if atype == "press":
+            self._do_press(page, action, step=step)
+            return None
+        if atype == "hover":
+            self._do_hover(page, action, step=step)
+            return None
+        if atype == "select_option":
+            self._do_select_option(page, action, step=step)
+            return None
         return None
 
-    async def _act_async(self, page: Any, action: Action) -> Any:
+    async def _act_async(self, page: Any, action: Action, *, step: int = 0) -> Any:
         """异步执行动作。"""
         atype = action.action_type
         if atype == "navigate":
@@ -1391,7 +1432,221 @@ class ReverseAgent:
         if atype == "solve_captcha":
             # CaptchaManager.handle 是同步的
             return self.captcha_manager.handle(page)
+        if atype == "click":
+            await self._do_click_async(page, action, step=step)
+            return None
+        if atype == "type":
+            await self._do_type_async(page, action, step=step)
+            return None
+        if atype == "scroll":
+            await self._do_scroll_async(page, action, step=step)
+            return None
+        if atype == "press":
+            await self._do_press_async(page, action, step=step)
+            return None
+        if atype == "hover":
+            await self._do_hover_async(page, action, step=step)
+            return None
+        if atype == "select_option":
+            await self._do_select_option_async(page, action, step=step)
+            return None
         return None
+
+    # ------------------------------------------------------------------
+    # 浏览器交互动作（click / type / scroll / press / hover / select_option）
+    # ------------------------------------------------------------------
+
+    # 所有交互动作统一设 10s 超时；超时抛 TimeoutError 由外层 _act 调用处捕获
+    _INTERACTION_TIMEOUT = 10000
+
+    def _do_click(self, page: Any, action: Action, *, step: int) -> None:
+        """同步：点击元素。"""
+        selector = action.params.get("selector", "")
+        if not selector:
+            raise ValueError("click 动作需要 selector 参数")
+        button = action.params.get("button", "left")
+        page.click(selector, button=button, timeout=self._INTERACTION_TIMEOUT)
+        self._emit(
+            "browser.action",
+            step=step,
+            action="click",
+            selector=selector,
+            button=button,
+        )
+
+    async def _do_click_async(self, page: Any, action: Action, *, step: int) -> None:
+        """异步：点击元素。"""
+        selector = action.params.get("selector", "")
+        if not selector:
+            raise ValueError("click 动作需要 selector 参数")
+        button = action.params.get("button", "left")
+        await page.click(selector, button=button, timeout=self._INTERACTION_TIMEOUT)
+        self._emit(
+            "browser.action",
+            step=step,
+            action="click",
+            selector=selector,
+            button=button,
+        )
+
+    def _do_type(self, page: Any, action: Action, *, step: int) -> None:
+        """同步：在输入框输入文本（默认先清空）。"""
+        selector = action.params.get("selector", "")
+        text = action.params.get("text", "")
+        if not selector:
+            raise ValueError("type 动作需要 selector 参数")
+        clear = action.params.get("clear", True)
+        if clear:
+            page.fill(selector, "", timeout=self._INTERACTION_TIMEOUT)
+        page.type(selector, text, timeout=self._INTERACTION_TIMEOUT)
+        self._emit(
+            "browser.action",
+            step=step,
+            action="type",
+            selector=selector,
+            text_length=len(str(text)),
+        )
+
+    async def _do_type_async(self, page: Any, action: Action, *, step: int) -> None:
+        """异步：在输入框输入文本（默认先清空）。"""
+        selector = action.params.get("selector", "")
+        text = action.params.get("text", "")
+        if not selector:
+            raise ValueError("type 动作需要 selector 参数")
+        clear = action.params.get("clear", True)
+        if clear:
+            await page.fill(selector, "", timeout=self._INTERACTION_TIMEOUT)
+        await page.type(selector, text, timeout=self._INTERACTION_TIMEOUT)
+        self._emit(
+            "browser.action",
+            step=step,
+            action="type",
+            selector=selector,
+            text_length=len(str(text)),
+        )
+
+    def _do_scroll(self, page: Any, action: Action, *, step: int) -> None:
+        """同步：滚动页面或元素。"""
+        selector = action.params.get("selector")
+        x = int(action.params.get("x", 0))
+        y = int(action.params.get("y", 800))
+        if selector:
+            # 滚动到元素内（selector 经过转义后注入 JS）
+            page.evaluate(f"document.querySelector({_js_str(selector)})?.scrollBy({x}, {y})")
+        else:
+            page.evaluate(f"window.scrollBy({x}, {y})")
+        self._emit(
+            "browser.action",
+            step=step,
+            action="scroll",
+            selector=selector,
+            x=x,
+            y=y,
+        )
+
+    async def _do_scroll_async(self, page: Any, action: Action, *, step: int) -> None:
+        """异步：滚动页面或元素。"""
+        selector = action.params.get("selector")
+        x = int(action.params.get("x", 0))
+        y = int(action.params.get("y", 800))
+        if selector:
+            await page.evaluate(f"document.querySelector({_js_str(selector)})?.scrollBy({x}, {y})")
+        else:
+            await page.evaluate(f"window.scrollBy({x}, {y})")
+        self._emit(
+            "browser.action",
+            step=step,
+            action="scroll",
+            selector=selector,
+            x=x,
+            y=y,
+        )
+
+    def _do_press(self, page: Any, action: Action, *, step: int) -> None:
+        """同步：按键（可先聚焦到指定元素）。"""
+        key = action.params.get("key", "Enter")
+        selector = action.params.get("selector")
+        if selector:
+            page.focus(selector, timeout=self._INTERACTION_TIMEOUT)
+        page.press(key)
+        self._emit(
+            "browser.action",
+            step=step,
+            action="press",
+            key=key,
+            selector=selector,
+        )
+
+    async def _do_press_async(self, page: Any, action: Action, *, step: int) -> None:
+        """异步：按键（可先聚焦到指定元素）。"""
+        key = action.params.get("key", "Enter")
+        selector = action.params.get("selector")
+        if selector:
+            await page.focus(selector, timeout=self._INTERACTION_TIMEOUT)
+        await page.press(key)
+        self._emit(
+            "browser.action",
+            step=step,
+            action="press",
+            key=key,
+            selector=selector,
+        )
+
+    def _do_hover(self, page: Any, action: Action, *, step: int) -> None:
+        """同步：鼠标悬停。"""
+        selector = action.params.get("selector", "")
+        if not selector:
+            raise ValueError("hover 动作需要 selector 参数")
+        page.hover(selector, timeout=self._INTERACTION_TIMEOUT)
+        self._emit(
+            "browser.action",
+            step=step,
+            action="hover",
+            selector=selector,
+        )
+
+    async def _do_hover_async(self, page: Any, action: Action, *, step: int) -> None:
+        """异步：鼠标悬停。"""
+        selector = action.params.get("selector", "")
+        if not selector:
+            raise ValueError("hover 动作需要 selector 参数")
+        await page.hover(selector, timeout=self._INTERACTION_TIMEOUT)
+        self._emit(
+            "browser.action",
+            step=step,
+            action="hover",
+            selector=selector,
+        )
+
+    def _do_select_option(self, page: Any, action: Action, *, step: int) -> None:
+        """同步：下拉选择。"""
+        selector = action.params.get("selector", "")
+        value = action.params.get("value", "")
+        if not selector:
+            raise ValueError("select_option 动作需要 selector 参数")
+        page.select_option(selector, value, timeout=self._INTERACTION_TIMEOUT)
+        self._emit(
+            "browser.action",
+            step=step,
+            action="select_option",
+            selector=selector,
+            value=value,
+        )
+
+    async def _do_select_option_async(self, page: Any, action: Action, *, step: int) -> None:
+        """异步：下拉选择。"""
+        selector = action.params.get("selector", "")
+        value = action.params.get("value", "")
+        if not selector:
+            raise ValueError("select_option 动作需要 selector 参数")
+        await page.select_option(selector, value, timeout=self._INTERACTION_TIMEOUT)
+        self._emit(
+            "browser.action",
+            step=step,
+            action="select_option",
+            selector=selector,
+            value=value,
+        )
 
     # ------------------------------------------------------------------
     # Hook 注入

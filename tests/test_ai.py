@@ -937,3 +937,640 @@ def test_cli_run_save_script_to_file(
 
     result = json.loads(result_file.read_text(encoding="utf-8"))
     assert result["success"] is True
+
+
+# -- 浏览器交互动作（click / type / scroll / press / hover / select_option）--
+
+
+class _FakeBrowserPage:
+    """模拟 Playwright Page 的浏览器交互方法（同步版本）。
+
+    记录所有调用以便断言。click/fill/type/hover/select_option/focus 接受
+    selector 与 timeout 关键字；evaluate 接受 JS 字符串；press 接受 key。
+    """
+
+    def __init__(self) -> None:
+        self.click_calls: list[dict[str, Any]] = []
+        self.fill_calls: list[dict[str, Any]] = []
+        self.type_calls: list[dict[str, Any]] = []
+        self.evaluate_calls: list[str] = []
+        self.focus_calls: list[dict[str, Any]] = []
+        self.press_calls: list[str] = []
+        self.hover_calls: list[dict[str, Any]] = []
+        self.select_option_calls: list[dict[str, Any]] = []
+
+    def click(self, selector: str, *, button: str = "left", timeout: int = 0) -> None:
+        self.click_calls.append({"selector": selector, "button": button, "timeout": timeout})
+
+    def fill(self, selector: str, value: str, *, timeout: int = 0) -> None:
+        self.fill_calls.append({"selector": selector, "value": value, "timeout": timeout})
+
+    def type(self, selector: str, text: str, *, timeout: int = 0) -> None:
+        self.type_calls.append({"selector": selector, "text": text, "timeout": timeout})
+
+    def evaluate(self, script: str) -> Any:
+        self.evaluate_calls.append(script)
+        return None
+
+    def focus(self, selector: str, *, timeout: int = 0) -> None:
+        self.focus_calls.append({"selector": selector, "timeout": timeout})
+
+    def press(self, key: str) -> None:
+        self.press_calls.append(key)
+
+    def hover(self, selector: str, *, timeout: int = 0) -> None:
+        self.hover_calls.append({"selector": selector, "timeout": timeout})
+
+    def select_option(self, selector: str, value: str, *, timeout: int = 0) -> None:
+        self.select_option_calls.append({"selector": selector, "value": value, "timeout": timeout})
+
+
+class _FakeAsyncBrowserPage:
+    """模拟 Playwright Page 的浏览器交互方法（异步版本）。"""
+
+    def __init__(self) -> None:
+        self.click_calls: list[dict[str, Any]] = []
+        self.fill_calls: list[dict[str, Any]] = []
+        self.type_calls: list[dict[str, Any]] = []
+        self.evaluate_calls: list[str] = []
+        self.focus_calls: list[dict[str, Any]] = []
+        self.press_calls: list[str] = []
+        self.hover_calls: list[dict[str, Any]] = []
+        self.select_option_calls: list[dict[str, Any]] = []
+
+    async def click(self, selector: str, *, button: str = "left", timeout: int = 0) -> None:
+        self.click_calls.append({"selector": selector, "button": button, "timeout": timeout})
+
+    async def fill(self, selector: str, value: str, *, timeout: int = 0) -> None:
+        self.fill_calls.append({"selector": selector, "value": value, "timeout": timeout})
+
+    async def type(self, selector: str, text: str, *, timeout: int = 0) -> None:
+        self.type_calls.append({"selector": selector, "text": text, "timeout": timeout})
+
+    async def evaluate(self, script: str) -> Any:
+        self.evaluate_calls.append(script)
+        return None
+
+    async def focus(self, selector: str, *, timeout: int = 0) -> None:
+        self.focus_calls.append({"selector": selector, "timeout": timeout})
+
+    async def press(self, key: str) -> None:
+        self.press_calls.append(key)
+
+    async def hover(self, selector: str, *, timeout: int = 0) -> None:
+        self.hover_calls.append({"selector": selector, "timeout": timeout})
+
+    async def select_option(self, selector: str, value: str, *, timeout: int = 0) -> None:
+        self.select_option_calls.append({"selector": selector, "value": value, "timeout": timeout})
+
+
+def _make_agent_for_browser_actions() -> Any:
+    """构造一个用于浏览器交互动作测试的 ReverseAgent（禁用截图/校验）。"""
+    from web_crawler.ai.reverse_agent import ReverseAgent, ReverseAgentConfig
+
+    cfg = ReverseAgentConfig(
+        enable_screenshot=False,
+        enable_guard=False,
+        enable_judge=False,
+        enable_recorder=False,
+        planner_interval=None,
+    )
+    return ReverseAgent(config=cfg)
+
+
+def test_execute_click_action() -> None:
+    """click 动作应调用 page.click 并传递 selector / button / timeout。"""
+    agent = _make_agent_for_browser_actions()
+    try:
+        page = _FakeBrowserPage()
+        action_dict: dict[str, Any] = {
+            "action_type": "click",
+            "params": {"selector": "button#submit", "button": "right"},
+        }
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict(action_dict)
+        agent._act(page, action, step=1)
+        assert len(page.click_calls) == 1
+        assert page.click_calls[0]["selector"] == "button#submit"
+        assert page.click_calls[0]["button"] == "right"
+        assert page.click_calls[0]["timeout"] == 10000
+    finally:
+        agent.close()
+
+
+def test_execute_click_action_async() -> None:
+    """click 动作异步路径同样生效。"""
+    import asyncio
+
+    agent = _make_agent_for_browser_actions()
+    try:
+        page = _FakeAsyncBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict({"action_type": "click", "params": {"selector": "button#x"}})
+
+        async def _run() -> None:
+            await agent._act_async(page, action, step=1)
+
+        asyncio.run(_run())
+        assert len(page.click_calls) == 1
+        assert page.click_calls[0]["selector"] == "button#x"
+        assert page.click_calls[0]["button"] == "left"
+    finally:
+        agent.close()
+
+
+def test_execute_type_action() -> None:
+    """type 动作默认 clear=true，应先 fill 清空再 type 输入。"""
+    agent = _make_agent_for_browser_actions()
+    try:
+        page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict(
+            {
+                "action_type": "type",
+                "params": {"selector": "input#username", "text": "user123"},
+            }
+        )
+        agent._act(page, action, step=2)
+        # clear=True 时应先调 fill 清空
+        assert len(page.fill_calls) == 1
+        assert page.fill_calls[0]["selector"] == "input#username"
+        assert page.fill_calls[0]["value"] == ""
+        assert len(page.type_calls) == 1
+        assert page.type_calls[0]["text"] == "user123"
+    finally:
+        agent.close()
+
+
+def test_execute_type_action_no_clear() -> None:
+    """clear=False 时跳过 fill 直接 type。"""
+    agent = _make_agent_for_browser_actions()
+    try:
+        page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict(
+            {
+                "action_type": "type",
+                "params": {"selector": "input#q", "text": "hello", "clear": False},
+            }
+        )
+        agent._act(page, action, step=1)
+        assert page.fill_calls == []
+        assert len(page.type_calls) == 1
+    finally:
+        agent.close()
+
+
+def test_execute_scroll_action_window() -> None:
+    """scroll 无 selector 时调 window.scrollBy。"""
+    agent = _make_agent_for_browser_actions()
+    try:
+        page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict({"action_type": "scroll", "params": {"x": 0, "y": 800}})
+        agent._act(page, action, step=3)
+        assert len(page.evaluate_calls) == 1
+        assert "window.scrollBy" in page.evaluate_calls[0]
+        assert "0" in page.evaluate_calls[0]
+        assert "800" in page.evaluate_calls[0]
+    finally:
+        agent.close()
+
+
+def test_execute_scroll_action_element() -> None:
+    """scroll 带 selector 时调 querySelector.scrollBy。"""
+    agent = _make_agent_for_browser_actions()
+    try:
+        page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict(
+            {
+                "action_type": "scroll",
+                "params": {"selector": ".list", "y": 500},
+            }
+        )
+        agent._act(page, action, step=1)
+        assert len(page.evaluate_calls) == 1
+        js = page.evaluate_calls[0]
+        assert "querySelector" in js
+        assert ".list" in js
+        assert "scrollBy" in js
+    finally:
+        agent.close()
+
+
+def test_execute_press_action() -> None:
+    """press 动作应调 page.press；带 selector 时先 focus。"""
+    agent = _make_agent_for_browser_actions()
+    try:
+        page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict(
+            {
+                "action_type": "press",
+                "params": {"selector": "input#q", "key": "Enter"},
+            }
+        )
+        agent._act(page, action, step=4)
+        assert len(page.focus_calls) == 1
+        assert page.focus_calls[0]["selector"] == "input#q"
+        assert page.press_calls == ["Enter"]
+    finally:
+        agent.close()
+
+
+def test_execute_press_action_no_selector() -> None:
+    """press 无 selector 时只调 press。"""
+    agent = _make_agent_for_browser_actions()
+    try:
+        page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict({"action_type": "press", "params": {"key": "Escape"}})
+        agent._act(page, action, step=1)
+        assert page.focus_calls == []
+        assert page.press_calls == ["Escape"]
+    finally:
+        agent.close()
+
+
+def test_execute_hover_action() -> None:
+    """hover 动作应调 page.hover 并传递 selector / timeout。"""
+    agent = _make_agent_for_browser_actions()
+    try:
+        page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict({"action_type": "hover", "params": {"selector": ".menu-item"}})
+        agent._act(page, action, step=5)
+        assert len(page.hover_calls) == 1
+        assert page.hover_calls[0]["selector"] == ".menu-item"
+        assert page.hover_calls[0]["timeout"] == 10000
+    finally:
+        agent.close()
+
+
+def test_execute_select_action() -> None:
+    """select_option 动作应调 page.select_option。"""
+    agent = _make_agent_for_browser_actions()
+    try:
+        page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict(
+            {
+                "action_type": "select_option",
+                "params": {"selector": "select#country", "value": "CN"},
+            }
+        )
+        agent._act(page, action, step=6)
+        assert len(page.select_option_calls) == 1
+        assert page.select_option_calls[0]["selector"] == "select#country"
+        assert page.select_option_calls[0]["value"] == "CN"
+        assert page.select_option_calls[0]["timeout"] == 10000
+    finally:
+        agent.close()
+
+
+def test_execute_select_action_async() -> None:
+    """select_option 异步路径。"""
+    import asyncio
+
+    agent = _make_agent_for_browser_actions()
+    try:
+        page = _FakeAsyncBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict(
+            {
+                "action_type": "select_option",
+                "params": {"selector": "select#c", "value": "US"},
+            }
+        )
+
+        async def _run() -> None:
+            await agent._act_async(page, action, step=1)
+
+        asyncio.run(_run())
+        assert len(page.select_option_calls) == 1
+        assert page.select_option_calls[0]["value"] == "US"
+    finally:
+        agent.close()
+
+
+def test_execute_click_missing_selector_raises() -> None:
+    """click 缺少 selector 应抛 ValueError。"""
+    agent = _make_agent_for_browser_actions()
+    try:
+        page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict({"action_type": "click", "params": {}})
+        with pytest.raises(ValueError, match="selector"):
+            agent._act(page, action, step=1)
+    finally:
+        agent.close()
+
+
+def test_browser_action_emits_event() -> None:
+    """浏览器交互动作应发布 browser.action 事件。"""
+    agent = _make_agent_for_browser_actions()
+    try:
+        events: list[dict[str, Any]] = []
+
+        def _handler(event: Any) -> None:
+            events.append(
+                {
+                    "type": event.type,
+                    "step": event.step,
+                    **event.payload,
+                }
+            )
+
+        agent.event_bus.subscribe(_handler)
+        page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict({"action_type": "click", "params": {"selector": "button#x"}})
+        agent._act(page, action, step=7)
+        browser_events = [e for e in events if e["type"] == "browser.action"]
+        assert len(browser_events) == 1
+        assert browser_events[0]["action"] == "click"
+        assert browser_events[0]["selector"] == "button#x"
+        assert browser_events[0]["step"] == 7
+    finally:
+        agent.close()
+
+
+# -- Confidence: 浏览器交互动作的置信度评分 ----------------------------------
+def test_confidence_scores_browser_actions() -> None:
+    """click / type / scroll 等浏览器动作应得到合理置信度。"""
+    from web_crawler.ai.confidence import ConfidenceScorer
+
+    scorer = ConfidenceScorer(min_confidence=0.4)
+    # 完整 click 动作应得高分
+    click_action = {
+        "action_type": "click",
+        "params": {"selector": "button#submit"},
+        "reasoning": "点击提交按钮以触发加密参数生成",
+    }
+    result = scorer.score(click_action)
+    assert result.action_type == "click"
+    assert result.score >= 0.4
+    # type 缺 text 应被扣分
+    type_action = {
+        "action_type": "type",
+        "params": {"selector": "input#q"},
+        "reasoning": "输入查询关键词",
+    }
+    type_result = scorer.score(type_action)
+    assert type_result.score < 1.0
+    assert any("text" in r for r in type_result.reasons)
+    # scroll 无必填参数，应得高分
+    scroll_action = {
+        "action_type": "scroll",
+        "params": {"x": 0, "y": 800},
+        "reasoning": "向下滚动加载更多内容",
+    }
+    scroll_result = scorer.score(scroll_action)
+    assert scroll_result.action_type == "scroll"
+    assert scroll_result.score >= 0.5
+    # 未知动作仍低分
+    unknown = {
+        "action_type": "frob",
+        "params": {},
+        "reasoning": "",
+    }
+    unknown_result = scorer.score(unknown)
+    assert unknown_result.score < 0.5
+
+
+def test_confidence_valid_actions_includes_browser_types() -> None:
+    """_VALID_ACTIONS 应包含 6 类浏览器交互动作。"""
+    from web_crawler.ai.confidence import _VALID_ACTIONS
+
+    for at in ("click", "type", "scroll", "press", "hover", "select_option"):
+        assert at in _VALID_ACTIONS
+
+
+# -- Guardrails: 危险点击与 selector 注入 -----------------------------------
+def test_guard_blocks_dangerous_click() -> None:
+    """点击'删除'按钮应被 no-dangerous-click 规则拦截。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard()
+    action = {
+        "action_type": "click",
+        "params": {"selector": "button:has-text('删除')"},
+    }
+    result = guard.check(action)
+    assert result.denied
+    assert "no-dangerous-click" in result.matched_rules
+
+
+def test_guard_blocks_dangerous_click_english() -> None:
+    """点击 logout / delete / withdraw 按钮也应被拦截。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard()
+    for selector in [
+        "button:has-text('Logout')",
+        "a:has-text('Delete account')",
+        "button:has-text('Withdraw')",
+    ]:
+        action = {"action_type": "click", "params": {"selector": selector}}
+        result = guard.check(action)
+        assert result.denied, f"应拦截 {selector}"
+
+
+def test_guard_allows_safe_click() -> None:
+    """安全点击（如 'Login' / 'Search'）不应被拦截。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard()
+    action = {
+        "action_type": "click",
+        "params": {"selector": "button:has-text('Login')"},
+    }
+    result = guard.check(action)
+    assert not result.denied
+
+
+def test_guard_blocks_selector_injection() -> None:
+    """selector 含 JS 注入特征（; / () / script）应被拦截。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard()
+    bad_selectors = [
+        "button;alert(1)",
+        "img)script(",
+        "a[javascript:alert(1)]",
+        "input[onerror=eval(]",
+    ]
+    for selector in bad_selectors:
+        action = {"action_type": "click", "params": {"selector": selector}}
+        result = guard.check(action)
+        assert result.denied, f"应拦截 selector 注入：{selector}"
+        assert "no-selector-injection" in result.matched_rules
+
+
+def test_guard_blocks_injection_on_type_action() -> None:
+    """selector 注入规则应覆盖 type / hover 等所有使用 selector 的动作。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard()
+    action = {
+        "action_type": "type",
+        "params": {"selector": "input;evil()", "text": "x"},
+    }
+    result = guard.check(action)
+    assert result.denied
+    assert "no-selector-injection" in result.matched_rules
+
+
+def test_guard_allows_normal_selector() -> None:
+    """正常 selector 不应被注入规则误拦。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard()
+    for selector in [
+        "button#submit",
+        "input.login-form[name='user']",
+        ".menu > li:nth-child(2)",
+        "select#country",
+    ]:
+        action = {"action_type": "click", "params": {"selector": selector}}
+        result = guard.check(action)
+        assert not result.denied, f"不应拦截合法 selector：{selector}"
+
+
+# -- Recorder: 编译浏览器交互动作 -------------------------------------------
+def test_recorder_compiles_browser_actions() -> None:
+    """成功路径脚本应包含 6 类浏览器交互动作的对应代码。"""
+    from web_crawler.ai.recorder import RunRecorder
+
+    recorder = RunRecorder()
+    recorder.set_target("https://example.com")
+    # 依次记录 6 类动作
+    recorder.record(
+        step=1,
+        action_type="navigate",
+        params={"url": "https://example.com"},
+    )
+    recorder.record(
+        step=2,
+        action_type="click",
+        params={"selector": "button#login", "button": "left"},
+    )
+    recorder.record(
+        step=3,
+        action_type="type",
+        params={"selector": "input#user", "text": "alice", "clear": True},
+    )
+    recorder.record(
+        step=4,
+        action_type="scroll",
+        params={"x": 0, "y": 500},
+    )
+    recorder.record(
+        step=5,
+        action_type="press",
+        params={"key": "Enter"},
+    )
+    recorder.record(
+        step=6,
+        action_type="hover",
+        params={"selector": ".tooltip"},
+    )
+    recorder.record(
+        step=7,
+        action_type="select_option",
+        params={"selector": "select#lang", "value": "zh"},
+    )
+    recorder.record(step=8, action_type="done", params={"success": True})
+
+    script = recorder.compile_script()
+    # 验证脚本中包含各类动作的编译产物
+    assert "page.click" in script
+    assert "button='left'" in script or 'button="left"' in script
+    assert "page.fill" in script  # clear=True 时应生成 fill
+    assert "page.type" in script
+    assert "window.scrollBy" in script
+    assert "page.press" in script
+    assert "page.hover" in script
+    assert "page.select_option" in script
+    # 脚本应是合法 Python 源码
+    compile(script, "<test>", "exec")  # 不抛异常即合法
+
+
+def test_recorder_compiles_scroll_with_selector() -> None:
+    """scroll 带 selector 时编译产物应包含 querySelector。"""
+    from web_crawler.ai.recorder import RunRecorder
+
+    recorder = RunRecorder()
+    recorder.set_target("https://example.com")
+    recorder.record(
+        step=1,
+        action_type="scroll",
+        params={"selector": ".list", "y": 300},
+    )
+    script = recorder.compile_script()
+    assert "querySelector" in script
+    assert "scrollBy" in script
+    compile(script, "<test>", "exec")
+
+
+def test_recorder_skips_failed_browser_action() -> None:
+    """失败的浏览器交互动作不应编译进成功路径脚本。"""
+    from web_crawler.ai.recorder import RunRecorder
+
+    recorder = RunRecorder()
+    recorder.set_target("https://example.com")
+    recorder.record(
+        step=1,
+        action_type="click",
+        params={"selector": "button#x"},
+        success=False,  # 失败步
+    )
+    recorder.record(
+        step=2,
+        action_type="click",
+        params={"selector": "button#y"},
+        success=True,
+    )
+    script = recorder.compile_script()
+    assert "button#y" in script
+    assert "button#x" not in script
+
+
+# -- Action.from_dict 解析浏览器交互动作 ------------------------------------
+def test_action_from_dict_parses_browser_actions() -> None:
+    """Action.from_dict 应正确解析 6 类浏览器交互动作。"""
+    from web_crawler.ai.reverse_agent import Action
+
+    for atype, params in [
+        ("click", {"selector": "button#x", "button": "right"}),
+        ("type", {"selector": "input", "text": "hello", "clear": False}),
+        ("scroll", {"x": 0, "y": 100}),
+        ("press", {"key": "Tab"}),
+        ("hover", {"selector": ".item"}),
+        ("select_option", {"selector": "select#c", "value": "US"}),
+    ]:
+        action = Action.from_dict({"action_type": atype, "params": params})
+        assert action.action_type == atype
+        assert action.params == params
+
+
+def test_reverse_agent_prompt_lists_browser_actions() -> None:
+    """_THINK_USER_TEMPLATE 应在动作列表中包含 6 类浏览器交互动作。"""
+    from web_crawler.ai.reverse_agent import _THINK_USER_TEMPLATE
+
+    for atype in ["click", "type", "scroll", "press", "hover", "select_option"]:
+        assert atype in _THINK_USER_TEMPLATE
