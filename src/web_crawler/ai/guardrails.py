@@ -247,6 +247,24 @@ class ActionGuard:
                 severity="error",
             )
         )
+        # 5. 危险点击：拦截 click / hover 命中"删除/logout/withdraw/支付"等危险关键词
+        self._rules.append(
+            GuardrailRule(
+                name="no-dangerous-click",
+                check=self._check_dangerous_click,
+                action=GuardrailAction.DENY,
+                severity="error",
+            )
+        )
+        # 6. Selector 注入：拦截含 JS 注入特征（; / () / script / javascript:）的 selector
+        self._rules.append(
+            GuardrailRule(
+                name="no-selector-injection",
+                check=self._check_selector_injection,
+                action=GuardrailAction.DENY,
+                severity="error",
+            )
+        )
 
     # ------------------------------------------------------------------
     # 默认规则的 check 实现
@@ -352,6 +370,78 @@ class ActionGuard:
         for pattern, label in dangerous_patterns:
             if re.search(pattern, script, re.IGNORECASE):
                 return True, f"dangerous pattern: {label}"
+        return False, ""
+
+    # 危险点击关键词：按钮文本/selector 含这些词时拒绝执行
+    _DANGEROUS_CLICK_KEYWORDS: tuple[str, ...] = (
+        "删除",
+        "delete",
+        "logout",
+        "退出",
+        "withdraw",
+        "提现",
+        "支付",
+        "pay",
+        "confirm delete",
+        "确认删除",
+        "uninstall",
+        "卸载",
+    )
+
+    def _check_dangerous_click(
+        self,
+        action: dict[str, Any],
+        ctx: dict[str, Any],
+    ) -> tuple[bool, str]:
+        """拦截 click / hover 命中危险关键词的动作。
+
+        检查 selector 文本是否包含"删除/logout/withdraw/支付"等危险关键词，
+        命中即拒绝执行。覆盖 click 与 hover 两类动作（hover 也可能触发菜单展开
+        进而引导用户点击危险按钮）。
+        """
+        at = str(action.get("action_type", "")).lower()
+        if at not in {"click", "hover"}:
+            return False, ""
+        params = action.get("params") or {}
+        selector = str(params.get("selector", "")).lower()
+        if not selector:
+            return False, ""
+        for kw in self._DANGEROUS_CLICK_KEYWORDS:
+            if kw.lower() in selector:
+                return True, f"危险点击：{kw}"
+        return False, ""
+
+    @staticmethod
+    def _check_selector_injection(
+        action: dict[str, Any],
+        ctx: dict[str, Any],
+    ) -> tuple[bool, str]:
+        """拦截 selector 中的 JS 注入特征。
+
+        检查所有使用 selector 的动作（click / type / scroll / press / hover /
+        select_option）的 selector 字段是否含 ``;`` / ``()`` / ``script`` /
+        ``javascript:`` 等注入特征，命中即拒绝。
+        """
+        at = str(action.get("action_type", "")).lower()
+        if at not in {"click", "type", "scroll", "press", "hover", "select_option"}:
+            return False, ""
+        params = action.get("params") or {}
+        selector = str(params.get("selector", "") or "")
+        if not selector:
+            return False, ""
+        selector_lower = selector.lower()
+        # JS 注入特征：分号、括号、script 标签、javascript: 协议
+        injection_patterns = (
+            ";",
+            "()",
+            "script",
+            "javascript:",
+            "eval(",
+            "function(",
+        )
+        for pattern in injection_patterns:
+            if pattern in selector_lower:
+                return True, f"selector 注入特征：{pattern!r}"
         return False, ""
 
     # ------------------------------------------------------------------
