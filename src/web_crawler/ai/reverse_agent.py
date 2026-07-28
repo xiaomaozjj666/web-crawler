@@ -32,6 +32,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -152,6 +153,8 @@ class Observation:
     captcha_type: CaptchaType
     page_title: str
     dom_summary: str
+    # 当前步截图保存路径（启用 enable_screenshot 时由 _observe 写入）
+    screenshot_path: str = ""
 
 
 @dataclass
@@ -221,6 +224,8 @@ class ReverseAgentConfig:
     enable_guard: bool = True
     # Guard：允许导航的域名白名单（None 不限制）
     allowed_domains: list[str] | None = None
+    # Screenshot：是否在每步观察和错误时保存页面截图（PNG）
+    enable_screenshot: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +359,11 @@ class ReverseAgent:
         # provider 返回的真实 usage dict（若有），优先用于 budget 记账
         self._last_llm_usage: dict[str, Any] | None = None
 
+        # -- 截图缓存（每步截图路径收集，run/arun 结束后写入 result dict）---
+        self._screenshots: list[dict[str, Any]] = []
+        # 最近一次错误截图路径（供 UI 高亮展示）
+        self._last_error_screenshot: str = ""
+
     # ------------------------------------------------------------------
     # 事件总线便捷方法
     # ------------------------------------------------------------------
@@ -404,6 +414,9 @@ class ReverseAgent:
         self._last_pruned_dom = None
         self._last_confidence = None
         self._last_guard_result = None
+        # 重置截图缓存
+        self._screenshots = []
+        self._last_error_screenshot = ""
 
         history: list[dict] = []
         target_params_found: dict[str, str] = {}
@@ -450,7 +463,7 @@ class ReverseAgent:
             for step in range(start_step, self.config.max_steps + 1):
                 self._emit(EVENT_STEP_START, step=step)
                 try:
-                    observation = self._observe(page)
+                    observation = self._observe(page, step=step)
                     last_observation = observation
                     self._emit(
                         EVENT_OBSERVATION,
@@ -459,6 +472,7 @@ class ReverseAgent:
                         hook_count=observation.hook_data.get("count", 0),
                         network_count=len(observation.network_requests),
                         script_count=len(observation.scripts),
+                        screenshot_path=observation.screenshot_path,
                     )
                 except Exception as exc:
                     history.append({"step": step, "event": "observe_error", "error": str(exc)})
@@ -542,6 +556,8 @@ class ReverseAgent:
                 except Exception as exc:
                     history.append({"step": step, "event": "think_error", "error": str(exc)})
                     self._emit(EVENT_THINK_ERROR, step=step, error=str(exc))
+                    # 错误时截图（失败不抛异常）
+                    self._take_screenshot(page, step, error=True)
                     action = self._fallback_action(observation)
 
                 # -- Confidence 评分：低分动作触发 fallback ----------------
@@ -690,6 +706,8 @@ class ReverseAgent:
                 except Exception as exc:
                     history.append({"step": step, "event": "act_error", "error": str(exc)})
                     self._emit("act.error", step=step, error=str(exc))
+                    # 错误时截图（失败不抛异常）
+                    self._take_screenshot(page, step, error=True)
                     if self.recorder is not None and self.recorder._records:
                         self.recorder._records[-1].success = False
 
@@ -742,6 +760,19 @@ class ReverseAgent:
                     self._last_judge_result.to_dict() if self._last_judge_result else None
                 ),
                 "compiled_script": self._compiled_script or None,
+                "budget_summary": self.budget_tracker.summary(),
+                "last_confidence": (
+                    {
+                        "score": self._last_confidence.score,
+                        "reasons": list(self._last_confidence.reasons),
+                        "action_type": getattr(self._last_confidence, "action_type", ""),
+                    }
+                    if self._last_confidence is not None
+                    else None
+                ),
+                "checkpoints": list(self.checkpoints_snapshot()),
+                "screenshots": list(self._screenshots),
+                "error_screenshot": self._last_error_screenshot or None,
             }
         finally:
             self._cleanup_sync()
@@ -782,6 +813,9 @@ class ReverseAgent:
         self._last_think_prompt = ""
         self._last_think_completion = ""
         self._last_llm_usage = None
+        # 重置截图缓存
+        self._screenshots = []
+        self._last_error_screenshot = ""
 
         history: list[dict] = []
         target_params_found: dict[str, str] = {}
@@ -827,7 +861,7 @@ class ReverseAgent:
             for step in range(start_step, self.config.max_steps + 1):
                 self._emit(EVENT_STEP_START, step=step)
                 try:
-                    observation = await self._observe_async(page)
+                    observation = await self._observe_async(page, step=step)
                     last_observation = observation
                     self._emit(
                         EVENT_OBSERVATION,
@@ -836,6 +870,7 @@ class ReverseAgent:
                         hook_count=observation.hook_data.get("count", 0),
                         network_count=len(observation.network_requests),
                         script_count=len(observation.scripts),
+                        screenshot_path=observation.screenshot_path,
                     )
                 except Exception as exc:
                     history.append({"step": step, "event": "observe_error", "error": str(exc)})
@@ -926,6 +961,8 @@ class ReverseAgent:
                 except Exception as exc:
                     history.append({"step": step, "event": "think_error", "error": str(exc)})
                     self._emit(EVENT_THINK_ERROR, step=step, error=str(exc))
+                    # 错误时截图（失败不抛异常）
+                    await self._take_screenshot_async(page, step, error=True)
                     action = self._fallback_action(observation)
 
                 # -- Confidence 评分：低分动作触发 fallback ----------------
@@ -1068,6 +1105,8 @@ class ReverseAgent:
                 except Exception as exc:
                     history.append({"step": step, "event": "act_error", "error": str(exc)})
                     self._emit("act.error", step=step, error=str(exc))
+                    # 错误时截图（失败不抛异常）
+                    await self._take_screenshot_async(page, step, error=True)
                     if self.recorder is not None and self.recorder._records:
                         self.recorder._records[-1].success = False
 
@@ -1118,6 +1157,19 @@ class ReverseAgent:
                     self._last_judge_result.to_dict() if self._last_judge_result else None
                 ),
                 "compiled_script": self._compiled_script or None,
+                "budget_summary": self.budget_tracker.summary(),
+                "last_confidence": (
+                    {
+                        "score": self._last_confidence.score,
+                        "reasons": list(self._last_confidence.reasons),
+                        "action_type": getattr(self._last_confidence, "action_type", ""),
+                    }
+                    if self._last_confidence is not None
+                    else None
+                ),
+                "checkpoints": list(self.checkpoints_snapshot()),
+                "screenshots": list(self._screenshots),
+                "error_screenshot": self._last_error_screenshot or None,
             }
         finally:
             await self._cleanup_async()
@@ -1126,7 +1178,7 @@ class ReverseAgent:
     # 观察
     # ------------------------------------------------------------------
 
-    def _observe(self, page: Any) -> Observation:
+    def _observe(self, page: Any, *, step: int = 0) -> Observation:
         """收集页面状态。"""
         url = self._safe_page_url(page)
         # collect_hook_data 会清空浏览器侧数组，缓存一份供 _try_extract_param 复用
@@ -1151,6 +1203,8 @@ class ReverseAgent:
             dom_summary = pruned.text or dom_raw[:2000]
         else:
             dom_summary = dom_raw[:2000]
+        # 步末截图：失败不抛异常，仅留空路径
+        screenshot_path = self._take_screenshot(page, step)
         return Observation(
             url=url,
             hook_data=hook_data,
@@ -1159,9 +1213,10 @@ class ReverseAgent:
             captcha_type=captcha_type,
             page_title=page_title,
             dom_summary=dom_summary,
+            screenshot_path=screenshot_path,
         )
 
-    async def _observe_async(self, page: Any) -> Observation:
+    async def _observe_async(self, page: Any, *, step: int = 0) -> Observation:
         """异步收集页面状态。"""
         url = self._safe_page_url(page)
         # 异步版 collect_hook_data：内联 evaluate 以支持 await
@@ -1196,6 +1251,8 @@ class ReverseAgent:
             dom_summary = pruned.text or dom_raw[:2000]
         else:
             dom_summary = dom_raw[:2000]
+        # 步末截图：失败不抛异常，仅留空路径
+        screenshot_path = await self._take_screenshot_async(page, step)
         return Observation(
             url=url,
             hook_data=hook_data,
@@ -1204,6 +1261,7 @@ class ReverseAgent:
             captcha_type=captcha_type,
             page_title=page_title,
             dom_summary=dom_summary,
+            screenshot_path=screenshot_path,
         )
 
     # ------------------------------------------------------------------
@@ -1754,6 +1812,88 @@ class ReverseAgent:
     def _safe_page_url(page: Any) -> str:
         try:
             return page.url
+        except Exception:
+            return ""
+
+    # ------------------------------------------------------------------
+    # 截图
+    # ------------------------------------------------------------------
+
+    def _screenshot_dir(self) -> Path:
+        """截图保存目录：``$CWD/reverse_screenshots``。"""
+        return Path.cwd() / "reverse_screenshots"
+
+    def _screenshot_task_id(self) -> str:
+        """获取当前任务 ID（checkpoint_manager 未设置时回退为 default）。"""
+        try:
+            tid = getattr(self.checkpoint_manager, "task_id", "") or ""
+            return tid or "default"
+        except Exception:
+            return "default"
+
+    def checkpoints_snapshot(self) -> list[dict[str, Any]]:
+        """读取已保存的 checkpoint 列表（step + path），供结果汇总使用。"""
+        if not self.config.enable_checkpoint or not self.checkpoint_manager.task_id:
+            return []
+        try:
+            paths = self.checkpoint_manager.store.list_checkpoints(self.checkpoint_manager.task_id)
+            result: list[dict[str, Any]] = []
+            for p in paths:
+                step = 0
+                name = p.stem  # 形如 step-0007
+                if name.startswith("step-"):
+                    try:
+                        step = int(name[5:])
+                    except ValueError:
+                        pass
+                result.append({"step": step, "path": str(p)})
+            return result
+        except Exception:
+            return []
+
+    def _take_screenshot(self, page: Any, step: int, *, error: bool = False) -> str:
+        """同步截图：失败返回空字符串，绝不抛异常。
+
+        ``error=True`` 时文件名加 ``_error`` 后缀，供 think/act 异常路径使用。
+        """
+        if not self.config.enable_screenshot or page is None:
+            return ""
+        try:
+            task_id = self._screenshot_task_id()
+            suffix = "_error" if error else ""
+            filename = f"{task_id}_step{step}{suffix}.png"
+            out_dir = self._screenshot_dir()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            path = out_dir / filename
+            page.screenshot(path=str(path))
+            self._emit("screenshot", step=step, path=str(path), error=error)
+            entry = {"step": step, "path": str(path), "error": error, "ts": time.time()}
+            self._screenshots.append(entry)
+            if error:
+                self._last_error_screenshot = str(path)
+            return str(path)
+        except Exception:
+            # 截图失败不影响主循环：仅返回空路径
+            return ""
+
+    async def _take_screenshot_async(self, page: Any, step: int, *, error: bool = False) -> str:
+        """异步截图：失败返回空字符串，绝不抛异常。"""
+        if not self.config.enable_screenshot or page is None:
+            return ""
+        try:
+            task_id = self._screenshot_task_id()
+            suffix = "_error" if error else ""
+            filename = f"{task_id}_step{step}{suffix}.png"
+            out_dir = self._screenshot_dir()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            path = out_dir / filename
+            await page.screenshot(path=str(path))
+            self._emit("screenshot", step=step, path=str(path), error=error)
+            entry = {"step": step, "path": str(path), "error": error, "ts": time.time()}
+            self._screenshots.append(entry)
+            if error:
+                self._last_error_screenshot = str(path)
+            return str(path)
         except Exception:
             return ""
 

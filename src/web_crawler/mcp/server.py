@@ -196,6 +196,10 @@ class ReverseMCPServer:
                 "description": (
                     "逆向分析指定 URL 的加密参数。自动走完 Hook 注入 → 请求捕获 → "
                     "JS 分析 → 算法重写的完整流程，返回加密参数的生成链路。"
+                    "结果包含 budget_summary（token 预算汇总）、last_confidence"
+                    "（最近一次置信度评分）、checkpoints（断点列表）、screenshots"
+                    "（每步截图路径）与 error_screenshot（错误截图）字段，"
+                    "上游 AI 一次调用即可拿到全部运行时状态。"
                 ),
                 "inputSchema": {
                     "type": "object",

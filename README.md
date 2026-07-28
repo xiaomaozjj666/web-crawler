@@ -231,6 +231,12 @@ Register in your AI client's MCP config:
 }
 ```
 
+The `reverse_engineer_url` tool returns the full runtime state in one call:
+`analysis`, `compiled_script`, `judge_result`, plus `budget_summary`,
+`last_confidence`, `checkpoints`, `screenshots`, and `error_screenshot` — so
+upstream AI clients can render progress / step lists / screenshot galleries
+without polling a second endpoint.
+
 ### CLI (for shell scripts and interactive REPL)
 
 ```bash
@@ -241,6 +247,36 @@ web-crawler-reverse reimplement algo.js --lang python
 web-crawler-reverse capture https://example.com --wait 8
 web-crawler-reverse interactive                  # REPL: type `tools` to list
 ```
+
+### CLI `run` subcommand (full agent, no MCP)
+
+`run` constructs a `ReverseAgent` directly and calls `run()`, bypassing the MCP
+transport. It exposes the full set of budget / guard / checkpoint / screenshot
+flags, can save the success-path script to a file, and emits a complete JSON
+result (`budget_summary`, `last_confidence`, `checkpoints`, `screenshots`,
+`error_screenshot`) to stdout or `--output`:
+
+```bash
+# Headless run, save the compiled script, write JSON result to result.json
+web-crawler-reverse run \
+  --url https://target.example.com \
+  --task "提取 Anti-Content 签名参数" \
+  --target-params anti_content,sign \
+  --max-steps 20 --headless \
+  --enable-checkpoint \
+  --budget-total 100000 --budget-per-step 8000 \
+  --min-confidence 0.4 \
+  --enable-screenshot \
+  --save-script ./out/sign.py \
+  --output ./out/result.json
+
+# Quick foreground run with visible browser, stdout JSON
+web-crawler-reverse run --url https://example.com
+```
+
+`--enable-screenshot` (default on) saves a PNG per observation step and on every
+error path to `reverse_screenshots/<task_id>_step<N>[_error].png`; failures are
+swallowed so the main loop never crashes on a screenshot error.
 
 **Compliance note** — the agent only simulates normal user interaction; it does
 not crack image-based captchas, forge login credentials, or bypass paywalls.
