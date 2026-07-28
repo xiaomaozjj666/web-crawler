@@ -356,7 +356,7 @@ def build_parser() -> argparse.ArgumentParser:
     # analyze
     p = sub.add_parser("analyze", help="分析 JS 代码片段的加密逻辑")
     p.add_argument("code", nargs="?", default="", help="JS 代码（或用 --file）")
-    p.add_argument("--file", type=argparse.FileType("r"), help="JS 文件")
+    p.add_argument("--file", type=Path, help="JS 文件路径")
     p.add_argument("--url", default="", help="来源 URL（可选）")
     p.add_argument("--target-param", default="", help="目标参数名")
     p.set_defaults(func=cmd_analyze_js)
@@ -364,19 +364,19 @@ def build_parser() -> argparse.ArgumentParser:
     # webpack
     p = sub.add_parser("webpack", help="从 JS 源码提取 webpack 模块")
     p.add_argument("code", nargs="?", default="", help="JS 源码（或用 --file）")
-    p.add_argument("--file", type=argparse.FileType("r"), help="JS 文件")
+    p.add_argument("--file", type=Path, help="JS 文件路径")
     p.set_defaults(func=cmd_webpack)
 
     # deobfuscate
     p = sub.add_parser("deobfuscate", help="AI 反混淆 JS 代码")
     p.add_argument("code", nargs="?", default="", help="JS 代码（或用 --file）")
-    p.add_argument("--file", type=argparse.FileType("r"), help="JS 文件")
+    p.add_argument("--file", type=Path, help="JS 文件路径")
     p.set_defaults(func=cmd_deobfuscate)
 
     # reimplement
     p = sub.add_parser("reimplement", help="用指定语言重写加密逻辑")
     p.add_argument("code", nargs="?", default="", help="JS 代码（或用 --file）")
-    p.add_argument("--file", type=argparse.FileType("r"), help="JS 文件")
+    p.add_argument("--file", type=Path, help="JS 文件路径")
     p.add_argument("--language", default="python", help="目标语言（默认 python）")
     p.set_defaults(func=cmd_reimplement)
 

@@ -13,7 +13,7 @@ A Scrapling-aligned stealth web scraping library for Python: **adaptive selector
 - **Spider framework** — `Spider`/`Request` with callback dispatch, priority scheduling, domain filtering, dedup, and JSON-based pause/resume.
 - **Unified `Response`** — every fetcher returns the same `Response` with `.css()` / `.xpath()` / `.json()` helpers.
 - **AI-assisted scraping** — `AIExtractor` turns a plain-language field schema into validated CSS selectors; `AIScrapeAgent` orchestrates fetch + extract with robots.txt respect, 429/503 back-off (`Retry-After` honored), and "stuck → hand-off to human" semantics.
-- **JS reverse-engineering agent** — `ReverseAgent` runs an observe→think→act loop over a target URL using `CamoufoxFetcher` + DeepSeek-V4-Pro: injects JS hooks (fetch / XHR / cookie / `crypto.subtle` / webpack / console), captures network traffic, splits webpack bundles, then asks the LLM to deobfuscate and reimplement signing algorithms in Python. Exposed via both an MCP server (`web-crawler-mcp`) and a CLI (`web-crawler-reverse`).
+- **JS reverse-engineering agent** — `ReverseAgent` runs an observe→think→act loop over a target URL using `CamoufoxFetcher` + DeepSeek-V4-Pro: injects JS hooks (fetch / XHR / cookie / `crypto.subtle` / webpack / console), captures network traffic, splits webpack bundles, then asks the LLM to deobfuscate and reimplement signing algorithms in Python. Supports 6 real browser interaction actions (`click` / `type` / `scroll` / `press` / `hover` / `select_option`) via Playwright, with dangerous-click guardrails and selector-injection blocking. Exposed via both an MCP server (`web-crawler-mcp`) and a CLI (`web-crawler-reverse`). Web UI uses SSE real-time push (`/reverse/stream`) for live step events.
 
 ## Requirements
 
