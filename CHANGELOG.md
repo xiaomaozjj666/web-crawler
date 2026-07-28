@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Browser interaction actions**: `ReverseAgent` now supports 6 real
+  Playwright browser actions — `click`, `type`, `scroll`, `press`, `hover`,
+  `select_option` — in both sync `run` and async `arun` paths. All actions
+  use 10s timeout, auto-screenshot on failure, and emit `browser.action`
+  events for UI. LLM prompt extended with action descriptions.
+- **ActionGuard** gains 2 new rules: `no-dangerous-click` (blocks clicks on
+  删除/delete/logout/退出/withdraw/提现/支付 buttons) and
+  `no-selector-injection` (blocks JS injection in CSS selectors).
+- **ConfidenceScorer** `_VALID_ACTIONS` extended with 6 browser action types
+  and their required-parameter validation.
+- **RunRecorder** compile method extended to compile 6 browser actions into
+  replay scripts; also fixes a pre-existing indentation bug that prevented
+  multi-step paths from generating valid Python.
+- **SSE real-time push** (`GET /reverse/stream?id=...`): Server-Sent Events
+  endpoint streams `snapshot` / `step` / `final` events to the browser,
+  replacing 800ms HTTP polling. Frontend auto-degrades to polling on SSE
+  error.
+- **MCP progress token**: `reverse_engineer_url` now constructs a progress
+  token, subscribes to ReverseAgent's EventBus `step.end` events, and
+  actually calls `report_progress` to push progress notifications to MCP
+  clients (Cursor / Claude Desktop).
+- **Docker deployment**: `Dockerfile` (python:3.12-slim + Firefox ESR +
+  Playwright deps), `.dockerignore`, `docker-compose.yml` (port 8765 +
+  volume mounts + DEEPSEEK_API_KEY env), `.github/workflows/release.yml`
+  (push `v*` tag triggers build + PyPI publish + GitHub Release).
+- **`--host` CLI flag** for `app/ui.py` (default 127.0.0.1; use 0.0.0.0 in
+  Docker).
+- **26 new tests**: browser action execution (sync + async), confidence
+  scoring, guard blocking, recorder compilation, Action parsing, prompt
+  content. Test count: 260 → 286.
+- **Single-model strategy**: `ReverseAgentConfig.budget_total` and
+  `budget_per_step` default to `None` (budget disabled by default). UI
+  removes "LLM rerank" / "LLM scoring" toggles. `BudgetPolicy.DOWNGRADE`
+  documented as no-op under single-model strategy.
+
+### Changed
+- `pyproject.toml` `[tool.setuptools.packages.find]` extended to include
+  `app` package.
+- Web UI right panel replaced "Token budget" ring with "Task statistics"
+  card (steps / avg step time / elapsed / hook count / network count).
+- `app/ui.py` polling logic refactored: `pollReverse` split into
+  `updateReverseUI` (reusable by SSE) + `appendReverseEvent` (incremental).
+
+### Removed
+- Web UI "Token budget" panel, budget fieldset, budget JS update logic,
+  `ReverseJobState.budget_*` fields, budget event handlers.
+
+### Added (previous)
 - **Screenshot capture** (`ReverseAgent.enable_screenshot`): every observation
   step and every think/act error path now saves a PNG to
   `reverse_screenshots/<task_id>_step<N>[_error].png`. Failures are swallowed
