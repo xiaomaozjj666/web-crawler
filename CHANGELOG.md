@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- (none)
+
+## [0.3.0] - 2026-07-29
+
+### Added
 - **Image captcha solver** (`web_crawler.ai.image_captcha.ImageCaptchaSolver`):
   recognizes three image-challenge families without requiring a browser —
   text OCR (4–8 char alphanumeric), slider gap localization (Pillow + numpy
@@ -89,7 +94,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pentest toolkit" entries; architecture tree extended with
   `ai/image_captcha.py` and the `pentest/` subpackage.
 
-### End-to-end test suite (previous)
+### Removed
+- `ai.budget` module (`BudgetTracker` / `TokenBudget` / `BudgetPolicy`) and
+  all references in `reverse_agent` / `cli` / `__init__`.
+- `ai.vision` module (`VisionObserver`) and all references.
+- `.gitlab-ci.yml` (CI migrated to `.github/workflows/ci.yml`).
+- `start.bat` (no references; equivalent to the `crawler-ui` entry point).
+- `ReverseAgentConfig.budget_total` / `budget_per_step` fields.
+- CLI `--budget-total` / `--budget-per-step` arguments.
+- `test_ai.py` (2021 lines) split into 11 standalone test files.
+
+## [0.2.2] - 2026-07-28
+
+### Added
 - **End-to-end test suite** (`tests/test_e2e_reverse_agent.py`): starts a
   local HTTP server with a real `__sign` encryption page, launches
   `CamoufoxFetcher` + `ReverseAgent` through a full observe→think→act loop
@@ -136,21 +153,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **16 new tests**: 5 JA4 fingerprint customization, 8 multi-tab
   management, 5 humanized input trajectory (sync + async), plus
   benchmark regression smoke tests. Total test count: 286 → 302+.
-
-### Changed
-- `_FakeBrowserPage` / `_FakeAsyncBrowserPage` test mocks extended with
-  `goto` / `bring_to_front` / `close` / `on` methods to support the new
-  multi-tab and humanize tests.
-- `Fetcher` docstring updated to mention `ja4_fingerprint`.
-- README adds "Multi-tab management & humanized input", "JA4 fingerprint
-  customization", and "Documentation" sections; `--check-regression`
-  flag documented under Development.
-- `.gitlab-ci.yml` adds a `bench` stage (runs
-  `python benchmarks.py --check-regression`) and a `docs` stage (runs
-  `mkdocs build --strict`); `test` stage now runs
-  `pytest -m "not slow"` to skip the Camoufox e2e suite.
-
-### Added (previous)
 - **Browser interaction actions**: `ReverseAgent` now supports 6 real
   Playwright browser actions — `click`, `type`, `scroll`, `press`, `hover`,
   `select_option` — in both sync `run` and async `arun` paths. All actions
@@ -185,20 +187,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `budget_per_step` default to `None` (budget disabled by default). UI
   removes "LLM rerank" / "LLM scoring" toggles. `BudgetPolicy.DOWNGRADE`
   documented as no-op under single-model strategy.
-
-### Changed
-- `pyproject.toml` `[tool.setuptools.packages.find]` extended to include
-  `app` package.
-- Web UI right panel replaced "Token budget" ring with "Task statistics"
-  card (steps / avg step time / elapsed / hook count / network count).
-- `app/ui.py` polling logic refactored: `pollReverse` split into
-  `updateReverseUI` (reusable by SSE) + `appendReverseEvent` (incremental).
-
-### Removed
-- Web UI "Token budget" panel, budget fieldset, budget JS update logic,
-  `ReverseJobState.budget_*` fields, budget event handlers.
-
-### Added (previous)
 - **Screenshot capture** (`ReverseAgent.enable_screenshot`): every observation
   step and every think/act error path now saves a PNG to
   `reverse_screenshots/<task_id>_step<N>[_error].png`. Failures are swallowed
@@ -229,8 +217,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **10 new tests**: screenshot success/disabled/error/failure/none-page/async
   (mock page.screenshot), CLI run arg parsing, defaults, mocked execution,
   save-script-to-file.
-
-### Added
 - **JS reverse-engineering agent** (`web_crawler.ai.reverse_agent.ReverseAgent`):
   Camoufox-driven browser observe→think→act loop powered by DeepSeek-V4-Pro.
   Injects JS hooks (fetch / XHR / cookie / `crypto.subtle` / webpack / console),
@@ -272,6 +258,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     gains `force_compress` / `force_compress_async` for budget-driven compaction.
 
 ### Changed
+- `_FakeBrowserPage` / `_FakeAsyncBrowserPage` test mocks extended with
+  `goto` / `bring_to_front` / `close` / `on` methods to support the new
+  multi-tab and humanize tests.
+- `Fetcher` docstring updated to mention `ja4_fingerprint`.
+- README adds "Multi-tab management & humanized input", "JA4 fingerprint
+  customization", and "Documentation" sections; `--check-regression`
+  flag documented under Development.
+- `.gitlab-ci.yml` adds a `bench` stage (runs
+  `python benchmarks.py --check-regression`) and a `docs` stage (runs
+  `mkdocs build --strict`); `test` stage now runs
+  `pytest -m "not slow"` to skip the Camoufox e2e suite.
+- `pyproject.toml` `[tool.setuptools.packages.find]` extended to include
+  `app` package.
+- Web UI right panel replaced "Token budget" ring with "Task statistics"
+  card (steps / avg step time / elapsed / hook count / network count).
+- `app/ui.py` polling logic refactored: `pollReverse` split into
+  `updateReverseUI` (reusable by SSE) + `appendReverseEvent` (incremental).
 - `pyproject.toml`: bumped `[tool.mypy].python_version` to `"3.12"` (modern
   stubs like numpy 2.5 use PEP 695 `type` statements). `requires-python` still
   `>=3.10`; runtime compat is verified by the test suite.
@@ -292,6 +295,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BudgetPolicy.DOWNGRADE` is documented as a no-op under this strategy;
   use `COMPRESS` (default) or `STOP` for budget overruns.
 
+### Removed
+- Web UI "Token budget" panel, budget fieldset, budget JS update logic,
+  `ReverseJobState.budget_*` fields, budget event handlers.
 
 ## [0.2.1] — 2026-07-12
 

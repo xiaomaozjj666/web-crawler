@@ -41,7 +41,6 @@ from typing_extensions import Self
 
 from ..fetchers.camoufox import CamoufoxFetcher
 from .analyzer import AnalysisResult, JSAnalyzer, JSFragment
-from .budget import BudgetTracker, TokenBudget
 from .captcha import CaptchaManager, CaptchaType
 from .checkpoint import Checkpoint, CheckpointManager, CheckpointStore
 from .confidence import ConfidenceResult, ConfidenceScorer
@@ -239,10 +238,6 @@ class ReverseAgentConfig:
     checkpoint_interval: int = 1
     # Checkpoint：滚动保留数量
     checkpoint_keep: int = 5
-    # Budget：全局 token 上限，None 表示不限制（默认禁用，不做预算控制）
-    budget_total: int | None = None
-    # Budget：单步 token 上限，None 表示不限制
-    budget_per_step: int | None = None
     # Confidence：动作置信度阈值，低于此值触发 fallback（0-1）
     min_confidence: float = 0.4
     # Confidence：是否启用 LLM 评分
@@ -369,14 +364,6 @@ class ReverseAgent:
         # 最近一次 resume 加载的 checkpoint（None 表示非 resume 启动）
         self._resume_from: Checkpoint | None = None
 
-        # -- Token 预算管理 --------------------------------------------------
-        self.budget_tracker: BudgetTracker = BudgetTracker(
-            budget=TokenBudget(
-                total=self.config.budget_total,
-                per_step=self.config.budget_per_step,
-            )
-        )
-
         # -- 动作置信度评分 -------------------------------------------------
         self.confidence_scorer: ConfidenceScorer = ConfidenceScorer(
             min_confidence=self.config.min_confidence,
@@ -393,11 +380,11 @@ class ReverseAgent:
         )
         self._last_guard_result: GuardrailResult | None = None
 
-        # -- Budget / Confidence 共享的 LLM 调用缓存 ---------------------
+        # -- Confidence 共享的 LLM 调用缓存 ---------------------
         # _think 内部更新这两个字段，主循环用它们做 token 估算
         self._last_think_prompt: str = ""
         self._last_think_completion: str = ""
-        # provider 返回的真实 usage dict（若有），优先用于 budget 记账
+        # provider 返回的真实 usage dict（若有）
         self._last_llm_usage: dict[str, Any] | None = None
 
         # -- 截图缓存（每步截图路径收集，run/arun 结束后写入 result dict）---
@@ -446,12 +433,6 @@ class ReverseAgent:
         self._last_judge_result = None
         self._compiled_script = ""
         # 重置新组件
-        self.budget_tracker = BudgetTracker(
-            budget=TokenBudget(
-                total=self.config.budget_total,
-                per_step=self.config.budget_per_step,
-            )
-        )
         self._last_pruned_dom = None
         self._last_confidence = None
         self._last_guard_result = None
@@ -583,13 +564,6 @@ class ReverseAgent:
 
                 try:
                     action = self._think(observation, task, history, plan=self._current_plan)
-                    # Token 预算记账：用 think prompt 估算 + completion 估算
-                    self.budget_tracker.record_call(
-                        step=step,
-                        prompt_text=self._last_think_prompt or "",
-                        completion_text=self._last_think_completion or "",
-                        usage=self._last_llm_usage,
-                    )
                     self._emit(
                         EVENT_ACTION,
                         step=step,
@@ -619,21 +593,6 @@ class ReverseAgent:
                         reasons=conf_result.reasons,
                     )
                     action = self._fallback_action(observation)
-
-                # -- Token 预算检查 ----------------------------------------
-                if self.budget_tracker.should_compress():
-                    self._emit("budget.compress", step=step, **self.budget_tracker.summary())
-                    history, _ = self.context_compressor.force_compress(history)
-                if self.budget_tracker.should_stop():
-                    self._emit("budget.exceeded", step=step, **self.budget_tracker.summary())
-                    history.append(
-                        {
-                            "step": step,
-                            "event": "budget_exceeded",
-                            "summary": self.budget_tracker.summary(),
-                        }
-                    )
-                    break
 
                 history.append(
                     {
@@ -769,7 +728,6 @@ class ReverseAgent:
                         cumulative_summary=self.context_compressor.cumulative_summary,
                         metadata={
                             "confidence": conf_result.score,
-                            "budget": self.budget_tracker.summary(),
                             "guard_denied": bool(guard_result and guard_result.denied),
                         },
                     )
@@ -803,7 +761,6 @@ class ReverseAgent:
                     self._last_judge_result.to_dict() if self._last_judge_result else None
                 ),
                 "compiled_script": self._compiled_script or None,
-                "budget_summary": self.budget_tracker.summary(),
                 "last_confidence": (
                     {
                         "score": self._last_confidence.score,
@@ -844,12 +801,6 @@ class ReverseAgent:
         self._last_judge_result = None
         self._compiled_script = ""
         # 重置新组件
-        self.budget_tracker = BudgetTracker(
-            budget=TokenBudget(
-                total=self.config.budget_total,
-                per_step=self.config.budget_per_step,
-            )
-        )
         self._last_pruned_dom = None
         self._last_confidence = None
         self._last_guard_result = None
@@ -990,13 +941,6 @@ class ReverseAgent:
                     action = await self._think_async(
                         observation, task, history, plan=self._current_plan
                     )
-                    # Token 预算记账
-                    self.budget_tracker.record_call(
-                        step=step,
-                        prompt_text=self._last_think_prompt or "",
-                        completion_text=self._last_think_completion or "",
-                        usage=self._last_llm_usage,
-                    )
                     self._emit(
                         EVENT_ACTION,
                         step=step,
@@ -1026,21 +970,6 @@ class ReverseAgent:
                         reasons=conf_result.reasons,
                     )
                     action = self._fallback_action(observation)
-
-                # -- Token 预算检查 ----------------------------------------
-                if self.budget_tracker.should_compress():
-                    self._emit("budget.compress", step=step, **self.budget_tracker.summary())
-                    history, _ = await self.context_compressor.force_compress_async(history)
-                if self.budget_tracker.should_stop():
-                    self._emit("budget.exceeded", step=step, **self.budget_tracker.summary())
-                    history.append(
-                        {
-                            "step": step,
-                            "event": "budget_exceeded",
-                            "summary": self.budget_tracker.summary(),
-                        }
-                    )
-                    break
 
                 history.append(
                     {
@@ -1170,7 +1099,6 @@ class ReverseAgent:
                         cumulative_summary=self.context_compressor.cumulative_summary,
                         metadata={
                             "confidence": conf_result.score,
-                            "budget": self.budget_tracker.summary(),
                             "guard_denied": bool(guard_result and guard_result.denied),
                         },
                     )
@@ -1202,7 +1130,6 @@ class ReverseAgent:
                     self._last_judge_result.to_dict() if self._last_judge_result else None
                 ),
                 "compiled_script": self._compiled_script or None,
-                "budget_summary": self.budget_tracker.summary(),
                 "last_confidence": (
                     {
                         "score": self._last_confidence.score,
@@ -1323,7 +1250,6 @@ class ReverseAgent:
     ) -> Action:
         """调 DeepSeek 分析当前状态，决定下一步。"""
         prompt = self._build_think_prompt(observation, task, history, plan=plan)
-        # 暂存 prompt / completion 供 BudgetTracker 记账使用
         self._last_think_prompt = prompt
         self._last_think_completion = ""
         messages = [LLMMessage("system", _THINK_SYSTEM_PROMPT), LLMMessage("user", prompt)]

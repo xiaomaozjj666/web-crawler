@@ -2,4 +2,4 @@
 
 from .server import ReverseMCPServer
 
-__all__ = ["ReverseMCPServer", "cli_main", "main"]
+__all__ = ["ReverseMCPServer"]
