@@ -33,6 +33,7 @@ src/web_crawler/          # 核心库
     hooks.py              # JS Hook 库（fetch/XHR/cookie/crypto/webpack/console）
     analyzer.py           # JSAnalyzer（webpack 模块抽取 + AI 反混淆）
     captcha.py            # CaptchaManager（检测 + 仅人类化处理）
+    image_captcha.py     # ImageCaptchaSolver（OCR / slider 缺口 / click 点选，LLM Vision + ddddocr/Pillow 降级）
     reverse_agent.py      # ReverseAgent（observe→think→act 循环）
     vision.py             # VisionObserver（Vision-LLM 截图感知双模态）
     planner.py            # Planner/Actor 双脑分离 + 周期重规划
@@ -46,6 +47,13 @@ src/web_crawler/          # 核心库
     budget.py             # BudgetTracker（Token 预算管理，单步/全局/单次）
     confidence.py         # ConfidenceScorer（动作置信度评分，规则 + LLM 双路径）
     guardrails.py         # ActionGuard（危险动作护栏，白名单 + 跨域拦截）
+  pentest/                # 轻量渗透辅助工具集（纯 Python，无外部命令依赖）
+    port_scanner.py       # PortScanner（TCP connect 扫描，TOP-100 端口）
+    dir_bruter.py         # DirBruter（目录/文件路径爆破）
+    subdomain.py          # SubdomainEnumerator（DNS 子域名枚举）
+    vuln_scanner.py       # VulnScanner（SQLi/XSS/路径穿越规则检测）
+    header_check.py       # HeaderChecker（8 项 HTTP 安全头检测 + A-F 评级）
+    report.py             # PentestReport（聚合所有结果 + summary/to_dict/to_json）
   mcp/                    # MCP server + CLI
     server.py             # ReverseMCPServer（JSON-RPC over stdio）
     cli.py                # web-crawler-reverse 命令行

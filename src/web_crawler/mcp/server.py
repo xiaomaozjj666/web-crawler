@@ -907,6 +907,7 @@ class ReverseMCPServer:
 
         合规声明：仅用于已获书面授权的目标。
         """
+        import signal
         from urllib.parse import urlparse
 
         from ..pentest import (
@@ -929,27 +930,59 @@ class ReverseMCPServer:
         else:
             host = target
             base_url = f"https://{host}/"
-        checks = args.get("checks") or ["ports", "dirs", "subdomains", "vulns", "headers"]
+
+        all_checks = ["ports", "dirs", "subdomains", "vulns", "headers"]
+        checks = args.get("checks") or all_checks
+        # 校验 checks 名称，避免拼写错误静默跳过
+        unknown = [c for c in checks if c not in all_checks]
+        if unknown:
+            return _error(
+                f"unknown check names: {unknown}. Valid: {all_checks}",
+            )
+
         custom_ports = args.get("ports")
+        timeout = float(args.get("timeout", 30.0))
+        timeout = max(1.0, min(timeout, 300.0))
 
         report = PentestReport(target=target)
         try:
-            if "ports" in checks:
-                scanner = PortScanner()
-                ports_to_scan = custom_ports if custom_ports else None
-                report.port_scan = scanner.scan(host, ports_to_scan)
-            if "dirs" in checks:
-                bruter = DirBruter()
-                report.dir_brute = bruter.brute(base_url)
-            if "subdomains" in checks:
-                enumerator = SubdomainEnumerator()
-                report.subdomains = enumerator.enumerate(host)
-            if "vulns" in checks:
-                vuln_scanner = VulnScanner()
-                report.vulns = vuln_scanner.scan_url(base_url)
-            if "headers" in checks:
-                checker = HeaderChecker()
-                report.headers = checker.check(base_url)
+            # 用 SIGALRM 实现整体超时（仅 Unix；Windows 下退化为单检查项无全局上限）
+            use_alarm = hasattr(signal, "SIGALRM")
+
+            def _run_all() -> None:
+                if "ports" in checks:
+                    scanner = PortScanner()
+                    ports_to_scan = custom_ports if custom_ports else None
+                    report.port_scan = scanner.scan(host, ports_to_scan)
+                if "dirs" in checks:
+                    bruter = DirBruter()
+                    report.dir_brute = bruter.brute(base_url)
+                if "subdomains" in checks:
+                    enumerator = SubdomainEnumerator()
+                    report.subdomains = enumerator.enumerate(host)
+                if "vulns" in checks:
+                    vuln_scanner = VulnScanner()
+                    report.vulns = vuln_scanner.scan_url(base_url)
+                if "headers" in checks:
+                    checker = HeaderChecker()
+                    report.headers = checker.check(base_url)
+
+            if use_alarm:
+                old_handler = signal.signal(  # type: ignore[attr-defined]
+                    signal.SIGALRM,  # type: ignore[attr-defined]
+                    lambda *_: None,
+                )
+                signal.alarm(int(timeout))  # type: ignore[attr-defined]
+                try:
+                    _run_all()
+                finally:
+                    signal.alarm(0)  # type: ignore[attr-defined]
+                    signal.signal(  # type: ignore[attr-defined]
+                        signal.SIGALRM,  # type: ignore[attr-defined]
+                        old_handler,
+                    )
+            else:
+                _run_all()
         except Exception as exc:
             return _error("pentest recon failed", details=str(exc))
         return _to_json(report.to_dict())

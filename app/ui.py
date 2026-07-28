@@ -1440,7 +1440,6 @@ def build_args(form: dict[str, list[str]]) -> object:
     args.smart_extract = checked("smart_extract")
     args.resume_crawl = checked("resume_crawl")
     args.extract_text = checked("extract_text")
-    args.rewrite_html = checked("strip_overlays")
     args.crawl_pages = checked("crawl_pages")
     args.respect_robots = checked("respect_robots")
     args.stealth = checked("stealth")

@@ -25,10 +25,13 @@ extract 等）编译成一段独立可执行的 Python 脚本。下次面对同�
 from __future__ import annotations
 
 import json
+import logging
 import re
 import textwrap
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -166,9 +169,14 @@ class ScriptCompiler:
                 continue
             handler_name = self._HANDLER_MAP.get(rec.action_type)
             if handler_name is None:
-                # 未知动作类型：写一条注释，便于人工补全
+                # 未知动作类型：记录警告并写一条注释，便于人工补全
+                logger.warning(
+                    "unsupported action %r at step %d — replay script will skip it",
+                    rec.action_type,
+                    rec.step,
+                )
                 body_lines.append(
-                    f"    # TODO: unsupported action {rec.action_type!r} at step {rec.step}"
+                    f"    # NOTE: unsupported action {rec.action_type!r} at step {rec.step}"
                 )
                 continue
             handler = getattr(self, handler_name)
