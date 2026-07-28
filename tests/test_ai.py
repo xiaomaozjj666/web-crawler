@@ -958,6 +958,9 @@ class _FakeBrowserPage:
         self.press_calls: list[str] = []
         self.hover_calls: list[dict[str, Any]] = []
         self.select_option_calls: list[dict[str, Any]] = []
+        self.goto_calls: list[dict[str, Any]] = []
+        self.bring_to_front_calls: int = 0
+        self.close_calls: int = 0
 
     def click(self, selector: str, *, button: str = "left", timeout: int = 0) -> None:
         self.click_calls.append({"selector": selector, "button": button, "timeout": timeout})
@@ -984,6 +987,18 @@ class _FakeBrowserPage:
     def select_option(self, selector: str, value: str, *, timeout: int = 0) -> None:
         self.select_option_calls.append({"selector": selector, "value": value, "timeout": timeout})
 
+    def goto(self, url: str, **kwargs: Any) -> None:
+        self.goto_calls.append({"url": url, **kwargs})
+
+    def bring_to_front(self) -> None:
+        self.bring_to_front_calls += 1
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+    def on(self, event: str, handler: Any) -> None:
+        pass
+
 
 class _FakeAsyncBrowserPage:
     """模拟 Playwright Page 的浏览器交互方法（异步版本）。"""
@@ -997,6 +1012,9 @@ class _FakeAsyncBrowserPage:
         self.press_calls: list[str] = []
         self.hover_calls: list[dict[str, Any]] = []
         self.select_option_calls: list[dict[str, Any]] = []
+        self.goto_calls: list[dict[str, Any]] = []
+        self.bring_to_front_calls: int = 0
+        self.close_calls: int = 0
 
     async def click(self, selector: str, *, button: str = "left", timeout: int = 0) -> None:
         self.click_calls.append({"selector": selector, "button": button, "timeout": timeout})
@@ -1022,6 +1040,18 @@ class _FakeAsyncBrowserPage:
 
     async def select_option(self, selector: str, value: str, *, timeout: int = 0) -> None:
         self.select_option_calls.append({"selector": selector, "value": value, "timeout": timeout})
+
+    async def goto(self, url: str, **kwargs: Any) -> None:
+        self.goto_calls.append({"url": url, **kwargs})
+
+    async def bring_to_front(self) -> None:
+        self.bring_to_front_calls += 1
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+    def on(self, event: str, handler: Any) -> None:
+        pass
 
 
 def _make_agent_for_browser_actions() -> Any:
@@ -1574,3 +1604,418 @@ def test_reverse_agent_prompt_lists_browser_actions() -> None:
 
     for atype in ["click", "type", "scroll", "press", "hover", "select_option"]:
         assert atype in _THINK_USER_TEMPLATE
+
+
+# -- 多标签页管理（new_tab / switch_tab / close_tab） -----------------------
+
+
+class _FakeBrowserContext:
+    """模拟 Playwright BrowserContext，用于多标签页测试。"""
+
+    def __init__(self) -> None:
+        self.pages: list[_FakeBrowserPage] = []
+        self.next_id = 0
+
+    def new_page(self) -> _FakeBrowserPage:
+        page = _FakeBrowserPage()
+        page._tab_id = self.next_id  # type: ignore[attr-defined]
+        self.next_id += 1
+        self.pages.append(page)
+        return page
+
+
+def _make_agent_with_context() -> Any:
+    """构造带 _context 的 ReverseAgent，用于多标签页测试。"""
+    from web_crawler.ai.reverse_agent import ReverseAgent, ReverseAgentConfig
+
+    cfg = ReverseAgentConfig(
+        enable_screenshot=False,
+        enable_guard=False,
+        enable_judge=False,
+        enable_recorder=False,
+        planner_interval=None,
+        humanize_input=False,
+        wait_after_navigate=0.0,
+    )
+    agent = ReverseAgent(config=cfg)
+    agent._context = _FakeBrowserContext()
+    return agent
+
+
+def test_execute_new_tab_action() -> None:
+    """new_tab 动作应创建新 page 并切到新标签；主页面登记为 'main'。"""
+    agent = _make_agent_with_context()
+    try:
+        main_page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict(
+            {
+                "action_type": "new_tab",
+                "params": {"url": "https://example.com/tab2", "name": "second"},
+            }
+        )
+        agent._do_new_tab(main_page, action, step=1)
+        # _tabs 应包含 'main' 和 'second'
+        assert "main" in agent._tabs
+        assert "second" in agent._tabs
+        assert agent._tabs["main"] is main_page
+        # 当前 _page 应切到新标签
+        assert agent._page is agent._tabs["second"]
+        assert agent._page is not main_page
+        # 新标签应被导航到 url
+        new_tab = agent._tabs["second"]
+        assert len(new_tab.goto_calls) == 1
+        assert new_tab.goto_calls[0]["url"] == "https://example.com/tab2"
+    finally:
+        agent.close()
+
+
+def test_execute_new_tab_default_name() -> None:
+    """new_tab 不传 name 时应使用 tab_N 作为默认名。"""
+    agent = _make_agent_with_context()
+    try:
+        main_page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict({"action_type": "new_tab", "params": {"url": ""}})
+        agent._do_new_tab(main_page, action, step=1)
+        # 默认名应为 tab_0（首次新建，main 不计入计数）
+        assert "tab_0" in agent._tabs
+    finally:
+        agent.close()
+
+
+def test_execute_switch_tab_by_name() -> None:
+    """switch_tab 按 name 切换应更新 self._page。"""
+    agent = _make_agent_with_context()
+    try:
+        main_page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        # 先新建一个 tab
+        agent._do_new_tab(
+            main_page,
+            Action.from_dict({"action_type": "new_tab", "params": {"url": "", "name": "t2"}}),
+            step=1,
+        )
+        new_tab = agent._tabs["t2"]
+        # 切回 main
+        agent._do_switch_tab(
+            new_tab,
+            Action.from_dict({"action_type": "switch_tab", "params": {"name": "main"}}),
+            step=2,
+        )
+        assert agent._page is main_page
+        # 再切到 t2
+        agent._do_switch_tab(
+            main_page,
+            Action.from_dict({"action_type": "switch_tab", "params": {"name": "t2"}}),
+            step=3,
+        )
+        assert agent._page is new_tab
+    finally:
+        agent.close()
+
+
+def test_execute_switch_tab_by_index() -> None:
+    """switch_tab 按 index 切换应按 _tabs 插入顺序解析。"""
+    agent = _make_agent_with_context()
+    try:
+        main_page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        agent._do_new_tab(
+            main_page,
+            Action.from_dict({"action_type": "new_tab", "params": {"url": "", "name": "second"}}),
+            step=1,
+        )
+        # _do_new_tab 先插入 "second" 再插入 "main"，所以 index=0 是 second，index=1 是 main
+        agent._do_switch_tab(
+            agent._tabs["second"],
+            Action.from_dict({"action_type": "switch_tab", "params": {"index": 1}}),
+            step=2,
+        )
+        assert agent._page is main_page
+        # index=0 应回到 second
+        agent._do_switch_tab(
+            main_page,
+            Action.from_dict({"action_type": "switch_tab", "params": {"index": 0}}),
+            step=3,
+        )
+        assert agent._page is agent._tabs["second"]
+    finally:
+        agent.close()
+
+
+def test_execute_switch_tab_unknown_raises() -> None:
+    """switch_tab 找不到标签时应抛 ValueError。"""
+    agent = _make_agent_with_context()
+    try:
+        main_page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict({"action_type": "switch_tab", "params": {"name": "nonexistent"}})
+        with pytest.raises(ValueError, match="switch_tab"):
+            agent._do_switch_tab(main_page, action, step=1)
+    finally:
+        agent.close()
+
+
+def test_execute_close_tab_action() -> None:
+    """close_tab 应从 _tabs 移除并把 _page 回退到 main。"""
+    agent = _make_agent_with_context()
+    try:
+        main_page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        # 新建 second tab
+        agent._do_new_tab(
+            main_page,
+            Action.from_dict({"action_type": "new_tab", "params": {"url": "", "name": "second"}}),
+            step=1,
+        )
+        assert "second" in agent._tabs
+        # 关闭 second
+        agent._do_close_tab(
+            agent._tabs["second"],
+            Action.from_dict({"action_type": "close_tab", "params": {"name": "second"}}),
+            step=2,
+        )
+        assert "second" not in agent._tabs
+        # _page 应回退到 main
+        assert agent._page is main_page
+    finally:
+        agent.close()
+
+
+def test_execute_close_tab_unknown_raises() -> None:
+    """close_tab 找不到 name 时应抛 ValueError。"""
+    agent = _make_agent_with_context()
+    try:
+        main_page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict({"action_type": "close_tab", "params": {"name": "ghost"}})
+        with pytest.raises(ValueError, match="close_tab"):
+            agent._do_close_tab(main_page, action, step=1)
+    finally:
+        agent.close()
+
+
+def test_new_tab_action_emits_event() -> None:
+    """new_tab 动作应发布 browser.action 事件。"""
+    agent = _make_agent_with_context()
+    try:
+        events: list[dict[str, Any]] = []
+
+        def _handler(event: Any) -> None:
+            events.append({"type": event.type, "step": event.step, **event.payload})
+
+        agent.event_bus.subscribe(_handler)
+        main_page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict(
+            {"action_type": "new_tab", "params": {"url": "https://x.example", "name": "n1"}}
+        )
+        agent._do_new_tab(main_page, action, step=5)
+        tab_events = [
+            e for e in events if e["type"] == "browser.action" and e.get("action") == "new_tab"
+        ]
+        assert len(tab_events) == 1
+        assert tab_events[0]["name"] == "n1"
+        assert tab_events[0]["url"] == "https://x.example"
+        assert tab_events[0]["step"] == 5
+    finally:
+        agent.close()
+
+
+# -- 人类化输入轨迹（humanize_input） ---------------------------------------
+
+
+def test_humanize_click_hovers_before_click() -> None:
+    """humanize_input=True 时 click 应先 hover 再 click。"""
+    from web_crawler.ai.reverse_agent import ReverseAgent, ReverseAgentConfig
+
+    cfg = ReverseAgentConfig(
+        enable_screenshot=False,
+        enable_guard=False,
+        enable_judge=False,
+        enable_recorder=False,
+        planner_interval=None,
+        humanize_input=True,
+    )
+    agent = ReverseAgent(config=cfg)
+    try:
+        page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict({"action_type": "click", "params": {"selector": "button#x"}})
+        agent._act(page, action, step=1)
+        # hover 应被调用（人类化先 hover）
+        assert len(page.hover_calls) == 1
+        assert page.hover_calls[0]["selector"] == "button#x"
+        # click 也应被调用
+        assert len(page.click_calls) == 1
+        assert page.click_calls[0]["selector"] == "button#x"
+    finally:
+        agent.close()
+
+
+def test_humanize_type_focuses_before_type() -> None:
+    """humanize_input=True 时 type 应先 focus 再 type。"""
+    from web_crawler.ai.reverse_agent import ReverseAgent, ReverseAgentConfig
+
+    cfg = ReverseAgentConfig(
+        enable_screenshot=False,
+        enable_guard=False,
+        enable_judge=False,
+        enable_recorder=False,
+        planner_interval=None,
+        humanize_input=True,
+    )
+    agent = ReverseAgent(config=cfg)
+    try:
+        page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict(
+            {"action_type": "type", "params": {"selector": "input#q", "text": "hi"}}
+        )
+        agent._act(page, action, step=1)
+        # focus 应被调用
+        assert len(page.focus_calls) == 1
+        assert page.focus_calls[0]["selector"] == "input#q"
+        # type 也应被调用（mock 不支持 delay，TypeError 退化为不带 delay）
+        assert len(page.type_calls) == 1
+        assert page.type_calls[0]["text"] == "hi"
+    finally:
+        agent.close()
+
+
+def test_humanize_disabled_skips_hover_and_focus() -> None:
+    """humanize_input=False 时 click 不 hover，type 不 focus。"""
+    from web_crawler.ai.reverse_agent import ReverseAgent, ReverseAgentConfig
+
+    cfg = ReverseAgentConfig(
+        enable_screenshot=False,
+        enable_guard=False,
+        enable_judge=False,
+        enable_recorder=False,
+        planner_interval=None,
+        humanize_input=False,
+    )
+    agent = ReverseAgent(config=cfg)
+    try:
+        page = _FakeBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        # click：不应 hover
+        agent._act(
+            page,
+            Action.from_dict({"action_type": "click", "params": {"selector": "button#x"}}),
+            step=1,
+        )
+        assert page.hover_calls == []
+        assert len(page.click_calls) == 1
+        # type：不应 focus
+        agent._act(
+            page,
+            Action.from_dict(
+                {
+                    "action_type": "type",
+                    "params": {"selector": "input#q", "text": "hi", "clear": False},
+                }
+            ),
+            step=2,
+        )
+        assert page.focus_calls == []
+        assert len(page.type_calls) == 1
+    finally:
+        agent.close()
+
+
+def test_humanize_click_async_hovers_before_click() -> None:
+    """异步路径 humanize_input=True 时 click 应先 hover 再 click。"""
+    import asyncio
+
+    from web_crawler.ai.reverse_agent import ReverseAgent, ReverseAgentConfig
+
+    cfg = ReverseAgentConfig(
+        enable_screenshot=False,
+        enable_guard=False,
+        enable_judge=False,
+        enable_recorder=False,
+        planner_interval=None,
+        humanize_input=True,
+    )
+    agent = ReverseAgent(config=cfg)
+    try:
+        page = _FakeAsyncBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict({"action_type": "click", "params": {"selector": "button#async"}})
+
+        async def _run() -> None:
+            await agent._act_async(page, action, step=1)
+
+        asyncio.run(_run())
+        assert len(page.hover_calls) == 1
+        assert page.hover_calls[0]["selector"] == "button#async"
+        assert len(page.click_calls) == 1
+    finally:
+        agent.close()
+
+
+def test_humanize_type_async_focuses_before_type() -> None:
+    """异步路径 humanize_input=True 时 type 应先 focus 再 type。"""
+    import asyncio
+
+    from web_crawler.ai.reverse_agent import ReverseAgent, ReverseAgentConfig
+
+    cfg = ReverseAgentConfig(
+        enable_screenshot=False,
+        enable_guard=False,
+        enable_judge=False,
+        enable_recorder=False,
+        planner_interval=None,
+        humanize_input=True,
+    )
+    agent = ReverseAgent(config=cfg)
+    try:
+        page = _FakeAsyncBrowserPage()
+        from web_crawler.ai.reverse_agent import Action
+
+        action = Action.from_dict(
+            {"action_type": "type", "params": {"selector": "input#q", "text": "abc"}}
+        )
+
+        async def _run() -> None:
+            await agent._act_async(page, action, step=1)
+
+        asyncio.run(_run())
+        assert len(page.focus_calls) == 1
+        assert page.focus_calls[0]["selector"] == "input#q"
+        assert len(page.type_calls) == 1
+    finally:
+        agent.close()
+
+
+# -- Prompt 应包含多标签页与 humanize 说明 ----------------------------------
+
+
+def test_prompt_lists_multi_tab_actions() -> None:
+    """_THINK_USER_TEMPLATE 应在动作列表中包含 new_tab / switch_tab / close_tab。"""
+    from web_crawler.ai.reverse_agent import _THINK_USER_TEMPLATE
+
+    for atype in ["new_tab", "switch_tab", "close_tab"]:
+        assert atype in _THINK_USER_TEMPLATE, f"prompt 缺少 {atype} 动作说明"
+
+
+def test_reverse_agent_config_humanize_input_default_true() -> None:
+    """ReverseAgentConfig.humanize_input 默认应为 True。"""
+    from web_crawler.ai.reverse_agent import ReverseAgentConfig
+
+    cfg = ReverseAgentConfig()
+    assert cfg.humanize_input is True

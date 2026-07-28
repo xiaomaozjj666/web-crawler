@@ -104,6 +104,7 @@ class _FetcherCore(BaseFetcher):
         follow_redirects: bool = True,
         verify: bool = True,
         http2: bool = True,
+        ja4_fingerprint: str | None = None,
     ) -> None:
         super().__init__(
             timeout=timeout,
@@ -117,6 +118,10 @@ class _FetcherCore(BaseFetcher):
         )
         self.impersonate = impersonate
         self.http2 = http2
+        # JA4/JA3 指纹定制：传入时通过 curl_cffi 的 ja3 参数覆盖默认 TLS 扩展顺序。
+        # curl_cffi 0.7+ 支持在 Session 构造时传 ja3 字符串做细粒度 TLS 指纹定制；
+        # 若 curl_cffi 不可用则此字段被忽略（httpx 后端无 TLS 指纹能力）。
+        self.ja4_fingerprint = ja4_fingerprint
 
         # Backend is selected once at construction; sessions are built lazily.
         self._use_curl: bool = HAS_CURL_CFFI
@@ -149,6 +154,10 @@ class _FetcherCore(BaseFetcher):
         }
         if not self.http2:
             kwargs["http_version"] = CurlHttpVersion.V1_1
+        if self.ja4_fingerprint:
+            # curl_cffi 的 ja3 参数接受 JA3/JA4 格式的 TLS 扩展字符串，
+            # 覆盖 impersonate 预设的默认 TLS 指纹。
+            kwargs["ja3"] = self.ja4_fingerprint
         return CurlSession(**kwargs)
 
     def _build_curl_async_session(self) -> Any:
@@ -161,6 +170,8 @@ class _FetcherCore(BaseFetcher):
         }
         if not self.http2:
             kwargs["http_version"] = CurlHttpVersion.V1_1
+        if self.ja4_fingerprint:
+            kwargs["ja3"] = self.ja4_fingerprint
         return CurlAsyncSession(**kwargs)
 
     def _build_httpx_sync_client(self, proxy: str | None = None) -> Any:

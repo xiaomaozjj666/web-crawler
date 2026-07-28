@@ -5,7 +5,7 @@ A Scrapling-aligned stealth web scraping library for Python: **adaptive selector
 ## Highlights
 
 - **Adaptive parser** — `Selector` over `lxml` with element fingerprinting and structural-similarity relocation. When a site's markup changes, stored fingerprints re-find the element automatically (Scrapling's signature feature). Public `save`/`retrieve`/`relocate` API lets you manage fingerprints explicitly. Includes `find_by_regex`, `re`/`re_first`, `get_all_text`, `prettify`, full DOM traversal (`parent`/`children`/`siblings`/`next`/`previous`/`path`), and `ResultList` batch helpers (`css`/`xpath`/`get`/`getall`/`.first`/`.last`).
-- **Stealth HTTP** — `Fetcher` uses `curl_cffi` to replay a real browser's TLS/JA3 fingerprint and HTTP/2 frame ordering, so requests are indistinguishable from Chrome at the network layer. Degrades to `httpx` (with a warning) when `curl_cffi` is absent. `AsyncFetcher` provides a pure async-only API surface.
+- **Stealth HTTP** — `Fetcher` uses `curl_cffi` to replay a real browser's TLS/JA3 fingerprint and HTTP/2 frame ordering, so requests are indistinguishable from Chrome at the network layer. Supports `ja4_fingerprint` for fine-grained TLS extension customization (passed through to `curl_cffi`'s `ja3` parameter, overriding the `impersonate` preset). Degrades to `httpx` (with a warning) when `curl_cffi` is absent. `AsyncFetcher` provides a pure async-only API surface.
 - **Lazy imports** — `import web_crawler` never forces `playwright` or `curl_cffi` to load; heavy submodules resolve on first access (Scrapling-style).
 - **JS rendering** — `DynamicFetcher` drives Playwright/Chromium to render dynamic pages, block resources for speed, and wait on selectors.
 - **Anti-bot** — `StealthyFetcher` injects fingerprint-patching JS, humanizes mouse/scroll, and best-effort solves Cloudflare challenges.
@@ -13,7 +13,7 @@ A Scrapling-aligned stealth web scraping library for Python: **adaptive selector
 - **Spider framework** — `Spider`/`Request` with callback dispatch, priority scheduling, domain filtering, dedup, and JSON-based pause/resume.
 - **Unified `Response`** — every fetcher returns the same `Response` with `.css()` / `.xpath()` / `.json()` helpers.
 - **AI-assisted scraping** — `AIExtractor` turns a plain-language field schema into validated CSS selectors; `AIScrapeAgent` orchestrates fetch + extract with robots.txt respect, 429/503 back-off (`Retry-After` honored), and "stuck → hand-off to human" semantics.
-- **JS reverse-engineering agent** — `ReverseAgent` runs an observe→think→act loop over a target URL using `CamoufoxFetcher` + DeepSeek-V4-Pro: injects JS hooks (fetch / XHR / cookie / `crypto.subtle` / webpack / console), captures network traffic, splits webpack bundles, then asks the LLM to deobfuscate and reimplement signing algorithms in Python. Supports 6 real browser interaction actions (`click` / `type` / `scroll` / `press` / `hover` / `select_option`) via Playwright, with dangerous-click guardrails and selector-injection blocking. Exposed via both an MCP server (`web-crawler-mcp`) and a CLI (`web-crawler-reverse`). Web UI uses SSE real-time push (`/reverse/stream`) for live step events.
+- **JS reverse-engineering agent** — `ReverseAgent` runs an observe→think→act loop over a target URL using `CamoufoxFetcher` + DeepSeek-V4-Pro: injects JS hooks (fetch / XHR / cookie / `crypto.subtle` / webpack / console), captures network traffic, splits webpack bundles, then asks the LLM to deobfuscate and reimplement signing algorithms in Python. Supports 6 real browser interaction actions (`click` / `type` / `scroll` / `press` / `hover` / `select_option`) via Playwright, plus 3 multi-tab actions (`new_tab` / `switch_tab` / `close_tab`) and humanized input trajectories (hover-before-click, per-keystroke random delay). Dangerous-click guardrails and selector-injection blocking built in. Exposed via both an MCP server (`web-crawler-mcp`) and a CLI (`web-crawler-reverse`). Web UI uses SSE real-time push (`/reverse/stream`) for live step events.
 
 ## Requirements
 
@@ -328,6 +328,51 @@ All capabilities are optional and individually toggleable via
 `ReverseAgentConfig` fields (e.g. `enable_checkpoint=True`,
 `budget_total=100_000`, `min_confidence=0.4`, `enable_guard=True`).
 
+### Multi-tab management & humanized input
+
+`ReverseAgent` supports 3 multi-tab actions on top of the 6 browser
+interaction actions:
+
+| Action | Params | Behavior |
+| --- | --- | --- |
+| `new_tab` | `url`, `name` (optional) | Open a new tab, navigate, switch `self._page` to it; main page registered as `"main"` |
+| `switch_tab` | `name` **or** `index` | Switch active page by name or insertion-order index; calls `bring_to_front` |
+| `close_tab` | `name` | Close the tab; if it was active, `self._page` falls back to `main` |
+
+`ReverseAgentConfig.humanize_input=True` (default) enables trajectory
+simulation to evade anti-bot detection:
+
+- **`click`** — `hover(selector)` moves the cursor first, then a random
+  50–200 ms delay, then `click`
+- **`type`** — `focus(selector)`, a 100–300 ms "thinking" pause, then
+  `type(text, delay=30–150ms)` for per-keystroke rhythm
+
+Both sync (`run`) and async (`arun`) paths implement the humanized variants;
+mock objects that don't accept `delay=` auto-degrade via `TypeError` fallback.
+
+### JA4 fingerprint customization
+
+`Fetcher(ja4_fingerprint=...)` passes a JA3/JA4 TLS extension string through
+to `curl_cffi`'s `ja3` parameter, overriding the `impersonate` preset's
+default TLS fingerprint. This enables fine-grained customization of the
+TLS ClientHello (cipher order, extensions, supported groups) beyond the
+built-in browser presets:
+
+```python
+from web_crawler import Fetcher
+
+# Use Chrome 131's HTTP/2 frame ordering but a custom JA4 TLS fingerprint
+with Fetcher(
+    impersonate="chrome131",
+    ja4_fingerprint="t13d1516h2_8daaf6152771_b0da82dd1658",
+) as f:
+    resp = f.get("https://example.com")
+```
+
+When `curl_cffi` is not installed (httpx fallback), `ja4_fingerprint` is
+silently ignored (httpx has no TLS fingerprint capability). Both sync
+`Fetcher` and `AsyncFetcher` honor the parameter.
+
 ### Single-model strategy
 
 `ReverseAgent` uses a **single DeepSeek V4 Pro** instance shared by every
@@ -339,6 +384,26 @@ no-op under this strategy. Override only if you bring your own multi-model
 setup; the defaults assume DeepSeek V4 Pro everywhere.
 
 
+## Documentation
+
+An API documentation site is built with [MkDocs Material](https://squidfunk.github.io/mkdocs-material/)
++ [mkdocstrings](https://mkdocstrings.github.io/). Source lives in `docs/`,
+config in `mkdocs.yml`.
+
+```bash
+pip install -e ".[docs]"
+mkdocs serve          # http://127.0.0.1:8000
+mkdocs build          # static site in site/
+```
+
+The site covers:
+
+- **Home / quick start** — install + minimal examples
+- **Architecture** — module tree + per-layer responsibilities + data flow
+- **JS reverse agent** — full usage guide, all actions, all config fields
+- **API reference** — auto-generated from docstrings via mkdocstrings
+
+
 ## Development
 
 ```bash
@@ -347,9 +412,13 @@ ruff format .         # format
 mypy src              # type-check
 pytest --cov=web_crawler   # tests + coverage
 python benchmarks.py       # parser/adaptive micro-benchmarks
+python benchmarks.py --check-regression   # CI: fail on >20% regression vs built-in baseline
 ```
 
-CI (`.gitlab-ci.yml`) runs lint, type-check, and tests with coverage on every push.
+CI (`.gitlab-ci.yml`) runs lint, type-check, tests with coverage, a
+benchmark regression check, and a docs build on every push. Slow tests
+(marked `@pytest.mark.slow`, e.g. the Camoufox end-to-end suite) are
+excluded from the default CI test run via `-m "not slow"`.
 
 ## License
 

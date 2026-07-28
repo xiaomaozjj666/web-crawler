@@ -1,0 +1,66 @@
+site_name: web-crawler 文档
+site_description: Scrapling 风格隐身爬虫库 + JS 逆向 Agent
+site_url: https://github.com/xiaomaozjj666/web-crawler
+repo_url: https://github.com/xiaomaozjj666/web-crawler
+repo_name: xiaomaozjj666/web-crawler
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+
+theme:
+  name: material
+  language: zh
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+    - content.code.annotate
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: 切换暗色模式
+    - scheme: slate
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-4
+        name: 切换亮色模式
+
+plugins:
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: true
+            show_root_heading: true
+            show_signature_annotations: true
+            separate_signature: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            docstring_style: google
+            heading_level: 2
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - toc:
+      permalink: true
+
+nav:
+  - 首页: index.md
+  - 快速开始: index.md#快速开始
+  - 架构说明: architecture.md
+  - JS 逆向 Agent: reverse-agent.md
+  - API 参考:
+      - 概览: api-reference.md
+      - Fetcher: api-reference.md#fetcher
+      - Selector: api-reference.md#selector
+      - ReverseAgent: api-reference.md#reverseagent
