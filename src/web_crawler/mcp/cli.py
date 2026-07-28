@@ -208,8 +208,7 @@ def cmd_pentest(args: argparse.Namespace) -> int:
         payload["checks"] = [c.strip() for c in args.checks.split(",") if c.strip()]
     if args.ports:
         payload["ports"] = [int(p.strip()) for p in args.ports.split(",") if p.strip()]
-    if args.timeout:
-        payload["timeout"] = args.timeout
+    payload["timeout"] = args.timeout
     try:
         result = server.handle_tool("pentest_recon", payload)
         _print_json(json.loads(result))
@@ -372,6 +371,48 @@ def cmd_interactive(args: argparse.Namespace) -> int:
                 _print_json(json.loads(result))
             elif cmd == "captcha" and len(parts) >= 2:
                 result = server.handle_tool("solve_captcha", {"url": parts[1]})
+                _print_json(json.loads(result))
+            elif cmd == "captcha-image" and len(parts) >= 2:
+                # captcha-image <mode> <image_path> [prompt]
+                mode = parts[1]
+                import base64
+
+                payload: dict[str, Any] = {"mode": mode}
+                if mode == "text" and len(parts) >= 3:
+                    payload["image"] = base64.b64encode(
+                        Path(parts[2]).read_bytes()
+                    ).decode("ascii")
+                elif mode == "slider" and len(parts) >= 4:
+                    payload["bg"] = base64.b64encode(
+                        Path(parts[2]).read_bytes()
+                    ).decode("ascii")
+                    payload["slider"] = base64.b64encode(
+                        Path(parts[3]).read_bytes()
+                    ).decode("ascii")
+                elif mode == "click" and len(parts) >= 3:
+                    payload["image"] = base64.b64encode(
+                        Path(parts[2]).read_bytes()
+                    ).decode("ascii")
+                    payload["prompt"] = parts[3] if len(parts) >= 4 else ""
+                else:
+                    print(
+                        "用法: captcha-image text <img> | "
+                        "slider <bg> <slider> | click <img> [prompt]",
+                        file=sys.stderr,
+                    )
+                    continue
+                result = server.handle_tool("solve_captcha_image", payload)
+                _print_json(json.loads(result))
+            elif cmd == "pentest" and len(parts) >= 2:
+                pentest_target = parts[1]
+                pentest_payload: dict[str, Any] = {"target": pentest_target}
+                if "--checks" in parts:
+                    idx = parts.index("--checks")
+                    checks_str = parts[idx + 1] if len(parts) > idx + 1 else ""
+                    pentest_payload["checks"] = [
+                        c.strip() for c in checks_str.split(",") if c.strip()
+                    ]
+                result = server.handle_tool("pentest_recon", pentest_payload)
                 _print_json(json.loads(result))
             elif cmd == "capture" and len(parts) >= 2:
                 result = server.handle_tool(

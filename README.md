@@ -308,9 +308,10 @@ error path to `reverse_screenshots/<task_id>_step<N>[_error].png`; failures are
 swallowed so the main loop never crashes on a screenshot error.
 
 **Compliance note** — the agent only simulates normal user interaction; it does
-not crack image-based captchas, forge login credentials, or bypass paywalls.
-When a page is blocked (401/403) or shows a captcha it cannot solve, it stops
-and returns a "hand-off to human" status.
+not forge login credentials or bypass paywalls. Image-based captchas (text OCR,
+slider gap, click-order) are auto-solved via `ImageCaptchaSolver` when
+`enable_image_captcha=True` (default); for unsolvable challenges the agent
+stops and returns a "hand-off to human" status.
 
 ### Mainstream-agent alignment
 
