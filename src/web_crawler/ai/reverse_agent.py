@@ -212,10 +212,10 @@ class ReverseAgentConfig:
     checkpoint_interval: int = 1
     # Checkpoint：滚动保留数量
     checkpoint_keep: int = 5
-    # Budget：全局 token 上限，None 表示不限制
-    budget_total: int | None = 100_000
-    # Budget：单步 token 上限
-    budget_per_step: int | None = 8_000
+    # Budget：全局 token 上限，None 表示不限制（默认禁用，不做预算控制）
+    budget_total: int | None = None
+    # Budget：单步 token 上限，None 表示不限制
+    budget_per_step: int | None = None
     # Confidence：动作置信度阈值，低于此值触发 fallback（0-1）
     min_confidence: float = 0.4
     # Confidence：是否启用 LLM 评分

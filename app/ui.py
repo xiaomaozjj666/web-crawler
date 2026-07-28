@@ -121,17 +121,11 @@ class ReverseJobState:
     events: list[dict] = field(default_factory=list)
     events_lock: threading.Lock = field(default_factory=threading.Lock)
 
-    # 步骤列表（每个 step 一条，含 action_type/reasoning/duration/tokens/confidence）
+    # 步骤列表（每个 step 一条，含 action_type/reasoning/duration/confidence）
     steps: list[dict] = field(default_factory=list)
 
     # 当前观察
     current_observation: dict = field(default_factory=dict)
-
-    # 预算
-    budget_used: int = 0
-    budget_total: int = 100_000
-    budget_per_step: int = 8_000
-    budget_step_used: int = 0
 
     # 置信度
     last_confidence: dict = field(default_factory=dict)  # {score, reasons, action_type}
@@ -204,11 +198,9 @@ class ReverseJobState:
         """返回可 JSON 序列化的完整状态快照。"""
         with self.events_lock:
             events_copy = list(self.events)
-        # 计算平均步时（毫秒）与 token 速率（tokens/sec）
+        # 计算平均步时（毫秒）
         durations_ms = [d * 1000.0 for d in self.step_durations if d >= 0]
         avg_step_ms = sum(durations_ms) / len(durations_ms) if durations_ms else 0.0
-        total_elapsed = max(0.001, time.time() - self.created_at)
-        tokens_per_sec = self.budget_used / total_elapsed if self.budget_used > 0 else 0.0
         return {
             "id": self.id,
             "url": self.url,
@@ -220,10 +212,6 @@ class ReverseJobState:
             "events": events_copy,
             "steps": list(self.steps),
             "current_observation": dict(self.current_observation),
-            "budget_used": self.budget_used,
-            "budget_total": self.budget_total,
-            "budget_per_step": self.budget_per_step,
-            "budget_step_used": self.budget_step_used,
             "last_confidence": dict(self.last_confidence),
             "guard_blocks": list(self.guard_blocks),
             "hook_records": list(self.hook_records[-50:]),
@@ -240,7 +228,6 @@ class ReverseJobState:
             "error_screenshot": self.error_screenshot,
             "step_durations": list(self.step_durations),
             "avg_step_ms": round(avg_step_ms, 1),
-            "tokens_per_sec": round(tokens_per_sec, 2),
             "exit_code": self.exit_code,
             "error": self.error,
         }
@@ -385,12 +372,10 @@ PAGE = """<!doctype html>
     .step-conf { font-size: 12px; font-weight: 700; }
     .step-reasoning { font-size: 13px; color: var(--text); line-height: 1.5; overflow-wrap: anywhere; }
 
-    /* Token 预算环形图 */
-    .budget-card { display: flex; align-items: center; gap: 14px; }
-    .budget-ring { width: 72px; height: 72px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: conic-gradient(var(--primary) 0%, var(--bar-bg) 0%); transition: background .3s; flex-shrink: 0; }
-    .ring-value { width: 56px; height: 56px; border-radius: 50%; background: var(--card); display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; color: var(--text); }
-    .budget-meta { flex: 1; font-size: 12px; color: var(--muted); line-height: 1.8; }
-    .budget-meta strong { color: var(--text); }
+    /* 任务统计行（右栏） */
+    .stat-card .stat-row { display: flex; align-items: center; justify-content: space-between; padding: 7px 0; border-bottom: 1px dashed var(--border); font-size: 12px; color: var(--muted); }
+    .stat-card .stat-row:last-child { border-bottom: 0; }
+    .stat-card .stat-row strong { color: var(--text); font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
 
     /* 置信度仪表 */
     .confidence-card { display: flex; align-items: center; gap: 14px; }
@@ -594,7 +579,7 @@ PAGE = """<!doctype html>
               <input name="url" type="text" placeholder="https://example.com" required>
 
               <label>任务描述</label>
-              <input name="task" type="text" placeholder="提取 Anti-Content / sign 加密参数">
+              <input name="task" type="text" placeholder="提取 Anti-Content / sign 加密参数" value="分析加密参数的生成逻辑并复现">
 
               <label>目标参数（逗号分隔）</label>
               <input name="target_params" type="text" placeholder="anti_content, sign, X-Bogus" value="anti_content, sign">
@@ -621,7 +606,7 @@ PAGE = """<!doctype html>
               </div>
 
               <details>
-                <summary>高级配置（DomPruner / Checkpoint / Budget / Confidence / Guard / Screenshot）</summary>
+                <summary>高级配置（DomPruner / Checkpoint / Confidence / Guard / Screenshot）</summary>
                 <fieldset>
                   <legend>DOM 焦点裁剪</legend>
                   <label class="check"><input type="checkbox" name="dom_prune" value="1"> 启用 DOM 裁剪</label>
@@ -637,14 +622,6 @@ PAGE = """<!doctype html>
                   <input name="checkpoint_interval" type="number" value="1">
                   <label>保留数量</label>
                   <input name="checkpoint_keep" type="number" value="5">
-                </fieldset>
-
-                <fieldset>
-                  <legend>Token 预算</legend>
-                  <label>全局上限</label>
-                  <input name="budget_total" type="number" value="100000">
-                  <label>单步上限</label>
-                  <input name="budget_per_step" type="number" value="8000">
                 </fieldset>
 
                 <fieldset>
@@ -695,16 +672,13 @@ PAGE = """<!doctype html>
 
           <!-- 右栏：Agent 内部状态 -->
           <aside class="reverse-right">
-            <h3>Token 预算</h3>
-            <div class="budget-card">
-              <div class="budget-ring" id="rev-budget-ring">
-                <div class="ring-value"><span id="rev-budget-pct">0%</span></div>
-              </div>
-              <div class="budget-meta">
-                <div>已用 <strong id="rev-budget-used">0</strong></div>
-                <div>总额 <strong id="rev-budget-total">100000</strong></div>
-                <div>单步 <strong id="rev-budget-step">0</strong>/<span id="rev-budget-step-max">8000</span></div>
-              </div>
+            <h3>任务统计</h3>
+            <div class="stat-card">
+              <div class="stat-row"><span>已用步数</span><strong id="rev-stat-steps">0</strong></div>
+              <div class="stat-row"><span>平均步时</span><strong id="rev-stat-avg-ms">0 ms</strong></div>
+              <div class="stat-row"><span>总耗时</span><strong id="rev-stat-elapsed">0s</strong></div>
+              <div class="stat-row"><span>Hook 捕获</span><strong id="rev-stat-hooks">0</strong></div>
+              <div class="stat-row"><span>网络请求</span><strong id="rev-stat-net">0</strong></div>
             </div>
 
             <h3>动作置信度</h3>
@@ -735,8 +709,6 @@ PAGE = """<!doctype html>
           <div class="stat-cards" id="rev-stats-grid">
             <div class="stat-card"><div class="stat-label">总步数</div><div class="stat-value" id="rev-stat-steps">0</div></div>
             <div class="stat-card"><div class="stat-label">平均步时</div><div class="stat-value" id="rev-stat-avg-ms">0 ms</div></div>
-            <div class="stat-card"><div class="stat-label">Token 速率</div><div class="stat-value" id="rev-stat-tps">0 tok/s</div></div>
-            <div class="stat-card"><div class="stat-label">Token 用量</div><div class="stat-value" id="rev-stat-tokens">0</div></div>
             <div class="stat-card"><div class="stat-label">Hook 命中</div><div class="stat-value" id="rev-stat-hooks">0</div></div>
             <div class="stat-card"><div class="stat-label">参数命中</div><div class="stat-value" id="rev-stat-params">0/0</div></div>
           </div>
@@ -873,7 +845,7 @@ PAGE = """<!doctype html>
         '<div class="step-header">' +
         '<span class="step-num">Step ' + s.step + '</span>' +
         '<span class="action-badge" style="background:' + color + '">' + escapeHtml(s.action_type || '--') + '</span>' +
-        '<span class="step-meta">' + (s.duration_ms || 0) + 'ms &middot; ' + (s.tokens || 0) + ' tok</span>' +
+        '<span class="step-meta">' + (s.duration_ms || 0) + 'ms</span>' +
         confHtml +
         '</div>' +
         '<div class="step-reasoning">' + escapeHtml(s.reasoning || '') + '</div>' +
@@ -884,8 +856,6 @@ PAGE = """<!doctype html>
     function updateStats(data) {
       document.getElementById('rev-stat-steps').textContent = data.current_step || 0;
       document.getElementById('rev-stat-avg-ms').textContent = (data.avg_step_ms || 0) + ' ms';
-      document.getElementById('rev-stat-tps').textContent = (data.tokens_per_sec || 0) + ' tok/s';
-      document.getElementById('rev-stat-tokens').textContent = data.budget_used || 0;
       document.getElementById('rev-stat-hooks').textContent = data.hook_count || 0;
       var tp = data.target_params || [];
       var tpFound = data.target_params_found || {};
@@ -950,14 +920,13 @@ PAGE = """<!doctype html>
       statusBadge.textContent = data.status || '--';
       statusBadge.className = 'status-badge ' + (data.status || '');
 
-      var pct = data.budget_total > 0 ? (data.budget_used / data.budget_total * 100) : 0;
-      document.getElementById('rev-budget-ring').style.background =
-        'conic-gradient(var(--primary) ' + pct + '%, var(--bar-bg) ' + pct + '%)';
-      document.getElementById('rev-budget-pct').textContent = Math.round(pct) + '%';
-      document.getElementById('rev-budget-used').textContent = data.budget_used || 0;
-      document.getElementById('rev-budget-total').textContent = data.budget_total || 0;
-      document.getElementById('rev-budget-step').textContent = data.budget_step_used || 0;
-      document.getElementById('rev-budget-step-max').textContent = data.budget_per_step || 0;
+      // 任务统计
+      document.getElementById('rev-stat-steps').textContent = data.current_step || 0;
+      document.getElementById('rev-stat-avg-ms').textContent = Math.round(data.avg_step_ms || 0) + ' ms';
+      var elapsed = Math.max(0, Math.floor((Date.now() / 1000) - (data.created_at || 0)));
+      document.getElementById('rev-stat-elapsed').textContent = elapsed + 's';
+      document.getElementById('rev-stat-hooks').textContent = data.hook_count || 0;
+      document.getElementById('rev-stat-net').textContent = (data.network_requests || []).length;
 
       if (data.last_confidence && data.last_confidence.score !== undefined) {
         var score = data.last_confidence.score;
@@ -1184,7 +1153,7 @@ PAGE = """<!doctype html>
     function applyConfigToForm(cfg) {
       var fields = {
         max_steps: 'max_steps', target_params: 'target_params', proxy: 'proxy',
-        os_name: 'os_name', budget_total: 'budget_total', budget_per_step: 'budget_per_step',
+        os_name: 'os_name',
         min_confidence: 'min_confidence', allowed_domains: 'allowed_domains',
         checkpoint_interval: 'checkpoint_interval', checkpoint_keep: 'checkpoint_keep',
         dom_prune_max_chars: 'dom_prune_max_chars'
@@ -1419,8 +1388,6 @@ def build_reverse_config(form: dict[str, list[str]]) -> dict[str, object]:
         "enable_checkpoint": checked("enable_checkpoint"),
         "checkpoint_interval": int(value("checkpoint_interval", "1") or "1"),
         "checkpoint_keep": int(value("checkpoint_keep", "5") or "5"),
-        "budget_total": int(value("budget_total", "100000") or "100000"),
-        "budget_per_step": int(value("budget_per_step", "8000") or "8000"),
         "min_confidence": float(value("min_confidence", "0.4") or "0.4"),
         "confidence_llm_score": checked("confidence_llm_score"),
         "enable_guard": checked("enable_guard"),
@@ -1441,8 +1408,6 @@ _CONFIG_FIELD_SPECS: tuple[tuple[str, type, object], ...] = (
     ("enable_checkpoint", bool, False),
     ("checkpoint_interval", int, 1),
     ("checkpoint_keep", int, 5),
-    ("budget_total", int, 100_000),
-    ("budget_per_step", int, 8_000),
     ("min_confidence", float, 0.4),
     ("confidence_llm_score", bool, False),
     ("enable_guard", bool, True),
@@ -1516,8 +1481,6 @@ class ReverseAgentRunner:
                 enable_checkpoint=bool(cfg_dict.get("enable_checkpoint", False)),
                 checkpoint_interval=int(cfg_dict.get("checkpoint_interval", 1)),
                 checkpoint_keep=int(cfg_dict.get("checkpoint_keep", 5)),
-                budget_total=int(cfg_dict.get("budget_total", 100_000)),
-                budget_per_step=int(cfg_dict.get("budget_per_step", 8_000)),
                 min_confidence=float(cfg_dict.get("min_confidence", 0.4)),
                 enable_guard=bool(cfg_dict.get("enable_guard", True)),
                 allowed_domains=cfg_dict.get("allowed_domains") or None,
@@ -1541,12 +1504,6 @@ class ReverseAgentRunner:
             job.target_params_found = dict(result.get("target_params_found") or {})
             judge = result.get("judge_result")
             job.judge_result = dict(judge) if isinstance(judge, dict) else {}
-            # 最终预算快照
-            try:
-                summary = agent.budget_tracker.summary()
-                job.budget_used = int(summary.get("used_total", 0))
-            except Exception:
-                pass
 
             if job.stop_event.is_set():
                 job.status = "cancelled"
@@ -1604,8 +1561,6 @@ class ReverseAgentRunner:
                 for i, rule in enumerate(rules):
                     detail = details[i] if i < len(details) else ""
                     job.guard_blocks.append({"rule": rule, "detail": detail})
-            elif evt_type == "budget.compress" or evt_type == "budget.exceeded":
-                job.budget_used = int(evt_payload.get("used_total", 0))
             elif evt_type == "judge.result":
                 job.judge_result = {
                     "verified": evt_payload.get("verified", False),
@@ -1644,7 +1599,6 @@ class ReverseAgentRunner:
             "action_type": "",
             "reasoning": "",
             "duration_ms": 0,
-            "tokens": 0,
             "confidence": None,
         }
         job.steps.append(entry)
@@ -1657,7 +1611,7 @@ class ReverseAgentRunner:
         entry["reasoning"] = str(payload.get("reasoning", ""))
 
     def _finalize_step(self, job: ReverseJobState, step: int, agent: object) -> None:
-        """step.end 时计算耗时、token、置信度，完成步骤卡片。"""
+        """step.end 时计算耗时、置信度，完成步骤卡片。"""
         entry = self._update_step(job, step)
         start_ts = job._step_starts.pop(step, None)
         step_duration_sec = 0.0
@@ -1679,17 +1633,6 @@ class ReverseAgentRunner:
                         "reasons": list(getattr(conf, "reasons", []) or []),
                         "action_type": str(getattr(conf, "action_type", "")),
                     }
-        except Exception:
-            pass
-
-        try:
-            summary: dict[str, Any] = getattr(
-                getattr(agent, "budget_tracker", None), "summary", dict
-            )()
-            used_now = int(summary.get("used_total", 0))
-            entry["tokens"] = max(0, used_now - job.budget_used)
-            job.budget_used = used_now
-            job.budget_step_used = entry["tokens"]
         except Exception:
             pass
 
@@ -1899,8 +1842,6 @@ class Handler(BaseHTTPRequestHandler):
                 task=task,
                 config=config,
                 max_steps=int(config.get("max_steps", 20)),
-                budget_total=int(config.get("budget_total", 100_000)),
-                budget_per_step=int(config.get("budget_per_step", 8_000)),
                 target_params=list(config.get("target_params") or []),
             )
             with REVERSE_JOBS_LOCK:

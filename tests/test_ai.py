@@ -563,8 +563,8 @@ def test_reverse_agent_config_has_new_fields() -> None:
     cfg = ReverseAgentConfig()
     assert cfg.dom_prune_max_chars == 0  # 默认禁用 DomPruner
     assert cfg.enable_checkpoint is False
-    assert cfg.budget_total == 100_000
-    assert cfg.budget_per_step == 8_000
+    assert cfg.budget_total is None  # 默认禁用预算
+    assert cfg.budget_per_step is None
     assert cfg.min_confidence == 0.4
     assert cfg.enable_guard is True
     assert cfg.allowed_domains is None
