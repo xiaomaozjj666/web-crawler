@@ -100,7 +100,6 @@ src/web_crawler/          # Scrapling-aligned core library
     captcha.py            # CaptchaManager (detect + humanize + image_solver injection)
     image_captcha.py     # ImageCaptchaSolver (OCR / slider gap / click coord, LLM Vision + ddddocr/Pillow fallback)
     reverse_agent.py      # ReverseAgent (observe→think→act loop)
-    vision.py             # VisionObserver (Vision-LLM 截图感知双模态)
     planner.py            # Planner/Actor 双脑分离 + 周期重规划
     loop.py               # LoopDetector + ContextCompressor (循环检测 + 历史压缩)
     judge.py               # TaskJudge (done 二次验证，防止 LLM 幻觉)
@@ -109,7 +108,6 @@ src/web_crawler/          # Scrapling-aligned core library
     schema.py             # SchemaValidator (结构化抽取 Pydantic 校验)
     dom_pruner.py         # DomPruner (DOM 焦点裁剪，Skyvern/browser-use 风格)
     checkpoint.py         # CheckpointManager (断点续跑 + 状态持久化)
-    budget.py             # BudgetTracker (Token 预算管理，单步/全局/单次)
     confidence.py         # ConfidenceScorer (动作置信度评分，规则 + LLM 双路径)
     guardrails.py         # ActionGuard (危险动作护栏，白名单 + 跨域拦截)
   pentest/                # 轻量渗透辅助工具集（纯 Python，无外部命令依赖）
@@ -280,9 +278,9 @@ web-crawler-reverse interactive                  # REPL: type `tools` to list
 ### CLI `run` subcommand (full agent, no MCP)
 
 `run` constructs a `ReverseAgent` directly and calls `run()`, bypassing the MCP
-transport. It exposes the full set of budget / guard / checkpoint / screenshot
+transport. It exposes the full set of guard / checkpoint / screenshot
 flags, can save the success-path script to a file, and emits a complete JSON
-result (`budget_summary`, `last_confidence`, `checkpoints`, `screenshots`,
+result (`last_confidence`, `checkpoints`, `screenshots`,
 `error_screenshot`) to stdout or `--output`:
 
 ```bash
@@ -293,7 +291,6 @@ web-crawler-reverse run \
   --target-params anti_content,sign \
   --max-steps 20 --headless \
   --enable-checkpoint \
-  --budget-total 100000 --budget-per-step 8000 \
   --min-confidence 0.4 \
   --enable-screenshot \
   --save-script ./out/sign.py \
@@ -323,7 +320,6 @@ following capabilities commonly seen in production agent frameworks
 | --- | --- | --- |
 | DOM focus pruning | `ai.dom_pruner.DomPruner` | Rule + LLM rerank, keeps only encryption-related elements (≈80% token cut) |
 | Checkpoint / resume | `ai.checkpoint.CheckpointManager` | Step-end state persisted; resume after crash or interrupt |
-| Token budget | `ai.budget.BudgetTracker` | Per-step / per-call / global caps with COMPRESS/DOWNGRADE/STOP policies |
 | Action confidence | `ai.confidence.ConfidenceScorer` | Rule + LLM dual-path scoring; low-confidence actions trigger fallback |
 | Action guardrails | `ai.guardrails.ActionGuard` | Domain whitelist, blocks localhost/non-HTTPS/cross-origin/dangerous scripts |
 | Planner / Actor split | `ai.planner.Planner` | High-level sub-goal planning + periodic replanning |
@@ -333,11 +329,10 @@ following capabilities commonly seen in production agent frameworks
 | Success recorder | `ai.recorder.RunRecorder` | Compile a successful trace into a deterministic Python script |
 | Event bus + watchdog | `ai.watchdog` | Pub/sub events, heartbeat stall detection, browser crash auto-recovery |
 | Structured schema | `ai.schema.SchemaValidator` | Pydantic-based result validation with auto-repair hints |
-| Vision observer | `ai.vision.VisionObserver` | Vision-LLM screenshots for DOM-obfuscated / Canvas-rendered pages |
 
 All capabilities are optional and individually toggleable via
 `ReverseAgentConfig` fields (e.g. `enable_checkpoint=True`,
-`budget_total=100_000`, `min_confidence=0.4`, `enable_guard=True`).
+`min_confidence=0.4`, `enable_guard=True`).
 
 ### Multi-tab management & humanized input
 
@@ -390,8 +385,7 @@ silently ignored (httpx has no TLS fingerprint capability). Both sync
 sub-component — Planner, Actor, Judge, DomPruner, ConfidenceScorer,
 JSAnalyzer all reuse the same `DeepSeekProvider(model="deepseek-v4-pro")`.
 There is no per-component model routing, no LLM-as-judge rerank, no
-capability-based provider selection, and `BudgetPolicy.DOWNGRADE` is a
-no-op under this strategy. Override only if you bring your own multi-model
+capability-based provider selection. Override only if you bring your own multi-model
 setup; the defaults assume DeepSeek V4 Pro everywhere.
 
 
