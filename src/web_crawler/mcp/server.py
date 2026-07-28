@@ -297,7 +297,8 @@ class ReverseMCPServer:
                 "name": "solve_captcha",
                 "description": (
                     "检测并尝试处理页面验证码（Turnstile / hCaptcha / reCAPTCHA v2&v3 / "
-                    "极验 GeeTest），仅模拟正常用户交互，不破解图片挑战。"
+                    "极验 GeeTest）。注入 ImageCaptchaSolver 后，遇到图片挑战会自动"
+                    "用 LLM Vision / 本地 OCR / Pillow 模板匹配识别图片，无需人工介入。"
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -305,6 +306,84 @@ class ReverseMCPServer:
                         "url": {"type": "string", "description": "目标页面 URL"},
                     },
                     "required": ["url"],
+                },
+            },
+            {
+                "name": "solve_captcha_image",
+                "description": (
+                    "直接识别图片验证码（无需浏览器）。支持三类识别："
+                    "(1) text — 文本字符 OCR；"
+                    "(2) slider — 滑块缺口 x 坐标，需提供 bg + slider 两张图；"
+                    "(3) click — 点选坐标，需提供 image + prompt。"
+                    "图片以 base64 字符串传入（不带 data: 前缀）。"
+                    "默认走 LLM Vision（需 provider 支持 vision）+ 本地 ddddocr/Pillow 兜底。"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["text", "slider", "click"],
+                            "description": "识别模式",
+                        },
+                        "image": {
+                            "type": "string",
+                            "description": "base64 编码的图片（text 模式传验证码图，click 模式传点选图）",
+                        },
+                        "bg": {
+                            "type": "string",
+                            "description": "slider 模式下的背景图 base64",
+                        },
+                        "slider": {
+                            "type": "string",
+                            "description": "slider 模式下的滑块图 base64",
+                        },
+                        "prompt": {
+                            "type": "string",
+                            "description": "click 模式下的提示文字（如\"请按顺序点击图中所有的红绿灯\"）",
+                        },
+                        "mime": {
+                            "type": "string",
+                            "default": "image/png",
+                            "description": "图片 MIME 类型",
+                        },
+                    },
+                    "required": ["mode"],
+                },
+            },
+            {
+                "name": "pentest_recon",
+                "description": (
+                    "对指定目标执行轻量级渗透侦察（合规声明：仅用于已获书面授权的目标）。"
+                    "支持五项独立检查，可任意组合："
+                    "ports（端口扫描）、dirs（目录爆破）、subdomains（子域名枚举）、"
+                    "vulns（SQL注入/XSS/路径穿越检测）、headers（HTTP 安全头检测）。"
+                    "返回聚合的 PentestReport（含 summary 统计与 grade 评级）。"
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target": {
+                            "type": "string",
+                            "description": "目标主机或 URL（如 example.com 或 https://example.com）",
+                        },
+                        "checks": {
+                            "type": "array",
+                            "items": {"type": "string", "enum": ["ports", "dirs", "subdomains", "vulns", "headers"]},
+                            "description": "要执行的检查项列表，留空执行全部",
+                        },
+                        "ports": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                            "description": "自定义端口列表（仅 ports 检查，留空用 TOP 100）",
+                        },
+                        "timeout": {
+                            "type": "number",
+                            "default": 30.0,
+                            "description": "整体超时（秒）",
+                        },
+                    },
+                    "required": ["target"],
                 },
             },
             {
@@ -532,6 +611,8 @@ class ReverseMCPServer:
             "deobfuscate_js": self._tool_deobfuscate_js,
             "reimplement_algorithm": self._tool_reimplement_algorithm,
             "solve_captcha": self._tool_solve_captcha,
+            "solve_captcha_image": self._tool_solve_captcha_image,
+            "pentest_recon": self._tool_pentest_recon,
             "capture_network_requests": self._tool_capture_network_requests,
             "get_page_scripts": self._tool_get_page_scripts,
         }
@@ -759,6 +840,119 @@ class ReverseMCPServer:
         except Exception as exc:
             return _error("浏览器操作失败", details=str(exc))
         return _to_json(result)
+
+    def _tool_solve_captcha_image(self, args: dict) -> str:
+        """直接识别图片验证码（无需浏览器）。
+
+        支持 text / slider / click 三种模式，自动协商 LLM Vision 能力。
+        """
+        from ..ai.image_captcha import ImageCaptchaSolver, ImageSolverConfig
+
+        mode = args.get("mode", "").lower()
+        if mode not in ("text", "slider", "click"):
+            return _error("mode must be one of: text / slider / click")
+        mime = args.get("mime", "image/png")
+
+        # 用 self.provider（可能支持 vision）构造 ImageCaptchaSolver
+        cfg = ImageSolverConfig()
+        solver = ImageCaptchaSolver(provider=self.provider, config=cfg)
+
+        try:
+            if mode == "text":
+                image = args.get("image", "")
+                if not image:
+                    return _error("image is required for text mode")
+                text = solver.solve_text(image, mime=mime)
+                return _to_json({"mode": "text", "text": text, "ok": bool(text)})
+            if mode == "slider":
+                bg = args.get("bg", "")
+                slider = args.get("slider", "")
+                if not bg or not slider:
+                    return _error("bg and slider are required for slider mode")
+                sol = solver.solve_slider(bg, slider)
+                if sol is None:
+                    return _to_json({"mode": "slider", "ok": False, "message": "识别失败"})
+                return _to_json(
+                    {
+                        "mode": "slider",
+                        "ok": True,
+                        "x": sol.x,
+                        "y": sol.y,
+                        "method": sol.method,
+                        "confidence": sol.confidence,
+                    }
+                )
+            # click
+            image = args.get("image", "")
+            prompt = args.get("prompt", "")
+            if not image:
+                return _error("image is required for click mode")
+            click_sol = solver.solve_click(image, prompt, mime=mime)
+            if click_sol is None:
+                return _to_json({"mode": "click", "ok": False, "message": "识别失败"})
+            return _to_json(
+                {
+                    "mode": "click",
+                    "ok": True,
+                    "points": [{"x": x, "y": y} for x, y in click_sol.points],
+                    "labels": click_sol.labels,
+                    "method": click_sol.method,
+                }
+            )
+        except Exception as exc:
+            return _error("captcha image solve failed", details=str(exc))
+
+    def _tool_pentest_recon(self, args: dict) -> str:
+        """对指定目标执行渗透侦察（端口/目录/子域名/漏洞/安全头）。
+
+        合规声明：仅用于已获书面授权的目标。
+        """
+        from urllib.parse import urlparse
+
+        from ..pentest import (
+            DirBruter,
+            HeaderChecker,
+            PentestReport,
+            PortScanner,
+            SubdomainEnumerator,
+            VulnScanner,
+        )
+
+        target = args.get("target", "").strip()
+        if not target:
+            return _error("target is required")
+        # 从 URL 提取 host，便于端口扫描与子域名枚举
+        if "://" in target:
+            parsed = urlparse(target)
+            host = parsed.hostname or target
+            base_url = target if target.endswith("/") else target + "/"
+        else:
+            host = target
+            base_url = f"https://{host}/"
+        checks = args.get("checks") or ["ports", "dirs", "subdomains", "vulns", "headers"]
+        custom_ports = args.get("ports")
+
+        report = PentestReport(target=target)
+        try:
+            if "ports" in checks:
+                scanner = PortScanner()
+                ports_to_scan = custom_ports if custom_ports else None
+                report.port_scan = scanner.scan(host, ports_to_scan)
+            if "dirs" in checks:
+                bruter = DirBruter()
+                report.dir_brute = bruter.brute(base_url)
+            if "subdomains" in checks:
+                enumerator = SubdomainEnumerator()
+                report.subdomains = enumerator.enumerate(host)
+            if "vulns" in checks:
+                vuln_scanner = VulnScanner()
+                report.vulns = vuln_scanner.scan_url(base_url)
+            if "headers" in checks:
+                checker = HeaderChecker()
+                report.headers = checker.check(base_url)
+        except Exception as exc:
+            return _error("pentest recon failed", details=str(exc))
+        return _to_json(report.to_dict())
 
     def _tool_capture_network_requests(self, args: dict) -> str:
         url = args["url"]

@@ -14,6 +14,8 @@ A Scrapling-aligned stealth web scraping library for Python: **adaptive selector
 - **Unified `Response`** — every fetcher returns the same `Response` with `.css()` / `.xpath()` / `.json()` helpers.
 - **AI-assisted scraping** — `AIExtractor` turns a plain-language field schema into validated CSS selectors; `AIScrapeAgent` orchestrates fetch + extract with robots.txt respect, 429/503 back-off (`Retry-After` honored), and "stuck → hand-off to human" semantics.
 - **JS reverse-engineering agent** — `ReverseAgent` runs an observe→think→act loop over a target URL using `CamoufoxFetcher` + DeepSeek-V4-Pro: injects JS hooks (fetch / XHR / cookie / `crypto.subtle` / webpack / console), captures network traffic, splits webpack bundles, then asks the LLM to deobfuscate and reimplement signing algorithms in Python. Supports 6 real browser interaction actions (`click` / `type` / `scroll` / `press` / `hover` / `select_option`) via Playwright, plus 3 multi-tab actions (`new_tab` / `switch_tab` / `close_tab`) and humanized input trajectories (hover-before-click, per-keystroke random delay). Dangerous-click guardrails and selector-injection blocking built in. Exposed via both an MCP server (`web-crawler-mcp`) and a CLI (`web-crawler-reverse`). Web UI uses SSE real-time push (`/reverse/stream`) for live step events.
+- **Image captcha solver** — `ImageCaptchaSolver` recognizes three image-challenge families without a browser: text OCR (4–8 char alphanumeric), slider gap localization (Pillow + numpy template matching), and click-order coordinate recognition (Vision-LLM). Falls back across backends: local `ddddocr` → `numpy` template match → LLM Vision (`gpt-4o` / Claude / Qwen-VL / DeepSeek-vision). `CaptchaSolver` injects the image solver automatically when `ReverseAgentConfig.enable_image_captcha=True` (default); hCaptcha / reCAPTCHA v2 image challenges and GeeTest puzzles are then auto-solved end-to-end. Exposed as the `solve_captcha_image` MCP tool and `captcha-image` CLI subcommand.
+- **Lightweight pentest toolkit** — `web_crawler.pentest` subpackage provides pure-Python, dependency-free reconnaissance utilities inspired by PentAGI's tool-integration approach: `PortScanner` (TCP connect + TOP-100), `DirBruter` (60+ common paths), `SubdomainEnumerator` (80+ prefix dictionary), `VulnScanner` (SQL injection / XSS / path traversal detection, rule-based with optional LLM analysis), `HeaderChecker` (8 security headers + A–F grade), aggregated by `PentestReport`. Exposed as the `pentest_recon` MCP tool and `pentest` CLI subcommand. Compliance notice: authorized testing only.
 
 ## Requirements
 
@@ -95,7 +97,8 @@ src/web_crawler/          # Scrapling-aligned core library
     agent.py              # AIScrapeAgent (robots-aware polite crawler)
     hooks.py              # JS Hook library (fetch/XHR/cookie/crypto/webpack/console)
     analyzer.py           # JSAnalyzer (webpack module extraction + AI deobfuscation)
-    captcha.py            # CaptchaManager (detect + humanize-only solve)
+    captcha.py            # CaptchaManager (detect + humanize + image_solver injection)
+    image_captcha.py     # ImageCaptchaSolver (OCR / slider gap / click coord, LLM Vision + ddddocr/Pillow fallback)
     reverse_agent.py      # ReverseAgent (observe→think→act loop)
     vision.py             # VisionObserver (Vision-LLM 截图感知双模态)
     planner.py            # Planner/Actor 双脑分离 + 周期重规划
@@ -109,6 +112,13 @@ src/web_crawler/          # Scrapling-aligned core library
     budget.py             # BudgetTracker (Token 预算管理，单步/全局/单次)
     confidence.py         # ConfidenceScorer (动作置信度评分，规则 + LLM 双路径)
     guardrails.py         # ActionGuard (危险动作护栏，白名单 + 跨域拦截)
+  pentest/                # 轻量渗透辅助工具集（纯 Python，无外部命令依赖）
+    port_scanner.py       # PortScanner（TCP connect + TOP-100 + 服务名映射）
+    dir_bruter.py         # DirBruter（目录/文件路径爆破 + 标题提取）
+    subdomain.py          # SubdomainEnumerator（80+ 子域前缀字典枚举）
+    vuln_scanner.py       # VulnScanner（SQL 注入 / XSS / 路径穿越规则检测）
+    header_check.py       # HeaderChecker（8 项安全头检测 + A–F 评级）
+    report.py             # PentestReport（聚合所有结果 + summary/to_dict/to_json）
   mcp/                    # MCP server + CLI exposing the reverse-agent tools
     server.py             # ReverseMCPServer (JSON-RPC over stdio)
     cli.py                # web-crawler-reverse command-line interface

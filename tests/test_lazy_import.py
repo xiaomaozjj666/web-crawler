@@ -10,21 +10,32 @@ import pytest
 
 def test_import_does_not_load_playwright() -> None:
     """``import web_crawler`` must not load the playwright package."""
-    # Drop any cached web_crawler modules + playwright.
+    # Save & restore sys.modules so later tests still see the original
+    # module objects (patch targets must match the class's module globals).
+    saved = dict(sys.modules)
     for mod in list(sys.modules):
         if mod.startswith("web_crawler") or mod == "playwright":
             del sys.modules[mod]
-    importlib.import_module("web_crawler")
-    assert "playwright" not in sys.modules, "import web_crawler loaded playwright"
+    try:
+        importlib.import_module("web_crawler")
+        assert "playwright" not in sys.modules, "import web_crawler loaded playwright"
+    finally:
+        sys.modules.clear()
+        sys.modules.update(saved)
 
 
 def test_import_does_not_load_curl_cffi() -> None:
     """``import web_crawler`` must not load curl_cffi at import time."""
+    saved = dict(sys.modules)
     for mod in list(sys.modules):
         if mod.startswith("web_crawler") or mod == "curl_cffi":
             del sys.modules[mod]
-    importlib.import_module("web_crawler")
-    assert "curl_cffi" not in sys.modules, "import web_crawler loaded curl_cffi"
+    try:
+        importlib.import_module("web_crawler")
+        assert "curl_cffi" not in sys.modules, "import web_crawler loaded curl_cffi"
+    finally:
+        sys.modules.clear()
+        sys.modules.update(saved)
 
 
 def test_selector_is_lazily_resolved() -> None:
