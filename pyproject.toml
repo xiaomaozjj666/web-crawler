@@ -72,6 +72,10 @@ all = [
 camoufox = [
     "camoufox[geoip]>=0.4",
 ]
+captcha = [
+    "ddddocr>=1.4",
+    "numpy>=1.26",
+]
 mcp = [
     "mcp>=1.0",
     "camoufox[geoip]>=0.4",

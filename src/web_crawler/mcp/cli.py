@@ -156,6 +156,68 @@ def cmd_captcha(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_captcha_image(args: argparse.Namespace) -> int:
+    """识别图片验证码（text / slider / click）。"""
+    import base64
+
+    mode = args.mode
+    payload: dict[str, Any] = {"mode": mode}
+
+    if mode == "text":
+        if not args.image:
+            print("错误：text 模式需要 --image 参数", file=sys.stderr)
+            return 1
+        image_bytes = Path(args.image).read_bytes()
+        payload["image"] = base64.b64encode(image_bytes).decode("ascii")
+    elif mode == "slider":
+        if not args.bg or not args.slider:
+            print("错误：slider 模式需要 --bg 和 --slider 参数", file=sys.stderr)
+            return 1
+        bg_bytes = Path(args.bg).read_bytes()
+        slider_bytes = Path(args.slider).read_bytes()
+        payload["bg"] = base64.b64encode(bg_bytes).decode("ascii")
+        payload["slider"] = base64.b64encode(slider_bytes).decode("ascii")
+    elif mode == "click":
+        if not args.image:
+            print("错误：click 模式需要 --image 参数", file=sys.stderr)
+            return 1
+        image_bytes = Path(args.image).read_bytes()
+        payload["image"] = base64.b64encode(image_bytes).decode("ascii")
+        payload["prompt"] = args.prompt or ""
+    else:
+        print(f"错误：未知模式 {mode!r}，可选 text/slider/click", file=sys.stderr)
+        return 1
+
+    if args.mime:
+        payload["mime"] = args.mime
+
+    server = _make_server(args.model)
+    try:
+        result = server.handle_tool("solve_captcha_image", payload)
+        _print_json(json.loads(result))
+    finally:
+        server.close()
+    return 0
+
+
+def cmd_pentest(args: argparse.Namespace) -> int:
+    """执行渗透侦察（合规声明：仅用于已获授权的目标）。"""
+    server = _make_server(args.model)
+    payload: dict[str, Any] = {"target": args.target}
+    if args.checks:
+        payload["checks"] = [c.strip() for c in args.checks.split(",") if c.strip()]
+    if args.ports:
+        payload["ports"] = [int(p.strip()) for p in args.ports.split(",") if p.strip()]
+    if args.timeout:
+        payload["timeout"] = args.timeout
+    try:
+        result = server.handle_tool("pentest_recon", payload)
+        _print_json(json.loads(result))
+    finally:
+        server.close()
+    return 0
+
+
 def cmd_capture(args: argparse.Namespace) -> int:
     """捕获页面网络请求。"""
     server = _make_server(args.model)
@@ -255,6 +317,8 @@ def cmd_interactive(args: argparse.Namespace) -> int:
     print("  deobfuscate <file|code>                反混淆 JS")
     print("  reimplement <file|code> [--lang python] 重写算法")
     print("  captcha <url>                           处理验证码")
+    print("  captcha-image --mode text|slider|click  识别图片验证码")
+    print("  pentest <target> [--checks ports,dirs]  渗透侦察")
     print("  capture <url> [--wait 5]               捕获网络请求")
     print("  scripts <url>                          获取 JS 脚本列表")
     print("  tools                                   列出所有工具")
@@ -384,6 +448,43 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("captcha", help="检测并处理页面验证码")
     p.add_argument("url", help="目标 URL")
     p.set_defaults(func=cmd_captcha)
+
+    # captcha-image
+    p = sub.add_parser(
+        "captcha-image",
+        help="直接识别图片验证码（text/slider/click），不启动浏览器",
+    )
+    p.add_argument(
+        "--mode",
+        required=True,
+        choices=["text", "slider", "click"],
+        help="识别模式：text=字符OCR、slider=滑块缺口、click=点选坐标",
+    )
+    p.add_argument("--image", help="图片路径（text/click 模式）")
+    p.add_argument("--bg", help="背景图路径（slider 模式）")
+    p.add_argument("--slider", help="滑块图路径（slider 模式）")
+    p.add_argument("--prompt", default="", help="点选提示文字（click 模式）")
+    p.add_argument("--mime", default="image/png", help="图片 MIME 类型")
+    p.set_defaults(func=cmd_captcha_image)
+
+    # pentest
+    p = sub.add_parser(
+        "pentest",
+        help="轻量渗透侦察（合规声明：仅用于已授权目标）",
+    )
+    p.add_argument("target", help="目标主机或 URL（如 example.com）")
+    p.add_argument(
+        "--checks",
+        default="",
+        help="检查项列表（逗号分隔）：ports,dirs,subdomains,vulns,headers；留空执行全部",
+    )
+    p.add_argument(
+        "--ports",
+        default="",
+        help="自定义端口列表（逗号分隔，仅 ports 检查）",
+    )
+    p.add_argument("--timeout", type=float, default=30.0, help="整体超时（秒）")
+    p.set_defaults(func=cmd_pentest)
 
     # capture
     p = sub.add_parser("capture", help="捕获页面网络请求")
