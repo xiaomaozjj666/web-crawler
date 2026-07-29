@@ -103,7 +103,7 @@ _THINK_USER_TEMPLATE = (
     '- analyze_js: 分析捕获的 JS，params: {{"script_urls": ["..."], "target_params": [...]}}\n'
     '- wait: 等待一段时间，params: {{"seconds": 3.0}}\n'
     '- extract: 尝试从 Hook 数据中提取目标参数，params: {{"param_name": "..."}}\n'
-    "- solve_captcha: 处理验证码，params: {}\n"
+    "- solve_captcha: 处理验证码，params: {{}}\n"
     '- done: 任务完成，params: {{"success": true/false, "summary": "..."}}\n'
     '- click: 点击元素，params: {{"selector": "button#submit", "button": "left"}}\n'
     '- type: 输入文本（默认先清空），params: {{"selector": "input#username", "text": "user123", "clear": true}}\n'
