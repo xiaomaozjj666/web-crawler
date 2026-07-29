@@ -45,6 +45,22 @@ JOBS: dict[str, JobState] = {}
 JOBS_LOCK = threading.Lock()
 MAX_JOBS = 50
 
+
+def _open_folder(path: str) -> None:
+    """跨平台打开文件夹（Windows explorer / macOS open / Linux xdg-open）。"""
+    import sys as _sys
+
+    if _sys.platform == "win32":
+        os.startfile(path)  # type: ignore[attr-defined]
+    elif _sys.platform == "darwin":
+        import subprocess
+
+        subprocess.Popen(["open", path])
+    else:
+        import subprocess
+
+        subprocess.Popen(["xdg-open", path])
+
 # JS 逆向 Agent 任务注册表
 REVERSE_JOBS: dict[str, ReverseJobState] = {}
 REVERSE_JOBS_LOCK = threading.Lock()
@@ -119,7 +135,10 @@ class ReverseJobState:
 
     # 实时事件流（保留最近 200 条，避免内存爆炸）
     events: list[dict] = field(default_factory=list)
-    events_lock: threading.Lock = field(default_factory=threading.Lock)
+    # state_lock 保护所有共享可变字段（events/steps/.../status），
+    # 避免子线程写入与主线程 snapshot 读取之间的数据竞争。
+    # 使用 RLock 支持嵌套获取（append_event 在锁内被调用时不死锁）
+    state_lock: Any = field(default_factory=threading.RLock)
 
     # 步骤列表（每个 step 一条，含 action_type/reasoning/duration/confidence）
     steps: list[dict] = field(default_factory=list)
@@ -168,69 +187,91 @@ class ReverseJobState:
 
     def append_event(self, event: dict) -> None:
         """追加一条事件到流，保留最近 200 条。"""
-        with self.events_lock:
+        with self.state_lock:
             self.events.append(event)
             if len(self.events) > 200:
                 self.events = self.events[-200:]
 
     def events_since(self, ts: float) -> list[dict]:
         """返回 ts 之后的所有事件（增量查询用）。"""
-        with self.events_lock:
+        with self.state_lock:
             return [e for e in self.events if e.get("ts", 0) > ts]
 
     def clear_runtime(self) -> None:
         """清空运行时事件/步骤/快照（保留最终结果）。"""
-        with self.events_lock:
+        with self.state_lock:
             self.events = []
-        self.steps = []
-        self.current_observation = {}
-        self.guard_blocks = []
-        self.hook_records = []
-        self.hook_count = 0
-        self.network_requests = []
-        self.checkpoints = []
-        self.screenshots = []
-        self.error_screenshot = ""
-        self.step_durations = []
-        self._step_starts = {}
+            self.steps = []
+            self.current_observation = {}
+            self.guard_blocks = []
+            self.hook_records = []
+            self.hook_count = 0
+            self.network_requests = []
+            self.checkpoints = []
+            self.screenshots = []
+            self.error_screenshot = ""
+            self.step_durations = []
+            self._step_starts = {}
 
     def snapshot(self) -> dict[str, object]:
         """返回可 JSON 序列化的完整状态快照。"""
-        with self.events_lock:
+        with self.state_lock:
             events_copy = list(self.events)
-        # 计算平均步时（毫秒）
-        durations_ms = [d * 1000.0 for d in self.step_durations if d >= 0]
+            steps_copy = list(self.steps)
+            current_observation_copy = dict(self.current_observation)
+            last_confidence_copy = dict(self.last_confidence)
+            guard_blocks_copy = list(self.guard_blocks)
+            hook_records_copy = list(self.hook_records[-50:])
+            hook_count_copy = self.hook_count
+            network_requests_copy = list(self.network_requests[-20:])
+            network_count_copy = len(self.network_requests)
+            target_params_copy = list(self.target_params)
+            target_params_found_copy = dict(self.target_params_found)
+            checkpoints_copy = list(self.checkpoints)
+            success_copy = self.success
+            analysis_copy = self.analysis
+            compiled_script_copy = self.compiled_script
+            judge_result_copy = dict(self.judge_result)
+            screenshots_copy = list(self.screenshots)
+            error_screenshot_copy = self.error_screenshot
+            step_durations_copy = list(self.step_durations)
+            status_copy = self.status
+            current_step_copy = self.current_step
+            exit_code_copy = self.exit_code
+            error_copy = self.error
+        # 计算平均步时（毫秒）—— 锁外计算避免长持有
+        durations_ms = [d * 1000.0 for d in step_durations_copy if d >= 0]
         avg_step_ms = sum(durations_ms) / len(durations_ms) if durations_ms else 0.0
         return {
             "id": self.id,
             "url": self.url,
             "task": self.task,
-            "status": self.status,
+            "status": status_copy,
             "created_at": self.created_at,
-            "current_step": self.current_step,
+            "current_step": current_step_copy,
             "max_steps": self.max_steps,
             "events": events_copy,
-            "steps": list(self.steps),
-            "current_observation": dict(self.current_observation),
-            "last_confidence": dict(self.last_confidence),
-            "guard_blocks": list(self.guard_blocks),
-            "hook_records": list(self.hook_records[-50:]),
-            "hook_count": self.hook_count,
-            "network_requests": list(self.network_requests[-20:]),
-            "network_count": len(self.network_requests),
-            "target_params": list(self.target_params),
-            "target_params_found": dict(self.target_params_found),
-            "checkpoints": list(self.checkpoints),
-            "success": self.success,
-            "analysis": self.analysis,
-            "compiled_script": self.compiled_script,
-            "judge_result": dict(self.judge_result),
-            "screenshots": list(self.screenshots),
-            "error_screenshot": self.error_screenshot,
-            "step_durations": list(self.step_durations),
+            "steps": steps_copy,
+            "current_observation": current_observation_copy,
+            "last_confidence": last_confidence_copy,
+            "guard_blocks": guard_blocks_copy,
+            "hook_records": hook_records_copy,
+            "hook_count": hook_count_copy,
+            "network_requests": network_requests_copy,
+            "network_count": network_count_copy,
+            "target_params": target_params_copy,
+            "target_params_found": target_params_found_copy,
+            "checkpoints": checkpoints_copy,
+            "success": success_copy,
+            "analysis": analysis_copy,
+            "compiled_script": compiled_script_copy,
+            "judge_result": judge_result_copy,
+            "screenshots": screenshots_copy,
+            "error_screenshot": error_screenshot_copy,
+            "step_durations": step_durations_copy,
             "avg_step_ms": round(avg_step_ms, 1),
-            "exit_code": self.exit_code,
-            "error": self.error,
+            "exit_code": exit_code_copy,
+            "error": error_copy,
         }
 
     def job_summary(self) -> dict[str, object]:
@@ -547,8 +588,8 @@ PAGE = """<!doctype html>
           </div>
         </form>
 
-        <div class="progress-wrap"><div id="progress-bar" class="progress-bar"></div></div>
-        <div id="status" class="status">等待开始...</div>
+        <div class="progress-wrap"><div id="progress-bar" class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div></div>
+        <div id="status" class="status" role="status" aria-live="polite">等待开始...</div>
         <pre id="log">等待开始...</pre>
       </div>
     </div>
@@ -575,31 +616,34 @@ PAGE = """<!doctype html>
               <button type="button" class="template-btn" data-template="signature">_signature 提取</button>
               <button type="button" class="template-btn" data-template="generic">通用加密参数</button>
             </div>
-            <form id="reverse-form">
-              <label>目标 URL</label>
-              <input name="url" type="text" placeholder="https://example.com" required>
+            <form id="reverse-form" novalidate>
+              <label for="rev-url">目标 URL</label>
+              <input id="rev-url" name="url" type="text" placeholder="https://example.com" required
+                     aria-required="true" aria-describedby="rev-url-hint">
+              <div id="rev-url-hint" class="hint">完整页面 URL（含 http(s):// 前缀）</div>
 
-              <label>任务描述</label>
-              <input name="task" type="text" placeholder="提取 Anti-Content / sign 加密参数" value="分析加密参数的生成逻辑并复现">
+              <label for="rev-task">任务描述</label>
+              <input id="rev-task" name="task" type="text" placeholder="提取 Anti-Content / sign 加密参数" value="分析加密参数的生成逻辑并复现">
 
-              <label>目标参数（逗号分隔）</label>
-              <input name="target_params" type="text" placeholder="anti_content, sign, X-Bogus" value="anti_content, sign">
+              <label for="rev-target-params">目标参数（逗号分隔）</label>
+              <input id="rev-target-params" name="target_params" type="text" placeholder="anti_content, sign, X-Bogus" value="anti_content, sign">
 
               <div class="row">
-                <div><label>最大步数</label><input name="max_steps" type="number" value="20" min="1"></div>
-                <div><label>OS 指纹</label>
-                  <select name="os_name">
+                <div><label for="rev-max-steps">最大步数</label><input id="rev-max-steps" name="max_steps" type="number" value="20" min="1" aria-describedby="rev-max-steps-hint"></div>
+                <div><label for="rev-os-name">OS 指纹</label>
+                  <select id="rev-os-name" name="os_name">
                     <option value="windows">windows</option>
                     <option value="macos">macos</option>
                     <option value="linux">linux</option>
                   </select>
                 </div>
               </div>
+              <div class="hint" id="rev-max-steps-hint">Agent 循环的最大步数；超出自动停止</div>
 
               <div class="row">
-                <div><label>代理</label><input name="proxy" type="text" placeholder="http://u:p@host:port"></div>
-                <div><label>headless</label>
-                  <select name="headless">
+                <div><label for="rev-proxy">代理</label><input id="rev-proxy" name="proxy" type="text" placeholder="http://u:p@host:port"></div>
+                <div><label for="rev-headless">headless</label>
+                  <select id="rev-headless" name="headless">
                     <option value="false">否（可见浏览器）</option>
                     <option value="true">是（无头）</option>
                   </select>
@@ -611,32 +655,32 @@ PAGE = """<!doctype html>
                 <fieldset>
                   <legend>DOM 焦点裁剪</legend>
                   <label class="check"><input type="checkbox" name="dom_prune" value="1"> 启用 DOM 裁剪</label>
-                  <label>max_chars</label>
-                  <input name="dom_prune_max_chars" type="number" value="4000">
+                  <label for="rev-dom-prune-max-chars">max_chars</label>
+                  <input id="rev-dom-prune-max-chars" name="dom_prune_max_chars" type="number" value="4000">
                   <div class="hint">单一模型策略：规则打分，不调用 LLM 重排</div>
                 </fieldset>
 
                 <fieldset>
                   <legend>断点续跑 (Checkpoint)</legend>
                   <label class="check"><input type="checkbox" name="enable_checkpoint" value="1" checked> 启用</label>
-                  <label>保存间隔（步）</label>
-                  <input name="checkpoint_interval" type="number" value="1">
-                  <label>保留数量</label>
-                  <input name="checkpoint_keep" type="number" value="5">
+                  <label for="rev-checkpoint-interval">保存间隔（步）</label>
+                  <input id="rev-checkpoint-interval" name="checkpoint_interval" type="number" value="1">
+                  <label for="rev-checkpoint-keep">保留数量</label>
+                  <input id="rev-checkpoint-keep" name="checkpoint_keep" type="number" value="5">
                 </fieldset>
 
                 <fieldset>
                   <legend>动作置信度</legend>
-                  <label>最低阈值（0-1）</label>
-                  <input name="min_confidence" type="number" value="0.4" step="0.1" min="0" max="1">
+                  <label for="rev-min-confidence">最低阈值（0-1）</label>
+                  <input id="rev-min-confidence" name="min_confidence" type="number" value="0.4" step="0.1" min="0" max="1">
                   <div class="hint">单一模型策略：规则评分，不调用 LLM 评分</div>
                 </fieldset>
 
                 <fieldset>
                   <legend>危险动作护栏</legend>
                   <label class="check"><input type="checkbox" name="enable_guard" value="1" checked> 启用</label>
-                  <label>允许域名白名单（逗号分隔，留空不限制）</label>
-                  <input name="allowed_domains" type="text" placeholder="example.com, cdn.example.com">
+                  <label for="rev-allowed-domains">允许域名白名单（逗号分隔，留空不限制）</label>
+                  <input id="rev-allowed-domains" name="allowed_domains" type="text" placeholder="example.com, cdn.example.com">
                 </fieldset>
 
                 <fieldset>
@@ -663,10 +707,10 @@ PAGE = """<!doctype html>
           <section class="reverse-center">
             <div class="reverse-status-bar">
               <span class="step-counter">步数 <strong id="rev-current-step">0</strong>/<span id="rev-max-steps">20</span></span>
-              <span class="status-badge running" id="rev-status">等待启动</span>
+              <span class="status-badge running" id="rev-status" role="status" aria-live="polite">等待启动</span>
             </div>
             <h3>执行轨迹 (Trace)</h3>
-            <div id="rev-trace" class="trace-list">
+            <div id="rev-trace" class="trace-list" role="log" aria-live="polite" aria-label="执行轨迹">
               <div class="trace-empty">点击"启动 Agent"开始任务</div>
             </div>
           </section>
@@ -788,18 +832,38 @@ PAGE = """<!doctype html>
       pauseButton.disabled = !active;
       cancelButton.disabled = !active;
     }
+    /* URL 校验：必须含 http(s):// 前缀 */
+    function validateUrl(value) {
+      if (!value) { return 'URL 不能为空'; }
+      if (!/^https?:\\/\\/[^\\s]+$/i.test(value)) { return 'URL 必须以 http:// 或 https:// 开头'; }
+      return null;
+    }
+    /* 状态查询失败重试计数器：连续失败 3 次后停止轮询 */
+    var POLL_FAIL_COUNT = 0;
+    var POLL_FAIL_MAX = 3;
     async function poll() {
       if (!jobId) return;
       var result;
       try {
         var response = await fetch('/status?id=' + encodeURIComponent(jobId));
+        if (!response.ok) { throw new Error('HTTP ' + response.status); }
         result = await response.json();
+        POLL_FAIL_COUNT = 0;
       } catch(e) {
-        statusEl.textContent = '状态查询失败：' + e.message;
+        POLL_FAIL_COUNT++;
+        if (POLL_FAIL_COUNT >= POLL_FAIL_MAX) {
+          statusEl.textContent = '状态查询连续失败 ' + POLL_FAIL_COUNT + ' 次，已停止轮询：' + e.message;
+          if (timer) { clearInterval(timer); timer = null; }
+          setRunning(false);
+        } else {
+          statusEl.textContent = '状态查询失败（第 ' + POLL_FAIL_COUNT + ' 次，将重试）：' + e.message;
+        }
         return;
       }
       log.textContent = result.log || '';
-      bar.style.width = (result.percent || 0) + '%';
+      var pct = result.percent || 0;
+      bar.style.width = pct + '%';
+      bar.setAttribute('aria-valuenow', String(pct));
       statusEl.textContent = (result.status || '') + ' | ' + (result.processed_resources || 0) + '/' + (result.total_resources || 0) + ' | 页面 ' + (result.pages_scanned || 0) + ' | ' + (result.current_url || '');
       if (result.status === 'paused') { pauseButton.disabled = true; resumeButton.disabled = false; }
       else { resumeButton.disabled = true; }
@@ -810,10 +874,19 @@ PAGE = """<!doctype html>
     }
     form.addEventListener('submit', async function(event) {
       event.preventDefault();
+      /* 客户端校验 */
+      var urlErr = validateUrl(form.querySelector('[name=url]').value);
+      if (urlErr) {
+        statusEl.textContent = urlErr;
+        form.querySelector('[name=url]').focus();
+        return;
+      }
       setRunning(true);
       resumeButton.disabled = true;
       log.textContent = '正在启动任务...\\n';
       bar.style.width = '0%';
+      bar.setAttribute('aria-valuenow', '0');
+      POLL_FAIL_COUNT = 0;
       try {
         var result = await post('/run', new URLSearchParams(new FormData(form)));
         if (!result.id) { throw new Error(result.error || '启动失败'); }
@@ -850,6 +923,18 @@ PAGE = """<!doctype html>
     /* 自适应轮询间隔：running=800ms，done/error/cancelled=停止 */
     var REVERSE_POLL_RUNNING = 800;
     var REVERSE_POLL_IDLE = 3000;
+    /* 轮询失败重试计数：连续 3 次失败停止轮询 */
+    var REVERSE_POLL_FAIL = 0;
+    var REVERSE_POLL_FAIL_MAX = 3;
+    /* 隐藏的下载 iframe：避免 window.location.href 中断 SSE 连接 */
+    var downloadFrame = document.createElement('iframe');
+    downloadFrame.style.display = 'none';
+    downloadFrame.setAttribute('aria-hidden', 'true');
+    downloadFrame.title = 'download-frame';
+    document.body.appendChild(downloadFrame);
+    function downloadViaFrame(url) {
+      downloadFrame.src = url;
+    }
 
     function escapeHtml(s) {
       return String(s == null ? '' : s).replace(/[<>&"]/g, function(c) {
@@ -941,87 +1026,29 @@ PAGE = """<!doctype html>
       if (!currentReverseJobId) return;
       try {
         var response = await fetch('/reverse/status?id=' + encodeURIComponent(currentReverseJobId));
+        if (!response.ok) { throw new Error('HTTP ' + response.status); }
         var data = await response.json();
+        REVERSE_POLL_FAIL = 0;
       } catch(e) {
+        REVERSE_POLL_FAIL++;
         var st = document.getElementById('rev-status');
-        if (st) { st.textContent = '查询失败'; }
+        if (REVERSE_POLL_FAIL >= REVERSE_POLL_FAIL_MAX) {
+          if (st) { st.textContent = '查询连续失败 ' + REVERSE_POLL_FAIL + ' 次'; }
+          if (reverseTimer) { clearTimeout(reverseTimer); reverseTimer = null; }
+          if (reverseSSE) { reverseSSE.close(); reverseSSE = null; }
+          var submitBtn = reverseForm.querySelector('button[type=submit]');
+          if (submitBtn) { submitBtn.disabled = false; }
+          if (reverseStopBtn) { reverseStopBtn.disabled = true; }
+        } else {
+          if (st) { st.textContent = '查询失败（第 ' + REVERSE_POLL_FAIL + ' 次，将重试）'; }
+        }
         return;
       }
       if (!data) return;
-
-      document.getElementById('rev-current-step').textContent = data.current_step || 0;
-      document.getElementById('rev-max-steps').textContent = data.max_steps || 20;
-
-      var statusBadge = document.getElementById('rev-status');
-      statusBadge.textContent = data.status || '--';
-      statusBadge.className = 'status-badge ' + (data.status || '');
-
-      // 任务统计
-      document.getElementById('rev-stat-steps').textContent = data.current_step || 0;
-      document.getElementById('rev-stat-avg-ms').textContent = Math.round(data.avg_step_ms || 0) + ' ms';
-      var elapsed = Math.max(0, Math.floor((Date.now() / 1000) - (data.created_at || 0)));
-      document.getElementById('rev-stat-elapsed').textContent = elapsed + 's';
-      document.getElementById('rev-stat-hooks').textContent = data.hook_count || 0;
-      document.getElementById('rev-stat-net').textContent = data.network_count != null ? data.network_count : (data.network_requests || []).length;
-
-      if (data.last_confidence && data.last_confidence.score !== undefined) {
-        var score = data.last_confidence.score;
-        var confColor = score >= 0.7 ? '#22c55e' : score >= 0.4 ? '#eab308' : '#ef4444';
-        document.getElementById('rev-confidence-meter').style.background =
-          'conic-gradient(' + confColor + ' ' + (score * 360) + 'deg, var(--bar-bg) ' + (score * 360) + 'deg)';
-        document.getElementById('rev-confidence-value').textContent = Number(score).toFixed(2);
-        document.getElementById('rev-confidence-value').style.color = confColor;
-        var reasonsHtml = (data.last_confidence.reasons || []).map(function(r) {
-          return '<div class="reason-item">' + escapeHtml(r) + '</div>';
-        }).join('');
-        document.getElementById('rev-confidence-reasons').innerHTML = reasonsHtml || '无';
-      }
-
-      var guardHtml = (data.guard_blocks || []).map(function(g) {
-        return '<div class="guard-item">' + escapeHtml(g.rule) + ': ' + escapeHtml(g.detail) + '</div>';
-      }).join('');
-      document.getElementById('rev-guard-blocks').innerHTML = guardHtml || '无';
-
-      var cpHtml = (data.checkpoints || []).map(function(c) {
-        return '<div class="checkpoint-item">Step ' + c.step + ' - ' + escapeHtml(String(c.url || c.path || '').slice(0, 50)) + '</div>';
-      }).join('');
-      document.getElementById('rev-checkpoints').innerHTML = cpHtml || '无';
-
-      var tpHtml = (data.target_params || []).map(function(p) {
-        var found = data.target_params_found && data.target_params_found[p];
-        return '<div class="param-item ' + (found ? 'found' : '') + '">' + (found ? '[OK] ' : '[..] ') + escapeHtml(p) + (found ? ': ' + escapeHtml(found) : '') + '</div>';
-      }).join('');
-      document.getElementById('rev-target-params').innerHTML = tpHtml || '--';
-
-      document.getElementById('rev-hook-count').textContent = data.hook_count || 0;
-      var hookHtml = (data.hook_records || []).slice(-10).map(function(h) {
-        return '<div class="hook-item">' + escapeHtml(JSON.stringify(h)) + '</div>';
-      }).join('');
-      document.getElementById('rev-hooks').innerHTML = hookHtml || '无数据';
-
-      var traceEl = document.getElementById('rev-trace');
-      var nearBottom = traceEl.scrollHeight - traceEl.scrollTop - traceEl.clientHeight < 60;
-      var stepsHtml = (data.steps || []).map(function(s) { return renderStep(s); }).join('');
-      if (!reverseLogCleared) {
-        traceEl.innerHTML = stepsHtml || '<div class="trace-empty">等待数据...</div>';
-        if (nearBottom) { traceEl.scrollTop = traceEl.scrollHeight; }
-      }
-
-      /* 更新统计卡片与截图 */
-      updateStats(data);
+      /* 统一走 updateReverseUI：避免与 SSE snapshot 路径的渲染逻辑分叉 */
+      updateReverseUI(data);
       if (!reverseLogCleared) {
         renderScreenshots(data.screenshots, data.error_screenshot, currentReverseJobId);
-      }
-
-      /* 自适应轮询：运行中快轮询，结束时停止 */
-      if (['done', 'error', 'cancelled'].indexOf(data.status) >= 0) {
-        if (reverseTimer) { clearTimeout(reverseTimer); reverseTimer = null; }
-        reverseForm.querySelector('button[type=submit]').disabled = false;
-        reverseStopBtn.disabled = true;
-        reverseLogCleared = false;
-        showReverseResult(data);
-        /* 任务结束后刷新历史列表 */
-        loadReverseHistory();
       }
     }
 
@@ -1060,8 +1087,9 @@ PAGE = """<!doctype html>
       dlBtn.disabled = !data.compiled_script;
       dlBtn.onclick = function() {
         if (!data.compiled_script) { return; }
-        /* 优先走后端 /reverse/script 接口下载（含 Content-Disposition）*/
-        window.location.href = '/reverse/script?id=' + encodeURIComponent(currentReverseJobId);
+        /* 走后端 /reverse/script 接口下载（含 Content-Disposition），
+           用隐藏 iframe 触发，避免 window.location.href 中断 SSE 连接 */
+        downloadViaFrame('/reverse/script?id=' + encodeURIComponent(currentReverseJobId));
       };
     }
 
@@ -1170,6 +1198,10 @@ PAGE = """<!doctype html>
     }
 
     /* 抽取 UI 更新逻辑供 SSE 复用 */
+    /* lastRenderedStepCount 用于避免 SSE snapshot 全量重绘 trace：
+       增量 step 事件已由 appendReverseEvent 处理，snapshot 仅在
+       步数减少（切换任务/清空）或首次绘制时做全量重写 */
+    var lastRenderedStepCount = -1;
     function updateReverseUI(data) {
       if (!data) return;
       document.getElementById('rev-current-step').textContent = data.current_step || 0;
@@ -1213,12 +1245,19 @@ PAGE = """<!doctype html>
         return '<div class="hook-item">' + escapeHtml(JSON.stringify(h)) + '</div>';
       }).join('');
       document.getElementById('rev-hooks').innerHTML = hookHtml || '无数据';
+      /* Trace 全量重绘只在步数减少（切任务/清空）或首次绘制时触发；
+         否则依赖增量 step 事件，避免 innerHTML 重写导致用户滚动位置丢失 */
       var traceEl = document.getElementById('rev-trace');
-      var nearBottom = traceEl.scrollHeight - traceEl.scrollTop - traceEl.clientHeight < 60;
-      var stepsHtml = (data.steps || []).map(function(s) { return renderStep(s); }).join('');
-      if (!reverseLogCleared) {
+      var stepCount = (data.steps || []).length;
+      if (!reverseLogCleared && (stepCount < lastRenderedStepCount || lastRenderedStepCount < 0)) {
+        var nearBottom = traceEl.scrollHeight - traceEl.scrollTop - traceEl.clientHeight < 60;
+        var stepsHtml = stepCount ? (data.steps || []).map(function(s) { return renderStep(s); }).join('') : '';
         traceEl.innerHTML = stepsHtml || '<div class="trace-empty">等待数据...</div>';
         if (nearBottom) { traceEl.scrollTop = traceEl.scrollHeight; }
+        lastRenderedStepCount = stepCount;
+      } else if (!reverseLogCleared) {
+        /* 步数未减少：同步 lastRenderedStepCount 以便后续切换任务时正确判断 */
+        lastRenderedStepCount = Math.max(lastRenderedStepCount, stepCount);
       }
       updateStats(data);
       if (['done', 'error', 'cancelled'].includes(data.status)) {
@@ -1285,6 +1324,10 @@ PAGE = """<!doctype html>
       if (reverseTimer) { clearTimeout(reverseTimer); reverseTimer = null; }
       currentReverseJobId = jobId;
       var myToken = jobId;
+      /* 切换任务时重置 trace 重绘计数器，强制下一次 snapshot 全量绘制 */
+      lastRenderedStepCount = -1;
+      reverseLogCleared = false;
+      REVERSE_POLL_FAIL = 0;
       try {
         await pollReverse();
       } catch(e) { /* pollReverse 内部已处理 */ }
@@ -1416,6 +1459,24 @@ PAGE = """<!doctype html>
     reverseForm.addEventListener('submit', async function(event) {
       event.preventDefault();
       var submitBtn = reverseForm.querySelector('button[type=submit]');
+      /* 客户端校验：URL 必填且合规 */
+      var urlInput = reverseForm.querySelector('[name=url]');
+      var urlErr = validateUrl(urlInput.value.trim());
+      if (urlErr) {
+        urlInput.focus();
+        var st = document.getElementById('rev-status');
+        if (st) { st.textContent = urlErr; }
+        return;
+      }
+      /* 最大步数校验：>=1 */
+      var maxStepsInput = reverseForm.querySelector('[name=max_steps]');
+      var maxStepsVal = parseInt(maxStepsInput.value, 10);
+      if (isNaN(maxStepsVal) || maxStepsVal < 1) {
+        maxStepsInput.focus();
+        var st2 = document.getElementById('rev-status');
+        if (st2) { st2.textContent = '最大步数必须为不小于 1 的整数'; }
+        return;
+      }
       /* 若当前任务仍在运行，需用户确认才能启动新任务 */
       if (currentReverseJobId && !submitBtn.disabled) {
         var statusEl = document.getElementById('rev-status');
@@ -1427,6 +1488,8 @@ PAGE = """<!doctype html>
       submitBtn.disabled = true;
       reverseStopBtn.disabled = false;
       reverseLogCleared = false;
+      REVERSE_POLL_FAIL = 0;
+      lastRenderedStepCount = -1;  /* 重置，强制首次全量绘制 */
       document.getElementById('rev-result-section').style.display = 'none';
       document.getElementById('rev-trace').innerHTML = '<div class="trace-empty">正在启动 Agent...</div>';
       try {
@@ -1559,8 +1622,9 @@ def run_job(job: JobState) -> None:
     try:
         with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
             code = web_resource_crawler.crawl(job.args)
-        job.exit_code = code
-        job.status = "cancelled" if job.stop_event.is_set() else "done"
+        with job.lock:
+            job.exit_code = code
+            job.status = "cancelled" if job.stop_event.is_set() else "done"
         report_html = Path(job.output_dir) / "run_report.html"
         report_md = Path(job.output_dir) / "run_report.md"
         job.append(f"\n完成，退出码：{code}\n输出目录：{job.output_dir}\n")
@@ -1569,19 +1633,28 @@ def run_job(job: JobState) -> None:
         if report_md.exists():
             job.append(f"Markdown 报告：{report_md}\n")
     except Exception as exc:
-        job.exit_code = 1
-        job.status = "error"
+        with job.lock:
+            job.exit_code = 1
+            job.status = "error"
         job.append(f"\n任务出错：{exc}\n")
 
 
 def wait_for_resume(job: JobState) -> None:
-    while not job.pause_event.is_set():
-        job.status = "paused"
+    """循环等待 pause_event 被设置（resume）。
+
+    所有对 job.status 的读写都在 job.lock 下完成，
+    与 snapshot() 互斥，避免 TOCTOU 竞争。
+    """
+    while True:
+        with job.lock:
+            if job.pause_event.is_set():
+                if job.status == "paused":
+                    job.status = "running"
+                return
+            job.status = "paused"
         if job.stop_event.is_set():
             raise RuntimeError("cancelled by user")
         time.sleep(0.2)
-    if job.status == "paused":
-        job.status = "running"
 
 
 # ---------------------------------------------------------------------------
@@ -1730,33 +1803,39 @@ class ReverseAgentRunner:
             # 同步运行（在子线程中阻塞）
             result = agent.run(url=job.url, task=job.task)
 
-            # 写回结果
-            job.success = bool(result.get("success", False))
+            # 写回结果（加锁保护共享字段）
             analysis = result.get("analysis")
-            job.analysis = _serialize_analysis(analysis)
-            job.compiled_script = str(result.get("compiled_script") or "")
-            job.target_params_found = dict(result.get("target_params_found") or {})
             judge = result.get("judge_result")
-            job.judge_result = dict(judge) if isinstance(judge, dict) else {}
+            with job.state_lock:
+                job.success = bool(result.get("success", False))
+                job.analysis = _serialize_analysis(analysis)
+                job.compiled_script = str(result.get("compiled_script") or "")
+                job.target_params_found = dict(result.get("target_params_found") or {})
+                job.judge_result = dict(judge) if isinstance(judge, dict) else {}
 
-            if job.stop_event.is_set():
-                job.status = "cancelled"
-            elif job.success:
-                job.status = "done"
-            else:
-                job.status = "error"
-                if not job.error:
-                    job.error = "Agent 未成功完成目标参数提取"
+                # stop_event 优先于 success 判断（避免成功完成时被误标为完成）
+                if job.stop_event.is_set():
+                    job.status = "cancelled"
+                elif job.success:
+                    job.status = "done"
+                else:
+                    job.status = "error"
+                    if not job.error:
+                        job.error = "Agent 未成功完成目标参数提取"
         except Exception as exc:
-            job.status = "error"
-            job.error = str(exc)
-            job.exit_code = 1
+            with job.state_lock:
+                job.status = "error"
+                job.error = str(exc)
+                job.exit_code = 1
 
     def _on_event(self, job: ReverseJobState, event: object, agent: object) -> None:
         """EventBus 订阅器：把 AgentEvent 推到 ReverseJobState。
 
         处理异常时不能让单个事件处理失败导致 agent 崩溃（EventBus 本身
         也会捕获订阅者异常，但这里额外做一层保护）。
+
+        所有对 ReverseJobState 共享字段的写入都在 state_lock 下完成，
+        与 snapshot()/clear_runtime() 互斥，避免数据竞争。
         """
         try:
             evt_type = getattr(event, "type", "")
@@ -1764,67 +1843,77 @@ class ReverseAgentRunner:
             evt_payload = getattr(event, "payload", {}) or {}
             ts = time.time()
 
-            # 序列化事件并追加到流
+            # 序列化事件并追加到流（append_event 自身获取 state_lock）
             evt_dict = {"type": evt_type, "step": evt_step, "payload": evt_payload, "ts": ts}
             job.append_event(evt_dict)
 
-            # 根据事件类型更新对应字段
-            if evt_type == "step.start":
-                job.current_step = evt_step
-                job._step_starts[evt_step] = ts
-            elif evt_type == "step.end":
-                self._finalize_step(job, evt_step, agent)
-            elif evt_type == "action":
-                self._update_step_action(job, evt_step, evt_payload)
-            elif evt_type == "observation":
-                job.current_observation = {
-                    "url": evt_payload.get("url", ""),
-                    "hook_count": evt_payload.get("hook_count", 0),
-                    "network_count": evt_payload.get("network_count", 0),
-                    "script_count": evt_payload.get("script_count", 0),
-                }
-            elif evt_type == "confidence.low":
-                job.last_confidence = {
-                    "score": evt_payload.get("score", 0.0),
-                    "reasons": list(evt_payload.get("reasons") or []),
-                    "action_type": "",
-                }
-            elif evt_type == "guard.deny":
-                rules = list(evt_payload.get("matched_rules") or [])
-                details = list(evt_payload.get("details") or [])
-                for i, rule in enumerate(rules):
-                    detail = details[i] if i < len(details) else ""
-                    job.guard_blocks.append({"rule": rule, "detail": detail})
-            elif evt_type == "judge.result":
-                job.judge_result = {
-                    "verified": evt_payload.get("verified", False),
-                    "missing": list(evt_payload.get("missing") or []),
-                }
-            elif evt_type == "checkpoint.resume":
-                job.checkpoints.append(
-                    {
-                        "step": evt_step,
+            # 根据事件类型更新对应字段 —— 所有写入都在 state_lock 下
+            with job.state_lock:
+                if evt_type == "step.start":
+                    job.current_step = evt_step
+                    job._step_starts[evt_step] = ts
+                elif evt_type == "step.end":
+                    # _finalize_step 需要单独调用以访问 agent 属性，
+                    # 这里只更新步骤计数；耗时/置信度等由 _finalize_step 在锁外读 agent 后再加锁写
+                    pass
+                elif evt_type == "action":
+                    self._update_step_action_locked(job, evt_step, evt_payload)
+                elif evt_type == "observation":
+                    job.current_observation = {
                         "url": evt_payload.get("url", ""),
-                        "type": "resume",
+                        "hook_count": evt_payload.get("hook_count", 0),
+                        "network_count": evt_payload.get("network_count", 0),
+                        "script_count": evt_payload.get("script_count", 0),
                     }
-                )
-            elif evt_type == "screenshot":
-                # 截图事件：追加到 screenshots 列表（含 step/path/error/ts）
-                shot_entry = {
-                    "step": evt_step,
-                    "path": evt_payload.get("path", ""),
-                    "error": bool(evt_payload.get("error", False)),
-                    "ts": ts,
-                }
-                job.screenshots.append(shot_entry)
-                if shot_entry["error"]:
-                    job.error_screenshot = shot_entry["path"]
+                elif evt_type == "confidence.low":
+                    job.last_confidence = {
+                        "score": evt_payload.get("score", 0.0),
+                        "reasons": list(evt_payload.get("reasons") or []),
+                        "action_type": "",
+                    }
+                elif evt_type == "guard.deny":
+                    rules = list(evt_payload.get("matched_rules") or [])
+                    details = list(evt_payload.get("details") or [])
+                    for i, rule in enumerate(rules):
+                        detail = details[i] if i < len(details) else ""
+                        job.guard_blocks.append({"rule": rule, "detail": detail})
+                elif evt_type == "judge.result":
+                    job.judge_result = {
+                        "verified": evt_payload.get("verified", False),
+                        "missing": list(evt_payload.get("missing") or []),
+                    }
+                elif evt_type == "checkpoint.resume":
+                    job.checkpoints.append(
+                        {
+                            "step": evt_step,
+                            "url": evt_payload.get("url", ""),
+                            "type": "resume",
+                        }
+                    )
+                elif evt_type == "screenshot":
+                    # 截图事件：追加到 screenshots 列表（含 step/path/error/ts）
+                    shot_entry = {
+                        "step": evt_step,
+                        "path": evt_payload.get("path", ""),
+                        "error": bool(evt_payload.get("error", False)),
+                        "ts": ts,
+                    }
+                    job.screenshots.append(shot_entry)
+                    if shot_entry["error"]:
+                        job.error_screenshot = shot_entry["path"]
+
+            # step.end 需要读取 agent 属性（非共享状态），在锁外读取后加锁写入
+            if evt_type == "step.end":
+                self._finalize_step(job, evt_step, agent)
         except Exception:
             # 静默吞掉订阅者异常，不能影响 agent 主循环
             pass
 
-    def _update_step(self, job: ReverseJobState, step: int) -> dict:
-        """获取或创建步骤字典（用于累积 action / confidence 等字段）。"""
+    def _update_step_locked(self, job: ReverseJobState, step: int) -> dict:
+        """获取或创建步骤字典（用于累积 action / confidence 等字段）。
+
+        调用者必须持有 job.state_lock。
+        """
         for s in job.steps:
             if s.get("step") == step:
                 return s
@@ -1838,55 +1927,76 @@ class ReverseAgentRunner:
         job.steps.append(entry)
         return entry
 
-    def _update_step_action(self, job: ReverseJobState, step: int, payload: dict) -> None:
-        """收到 action 事件时更新步骤的 action_type / reasoning。"""
-        entry = self._update_step(job, step)
+    def _update_step_action_locked(
+        self, job: ReverseJobState, step: int, payload: dict
+    ) -> None:
+        """收到 action 事件时更新步骤的 action_type / reasoning。
+
+        调用者必须持有 job.state_lock。
+        """
+        entry = self._update_step_locked(job, step)
         entry["action_type"] = str(payload.get("action_type", ""))
         entry["reasoning"] = str(payload.get("reasoning", ""))
 
     def _finalize_step(self, job: ReverseJobState, step: int, agent: object) -> None:
-        """step.end 时计算耗时、置信度，完成步骤卡片。"""
-        entry = self._update_step(job, step)
-        start_ts = job._step_starts.pop(step, None)
-        step_duration_sec = 0.0
-        if start_ts is not None:
-            step_duration_sec = max(0.0, time.time() - start_ts)
-            entry["duration_ms"] = int(step_duration_sec * 1000)
-        # 记录每步耗时（秒），与 steps 列表对齐
-        job.step_durations.append(step_duration_sec)
+        """step.end 时计算耗时、置信度，完成步骤卡片。
 
-        # 从 agent 读取最新置信度与预算
+        先在锁外读取 agent 属性（非共享状态），再加锁写入共享字段。
+        """
+        # 锁外读取 agent 属性（避免在锁内访问 agent 导致死锁）
+        conf_score: float | None = None
+        conf_reasons: list = []
+        conf_action_type: str = ""
+        hook_records: list[dict] = []
+        net_log: list[dict] = []
         try:
             conf = getattr(agent, "_last_confidence", None)
             if conf is not None:
                 score = getattr(conf, "score", None)
                 if score is not None:
-                    entry["confidence"] = float(score)
-                    job.last_confidence = {
-                        "score": float(score),
-                        "reasons": list(getattr(conf, "reasons", []) or []),
-                        "action_type": str(getattr(conf, "action_type", "")),
-                    }
+                    conf_score = float(score)
+                    conf_reasons = list(getattr(conf, "reasons", []) or [])
+                    conf_action_type = str(getattr(conf, "action_type", ""))
         except Exception:
             pass
-
-        # 从 agent 读取 hook 数据缓存
         try:
             hook_cache = getattr(agent, "_hook_data_cache", {})
             records = hook_cache.get("records", []) if isinstance(hook_cache, dict) else []
             if records:
-                job.hook_records = list(records)
-                job.hook_count = len(records)
+                hook_records = list(records)
+        except Exception:
+            pass
+        try:
+            net = getattr(agent, "_network_log", [])
+            if net:
+                net_log = list(net)
         except Exception:
             pass
 
-        # 从 agent 读取网络日志
-        try:
-            net_log = getattr(agent, "_network_log", [])
+        # 加锁写入所有共享字段
+        with job.state_lock:
+            entry = self._update_step_locked(job, step)
+            start_ts = job._step_starts.pop(step, None)
+            step_duration_sec = 0.0
+            if start_ts is not None:
+                step_duration_sec = max(0.0, time.time() - start_ts)
+                entry["duration_ms"] = int(step_duration_sec * 1000)
+            job.step_durations.append(step_duration_sec)
+
+            if conf_score is not None:
+                entry["confidence"] = conf_score
+                job.last_confidence = {
+                    "score": conf_score,
+                    "reasons": conf_reasons,
+                    "action_type": conf_action_type,
+                }
+
+            if hook_records:
+                job.hook_records = hook_records
+                job.hook_count = len(hook_records)
+
             if net_log:
-                job.network_requests = list(net_log)
-        except Exception:
-            pass
+                job.network_requests = net_log
 
 
 def _serialize_analysis(analysis: object) -> str:
@@ -2047,14 +2157,17 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/pause":
                 job.pause_event.clear()
-                job.status = "paused"
+                with job.lock:
+                    job.status = "paused"
             elif path == "/resume":
                 job.pause_event.set()
-                job.status = "running"
+                with job.lock:
+                    job.status = "running"
             elif path == "/cancel":
                 job.stop_event.set()
                 job.pause_event.set()
-                job.status = "cancelled"
+                with job.lock:
+                    job.status = "cancelled"
             self.respond_json({"ok": True})
             return
         if path == "/open-output":
@@ -2062,7 +2175,7 @@ class Handler(BaseHTTPRequestHandler):
             out_dir = Path(output_path(form.get("out", [DEFAULT_OUTPUT])[0]))
             out_dir.mkdir(parents=True, exist_ok=True)
             try:
-                os.startfile(str(out_dir))
+                _open_folder(str(out_dir))
                 self.respond_json({"ok": True, "message": f"已打开：{out_dir}"})
             except Exception as exc:
                 self.respond_json({"ok": False, "message": f"无法打开：{exc}"})
@@ -2100,10 +2213,10 @@ class Handler(BaseHTTPRequestHandler):
             if not rstop:
                 self.respond_json({"ok": False, "message": "任务不存在"})
                 return
+            # 仅设置 stop_event，不立即改 status；
+            # Agent 主循环会在下个步检查后让 run_job 决定最终状态
             rstop.stop_event.set()
-            if rstop.status == "running":
-                rstop.status = "cancelled"
-            self.respond_json({"ok": True})
+            self.respond_json({"ok": True, "message": "已请求停止，Agent 将在当前步骤结束后退出"})
             return
         if path == "/reverse/clear":
             # 清空指定任务的运行时数据（保留最终结果）
@@ -2180,8 +2293,23 @@ class Handler(BaseHTTPRequestHandler):
         deadline = _time.time() + 3600  # 单连接最多 1 小时，避免泄漏
         try:
             while _time.time() < deadline:
+                # 检查 job 是否已被清理（新任务达 MAX_REVERSE_JOBS 时可能被移除）
+                with REVERSE_JOBS_LOCK:
+                    if rjob.id not in REVERSE_JOBS:
+                        self.wfile.write(
+                            b"event: gone\ndata: "
+                            + json.dumps(
+                                {"status": "removed", "message": "任务已从注册表移除"},
+                                ensure_ascii=False,
+                            ).encode("utf-8")
+                            + b"\n\n"
+                        )
+                        self.wfile.flush()
+                        return
                 # 任务终态：先发 final，再退出
-                if rjob.status in {"done", "error", "cancelled"}:
+                with rjob.state_lock:
+                    cur_status = rjob.status
+                if cur_status in {"done", "error", "cancelled"}:
                     payload = rjob.snapshot()
                     payload["events_since"] = last_ts
                     self.wfile.write(
@@ -2192,7 +2320,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.flush()
                     return
                 # 推送增量事件
-                with rjob.events_lock:
+                with rjob.state_lock:
                     new_events = [e for e in rjob.events if e.get("ts", 0) > last_ts]
                     if new_events:
                         last_ts = new_events[-1].get("ts", last_ts)

@@ -949,26 +949,27 @@ class ReverseMCPServer:
 
         report = PentestReport(target=target)
         try:
-            # 用 SIGALRM 实现整体超时（仅 Unix；Windows 下退化为单检查项无全局上限）
+            # 用 SIGALRM 实现整体超时（仅 Unix）；Windows 下用线程池超时降级
             use_alarm = hasattr(signal, "SIGALRM")
 
             def _run_all() -> None:
+                # 用 with 确保所有可关闭资源被释放，避免 httpx.Client 泄漏
                 if "ports" in checks:
                     scanner = PortScanner()
                     ports_to_scan = custom_ports if custom_ports else None
                     report.port_scan = scanner.scan(host, ports_to_scan)
                 if "dirs" in checks:
-                    bruter = DirBruter()
-                    report.dir_brute = bruter.brute(base_url)
+                    with DirBruter() as bruter:
+                        report.dir_brute = bruter.brute(base_url)
                 if "subdomains" in checks:
                     enumerator = SubdomainEnumerator()
                     report.subdomains = enumerator.enumerate(host)
                 if "vulns" in checks:
-                    vuln_scanner = VulnScanner()
-                    report.vulns = vuln_scanner.scan_url(base_url)
+                    with VulnScanner() as vuln_scanner:
+                        report.vulns = vuln_scanner.scan_url(base_url)
                 if "headers" in checks:
-                    checker = HeaderChecker()
-                    report.headers = checker.check(base_url)
+                    with HeaderChecker() as checker:
+                        report.headers = checker.check(base_url)
 
             if use_alarm:
 
@@ -989,7 +990,17 @@ class ReverseMCPServer:
                         old_handler,
                     )
             else:
-                _run_all()
+                # Windows 无 SIGALRM，用线程池做跨平台超时
+                import concurrent.futures
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    fut = ex.submit(_run_all)
+                    try:
+                        fut.result(timeout=timeout)
+                    except concurrent.futures.TimeoutError:
+                        raise TimeoutError(
+                            f"pentest recon timed out after {timeout}s"
+                        ) from None
         except Exception as exc:
             return _error("pentest recon failed", details=str(exc))
         return _to_json(report.to_dict())

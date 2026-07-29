@@ -43,7 +43,6 @@ src/web_crawler/          # 核心库
     schema.py             # SchemaValidator（结构化抽取 Pydantic 校验）
     dom_pruner.py         # DomPruner（DOM 焦点裁剪，Skyvern/browser-use 风格）
     checkpoint.py         # CheckpointManager（断点续跑 + 状态持久化）
-    budget.py             # BudgetTracker（Token 预算管理，单步/全局/单次）
     confidence.py         # ConfidenceScorer（动作置信度评分，规则 + LLM 双路径）
     guardrails.py         # ActionGuard（危险动作护栏，白名单 + 跨域拦截）
   pentest/                # 轻量渗透辅助工具集（纯 Python，无外部命令依赖）

@@ -56,9 +56,9 @@ web-crawler-reverse interactive                  # REPL：输入 `tools` 列工�
 
 ### `run` 子命令（完整 Agent，不走 MCP）
 
-`run` 直接构造 `ReverseAgent` 并调用 `run()`，暴露全部 budget / guard /
+`run` 直接构造 `ReverseAgent` 并调用 `run()`，暴露全部 guard /
 checkpoint / screenshot 标志，可保存成功路径脚本到文件，并把完整 JSON
-结果（`budget_summary`、`last_confidence`、`checkpoints`、`screenshots`、
+结果（`last_confidence`、`checkpoints`、`screenshots`、
 `error_screenshot`）写到 stdout 或 `--output`：
 
 ```bash
@@ -68,7 +68,6 @@ web-crawler-reverse run \
   --target-params anti_content,sign \
   --max-steps 20 --headless \
   --enable-checkpoint \
-  --budget-total 100000 --budget-per-step 8000 \
   --min-confidence 0.4 \
   --enable-screenshot \
   --save-script ./out/sign.py \
