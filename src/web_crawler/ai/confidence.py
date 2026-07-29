@@ -320,8 +320,10 @@ class ConfidenceScorer:
         params = action.get("params") or {}
 
         # 简单指纹：action_type + params 关键字段
+        # 兼容 history 用 'action' 或 'action_type' 作为 key 的两种风格
         def _fingerprint(h: dict[str, Any]) -> str:
-            return f"{h.get('action', '')}|{json.dumps(h.get('params') or {}, sort_keys=True)}"
+            at_hist = h.get("action") or h.get("action_type", "")
+            return f"{at_hist}|{json.dumps(h.get('params') or {}, sort_keys=True)}"
 
         current_fp = f"{at}|{json.dumps(params, sort_keys=True)}"
         duplicates = sum(1 for h in recent if _fingerprint(h) == current_fp)

@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -151,7 +153,32 @@ def _make_stub_provider() -> StubProvider:
 _skip_no_camoufox = pytest.mark.skipif(not HAS_CAMOUFOX, reason="camoufox 未安装，跳过端到端测试")
 
 
+def _is_selector_loop_on_windows() -> bool:
+    """检测当前是否为 Windows + SelectorEventLoopPolicy。
+
+    conftest.py 为 curl_cffi 在 Windows 强制 SelectorEventLoopPolicy，而
+    Playwright 同步启动浏览器需要 ProactorEventLoop 才能创建子进程；
+    两者在同一进程内互斥，检测到即应跳过端到端真实浏览器测试。
+    """
+    if sys.platform != "win32":
+        return False
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return isinstance(
+            asyncio.get_event_loop_policy(), asyncio.WindowsSelectorEventLoopPolicy
+        )
+
+
+_skip_selector_loop = pytest.mark.skipif(
+    _is_selector_loop_on_windows(),
+    reason="Windows + SelectorEventLoop 与 Playwright 子进程启动互斥，跳过端到端测试",
+)
+
+
 @_skip_no_camoufox
+@_skip_selector_loop
 @pytest.mark.slow
 def test_e2e_reverse_agent_full_loop(e2e_server_url: str) -> None:
     """端到端：ReverseAgent 真实启动浏览器，跑通 observe→think→act 完整循环。
@@ -200,6 +227,7 @@ def test_e2e_reverse_agent_full_loop(e2e_server_url: str) -> None:
 
 
 @_skip_no_camoufox
+@_skip_selector_loop
 @pytest.mark.slow
 def test_e2e_reverse_agent_hook_capture(e2e_server_url: str) -> None:
     """端到端：验证 fetch_hook 真实注入并捕获页面发出的请求。
