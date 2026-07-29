@@ -521,8 +521,10 @@ class DynamicFetcher(BaseFetcher):
 
             try:
                 loop = asyncio.new_event_loop()
-                loop.run_until_complete(self._cleanup_async_handles())
-                loop.close()
+                try:
+                    loop.run_until_complete(self._cleanup_async_handles())
+                finally:
+                    loop.close()
             except Exception:
                 pass
 
