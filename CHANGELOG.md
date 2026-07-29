@@ -93,6 +93,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README highlights section adds "Image captcha solver" and "Lightweight
   pentest toolkit" entries; architecture tree extended with
   `ai/image_captcha.py` and the `pentest/` subpackage.
+- Project version bumped to `0.3.0`. Dependency lower bounds raised to
+  reflect tested-compatible baselines: `lxml>=5.2`, `curl_cffi>=0.9`,
+  `camoufox[geoip]>=0.4.4`, `ddddocr>=1.5`, `ruff>=0.9`,
+  `mkdocstrings[python]>=0.27`. Verified against latest stable releases
+  (`curl_cffi 0.15.0`, `camoufox 0.5.4`, `ruff 0.16.0`, `mcp 2.0.0`,
+  `pytest 9.1.1`, `mypy 2.3.0`, `lxml 6.1.1`, `numpy 2.5.1`,
+  `Pillow 12.3.0`, `playwright 1.61.0`, `pydantic 2.13.4`).
 
 ### Removed
 - `ai.budget` module (`BudgetTracker` / `TokenBudget` / `BudgetPolicy`) and
