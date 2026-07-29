@@ -680,7 +680,10 @@ class ReverseMCPServer:
                     analyzer=self.agent.analyzer,
                     event_bus=progress_bus,
                 )
-                result = run_agent.run(url=url, task=task)
+                try:
+                    result = run_agent.run(url=url, task=task)
+                finally:
+                    run_agent.close()
                 self.report_progress(
                     progress["progressToken"], max_steps, max_steps, message="done"
                 )
@@ -968,9 +971,13 @@ class ReverseMCPServer:
                     report.headers = checker.check(base_url)
 
             if use_alarm:
+
+                def _timeout_handler(signum: int, frame: Any) -> None:
+                    raise TimeoutError(f"pentest recon timed out after {timeout}s")
+
                 old_handler = signal.signal(  # type: ignore[attr-defined]
                     signal.SIGALRM,  # type: ignore[attr-defined]
-                    lambda *_: None,
+                    _timeout_handler,
                 )
                 signal.alarm(int(timeout))  # type: ignore[attr-defined]
                 try:
@@ -1044,9 +1051,21 @@ class ReverseMCPServer:
             return [types.Tool(**tool) for tool in self.get_tools()]
 
         @server.call_tool()
-        async def _call_tool(name: str, arguments: dict | None) -> list[Any]:
+        async def _call_tool(name: str, arguments: dict | None) -> Any:
             result = self.handle_tool(name, arguments or {})
-            return [types.TextContent(type="text", text=result)]
+            # 解析结果判断是否为错误，设置 isError 标志（MCP 规范要求）
+            is_error = False
+            try:
+                parsed = json.loads(result)
+                if isinstance(parsed, dict) and "error" in parsed:
+                    is_error = True
+            except (json.JSONDecodeError, TypeError):
+                pass
+            content = [types.TextContent(type="text", text=result)]
+            # CallToolResult 仅在较新 mcp SDK 中可用，不可用时退化为纯 content 列表
+            if is_error and hasattr(types, "CallToolResult"):
+                return types.CallToolResult(content=content, isError=True)
+            return content
 
         # prompts：预定义 prompt 模板，供 MCP 客户端按场景渲染
         @server.list_prompts()
@@ -1124,6 +1143,18 @@ class ReverseMCPServer:
             try:
                 request = json.loads(line)
             except json.JSONDecodeError:
+                # JSON-RPC 2.0 规范：解析失败返回 Parse error（id=null）
+                sys.stdout.write(
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": None,
+                            "error": {"code": -32700, "message": "Parse error"},
+                        }
+                    )
+                    + "\n"
+                )
+                sys.stdout.flush()
                 continue
             if not isinstance(request, dict):
                 continue
@@ -1182,12 +1213,20 @@ class ReverseMCPServer:
                 }
             arguments = params.get("arguments") or {}
             result = self.handle_tool(tool_name, arguments)
+            # 检测结果是否为错误，设置 isError 标志（MCP 规范要求）
+            is_error = False
+            try:
+                parsed = json.loads(result)
+                if isinstance(parsed, dict) and "error" in parsed:
+                    is_error = True
+            except (json.JSONDecodeError, TypeError):
+                pass
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "result": {
                     "content": [{"type": "text", "text": result}],
-                    "isError": False,
+                    "isError": is_error,
                 },
             }
 
@@ -1275,3 +1314,7 @@ def main() -> None:
 
 
 __all__ = ["ReverseMCPServer", "main"]
+
+
+if __name__ == "__main__":
+    main()

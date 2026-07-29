@@ -33,6 +33,10 @@ _COMPRESS_SYSTEM_PROMPT = (
     "只保留对后续决策有用的信息。"
 )
 
+# 累积摘要字符上限。超长任务多次压缩后，摘要本身可能消耗过多 token，
+# 与压缩初衷相悖；超过上限时截断保留最新部分。
+_MAX_SUMMARY_LEN = 2000
+
 
 @dataclass(frozen=True, slots=True)
 class StateFingerprint:
@@ -170,11 +174,7 @@ class ContextCompressor:
         to_compress = history[: -self.compress_to]
         recent = history[-self.compress_to :]
         summary = self._summarize(to_compress)
-        # 累加到历史摘要
-        if self._cumulative_summary:
-            self._cumulative_summary = f"{self._cumulative_summary}\n\n{summary}"
-        else:
-            self._cumulative_summary = summary
+        self._append_summary(summary)
         # 把摘要作为一条"meta"动作插到最近历史前
         return (
             [
@@ -194,10 +194,7 @@ class ContextCompressor:
         to_compress = history[: -self.compress_to]
         recent = history[-self.compress_to :]
         summary = await self._summarize_async(to_compress)
-        if self._cumulative_summary:
-            self._cumulative_summary = f"{self._cumulative_summary}\n\n{summary}"
-        else:
-            self._cumulative_summary = summary
+        self._append_summary(summary)
         return (
             [
                 {
@@ -210,6 +207,22 @@ class ContextCompressor:
             True,
         )
 
+    def _append_summary(self, summary: str) -> None:
+        """累加新摘要，超过上限时截断最旧部分，避免无界增长。
+
+        超长任务（数百步、多次压缩）后摘要本身可能消耗大量 token，
+        与压缩初衷相悖。这里保留最近 ``_MAX_SUMMARY_LEN`` 字符。
+        """
+        if not summary:
+            return
+        if self._cumulative_summary:
+            self._cumulative_summary = f"{self._cumulative_summary}\n\n{summary}"
+        else:
+            self._cumulative_summary = summary
+        if len(self._cumulative_summary) > _MAX_SUMMARY_LEN:
+            # 截断保留最新部分
+            self._cumulative_summary = self._cumulative_summary[-_MAX_SUMMARY_LEN:]
+
     def force_compress(self, history: list[dict]) -> tuple[list[dict], bool]:
         """强制压缩：不论历史长度是否超过阈值都触发一次压缩。
 
@@ -221,10 +234,7 @@ class ContextCompressor:
         to_compress = history[: -self.compress_to]
         recent = history[-self.compress_to :]
         summary = self._summarize(to_compress)
-        if self._cumulative_summary:
-            self._cumulative_summary = f"{self._cumulative_summary}\n\n{summary}"
-        else:
-            self._cumulative_summary = summary
+        self._append_summary(summary)
         return (
             [
                 {
@@ -244,10 +254,7 @@ class ContextCompressor:
         to_compress = history[: -self.compress_to]
         recent = history[-self.compress_to :]
         summary = await self._summarize_async(to_compress)
-        if self._cumulative_summary:
-            self._cumulative_summary = f"{self._cumulative_summary}\n\n{summary}"
-        else:
-            self._cumulative_summary = summary
+        self._append_summary(summary)
         return (
             [
                 {

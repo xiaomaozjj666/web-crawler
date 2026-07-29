@@ -430,11 +430,14 @@ class ActionGuard:
         if not selector:
             return False, ""
         selector_lower = selector.lower()
-        # JS 注入特征：分号、括号、script 标签、javascript: 协议
+        # JS 注入特征：分号、括号、<script> 标签、javascript: 协议
+        # 注意 "script" 作为子串会误匹配合法的 <script> 元素选择器
+        # （CSS 选择器 "script" 是合法的），所以用 "<script" 精确匹配标签
         injection_patterns = (
             ";",
             "()",
-            "script",
+            "<script",
+            "</script",
             "javascript:",
             "eval(",
             "function(",

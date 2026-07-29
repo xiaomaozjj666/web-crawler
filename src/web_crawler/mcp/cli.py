@@ -31,6 +31,13 @@ def _print_json(data: Any, *, indent: int = 2) -> None:
     print(json.dumps(data, ensure_ascii=False, indent=indent, default=str))
 
 
+def _print_result(result: str) -> int:
+    """打印 handle_tool 返回的 JSON 结果，返回退出码（0 成功 / 1 失败）。"""
+    data = json.loads(result)
+    _print_json(data)
+    return 1 if isinstance(data, dict) and "error" in data else 0
+
+
 def _make_server(model: str = "deepseek-v4-pro") -> Any:
     """创建 MCP server 实例（复用其内部所有工具）。"""
     from .server import ReverseMCPServer
@@ -51,10 +58,9 @@ def cmd_reverse_url(args: argparse.Namespace) -> int:
                 "max_steps": args.max_steps,
             },
         )
-        _print_json(json.loads(result))
+        return _print_result(result)
     finally:
         server.close()
-    return 0
 
 
 def cmd_inject_hooks(args: argparse.Namespace) -> int:
@@ -65,10 +71,9 @@ def cmd_inject_hooks(args: argparse.Namespace) -> int:
             "inject_hooks",
             {"url": args.url, "hooks": args.hooks or []},
         )
-        _print_json(json.loads(result))
+        return _print_result(result)
     finally:
         server.close()
-    return 0
 
 
 def cmd_analyze_js(args: argparse.Namespace) -> int:
@@ -83,10 +88,9 @@ def cmd_analyze_js(args: argparse.Namespace) -> int:
             "analyze_js_code",
             {"code": code, "url": args.url or "", "target_param": args.target_param or ""},
         )
-        _print_json(json.loads(result))
+        return _print_result(result)
     finally:
         server.close()
-    return 0
 
 
 def cmd_webpack(args: argparse.Namespace) -> int:
@@ -98,10 +102,9 @@ def cmd_webpack(args: argparse.Namespace) -> int:
     server = _make_server(args.model)
     try:
         result = server.handle_tool("extract_webpack_modules", {"source": source})
-        _print_json(json.loads(result))
+        return _print_result(result)
     finally:
         server.close()
-    return 0
 
 
 def cmd_deobfuscate(args: argparse.Namespace) -> int:
@@ -114,6 +117,9 @@ def cmd_deobfuscate(args: argparse.Namespace) -> int:
     try:
         result = server.handle_tool("deobfuscate_js", {"code": code})
         data = json.loads(result)
+        if isinstance(data, dict) and "error" in data:
+            _print_json(data)
+            return 1
         if "deobfuscated" in data:
             print(data["deobfuscated"])
         else:
@@ -136,6 +142,9 @@ def cmd_reimplement(args: argparse.Namespace) -> int:
             {"code": code, "language": args.language},
         )
         data = json.loads(result)
+        if isinstance(data, dict) and "error" in data:
+            _print_json(data)
+            return 1
         if "code" in data:
             print(data["code"])
         else:
@@ -150,10 +159,9 @@ def cmd_captcha(args: argparse.Namespace) -> int:
     server = _make_server(args.model)
     try:
         result = server.handle_tool("solve_captcha", {"url": args.url})
-        _print_json(json.loads(result))
+        return _print_result(result)
     finally:
         server.close()
-    return 0
 
 
 def cmd_captcha_image(args: argparse.Namespace) -> int:
@@ -194,10 +202,9 @@ def cmd_captcha_image(args: argparse.Namespace) -> int:
     server = _make_server(args.model)
     try:
         result = server.handle_tool("solve_captcha_image", payload)
-        _print_json(json.loads(result))
+        return _print_result(result)
     finally:
         server.close()
-    return 0
 
 
 def cmd_pentest(args: argparse.Namespace) -> int:
@@ -207,14 +214,17 @@ def cmd_pentest(args: argparse.Namespace) -> int:
     if args.checks:
         payload["checks"] = [c.strip() for c in args.checks.split(",") if c.strip()]
     if args.ports:
-        payload["ports"] = [int(p.strip()) for p in args.ports.split(",") if p.strip()]
+        try:
+            payload["ports"] = [int(p.strip()) for p in args.ports.split(",") if p.strip()]
+        except ValueError as exc:
+            print(f"错误：端口列表格式无效：{exc}", file=sys.stderr)
+            return 1
     payload["timeout"] = args.timeout
     try:
         result = server.handle_tool("pentest_recon", payload)
-        _print_json(json.loads(result))
+        return _print_result(result)
     finally:
         server.close()
-    return 0
 
 
 def cmd_capture(args: argparse.Namespace) -> int:
@@ -225,10 +235,9 @@ def cmd_capture(args: argparse.Namespace) -> int:
             "capture_network_requests",
             {"url": args.url, "wait_time": args.wait},
         )
-        _print_json(json.loads(result))
+        return _print_result(result)
     finally:
         server.close()
-    return 0
 
 
 def cmd_scripts(args: argparse.Namespace) -> int:
@@ -236,10 +245,9 @@ def cmd_scripts(args: argparse.Namespace) -> int:
     server = _make_server(args.model)
     try:
         result = server.handle_tool("get_page_scripts", {"url": args.url})
-        _print_json(json.loads(result))
+        return _print_result(result)
     finally:
         server.close()
-    return 0
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -278,6 +286,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     agent = ReverseAgent(config=config, provider=provider)
     try:
         result = agent.run(url=args.url, task=args.task or "")
+    except Exception as exc:
+        print(f"Agent 执行失败：{exc}", file=sys.stderr)
+        return 1
     finally:
         agent.close()
 
@@ -351,11 +362,15 @@ def cmd_interactive(args: argparse.Namespace) -> int:
                 _print_json(json.loads(result))
             elif cmd in ("analyze", "webpack", "deobfuscate", "reimplement") and len(parts) >= 2:
                 target_str: str = parts[1]
-                code = (
-                    Path(target_str).read_text(encoding="utf-8")
-                    if Path(target_str).exists()
-                    else target_str
-                )
+                try:
+                    code = (
+                        Path(target_str).read_text(encoding="utf-8")
+                        if Path(target_str).exists()
+                        else target_str
+                    )
+                except OSError as exc:
+                    print(f"读取文件失败：{exc}", file=sys.stderr)
+                    continue
                 tool_map = {
                     "analyze": "analyze_js_code",
                     "webpack": "extract_webpack_modules",
@@ -375,29 +390,28 @@ def cmd_interactive(args: argparse.Namespace) -> int:
                 mode = parts[1]
                 import base64
 
+                def _read_b64(path: str) -> str:
+                    return base64.b64encode(Path(path).read_bytes()).decode("ascii")
+
                 payload: dict[str, Any] = {"mode": mode}
-                if mode == "text" and len(parts) >= 3:
-                    payload["image"] = base64.b64encode(
-                        Path(parts[2]).read_bytes()
-                    ).decode("ascii")
-                elif mode == "slider" and len(parts) >= 4:
-                    payload["bg"] = base64.b64encode(
-                        Path(parts[2]).read_bytes()
-                    ).decode("ascii")
-                    payload["slider"] = base64.b64encode(
-                        Path(parts[3]).read_bytes()
-                    ).decode("ascii")
-                elif mode == "click" and len(parts) >= 3:
-                    payload["image"] = base64.b64encode(
-                        Path(parts[2]).read_bytes()
-                    ).decode("ascii")
-                    payload["prompt"] = parts[3] if len(parts) >= 4 else ""
-                else:
-                    print(
-                        "用法: captcha-image text <img> | "
-                        "slider <bg> <slider> | click <img> [prompt]",
-                        file=sys.stderr,
-                    )
+                try:
+                    if mode == "text" and len(parts) >= 3:
+                        payload["image"] = _read_b64(parts[2])
+                    elif mode == "slider" and len(parts) >= 4:
+                        payload["bg"] = _read_b64(parts[2])
+                        payload["slider"] = _read_b64(parts[3])
+                    elif mode == "click" and len(parts) >= 3:
+                        payload["image"] = _read_b64(parts[2])
+                        payload["prompt"] = parts[3] if len(parts) >= 4 else ""
+                    else:
+                        print(
+                            "用法: captcha-image text <img> | "
+                            "slider <bg> <slider> | click <img> [prompt]",
+                            file=sys.stderr,
+                        )
+                        continue
+                except OSError as exc:
+                    print(f"读取图片失败：{exc}", file=sys.stderr)
                     continue
                 result = server.handle_tool("solve_captcha_image", payload)
                 _print_json(json.loads(result))
