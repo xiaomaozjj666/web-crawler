@@ -498,7 +498,11 @@ class DynamicFetcher(BaseFetcher):
 
     # -- lifecycle -----------------------------------------------------------
     def close(self) -> None:
-        """Close the reused sync browser and stop the Playwright driver (sync)."""
+        """Close the reused sync browser and stop the Playwright driver (sync).
+
+        对 async 句柄做 best-effort 清理：启动临时事件循环执行 aclose。
+        避免混用 async/sync 接口后 async browser 进程残留。
+        """
         if self._browser is not None:
             try:
                 self._browser.close()
@@ -511,7 +515,31 @@ class DynamicFetcher(BaseFetcher):
             except Exception:
                 pass
             self._pw = None
-        # 异步 browser 无法在同步 close 中安全关闭，请使用 aclose() 或 async with
+        # 异步句柄 best-effort 清理
+        if self._async_browser is not None or self._async_pw is not None:
+            import asyncio
+
+            try:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(self._cleanup_async_handles())
+                loop.close()
+            except Exception:
+                pass
+
+    async def _cleanup_async_handles(self) -> None:
+        """关闭 async browser/pw 句柄（供 close() 同步路径调用）。"""
+        if self._async_browser is not None:
+            try:
+                await self._async_browser.close()
+            except Exception:
+                pass
+            self._async_browser = None
+        if self._async_pw is not None:
+            try:
+                await self._async_pw.stop()
+            except Exception:
+                pass
+            self._async_pw = None
 
     async def aclose(self) -> None:
         """Asynchronously close both sync and async browsers / Playwright drivers."""
@@ -527,18 +555,7 @@ class DynamicFetcher(BaseFetcher):
             except Exception:
                 pass
             self._pw = None
-        if self._async_browser is not None:
-            try:
-                await self._async_browser.close()
-            except Exception:
-                pass
-            self._async_browser = None
-        if self._async_pw is not None:
-            try:
-                await self._async_pw.stop()
-            except Exception:
-                pass
-            self._async_pw = None
+        await self._cleanup_async_handles()
 
     def __enter__(self) -> Self:
         return self
