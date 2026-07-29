@@ -17,6 +17,8 @@ dist/
 # Test / coverage
 .pytest_cache/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 .tox/
 .mypy_cache/
@@ -24,6 +26,8 @@ htmlcov/
 
 # Environment / secrets
 .env
+.env.*
+!.env.example
 *.local
 
 # IDE
@@ -36,9 +40,13 @@ Thumbs.db
 
 # Runtime generated files
 *.log
+*.sqlite
+*.db
 state.json
 resources_manifest.*
 run_report.*
 summary.txt
 crawler_output/
+reverse_screenshots/
+reverse_checkpoints/
 .item_state.json
