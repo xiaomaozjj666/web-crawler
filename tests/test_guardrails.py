@@ -134,13 +134,13 @@ def test_guard_allows_safe_click() -> None:
 
 
 def test_guard_blocks_selector_injection() -> None:
-    """selector 含 JS 注入特征（; / () / script）应被拦截。"""
+    """selector 含 JS 注入特征（; / () / <script> / javascript:）应被拦截。"""
     from web_crawler.ai.guardrails import ActionGuard
 
     guard = ActionGuard()
     bad_selectors = [
         "button;alert(1)",
-        "img)script(",
+        "img<script>alert(1)</script>",
         "a[javascript:alert(1)]",
         "input[onerror=eval(]",
     ]
@@ -175,6 +175,8 @@ def test_guard_allows_normal_selector() -> None:
         "input.login-form[name='user']",
         ".menu > li:nth-child(2)",
         "select#country",
+        "script",  # 合法的 <script> 元素选择器，不应误判为注入
+        "div.description",  # 类名含 "script" 子串的合法 selector
     ]:
         action = {"action_type": "click", "params": {"selector": selector}}
         result = guard.check(action)

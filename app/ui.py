@@ -217,6 +217,7 @@ class ReverseJobState:
             "hook_records": list(self.hook_records[-50:]),
             "hook_count": self.hook_count,
             "network_requests": list(self.network_requests[-20:]),
+            "network_count": len(self.network_requests),
             "target_params": list(self.target_params),
             "target_params_found": dict(self.target_params_found),
             "checkpoints": list(self.checkpoints),
@@ -679,6 +680,7 @@ PAGE = """<!doctype html>
               <div class="stat-row"><span>总耗时</span><strong id="rev-stat-elapsed">0s</strong></div>
               <div class="stat-row"><span>Hook 捕获</span><strong id="rev-stat-hooks">0</strong></div>
               <div class="stat-row"><span>网络请求</span><strong id="rev-stat-net">0</strong></div>
+              <div class="stat-row"><span>参数命中</span><strong id="rev-stat-params">0/0</strong></div>
             </div>
 
             <h3>动作置信度</h3>
@@ -707,10 +709,10 @@ PAGE = """<!doctype html>
         <section class="reverse-bottom" id="rev-result-section" style="display:none">
           <h3>统计概览</h3>
           <div class="stat-cards" id="rev-stats-grid">
-            <div class="stat-card"><div class="stat-label">总步数</div><div class="stat-value" id="rev-stat-steps">0</div></div>
-            <div class="stat-card"><div class="stat-label">平均步时</div><div class="stat-value" id="rev-stat-avg-ms">0 ms</div></div>
-            <div class="stat-card"><div class="stat-label">Hook 命中</div><div class="stat-value" id="rev-stat-hooks">0</div></div>
-            <div class="stat-card"><div class="stat-label">参数命中</div><div class="stat-value" id="rev-stat-params">0/0</div></div>
+            <div class="stat-card"><div class="stat-label">总步数</div><div class="stat-value" id="rev-result-stat-steps">0</div></div>
+            <div class="stat-card"><div class="stat-label">平均步时</div><div class="stat-value" id="rev-result-stat-avg-ms">0 ms</div></div>
+            <div class="stat-card"><div class="stat-label">Hook 命中</div><div class="stat-value" id="rev-result-stat-hooks">0</div></div>
+            <div class="stat-card"><div class="stat-label">参数命中</div><div class="stat-value" id="rev-result-stat-params">0/0</div></div>
           </div>
           <h3>任务结果</h3>
           <div class="result-grid">
@@ -774,6 +776,11 @@ PAGE = """<!doctype html>
 
     async function post(path, data) {
       var response = await fetch(path, { method: 'POST', body: data || new URLSearchParams() });
+      if (!response.ok) {
+        var msg = 'HTTP ' + response.status;
+        try { var errBody = await response.json(); if (errBody && errBody.error) { msg = errBody.error; } } catch(_) {}
+        throw new Error(msg);
+      }
       return await response.json();
     }
     function setRunning(active) {
@@ -783,15 +790,22 @@ PAGE = """<!doctype html>
     }
     async function poll() {
       if (!jobId) return;
-      var response = await fetch('/status?id=' + encodeURIComponent(jobId));
-      var result = await response.json();
+      var result;
+      try {
+        var response = await fetch('/status?id=' + encodeURIComponent(jobId));
+        result = await response.json();
+      } catch(e) {
+        statusEl.textContent = '状态查询失败：' + e.message;
+        return;
+      }
       log.textContent = result.log || '';
       bar.style.width = (result.percent || 0) + '%';
       statusEl.textContent = (result.status || '') + ' | ' + (result.processed_resources || 0) + '/' + (result.total_resources || 0) + ' | 页面 ' + (result.pages_scanned || 0) + ' | ' + (result.current_url || '');
       if (result.status === 'paused') { pauseButton.disabled = true; resumeButton.disabled = false; }
       else { resumeButton.disabled = true; }
-      if (['done', 'error', 'cancelled'].indexOf(result.status) >= 0) {
-        clearInterval(timer); setRunning(false); pauseButton.disabled = true; resumeButton.disabled = true;
+      if (['done', 'error', 'cancelled', 'missing'].indexOf(result.status) >= 0) {
+        if (timer) { clearInterval(timer); timer = null; }
+        setRunning(false); pauseButton.disabled = true; resumeButton.disabled = true;
       }
     }
     form.addEventListener('submit', async function(event) {
@@ -800,20 +814,31 @@ PAGE = """<!doctype html>
       resumeButton.disabled = true;
       log.textContent = '正在启动任务...\\n';
       bar.style.width = '0%';
-      var result = await post('/run', new URLSearchParams(new FormData(form)));
-      jobId = result.id;
-      if (timer) clearInterval(timer);
-      timer = setInterval(poll, 1000);
-      await poll();
+      try {
+        var result = await post('/run', new URLSearchParams(new FormData(form)));
+        if (!result.id) { throw new Error(result.error || '启动失败'); }
+        jobId = result.id;
+        if (timer) clearInterval(timer);
+        timer = setInterval(poll, 1000);
+        await poll();
+      } catch(e) {
+        setRunning(false);
+        statusEl.textContent = '启动失败：' + e.message;
+      }
     });
-    pauseButton.onclick = async function() { if (jobId) { await post('/pause?id=' + encodeURIComponent(jobId)); await poll(); } };
-    resumeButton.onclick = async function() { if (jobId) { await post('/resume?id=' + encodeURIComponent(jobId)); await poll(); } };
-    cancelButton.onclick = async function() { if (jobId) { await post('/cancel?id=' + encodeURIComponent(jobId)); await poll(); } };
+    async function ctrl(path) {
+      if (!jobId) return;
+      try { await post(path + '?id=' + encodeURIComponent(jobId)); await poll(); }
+      catch(e) { statusEl.textContent = '操作失败：' + e.message; }
+    }
+    pauseButton.onclick = function() { ctrl('/pause'); };
+    resumeButton.onclick = function() { ctrl('/resume'); };
+    cancelButton.onclick = function() { ctrl('/cancel'); };
     openButton.onclick = async function() {
       var data = new URLSearchParams();
       data.set('out', document.getElementById('out').value);
-      var result = await post('/open-output', data);
-      statusEl.textContent = result.message;
+      try { var result = await post('/open-output', data); statusEl.textContent = result.message; }
+      catch(e) { statusEl.textContent = '打开失败：' + e.message; }
     };
 
     /* ========== JS 逆向 Agent 逻辑 ========== */
@@ -856,13 +881,18 @@ PAGE = """<!doctype html>
 
     /* 更新统计卡片 */
     function updateStats(data) {
-      document.getElementById('rev-stat-steps').textContent = data.current_step || 0;
-      document.getElementById('rev-stat-avg-ms').textContent = (data.avg_step_ms || 0) + ' ms';
-      document.getElementById('rev-stat-hooks').textContent = data.hook_count || 0;
+      var setText = function(id, val) {
+        var el = document.getElementById(id);
+        if (el) { el.textContent = val; }
+      };
+      setText('rev-stat-steps', data.current_step || 0);
+      setText('rev-stat-avg-ms', (data.avg_step_ms || 0) + ' ms');
+      setText('rev-stat-hooks', data.hook_count || 0);
+      setText('rev-stat-net', data.network_count != null ? data.network_count : (data.network_requests || []).length);
       var tp = data.target_params || [];
       var tpFound = data.target_params_found || {};
       var foundCount = tp.filter(function(p) { return tpFound[p]; }).length;
-      document.getElementById('rev-stat-params').textContent = foundCount + '/' + tp.length;
+      setText('rev-stat-params', foundCount + '/' + tp.length);
     }
 
     /* 渲染截图卡片 */
@@ -912,7 +942,11 @@ PAGE = """<!doctype html>
       try {
         var response = await fetch('/reverse/status?id=' + encodeURIComponent(currentReverseJobId));
         var data = await response.json();
-      } catch(e) { return; }
+      } catch(e) {
+        var st = document.getElementById('rev-status');
+        if (st) { st.textContent = '查询失败'; }
+        return;
+      }
       if (!data) return;
 
       document.getElementById('rev-current-step').textContent = data.current_step || 0;
@@ -928,7 +962,7 @@ PAGE = """<!doctype html>
       var elapsed = Math.max(0, Math.floor((Date.now() / 1000) - (data.created_at || 0)));
       document.getElementById('rev-stat-elapsed').textContent = elapsed + 's';
       document.getElementById('rev-stat-hooks').textContent = data.hook_count || 0;
-      document.getElementById('rev-stat-net').textContent = (data.network_requests || []).length;
+      document.getElementById('rev-stat-net').textContent = data.network_count != null ? data.network_count : (data.network_requests || []).length;
 
       if (data.last_confidence && data.last_confidence.score !== undefined) {
         var score = data.last_confidence.score;
@@ -966,19 +1000,25 @@ PAGE = """<!doctype html>
       document.getElementById('rev-hooks').innerHTML = hookHtml || '无数据';
 
       var traceEl = document.getElementById('rev-trace');
+      var nearBottom = traceEl.scrollHeight - traceEl.scrollTop - traceEl.clientHeight < 60;
       var stepsHtml = (data.steps || []).map(function(s) { return renderStep(s); }).join('');
-      traceEl.innerHTML = stepsHtml || '<div class="trace-empty">等待数据...</div>';
-      traceEl.scrollTop = traceEl.scrollHeight;
+      if (!reverseLogCleared) {
+        traceEl.innerHTML = stepsHtml || '<div class="trace-empty">等待数据...</div>';
+        if (nearBottom) { traceEl.scrollTop = traceEl.scrollHeight; }
+      }
 
       /* 更新统计卡片与截图 */
       updateStats(data);
-      renderScreenshots(data.screenshots, data.error_screenshot, currentReverseJobId);
+      if (!reverseLogCleared) {
+        renderScreenshots(data.screenshots, data.error_screenshot, currentReverseJobId);
+      }
 
       /* 自适应轮询：运行中快轮询，结束时停止 */
       if (['done', 'error', 'cancelled'].indexOf(data.status) >= 0) {
-        if (reverseTimer) { clearInterval(reverseTimer); reverseTimer = null; }
+        if (reverseTimer) { clearTimeout(reverseTimer); reverseTimer = null; }
         reverseForm.querySelector('button[type=submit]').disabled = false;
         reverseStopBtn.disabled = true;
+        reverseLogCleared = false;
         showReverseResult(data);
         /* 任务结束后刷新历史列表 */
         loadReverseHistory();
@@ -999,9 +1039,27 @@ PAGE = """<!doctype html>
       document.getElementById('rev-judge').textContent = judgeText;
       document.getElementById('rev-analysis').textContent = data.analysis || '--';
 
+      /* 同步更新底部统计卡片（避免重复 DOM ID 导致永不刷新） */
+      var steps = (data.steps || []).length;
+      var stepDurations = data.step_durations || [];
+      var avgMs = stepDurations.length ? (stepDurations.reduce(function(a, b) { return a + b; }, 0) / stepDurations.length) : 0;
+      var hookCount = data.hook_count || 0;
+      var tpFound = data.target_params_found || {};
+      var targetFound = Object.keys(tpFound).length;
+      var targetTotal = (data.target_params || []).length;
+      var setText = function(id, val) {
+        var el = document.getElementById(id);
+        if (el) { el.textContent = val; }
+      };
+      setText('rev-result-stat-steps', steps);
+      setText('rev-result-stat-avg-ms', Math.round(avgMs) + ' ms');
+      setText('rev-result-stat-hooks', hookCount);
+      setText('rev-result-stat-params', targetFound + '/' + targetTotal);
+
       var dlBtn = document.getElementById('rev-download-script');
+      dlBtn.disabled = !data.compiled_script;
       dlBtn.onclick = function() {
-        if (!data.compiled_script) { alert('无可用脚本'); return; }
+        if (!data.compiled_script) { return; }
         /* 优先走后端 /reverse/script 接口下载（含 Content-Disposition）*/
         window.location.href = '/reverse/script?id=' + encodeURIComponent(currentReverseJobId);
       };
@@ -1009,39 +1067,33 @@ PAGE = """<!doctype html>
 
     /* 自适应轮询：根据状态动态调整间隔（仅作 SSE 不可用时的降级方案） */
     function startReversePolling() {
-      if (reverseTimer) clearInterval(reverseTimer);
+      if (reverseTimer) { clearTimeout(reverseTimer); reverseTimer = null; }
       /* 优先尝试 SSE 实时推送 */
       if (typeof EventSource !== 'undefined' && currentReverseJobId) {
         startReverseSSE();
         return;
       }
-      /* 降级：HTTP 轮询 */
-      reverseTimer = setInterval(function() {
-        pollReverse().then(function() {
-          if (!reverseTimer) return;
-          var statusEl = document.getElementById('rev-status');
-          var currentStatus = statusEl.textContent || '';
-          var expectedInterval = (currentStatus === 'running') ? REVERSE_POLL_RUNNING : REVERSE_POLL_IDLE;
-          if (reverseTimer && reverseTimer._interval !== expectedInterval) {
-            clearInterval(reverseTimer);
-            reverseTimer = setInterval(function() {
-              pollReverse();
-              var s = document.getElementById('rev-status').textContent || '';
-              var interval = (s === 'running') ? REVERSE_POLL_RUNNING : REVERSE_POLL_IDLE;
-              if (reverseTimer) { reverseTimer._interval = interval; }
-            }, expectedInterval);
-            reverseTimer._interval = expectedInterval;
-          }
-        });
-      }, REVERSE_POLL_RUNNING);
-      reverseTimer._interval = REVERSE_POLL_RUNNING;
+      /* 降级：HTTP 轮询（用 setTimeout 递归避免并发重叠） */
+      var schedulePoll = function() {
+        var statusEl = document.getElementById('rev-status');
+        var currentStatus = statusEl ? statusEl.textContent : '';
+        var interval = (currentStatus === 'running') ? REVERSE_POLL_RUNNING : REVERSE_POLL_IDLE;
+        reverseTimer = setTimeout(function() {
+          pollReverse().then(function() {
+            if (reverseTimer) { schedulePoll(); }
+          }).catch(function() {
+            if (reverseTimer) { schedulePoll(); }
+          });
+        }, interval);
+      };
+      schedulePoll();
     }
 
     /* SSE 实时推送 */
     var reverseSSE = null;
     function startReverseSSE() {
       if (reverseSSE) { reverseSSE.close(); reverseSSE = null; }
-      if (reverseTimer) { clearInterval(reverseTimer); reverseTimer = null; }
+      if (reverseTimer) { clearTimeout(reverseTimer); reverseTimer = null; }
       reverseSSE = new EventSource('/reverse/stream?id=' + encodeURIComponent(currentReverseJobId));
       /* 快照事件：更新整个 UI */
       reverseSSE.addEventListener('snapshot', function(e) {
@@ -1069,8 +1121,17 @@ PAGE = """<!doctype html>
         /* SSE 断开，降级为轮询 */
         if (reverseSSE) { reverseSSE.close(); reverseSSE = null; }
         if (!reverseTimer && currentReverseJobId) {
-          reverseTimer = setInterval(pollReverse, REVERSE_POLL_RUNNING);
-          reverseTimer._interval = REVERSE_POLL_RUNNING;
+          /* 用 setTimeout 递归避免并发重叠 */
+          var scheduleFallback = function() {
+            reverseTimer = setTimeout(function() {
+              pollReverse().then(function() {
+                if (reverseTimer) { scheduleFallback(); }
+              }).catch(function() {
+                if (reverseTimer) { scheduleFallback(); }
+              });
+            }, REVERSE_POLL_RUNNING);
+          };
+          scheduleFallback();
         }
       };
     }
@@ -1102,8 +1163,9 @@ PAGE = """<!doctype html>
         /* 移除空状态提示 */
         var empty = traceEl.querySelector('.trace-empty');
         if (empty) empty.remove();
+        var nearBottom = traceEl.scrollHeight - traceEl.scrollTop - traceEl.clientHeight < 60;
         traceEl.appendChild(card);
-        traceEl.scrollTop = traceEl.scrollHeight;
+        if (nearBottom) { traceEl.scrollTop = traceEl.scrollHeight; }
       }
     }
 
@@ -1120,7 +1182,7 @@ PAGE = """<!doctype html>
       var elapsed = Math.max(0, Math.floor((Date.now() / 1000) - (data.created_at || 0)));
       document.getElementById('rev-stat-elapsed').textContent = elapsed + 's';
       document.getElementById('rev-stat-hooks').textContent = data.hook_count || 0;
-      document.getElementById('rev-stat-net').textContent = (data.network_requests || []).length;
+      document.getElementById('rev-stat-net').textContent = data.network_count != null ? data.network_count : (data.network_requests || []).length;
       if (data.last_confidence && data.last_confidence.score !== undefined) {
         var score = data.last_confidence.score;
         var confColor = score >= 0.7 ? '#22c55e' : score >= 0.4 ? '#eab308' : '#ef4444';
@@ -1152,25 +1214,42 @@ PAGE = """<!doctype html>
       }).join('');
       document.getElementById('rev-hooks').innerHTML = hookHtml || '无数据';
       var traceEl = document.getElementById('rev-trace');
+      var nearBottom = traceEl.scrollHeight - traceEl.scrollTop - traceEl.clientHeight < 60;
       var stepsHtml = (data.steps || []).map(function(s) { return renderStep(s); }).join('');
-      traceEl.innerHTML = stepsHtml || '<div class="trace-empty">等待数据...</div>';
-      traceEl.scrollTop = traceEl.scrollHeight;
+      if (!reverseLogCleared) {
+        traceEl.innerHTML = stepsHtml || '<div class="trace-empty">等待数据...</div>';
+        if (nearBottom) { traceEl.scrollTop = traceEl.scrollHeight; }
+      }
       updateStats(data);
       if (['done', 'error', 'cancelled'].includes(data.status)) {
         if (reverseSSE) { reverseSSE.close(); reverseSSE = null; }
-        if (reverseTimer) { clearInterval(reverseTimer); reverseTimer = null; }
+        if (reverseTimer) { clearTimeout(reverseTimer); reverseTimer = null; }
+        reverseLogCleared = false;
         showReverseResult(data);
+        /* 恢复提交按钮状态，让用户能启动新任务 */
+        var form = document.getElementById('reverse-form');
+        if (form) {
+          var submitBtn = form.querySelector('button[type=submit]');
+          if (submitBtn) { submitBtn.disabled = false; }
+        }
+        var stopBtn = document.getElementById('reverse-stop');
+        if (stopBtn) { stopBtn.disabled = true; }
+        loadReverseHistory();
       }
     }
 
     /* ========== 历史任务加载 ========== */
     async function loadReverseHistory() {
+      var list = document.getElementById('rev-history-list');
+      var countEl = document.getElementById('rev-history-count');
       try {
         var response = await fetch('/reverse/jobs');
         var data = await response.json();
-      } catch(e) { return; }
-      var list = document.getElementById('rev-history-list');
-      var countEl = document.getElementById('rev-history-count');
+      } catch(e) {
+        if (list) { list.innerHTML = '<div class="history-empty">加载失败</div>'; }
+        if (countEl) { countEl.textContent = '0'; }
+        return;
+      }
       var jobs = data.jobs || [];
       countEl.textContent = jobs.length;
       if (!jobs.length) {
@@ -1201,14 +1280,20 @@ PAGE = """<!doctype html>
 
     /* 选中历史任务：加载其状态到面板 */
     async function selectHistoryJob(jobId) {
+      /* 先清理旧的 SSE/轮询，避免旧任务事件覆盖新选中任务的 UI */
+      if (reverseSSE) { reverseSSE.close(); reverseSSE = null; }
+      if (reverseTimer) { clearTimeout(reverseTimer); reverseTimer = null; }
       currentReverseJobId = jobId;
+      var myToken = jobId;
       try {
-        var response = await fetch('/reverse/status?id=' + encodeURIComponent(jobId));
-        var data = await response.json();
-      } catch(e) { return; }
-      if (!data) return;
-      /* 更新面板 */
-      await pollReverse();
+        await pollReverse();
+      } catch(e) { /* pollReverse 内部已处理 */ }
+      /* 防竞态：若用户在等待期间又切到另一个任务，则不继续 */
+      if (myToken !== currentReverseJobId) return;
+      /* 若任务仍在运行，恢复实时轮询/SSE */
+      var statusEl = document.getElementById('rev-status');
+      var status = statusEl ? statusEl.textContent : '';
+      if (status === 'running') { startReversePolling(); }
       /* 高亮当前选中的历史项 */
       document.querySelectorAll('.history-item').forEach(function(el) {
         el.classList.toggle('active', el.getAttribute('data-job-id') === jobId);
@@ -1313,6 +1398,7 @@ PAGE = """<!doctype html>
     }
 
     /* ========== 清空日志 ========== */
+    var reverseLogCleared = false;
     reverseClearLogBtn.onclick = async function() {
       if (!currentReverseJobId) {
         document.getElementById('rev-trace').innerHTML = '<div class="trace-empty">已清空</div>';
@@ -1320,6 +1406,7 @@ PAGE = """<!doctype html>
       }
       try {
         await fetch('/reverse/clear?id=' + encodeURIComponent(currentReverseJobId), { method: 'POST' });
+        reverseLogCleared = true;
         document.getElementById('rev-trace').innerHTML = '<div class="trace-empty">已清空运行时数据</div>';
         document.getElementById('rev-screenshots').innerHTML = '<div class="screenshot-empty">已清空</div>';
         document.getElementById('rev-screenshot-count').textContent = '0';
@@ -1329,8 +1416,17 @@ PAGE = """<!doctype html>
     reverseForm.addEventListener('submit', async function(event) {
       event.preventDefault();
       var submitBtn = reverseForm.querySelector('button[type=submit]');
+      /* 若当前任务仍在运行，需用户确认才能启动新任务 */
+      if (currentReverseJobId && !submitBtn.disabled) {
+        var statusEl = document.getElementById('rev-status');
+        var curStatus = statusEl ? statusEl.textContent : '';
+        if (curStatus === 'running' && !confirm('当前有任务正在运行，是否强制启动新任务？')) {
+          return;
+        }
+      }
       submitBtn.disabled = true;
       reverseStopBtn.disabled = false;
+      reverseLogCleared = false;
       document.getElementById('rev-result-section').style.display = 'none';
       document.getElementById('rev-trace').innerHTML = '<div class="trace-empty">正在启动 Agent...</div>';
       try {
@@ -1355,10 +1451,17 @@ PAGE = """<!doctype html>
 
     reverseStopBtn.onclick = async function() {
       if (!currentReverseJobId) return;
+      reverseStopBtn.disabled = true;
       try {
         await fetch('/reverse/stop?id=' + encodeURIComponent(currentReverseJobId), { method: 'POST' });
+        var st = document.getElementById('rev-status');
+        if (st) { st.textContent = '已请求停止'; }
         await pollReverse();
-      } catch(e) {}
+      } catch(e) {
+        reverseStopBtn.disabled = false;
+        var st = document.getElementById('rev-status');
+        if (st) { st.textContent = '停止失败：' + e.message; }
+      }
     };
 
     /* 页面加载时拉取历史任务列表 */
@@ -1861,12 +1964,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond_json({"error": "无可用脚本"})
                 return
             filename = f"reverse_{rjob.id}.py"
-            body = json.dumps(
-                {"script": script, "filename": filename},
-                ensure_ascii=False,
-            ).encode("utf-8")
+            body = script.encode("utf-8")
             self.send_response(200)
-            self.send_header("content-type", "application/json; charset=utf-8")
+            self.send_header("content-type", "text/x-python; charset=utf-8")
             self.send_header("content-length", str(len(body)))
             self.send_header("content-disposition", f'attachment; filename="{filename}"')
             self.end_headers()

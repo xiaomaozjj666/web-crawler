@@ -266,7 +266,7 @@ class DynamicFetcher(BaseFetcher):
                     await page.wait_for_load_state("networkidle", timeout=self.wait_timeout * 1000)
                 except PlaywrightTimeoutError:
                     pass
-            content = page.content().encode("utf-8", errors="replace")
+            content = (await page.content()).encode("utf-8", errors="replace")
             status = resp.status if resp is not None else 200
             headers = dict(resp.headers) if resp is not None else {}
             return self._build_response(

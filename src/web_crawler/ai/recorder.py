@@ -222,6 +222,7 @@ class ScriptCompiler:
 
             def {function_name}(url: str = {target_url_literal}, *, fetcher: Any = None) -> dict:
                 """重放已记录的成功路径。返回与 ReverseAgent.run 一致结构的 dict。"""
+                _fetcher_created = fetcher is None
                 if fetcher is None:
                     fetcher = CamoufoxFetcher(headless=True, network_idle=False)
                 history: list[dict] = []
@@ -238,10 +239,11 @@ class ScriptCompiler:
                         context.close()
                     except Exception:
                         pass
-                    try:
-                        fetcher.close()
-                    except Exception:
-                        pass
+                    if _fetcher_created:
+                        try:
+                            fetcher.close()
+                        except Exception:
+                            pass
             ''')
 
     # -- 各动作的编译器 -----------------------------------------------------
@@ -253,7 +255,10 @@ class ScriptCompiler:
         return [
             f"    # step {rec.step}: navigate",
             f'    page.goto({url_literal}, wait_until="domcontentloaded", timeout=30000)',
-            "    time.sleep(3.0)",
+            '    try:',
+            '        page.wait_for_load_state("domcontentloaded", timeout=3000)',
+            '    except Exception:',
+            '        pass',
             f"    history.append({{'step': {rec.step}, 'action': 'navigate', 'url': {url_literal}}})",
         ]
 

@@ -160,6 +160,8 @@ class ImageCaptchaSolver:
     ) -> None:
         self.provider = provider
         self.config = config or ImageSolverConfig()
+        # ddddocr 实例延迟加载并缓存，避免每次识别都重新加载 ONNX 模型
+        self._ddddocr_instance: Any = None
 
     @property
     def llm_vision_available(self) -> bool:
@@ -199,14 +201,11 @@ class ImageCaptchaSolver:
 
     def _local_ocr(self, image: bytes | str) -> str:
         """尝试 ddddocr 本地识别；未安装或识别失败返回空。"""
-        try:
-            import ddddocr  # type: ignore[import-untyped]
-        except ImportError:
+        ocr = self._get_ddddocr()
+        if ocr is None:
             return ""
         try:
             data = _b64_to_bytes(image)
-            # show_ad=False 关闭作者广告输出
-            ocr = ddddocr.DdddOcr(show_ad=False)
             text = ocr.classification(data)
             allowed = set(self.config.ocr_charset)
             text = "".join(c for c in text if c in allowed)
@@ -215,6 +214,21 @@ class ImageCaptchaSolver:
             return ""
         except Exception:
             return ""
+
+    def _get_ddddocr(self) -> Any:
+        """延迟加载并缓存 ddddocr 实例（首次约 10-50ms 加载 ONNX 模型）。"""
+        if self._ddddocr_instance is not None:
+            return self._ddddocr_instance
+        try:
+            import ddddocr  # type: ignore[import-untyped]
+        except ImportError:
+            return None
+        try:
+            # show_ad=False 关闭作者广告输出
+            self._ddddocr_instance = ddddocr.DdddOcr(show_ad=False)
+        except Exception:
+            self._ddddocr_instance = None
+        return self._ddddocr_instance
 
     def _llm_ocr(self, image: bytes | str, mime: str) -> str:
         assert self.provider is not None
