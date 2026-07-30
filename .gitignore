@@ -49,4 +49,5 @@ summary.txt
 crawler_output/
 reverse_screenshots/
 reverse_checkpoints/
+.checkpoints/
 .item_state.json
