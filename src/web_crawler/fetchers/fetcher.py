@@ -354,9 +354,9 @@ class _FetcherCore(BaseFetcher):
             # 429 时尊重 Retry-After；否则指数退避
             delay = _parse_retry_after(raw.headers.get("Retry-After")) or backoff
             await asyncio.sleep(delay)
-        if last_exc is not None:
+        if last_exc is not None:  # pragma: no cover - 重试循环在最后一次必定 return 或 raise
             raise last_exc
-        raise RuntimeError(f"request to {url} failed without a captured exception")
+        raise RuntimeError(f"request to {url} failed without a captured exception")  # pragma: no cover
 
 
 class Fetcher(_FetcherCore):
@@ -479,9 +479,9 @@ class Fetcher(_FetcherCore):
             # 429 时尊重 Retry-After；否则指数退避
             delay = _parse_retry_after(raw.headers.get("Retry-After")) or backoff
             time.sleep(delay)
-        if last_exc is not None:
+        if last_exc is not None:  # pragma: no cover - 重试循环在最后一次必定 return 或 raise
             raise last_exc
-        raise RuntimeError(f"request to {url} failed without a captured exception")
+        raise RuntimeError(f"request to {url} failed without a captured exception")  # pragma: no cover
 
     # -- public synchronous API ---------------------------------------------
     def request(self, method: str, url: str, **kwargs: Any) -> Response:

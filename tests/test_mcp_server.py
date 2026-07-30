@@ -1570,3 +1570,284 @@ def test_server_init_with_mocked_deps(monkeypatch: pytest.MonkeyPatch) -> None:
     assert srv._fetcher is None
     assert srv._closed is False
     srv.close()
+
+
+# ===========================================================================
+# 扩展：未覆盖分支补齐
+# ===========================================================================
+
+
+def test_read_resource_schema_without_model_json_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ExtractedParams 无 model_json_schema 属性时返回 note。"""
+    srv = _make_server()
+    import web_crawler.ai.schema as schema_mod
+
+    # 构造一个无 model_json_schema 的类
+    fake_no_schema = MagicMock()
+    del fake_no_schema.model_json_schema  # 删除属性使 hasattr 返回 False
+    monkeypatch.setattr(schema_mod, "ExtractedParams", fake_no_schema)
+    parsed = json.loads(srv.read_resource("schema://extracted_params"))
+    assert "note" in parsed
+    assert "pydantic not available" in parsed["note"]
+
+
+def test_tool_pentest_recon_dirs_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """checks=['dirs'] 时执行 DirBruter.brute。"""
+    _patch_pentest_modules(monkeypatch)
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon({"target": "example.com", "checks": ["dirs"]})
+    )
+    assert "target" in parsed
+    assert "dir_brute" in parsed
+
+
+def test_tool_pentest_recon_subdomains_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """checks=['subdomains'] 时执行 SubdomainEnumerator.enumerate。"""
+    _patch_pentest_modules(monkeypatch)
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon({"target": "example.com", "checks": ["subdomains"]})
+    )
+    assert "target" in parsed
+    assert "subdomains" in parsed
+
+
+def test_tool_pentest_recon_vulns_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """checks=['vulns'] 时执行 VulnScanner.scan_url。"""
+    _patch_pentest_modules(monkeypatch)
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon({"target": "example.com", "checks": ["vulns"]})
+    )
+    assert "target" in parsed
+    assert "vulns" in parsed
+
+
+def test_tool_pentest_recon_all_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """所有 checks 一起执行时不报错。"""
+    _patch_pentest_modules(monkeypatch)
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon(
+            {
+                "target": "example.com",
+                "checks": ["ports", "dirs", "subdomains", "vulns", "headers"],
+            }
+        )
+    )
+    assert "target" in parsed
+    assert "port_scan" in parsed
+    assert "dir_brute" in parsed
+    assert "subdomains" in parsed
+    assert "vulns" in parsed
+    assert "headers" in parsed
+
+
+def test_tool_pentest_recon_timeout_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """pentest 超时时返回 pentest recon failed 错误。"""
+    # 让 DirBruter.brute 阻塞足够长时间以触发超时
+    fake_dir_bruter = MagicMock()
+    fake_dir_bruter.__enter__ = MagicMock(return_value=fake_dir_bruter)
+    fake_dir_bruter.__exit__ = MagicMock(return_value=False)
+
+    def _slow_brute(*args: Any, **kwargs: Any) -> list:
+        import time
+
+        time.sleep(5)
+        return []
+
+    fake_dir_bruter.brute.side_effect = _slow_brute
+    monkeypatch.setattr("web_crawler.pentest.DirBruter", lambda: fake_dir_bruter)
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon(
+            {"target": "x", "checks": ["dirs"], "timeout": 1}
+        )
+    )
+    assert parsed["error"] == "pentest recon failed"
+
+
+def test_handle_jsonrpc_tools_call_non_json_result() -> None:
+    """tools/call 结果非 JSON 时 is_error 保持 False（覆盖 JSONDecodeError 分支）。"""
+    srv = _make_server()
+    # mock handle_tool 返回非 JSON 字符串
+    with patch.object(srv, "handle_tool", return_value="plain text not json"):
+        resp = srv._handle_jsonrpc(
+            "tools/call",
+            {"name": "test_tool", "arguments": {}},
+            1,
+        )
+    assert resp["jsonrpc"] == "2.0"
+    assert resp["id"] == 1
+    assert resp["result"]["isError"] is False
+    assert resp["result"]["content"][0]["text"] == "plain text not json"
+
+
+def test_handle_jsonrpc_tools_call_type_error_result() -> None:
+    """tools/call 结果非 str（TypeError）时 is_error 保持 False。"""
+    srv = _make_server()
+    # mock handle_tool 返回 None → json.loads(None) 抛 TypeError
+    with patch.object(srv, "handle_tool", return_value=None):
+        resp = srv._handle_jsonrpc(
+            "tools/call",
+            {"name": "test_tool", "arguments": {}},
+            1,
+        )
+    assert resp["result"]["isError"] is False
+
+
+# -- 内部 _collect / _capture / _get_scripts 函数体覆盖 --------------------
+
+
+def test_tool_reverse_engineer_url_collect_inner_function(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_tool_reverse_engineer_url 降级路径的 _collect 内部函数被调用。"""
+    srv = _make_server(agent=None)
+    fake_page = MagicMock()
+    fake_page.evaluate.return_value = ["http://x/a.js"]
+
+    def _call_task_fn(url: str, task_fn: Any, **kw: Any) -> Any:
+        return task_fn(fake_page)
+
+    hook_result = {"records": [{"type": "fetch"}], "count": 1}
+    monkeypatch.setattr(server_module, "collect_hook_data", lambda page: hook_result)
+    with patch.object(srv, "_run_browser_task", side_effect=_call_task_fn):
+        parsed = json.loads(srv._tool_reverse_engineer_url({"url": "http://x"}))
+    assert parsed["agent"] is False
+    assert parsed["hook_count"] == 1
+    assert parsed["scripts"] == ["http://x/a.js"]
+
+
+def test_tool_inject_hooks_collect_inner_function(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_tool_inject_hooks 的 _collect 内部函数被调用。"""
+    srv = _make_server(agent=None)
+    fake_page = MagicMock()
+
+    def _call_task_fn(url: str, task_fn: Any, **kw: Any) -> Any:
+        return task_fn(fake_page)
+
+    records = [{"type": "fetch", "url": "http://x/api"}]
+    hook_result = {"records": records, "count": 1}
+    monkeypatch.setattr(server_module, "collect_hook_data", lambda page: hook_result)
+    with patch.object(srv, "_run_browser_task", side_effect=_call_task_fn):
+        parsed = json.loads(
+            srv._tool_inject_hooks({"url": "http://x", "hooks": ["fetch_hook"]})
+        )
+    assert parsed["injected"] == ["fetch_hook"]
+    assert parsed["preview_count"] == 1
+
+
+def test_tool_capture_network_requests_inner_function(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_tool_capture_network_requests 的 _capture 内部函数被调用。"""
+    srv = _make_server(agent=None)
+    fake_page = MagicMock()
+
+    def _call_task_fn(url: str, task_fn: Any, **kw: Any) -> Any:
+        return task_fn(fake_page)
+
+    records = [{"type": "fetch", "url": "http://x/api"}]
+    hook_result = {"records": records, "count": 1}
+    monkeypatch.setattr(server_module, "collect_hook_data", lambda page: hook_result)
+    with patch.object(srv, "_run_browser_task", side_effect=_call_task_fn):
+        parsed = json.loads(
+            srv._tool_capture_network_requests({"url": "http://x"})
+        )
+    assert parsed["count"] == 1
+    assert parsed["requests"] == records
+
+
+def test_tool_get_page_scripts_inner_function() -> None:
+    """_tool_get_page_scripts 的 _get_scripts 内部函数被调用。"""
+    srv = _make_server(agent=None)
+    fake_page = MagicMock()
+    scripts = [{"src": "http://x/a.js", "type": "", "async": False, "defer": False}]
+    fake_page.evaluate.return_value = scripts
+
+    def _call_task_fn(url: str, task_fn: Any, **kw: Any) -> Any:
+        return task_fn(fake_page)
+
+    with patch.object(srv, "_run_browser_task", side_effect=_call_task_fn):
+        parsed = json.loads(srv._tool_get_page_scripts({"url": "http://x"}))
+    assert parsed["count"] == 1
+    assert parsed["scripts"] == scripts
+
+
+# -- _on_step_end 回调覆盖 --------------------------------------------------
+
+
+def test_tool_reverse_engineer_url_step_end_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent 执行时 EventBus 回调 _on_step_end 被 event 触发（覆盖 668-669）。"""
+    monkeypatch.setattr(server_module, "_HAS_REVERSE_AGENT", True)
+
+    class _FakeAgentEmit:
+        """run() 时向 event_bus 发出 step.end 事件以覆盖 _on_step_end 回调。"""
+
+        config = _FakeAgentConfig()
+        provider = MagicMock()
+        analyzer = MagicMock()
+
+        def __init__(
+            self,
+            *,
+            config: Any = None,
+            provider: Any = None,
+            analyzer: Any = None,
+            event_bus: Any = None,
+        ) -> None:
+            self.config = config or _FakeAgentConfig()
+            self.provider = provider
+            self.analyzer = analyzer
+            self.event_bus = event_bus
+
+        def run(self, url: str, task: str = "") -> dict:
+            # 模拟 agent 发出 step.end 事件
+            evt = type("Evt", (), {"step": 1, "type": "step.end"})()
+            if self.event_bus is not None:
+                self.event_bus.emit(evt)
+            return {"success": True, "steps": 3}
+
+        def close(self) -> None:
+            pass
+
+    class _EventBusWithCallback:
+        """subscribe 时存储回调，emit 时逐一调用。"""
+
+        def __init__(self) -> None:
+            self._subscribers: list[Any] = []
+
+        def subscribe(self, fn: Any) -> None:
+            self._subscribers.append(fn)
+
+        def emit(self, evt: Any) -> None:
+            for fn in self._subscribers:
+                fn(evt)
+
+    monkeypatch.setattr("web_crawler.ai.watchdog.EventBus", _EventBusWithCallback)
+    monkeypatch.setattr(
+        "web_crawler.ai.reverse_agent.ReverseAgentConfig",
+        lambda **kw: MagicMock(**kw),
+    )
+
+    # self.agent 必须是 _FakeAgentEmit 实例，使 type(self.agent)(...) 构造同类
+    base_agent = _FakeAgentEmit()
+    srv = _make_server(agent=base_agent)
+
+    progress_mock = MagicMock()
+    with patch.object(srv, "report_progress", progress_mock):
+        parsed = json.loads(
+            srv._tool_reverse_engineer_url({"url": "http://x", "max_steps": 5})
+        )
+    assert parsed["agent"] is True
+    progress_mock.assert_called()

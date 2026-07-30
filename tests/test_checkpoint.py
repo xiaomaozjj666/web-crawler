@@ -290,6 +290,27 @@ def test_checkpoint_store_rotate_no_op_when_under_limit(tmp_path) -> None:
     assert len(files) == 1
 
 
+def test_checkpoint_store_rotate_swallows_unlink_oserror(tmp_path, monkeypatch) -> None:
+    """_rotate 中 unlink 抛 OSError 时被吞掉。"""
+    import pathlib
+
+    from web_crawler.ai.checkpoint import CheckpointStore
+
+    store = CheckpointStore(tmp_path / "cps", keep=1)
+    # 直接创建 3 个 checkpoint 文件，避免 save() 内部触发 _rotate 清理
+    task_dir = store._task_dir("rot")
+    task_dir.mkdir(parents=True, exist_ok=True)
+    for step in range(1, 4):
+        (task_dir / f"step-{step:04d}.json").write_text("{}", encoding="utf-8")
+
+    def raising_unlink(self: pathlib.Path, *args: object, **kwargs: object) -> None:
+        raise OSError("simulated")
+
+    monkeypatch.setattr(pathlib.Path, "unlink", raising_unlink)
+    # 不应抛异常；3 个文件 > keep=1，触发 unlink
+    store._rotate("rot")
+
+
 def test_checkpoint_store_safe_id_escapes_special_chars(tmp_path) -> None:
     """_task_dir 应将特殊字符替换为下划线。"""
     from web_crawler.ai.checkpoint import CheckpointStore

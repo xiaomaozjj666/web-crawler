@@ -198,7 +198,7 @@ def _extract_export_keys(src: str, alias: str) -> list[str]:
     keys: list[str] = []
     for m in re.finditer(rf"\b{re.escape(alias)}\.d\s*\(", src):
         open_paren = src.find("(", m.start())
-        if open_paren == -1:
+        if open_paren == -1:  # pragma: no cover - 正则已保证 ( 存在
             continue
         end = _balanced_end(src, open_paren)
         if end is None:

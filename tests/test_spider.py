@@ -248,6 +248,54 @@ def test_spider_async_run() -> None:
     assert spider.stats.pages_crawled == 2
 
 
+def test_spider_async_run_with_download_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    """async_run() 在 download_delay>0 时应 await asyncio.sleep。"""
+
+    class S(Spider):
+        start_urls = ["https://shop.example.com/"]
+        download_delay = 0.5
+
+        def parse(self, response: Response) -> Any:
+            return None
+
+    spider = S(fetcher=FakeFetcher(PAGES))
+    sleep_calls: list[float] = []
+
+    async def mock_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr("asyncio.sleep", mock_sleep)
+    asyncio.run(spider.async_run())
+    assert sleep_calls == [0.5]
+
+
+def test_spider_stream_with_download_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    """stream() 在 download_delay>0 时应 await asyncio.sleep。"""
+
+    class S(Spider):
+        start_urls = ["https://shop.example.com/"]
+        download_delay = 0.5
+
+        def parse(self, response: Response) -> Any:
+            return None
+
+    spider = S(fetcher=FakeFetcher(PAGES))
+    sleep_calls: list[float] = []
+
+    async def mock_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr("asyncio.sleep", mock_sleep)
+
+    async def collect() -> list[Any]:
+        async for _ in spider.stream():
+            pass
+        return []
+
+    asyncio.run(collect())
+    assert sleep_calls == [0.5]
+
+
 def test_spider_meta_passes_between_requests() -> None:
     class S(Spider):
         start_urls = ["https://shop.example.com/"]

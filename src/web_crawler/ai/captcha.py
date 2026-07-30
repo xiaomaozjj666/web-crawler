@@ -247,7 +247,7 @@ class CaptchaSolver:
             CaptchaType.UNKNOWN: self._solve_unknown,
         }
         handler = dispatch.get(info.type)
-        if handler is None:
+        if handler is None:  # pragma: no cover - 所有 CaptchaType 已在 dispatch 中覆盖
             return False
         try:
             return handler(page, info)

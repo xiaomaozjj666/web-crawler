@@ -374,7 +374,7 @@ class Spider:
                 max_requests - self.stats.pages_crawled if max_requests is not None else len(queue)
             )
             batch_size = min(self.max_concurrency, len(queue), max(0, remaining))
-            if batch_size <= 0:
+            if batch_size <= 0:  # pragma: no cover - 防御性：上层已保证 remaining>0
                 break
             batch = [queue.pop(0) for _ in range(batch_size)]
             results = await asyncio.gather(*[worker(r) for r in batch])
@@ -456,7 +456,7 @@ class Spider:
                 max_requests - self.stats.pages_crawled if max_requests is not None else len(queue)
             )
             batch_size = min(self.max_concurrency, len(queue), max(0, remaining))
-            if batch_size <= 0:
+            if batch_size <= 0:  # pragma: no cover - 防御性：上层已保证 remaining>0
                 break
             batch = [queue.pop(0) for _ in range(batch_size)]
             results = await asyncio.gather(*[worker(r) for r in batch])

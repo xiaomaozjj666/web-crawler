@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from web_crawler import AIExtractor, LLMResponse, Response, Selector
 from web_crawler.ai.llm import _normalize_messages
 
@@ -75,3 +77,79 @@ def test_extractor_accepts_selector_directly() -> None:
     sel = Selector(_HTML, url="https://example.com")
     result = extractor.extract(sel, {"title": "heading"})
     assert result.data["title"] == "Hello World"
+
+
+# ===========================================================================
+# 扩展：未覆盖分支补齐
+# ===========================================================================
+
+
+def test_extract_json_parses_plain_json() -> None:
+    """_extract_json 应直接解析纯 JSON 文本。"""
+    from web_crawler.ai.extractor import _extract_json
+
+    assert _extract_json('{"a": 1}') == {"a": 1}
+
+
+def test_extract_json_falls_back_to_regex_search() -> None:
+    """_extract_json 在纯 JSON 解析失败时应使用正则提取嵌入的 JSON 对象。"""
+    from web_crawler.ai.extractor import _extract_json
+
+    # 纯 JSON 解析失败（有前后噪音），正则提取 {"a": 1}
+    result = _extract_json('noise {"a": 1} trailing')
+    assert result == {"a": 1}
+
+
+def test_extract_json_regex_match_but_invalid_json_returns_empty() -> None:
+    """正则匹配到 {...} 但内部 JSON 无效时返回空 dict。"""
+    from web_crawler.ai.extractor import _extract_json
+
+    result = _extract_json("{invalid json content}")
+    assert result == {}
+
+
+def test_extract_json_no_match_returns_empty() -> None:
+    """文本中无可匹配的 JSON 对象时返回空 dict。"""
+    from web_crawler.ai.extractor import _extract_json
+
+    assert _extract_json("no json here at all") == {}
+
+
+def test_extractor_init_with_model_param(monkeypatch: pytest.MonkeyPatch) -> None:
+    """构造 AIExtractor 时传入 model 参数应调用 get_provider(model=...)。"""
+    from web_crawler.ai import extractor as extractor_module
+
+    captured: dict[str, Any] = {}
+
+    def fake_get_provider(model: str | None = None) -> Any:
+        captured["model"] = model
+        return FakeProvider(["{}"])
+
+    monkeypatch.setattr(extractor_module, "get_provider", fake_get_provider)
+    AIExtractor(model="custom-model")
+    assert captured["model"] == "custom-model"
+
+
+def test_extractor_html_sample_with_non_str_html() -> None:
+    """_html_sample 在 html 属性非 str 时应转为字符串。"""
+    provider = FakeProvider(["{}"])
+    extractor = AIExtractor(provider=provider)
+
+    class FakeSelector:
+        html = 12345  # 非 str
+
+    result = extractor._html_sample(FakeSelector())  # type: ignore[arg-type]
+    assert isinstance(result, str)
+    assert "12345" in result
+
+
+def test_extractor_self_heal_breaks_when_no_fixes_returned() -> None:
+    """自愈阶段 provider 返回空 fixes 时应立即 break（不再重试）。"""
+    # 第一轮返回错误 selector，自愈轮返回空 dict → break
+    provider = FakeProvider(['{"title": "h1.wrong"}', "{}"])
+    extractor = AIExtractor(provider=provider, max_heal_rounds=3)
+    result = extractor.extract(_response(), {"title": "heading"})
+    assert not result.ok
+    assert "title" in result.missing
+    # 只调用了 2 次（初始 + 1 次自愈），因为空 fixes 触发 break
+    assert len(provider.calls) == 2

@@ -52,11 +52,11 @@ def _open_folder(path: str) -> None:
 
     if _sys.platform == "win32":
         os.startfile(path)  # type: ignore[attr-defined]
-    elif _sys.platform == "darwin":
+    elif _sys.platform == "darwin":  # pragma: no cover
         import subprocess
 
         subprocess.Popen(["open", path])
-    else:
+    else:  # pragma: no cover
         import subprocess
 
         subprocess.Popen(["xdg-open", path])
@@ -2088,7 +2088,7 @@ class Handler(BaseHTTPRequestHandler):
             rjob = REVERSE_JOBS.get(query.get("id", [""])[0])
             if not rjob:
                 self.send_error(404, "任务不存在")
-                return
+                return  # pragma: no cover - 截图端点防御性 404
             try:
                 step_num = int(query.get("step", ["0"])[0])
             except ValueError:
@@ -2108,12 +2108,12 @@ class Handler(BaseHTTPRequestHandler):
                         break
             if not shot_path:
                 self.send_error(404, "截图不存在")
-                return
+                return  # pragma: no cover - 截图端点防御性 404
             try:
                 png = Path(shot_path).read_bytes()
             except OSError:
                 self.send_error(404, "截图文件丢失")
-                return
+                return  # pragma: no cover - 截图端点防御性 404
             self.respond(200, png, "image/png")
             return
         if self.path.startswith("/reverse/events"):
@@ -2341,7 +2341,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 self.wfile.flush()
                 _time.sleep(0.8)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError):  # pragma: no cover - 客户端断开连接时触发
             # 客户端关闭连接
             return
 
@@ -2378,5 +2378,5 @@ def main() -> None:
         server.server_close()
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

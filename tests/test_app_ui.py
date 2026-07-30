@@ -1347,3 +1347,222 @@ class TestMain:
         with patch("app.ui.ThreadingHTTPServer", return_value=mock_server):
             ui.main()  # 不应抛异常
         mock_server.server_close.assert_called_once()
+
+
+# ========== 补充分支测试：覆盖剩余未覆盖行 ==========
+
+
+class TestOpenFolder:
+    def test_open_folder_win32(self, tmp_path: Path) -> None:
+        """_open_folder 在 Windows 上调用 os.startfile。"""
+        with patch("os.startfile") as mock_startfile:
+            ui._open_folder(str(tmp_path))
+        mock_startfile.assert_called_once_with(str(tmp_path))
+
+
+class TestNormalizeImportedConfigListEdge:
+    def test_list_field_with_int_value(self) -> None:
+        """list 类型字段传入非 str/非 list（如 int）时返回空列表。"""
+        data: dict[str, object] = {"target_params": 123}
+        result = _normalize_imported_config(data)
+        assert result["target_params"] == []
+
+
+class TestSerializeAnalysisEdge:
+    def test_dataclass_asdict_fails(self) -> None:
+        """dataclass 的 asdict 失败时回退到 str()。"""
+
+        @dataclass
+        class BadAnalysis:
+            value: object
+
+        # 构造一个会让 asdict 递归失败的对象
+        obj = BadAnalysis(value=BadAnalysis(value=None))
+        obj.value.value = obj  # type: ignore[attr-defined]  # 创建循环引用
+        result = _serialize_analysis(obj)
+        assert isinstance(result, str)
+
+
+class TestOnEventException:
+    def test_on_event_swallows_exception(self) -> None:
+        """_on_event 内部异常被静默吞掉，不向外抛出。"""
+        runner = ReverseAgentRunner()
+        rjob = _make_reverse_job()
+
+        # 构造一个会让 getattr(event, "type") 正常但后续处理抛异常的 event
+        bad_event = Mock()
+        bad_event.type = "step.start"
+        bad_event.step = 1
+        bad_event.payload = {}
+
+        # 让 append_event 抛异常
+        with patch.object(rjob, "append_event", side_effect=RuntimeError("boom")):
+            runner._on_event(rjob, bad_event, agent=Mock())  # 不应抛异常
+
+
+class TestUpdateStepLockedExisting:
+    def test_find_existing_step(self) -> None:
+        """_update_step_locked 找到已存在的步骤时返回该步骤。"""
+        runner = ReverseAgentRunner()
+        rjob = _make_reverse_job()
+        # 第一次调用创建步骤
+        entry1 = runner._update_step_locked(rjob, 1)
+        assert entry1["step"] == 1
+        # 第二次调用应找到已存在的步骤
+        entry2 = runner._update_step_locked(rjob, 1)
+        assert entry2 is entry1
+        assert len(rjob.steps) == 1
+
+
+class TestFinalizeStepExceptions:
+    def test_confidence_attr_raises(self) -> None:
+        """_finalize_step 中读取 _last_confidence 抛异常时被捕获。"""
+
+        class RaisingConfAgent:
+            @property
+            def _last_confidence(self):  # type: ignore[override]
+                raise RuntimeError("conf err")
+
+            _hook_data_cache: dict = {}
+            _network_log: list = []
+
+        runner = ReverseAgentRunner()
+        rjob = _make_reverse_job()
+        rjob._step_starts[1] = time.time()
+
+        runner._finalize_step(rjob, 1, RaisingConfAgent())  # 不应抛异常
+
+    def test_hook_cache_attr_raises(self) -> None:
+        """_finalize_step 中读取 _hook_data_cache 抛异常时被捕获。"""
+
+        class RaisingHookAgent:
+            _last_confidence = None
+
+            @property
+            def _hook_data_cache(self):  # type: ignore[override]
+                raise RuntimeError("hook err")
+
+            _network_log: list = []
+
+        runner = ReverseAgentRunner()
+        rjob = _make_reverse_job()
+        rjob._step_starts[1] = time.time()
+
+        runner._finalize_step(rjob, 1, RaisingHookAgent())  # 不应抛异常
+
+    def test_network_log_attr_raises(self) -> None:
+        """_finalize_step 中读取 _network_log 抛异常时被捕获。"""
+
+        class RaisingNetAgent:
+            _last_confidence = None
+            _hook_data_cache: dict = {}
+
+            @property
+            def _network_log(self):  # type: ignore[override]
+                raise RuntimeError("net err")
+
+        runner = ReverseAgentRunner()
+        rjob = _make_reverse_job()
+        rjob._step_starts[1] = time.time()
+
+        runner._finalize_step(rjob, 1, RaisingNetAgent())  # 不应抛异常
+
+
+class TestHandlerScreenshotEdge:
+    def test_screenshot_invalid_step(self, http_server: str, tmp_path: Path) -> None:
+        """step 参数非数字时回退为 0。"""
+        png_file = tmp_path / "shot.png"
+        png_file.write_bytes(b"png_data")
+
+        rjob = _make_reverse_job(id="si1")
+        rjob.screenshots.append({"step": 0, "path": str(png_file), "error": False})
+        ui.REVERSE_JOBS["si1"] = rjob
+
+        resp = httpx.get(f"{http_server}/reverse/screenshot?id=si1&step=abc")
+        assert resp.status_code == 200
+        assert b"png_data" in resp.content
+
+    def test_screenshot_fallback_any_step(self, http_server: str, tmp_path: Path) -> None:
+        """无精确匹配时回退到该 step 的任一截图。"""
+        png_file = tmp_path / "shot.png"
+        png_file.write_bytes(b"fallback_png")
+
+        rjob = _make_reverse_job(id="sf1")
+        # 有 step=1 的截图但不匹配 error=1
+        rjob.screenshots.append({"step": 1, "path": str(png_file), "error": False})
+        ui.REVERSE_JOBS["sf1"] = rjob
+
+        # 请求 error=1 截图，无精确匹配 → 回退到 step=1 的任一截图
+        resp = httpx.get(f"{http_server}/reverse/screenshot?id=sf1&step=1&error=1")
+        assert resp.status_code == 200
+        assert b"fallback_png" in resp.content
+
+    def test_screenshot_not_found_after_fallback(self, http_server: str) -> None:
+        """回退后仍无匹配截图时返回 404。"""
+        rjob = _make_reverse_job(id="sn1")
+        rjob.screenshots.append({"step": 1, "path": "/tmp/x.png", "error": False})
+        ui.REVERSE_JOBS["sn1"] = rjob
+
+        resp = httpx.get(f"{http_server}/reverse/screenshot?id=sn1&step=99")
+        assert resp.status_code >= 400
+
+
+class TestHandlerEventsEdge:
+    def test_events_invalid_since(self, http_server: str) -> None:
+        """since 参数非数字时回退为 0。"""
+        rjob = _make_reverse_job(id="ei1")
+        rjob.append_event({"type": "evt", "ts": 1.0})
+        ui.REVERSE_JOBS["ei1"] = rjob
+
+        resp = httpx.get(f"{http_server}/reverse/events?id=ei1&since=notanumber")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["events"]) == 1
+
+
+class TestJobsCleanup:
+    def test_jobs_cleanup_over_max(self, http_server: str) -> None:
+        """JOBS 超过 MAX_JOBS 时清理已完成任务。"""
+        # 填充大量已完成任务
+        for i in range(ui.MAX_JOBS + 5):
+            job = _make_job_state(id=f"old{i}")
+            job.status = "done"
+            ui.JOBS[f"old{i}"] = job
+
+        # 发起 /run 请求触发清理
+        with patch.object(ui, "run_job"):
+            resp = httpx.post(
+                f"{http_server}/run",
+                data={"url": "https://example.com", "out": "", "max_pages": "1"},
+            )
+        assert resp.status_code == 200
+        # 已完成的任务应被清理
+        assert len(ui.JOBS) <= ui.MAX_JOBS + 1
+
+
+class TestReverseJobsCleanup:
+    def test_reverse_jobs_cleanup_over_max(self, http_server: str) -> None:
+        """REVERSE_JOBS 超过 MAX_REVERSE_JOBS 时清理已完成任务。"""
+        for i in range(ui.MAX_REVERSE_JOBS + 5):
+            rjob = _make_reverse_job(id=f"rold{i}")
+            rjob.status = "done"
+            ui.REVERSE_JOBS[f"rold{i}"] = rjob
+
+        with patch.object(ui, "run_reverse_job"):
+            resp = httpx.post(
+                f"{http_server}/reverse/run",
+                data={"url": "https://example.com", "task": "提取签名"},
+            )
+        assert resp.status_code == 200
+        assert len(ui.REVERSE_JOBS) <= ui.MAX_REVERSE_JOBS + 1
+
+
+class TestReadJsonBodyEmpty:
+    def test_import_empty_body(self, http_server: str) -> None:
+        """POST /reverse/config/import 空请求体返回错误。"""
+        resp = httpx.post(
+            f"{http_server}/reverse/config/import",
+            content=b"",
+            headers={"content-type": "application/json"},
+        )
+        assert "error" in resp.json()
