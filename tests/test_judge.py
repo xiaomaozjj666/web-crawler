@@ -305,6 +305,33 @@ class TestTaskJudgeValidateStrict:
         assert result.verified is False
         assert result.missing == []
 
+    def test_extract_json_block_match_but_invalid_returns_empty(self) -> None:
+        """LLM 返回含 {...} 但 JSON 非法时返回空 dict。"""
+        provider = _FakeProvider(["Result: { not valid json }"])
+        judge = TaskJudge(provider, strict=False)
+        result = judge.validate(
+            action=_Action(),
+            observation=_Observation(),
+            target_params_found={},
+            task="task",
+        )
+        assert result.verified is False
+        assert result.missing == []
+
+    def test_strict_all_found_llm_says_not_verified_recomputes_empty(self) -> None:
+        """严格模式 + 参数齐全 + LLM 判 False → 重算 missing（为空）。"""
+        provider = _FakeProvider(['{"verified": false, "missing": [], "reasoning": "not sure"}'])
+        judge = TaskJudge(provider, strict=True)
+        result = judge.validate(
+            action=_Action(),
+            observation=_Observation(),
+            target_params_found={"a": "1", "b": "2"},
+            task="find a and b",
+            target_params=["a", "b"],
+        )
+        assert result.verified is False
+        assert result.missing == []
+
 
 # ---------------------------------------------------------------------------
 # TaskJudge.validate_async
@@ -421,6 +448,27 @@ class TestTaskJudgeValidateAsync:
         )
         assert result.verified is False
         assert "b" in result.missing
+
+    @pytest.mark.asyncio
+    async def test_async_strict_all_found_llm_says_not_verified_recomputes_empty(self) -> None:
+        """异步严格模式 + 参数齐全 + LLM 判 False → 重算 missing（为空）。"""
+        provider = MagicMock()
+        provider.achat = AsyncMock(
+            return_value=LLMResponse(
+                content='{"verified": false, "missing": [], "reasoning": "not sure"}',
+                model="fake",
+            )
+        )
+        judge = TaskJudge(provider, strict=True)
+        result = await judge.validate_async(
+            action=_Action(),
+            observation=_Observation(),
+            target_params_found={"a": "1", "b": "2"},
+            task="find a and b",
+            target_params=["a", "b"],
+        )
+        assert result.verified is False
+        assert result.missing == []
 
 
 # ---------------------------------------------------------------------------

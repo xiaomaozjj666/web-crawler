@@ -77,3 +77,13 @@ def test_cooldown_expires() -> None:
 def test_repr_contains_strategy() -> None:
     pool = ProxyPool(["a"], strategy="round_robin")
     assert "round_robin" in repr(pool)
+
+
+def test_available_count() -> None:
+    """available_count 返回未冷却的代理数。"""
+    pool = ProxyPool(["a", "b", "c"], strategy="round_robin", max_failures=1, cooldown=60.0)
+    assert pool.available_count() == 3
+    pool.mark_failed("a")
+    assert pool.available_count() == 2
+    pool.mark_success("a")
+    assert pool.available_count() == 3

@@ -626,6 +626,29 @@ def test_local_slider_numpy_path_returns_x() -> None:
     assert x >= 12  # 起始位置为 sw
 
 
+def test_local_slider_numpy_skips_dark_pixels() -> None:
+    """滑块含暗色像素（< 30）时跳过，仍返回匹配位置。"""
+    pytest.importorskip("PIL")
+    pytest.importorskip("numpy")
+    cfg = ImageSolverConfig(use_llm=False)
+    solver = ImageCaptchaSolver(provider=None, config=cfg)
+    bg = _make_test_image_bytes((40, 12), "bg_with_gap")
+    # 构造含暗色像素的滑块
+    import io
+
+    from PIL import Image
+    img = Image.new("L", (12, 12), color=10)  # 大部分像素 < 30
+    for x in range(2, 8):
+        for y in range(2, 8):
+            img.putpixel((x, y), 200)  # 少量亮色像素
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    slider = buf.getvalue()
+    x = solver._local_slider(bg, slider)
+    assert x is not None
+    assert x >= 12
+
+
 def test_local_slider_numpy_returns_none_on_invalid_image() -> None:
     """numpy 路径下图片打开失败应返回 None。"""
     pytest.importorskip("PIL")
@@ -668,6 +691,29 @@ def test_pillow_only_slider_returns_x() -> None:
     solver = ImageCaptchaSolver(provider=None, config=cfg)
     bg = _make_test_image_bytes((40, 12), "bg_with_gap")
     slider = _make_test_image_bytes((12, 12), "slider")
+    x = solver._pillow_only_slider(bg, slider)
+    assert x is not None
+    assert x >= 12
+
+
+def test_pillow_only_slider_skips_dark_pixels() -> None:
+    """纯 Pillow 路径下滑块含暗色像素（< 30）时跳过，仍返回匹配位置。"""
+    pytest.importorskip("PIL")
+    cfg = ImageSolverConfig(use_llm=False)
+    solver = ImageCaptchaSolver(provider=None, config=cfg)
+    bg = _make_test_image_bytes((40, 12), "bg_with_gap")
+    # 构造含暗色像素的滑块：大部分像素 < 30，少量亮色像素
+    import io
+
+    from PIL import Image
+
+    img = Image.new("L", (12, 12), color=10)  # 大部分像素 < 30
+    for x in range(2, 8):
+        for y in range(2, 8):
+            img.putpixel((x, y), 200)  # 少量亮色像素
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    slider = buf.getvalue()
     x = solver._pillow_only_slider(bg, slider)
     assert x is not None
     assert x >= 12

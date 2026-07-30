@@ -80,7 +80,7 @@ if _HAS_PYDANTIC:
         network_count: int = 0
         script_count: int = 0
 
-else:  # Pydantic 不可用时的占位类型，仅用于类型注解
+else:  # pragma: no cover - Pydantic 不可用时的占位类型，仅用于类型注解
 
     class ExtractedParams:  # type: ignore[no-redef]
         """目标参数抽取结果的 schema（Pydantic 未安装时的占位）。"""

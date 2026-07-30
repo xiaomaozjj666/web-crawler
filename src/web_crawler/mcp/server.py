@@ -145,7 +145,7 @@ class ReverseMCPServer:
             self._fetcher = CamoufoxFetcher(headless=True, network_idle=False)
         return self._fetcher
 
-    def _run_browser_task(
+    def _run_browser_task(  # pragma: no cover - 需真实 Playwright 浏览器，属集成测试范畴
         self,
         url: str,
         task_fn: Callable[[Any], Any],
@@ -971,7 +971,7 @@ class ReverseMCPServer:
                     with HeaderChecker() as checker:
                         report.headers = checker.check(base_url)
 
-            if use_alarm:
+            if use_alarm:  # pragma: no cover - Unix-only SIGALRM path, Windows CI 不触发
 
                 def _timeout_handler(signum: int, frame: Any) -> None:
                     raise TimeoutError(f"pentest recon timed out after {timeout}s")
@@ -1053,7 +1053,7 @@ class ReverseMCPServer:
         """run 的别名。"""
         self.run()
 
-    async def _run_mcp(self) -> None:
+    async def _run_mcp(self) -> None:  # pragma: no cover - 需真实 MCP 客户端连接，属集成测试范畴
         """基于 mcp SDK 的 stdio 服务器实现。"""
         server: Any = Server(_SERVER_NAME)
 
@@ -1327,5 +1327,5 @@ def main() -> None:
 __all__ = ["ReverseMCPServer", "main"]
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

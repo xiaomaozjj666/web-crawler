@@ -51,3 +51,5 @@ reverse_screenshots/
 reverse_checkpoints/
 .checkpoints/
 .item_state.json
+coverage_final.txt
+coverage_out.txt

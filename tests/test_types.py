@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from web_crawler._types import Attrs, ResultList, TextHandler, ensure_list, iter_chunks
 
 
@@ -153,3 +155,145 @@ def test_result_list_to_json_coerces_dataclass() -> None:
     text = rl.to_json()
     assert "Widget" in text
     assert "19.99" in text
+
+
+# ===========================================================================
+# 扩展：未覆盖分支补齐
+# ===========================================================================
+
+
+def test_result_list_text_property_str_fallback_for_non_text_items() -> None:
+    """text 属性在 item 无 text 属性时回退到 str(item)（line 104）。"""
+    # int 没有 .text 属性 → text=None → str(item)
+    rl: ResultList[int] = ResultList([42, 99])
+    result = str(rl.text)
+    assert "42" in result
+    assert "99" in result
+
+
+def test_result_list_texts_handles_non_text_items() -> None:
+    """texts 属性在 item 无 text 时回退到空串。"""
+    rl: ResultList[int] = ResultList([1, 2])
+    texts = rl.texts
+    assert len(texts) == 2
+    # int 无 .text → text=None → TextHandler("")
+    assert all(str(t) == "" for t in texts)
+
+
+def test_result_list_attr_method_on_items_without_attr() -> None:
+    """attr 方法对无 attr 方法的元素返回 default（lines 124-131）。"""
+    # 混合：有 attr 方法的 Selector-like 和无 attr 方法的纯 str
+    class HasAttr:
+        def attr(self, name: str, default: Any = None) -> Any:
+            return f"val-{name}"
+
+    rl: ResultList = ResultList([HasAttr(), "plain-string", 42])  # type: ignore[arg-type]
+    result = rl.attr("id", "default")
+    assert result[0] == "val-id"
+    assert result[1] == "default"
+    assert result[2] == "default"
+
+
+def test_result_list_attr_method_all_have_attr() -> None:
+    """attr 方法在所有元素都有 attr 方法时正常返回。"""
+
+    class HasAttr:
+        def __init__(self, v: str) -> None:
+            self._v = v
+
+        def attr(self, name: str, default: Any = None) -> Any:
+            return self._v if name == "id" else default
+
+    rl: ResultList = ResultList([HasAttr("a"), HasAttr("b")])  # type: ignore[arg-type]
+    assert rl.attr("id") == ["a", "b"]
+
+
+def test_result_list_coerce_fallback_for_plain_items() -> None:
+    """_coerce 对无 as_dict/__dict__ 的对象返回原值（line 163）。"""
+    # int 无 as_dict 也无 __dict__
+    rl: ResultList[int] = ResultList([1, 2])
+    text = rl.to_json()
+    # int 被直接序列化
+    import json as _json
+
+    assert _json.loads(text) == [1, 2]
+
+
+def test_result_list_coerce_with_as_dict_method() -> None:
+    """_coerce 优先调用 as_dict()。"""
+
+    class WithAsDict:
+        def as_dict(self) -> dict:
+            return {"custom": True}
+
+    rl: ResultList = ResultList([WithAsDict()])  # type: ignore[arg-type]
+    import json as _json
+
+    parsed = _json.loads(rl.to_json())
+    assert parsed == [{"custom": True}]
+
+
+def test_result_list_coerce_with_dict_attr() -> None:
+    """_coerce 对有 __dict__ 的对象取 vars()。"""
+
+    class Plain:
+        def __init__(self) -> None:
+            self.x = 1
+            self.y = 2
+
+    rl: ResultList = ResultList([Plain()])  # type: ignore[arg-type]
+    import json as _json
+
+    parsed = _json.loads(rl.to_json())
+    assert parsed == [{"x": 1, "y": 2}]
+
+
+def test_result_list_coerce_skips_private_attrs() -> None:
+    """_coerce 过滤 _ 开头的私有属性。"""
+
+    class WithPrivate:
+        def __init__(self) -> None:
+            self.public = "yes"
+            self._private = "no"
+
+    rl: ResultList = ResultList([WithPrivate()])  # type: ignore[arg-type]
+    import json as _json
+
+    parsed = _json.loads(rl.to_json())
+    assert parsed == [{"public": "yes"}]
+
+
+def test_result_list_text_property_filters_empty_parts() -> None:
+    """text 属性过滤空字符串部分。"""
+
+    class FakeSel:
+        def __init__(self, t: str) -> None:
+            self.text = t
+
+    rl = ResultList([FakeSel(""), FakeSel("a"), FakeSel("")])
+    assert str(rl.text) == "a"
+
+
+def test_ensure_list_with_set() -> None:
+    """ensure_list 处理 set 类型。"""
+    assert sorted(ensure_list({1, 2, 3})) == [1, 2, 3]
+
+
+def test_ensure_list_with_result_list() -> None:
+    """ensure_list 处理 ResultList 类型。"""
+    rl: ResultList[int] = ResultList([1, 2])
+    assert ensure_list(rl) == [1, 2]
+
+
+def test_attrs_get_with_none_default() -> None:
+    """Attrs.get 默认返回 None。"""
+    a = Attrs({"X": "1"})
+    assert a.get("missing") is None
+
+
+def test_attrs_contains_case_insensitive() -> None:
+    """Attrs.__contains__ 大小写不敏感。"""
+    a = Attrs({"Content-Type": "text/html"})
+    assert "content-type" in a
+    assert "CONTENT-TYPE" in a
+    assert "x-missing" not in a

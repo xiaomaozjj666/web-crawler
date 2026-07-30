@@ -122,7 +122,7 @@ def similarity_score(fp_a: str, fp_b: str) -> float:
             acc += weight * _ratio(va, vb)
         else:
             acc += weight * _ratio(va, vb)
-    if total_weight == 0:
+    if total_weight == 0:  # pragma: no cover - _WEIGHTS 恒非空，total_weight 不可能为 0
         return 0.0
     return acc / total_weight
 

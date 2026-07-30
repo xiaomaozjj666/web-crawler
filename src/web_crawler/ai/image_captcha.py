@@ -322,7 +322,7 @@ class ImageCaptchaSolver:
         except Exception:
             return None
 
-        if bg_img.ndim != 2 or slider_img.ndim != 2:
+        if bg_img.ndim != 2 or slider_img.ndim != 2:  # pragma: no cover - .convert("L") 保证 2D
             return None
         bh, bw = bg_img.shape
         sh, sw = slider_img.shape

@@ -72,7 +72,7 @@ class ProxyPool:
                 proxy = self._proxies[idx]
                 if proxy in available:
                     return proxy
-            return None
+            return None  # pragma: no cover - available 非空时循环必定命中
 
     def mark_failed(self, proxy: str) -> None:
         """Record a failure for ``proxy``; cool it down once ``max_failures`` is reached."""
