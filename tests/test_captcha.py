@@ -986,6 +986,49 @@ def test_wait_for_token_unknown_type_uses_geetest_path() -> None:
     assert solver._wait_for_token(page, info, timeout=5.0) is True
 
 
+def test_wait_for_token_geetest_polls_then_times_out() -> None:
+    """GEETEST 轮询循环执行 sleep 后超时返回 False。"""
+    solver = CaptchaSolver(max_wait=10.0)
+    info = CaptchaInfo(type=CaptchaType.GEETEST)
+    page = _make_page({})
+    # monotonic: deadline=0, first check=0(<0 False → 进入循环), second check=100(>=0 → 退出)
+    monotonic_values = iter([0.0, 0.0, 100.0])
+    with (
+        patch("web_crawler.ai.captcha.time.monotonic", side_effect=lambda: next(monotonic_values)),
+        patch("web_crawler.ai.captcha.time.sleep"),
+    ):
+        assert solver._wait_for_token(page, info, timeout=0.001) is False
+
+
+def test_wait_for_token_main_loop_sleeps_then_times_out() -> None:
+    """主 token 循环执行 sleep 后超时返回 False。"""
+    solver = CaptchaSolver(max_wait=10.0)
+    info = CaptchaInfo(type=CaptchaType.HCAPTCHA)
+    page = _make_page({})
+    # monotonic: deadline=0, first check=0, second check=100
+    monotonic_values = iter([0.0, 0.0, 100.0])
+    with (
+        patch("web_crawler.ai.captcha.time.monotonic", side_effect=lambda: next(monotonic_values)),
+        patch("web_crawler.ai.captcha.time.sleep"),
+    ):
+        assert solver._wait_for_token(page, info, timeout=0.001) is False
+
+
+def test_wait_for_token_query_exception_in_loop() -> None:
+    """主循环中 query_selector 抛异常时 el 设为 None，继续轮询。"""
+    solver = CaptchaSolver(max_wait=10.0)
+    info = CaptchaInfo(type=CaptchaType.HCAPTCHA)
+    page = MagicMock()
+    page.query_selector.side_effect = RuntimeError("boom")
+    # monotonic: deadline=0, first check=0, second check=100
+    monotonic_values = iter([0.0, 0.0, 100.0])
+    with (
+        patch("web_crawler.ai.captcha.time.monotonic", side_effect=lambda: next(monotonic_values)),
+        patch("web_crawler.ai.captcha.time.sleep"),
+    ):
+        assert solver._wait_for_token(page, info, timeout=0.001) is False
+
+
 # ===========================================================================
 # 扩展：_humanize_click / _humanize_drag / _bezier_points
 # ===========================================================================

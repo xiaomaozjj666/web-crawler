@@ -192,7 +192,7 @@ def cmd_captcha_image(args: argparse.Namespace) -> int:
         image_bytes = Path(args.image).read_bytes()
         payload["image"] = base64.b64encode(image_bytes).decode("ascii")
         payload["prompt"] = args.prompt or ""
-    else:
+    else:  # pragma: no cover - argparse choices 已限制 mode
         print(f"错误：未知模式 {mode!r}，可选 text/slider/click", file=sys.stderr)
         return 1
 
@@ -629,5 +629,5 @@ def main() -> None:
     sys.exit(args.func(args))
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

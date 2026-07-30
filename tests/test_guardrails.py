@@ -181,3 +181,422 @@ def test_guard_allows_normal_selector() -> None:
         action = {"action_type": "click", "params": {"selector": selector}}
         result = guard.check(action)
         assert not result.denied, f"不应拦截合法 selector：{selector}"
+
+
+# ===========================================================================
+# 扩展：GuardrailResult 属性 / to_dict
+# ===========================================================================
+
+
+def test_guardrail_result_needs_confirm_property() -> None:
+    """needs_confirm 在 action=CONFIRM 时为 True。"""
+    from web_crawler.ai.guardrails import GuardrailAction, GuardrailResult
+
+    result = GuardrailResult(action=GuardrailAction.CONFIRM)
+    assert result.needs_confirm is True
+    assert result.denied is False
+
+    allow_result = GuardrailResult(action=GuardrailAction.ALLOW)
+    assert allow_result.needs_confirm is False
+    assert allow_result.denied is False
+
+    deny_result = GuardrailResult(action=GuardrailAction.DENY)
+    assert deny_result.needs_confirm is False
+    assert deny_result.denied is True
+
+
+def test_guardrail_result_to_dict() -> None:
+    """to_dict 序列化 action/matched_rules/details。"""
+    from web_crawler.ai.guardrails import GuardrailAction, GuardrailResult
+
+    result = GuardrailResult(
+        action=GuardrailAction.DENY,
+        matched_rules=["rule-a"],
+        details=["detail-a"],
+    )
+    d = result.to_dict()
+    assert d["action"] == "deny"
+    assert d["matched_rules"] == ["rule-a"]
+    assert d["details"] == ["detail-a"]
+
+
+# ===========================================================================
+# 扩展：check 方法 - 规则异常处理 / confirm 回调拒绝
+# ===========================================================================
+
+
+def test_guard_check_swallows_rule_exception() -> None:
+    """规则 check 抛异常时记录 (error) 但不阻塞动作。"""
+    from web_crawler.ai.guardrails import (
+        ActionGuard,
+        GuardrailAction,
+        GuardrailRule,
+    )
+
+    def _boom(action, ctx):
+        raise RuntimeError("rule crashed")
+
+    bad_rule = GuardrailRule(name="crashy", check=_boom, action=GuardrailAction.DENY)
+    guard = ActionGuard(extra_rules=[bad_rule])
+    result = guard.check({"action_type": "navigate", "params": {"url": "https://example.com"}})
+    # 异常规则不应阻塞
+    assert not result.denied
+    assert any("crashy" in name and "error" in name for name in result.matched_rules)
+
+
+def test_guard_confirm_callback_returns_false_denies() -> None:
+    """on_confirm 返回 False 时降级为 DENY。"""
+    from web_crawler.ai.guardrails import (
+        ActionGuard,
+        GuardrailAction,
+        GuardrailRule,
+    )
+
+    custom = GuardrailRule(
+        name="needs-confirm",
+        check=lambda action, ctx: (True, "needs user confirm"),
+        action=GuardrailAction.CONFIRM,
+    )
+    guard = ActionGuard(extra_rules=[custom], on_confirm=lambda name, detail: False)
+    result = guard.check({"action_type": "navigate", "params": {"url": "https://example.com"}})
+    assert result.denied
+
+
+def test_guard_confirm_callback_all_rules_confirmed_allows() -> None:
+    """多条 confirm 规则全部确认时 ALLOW。"""
+    from web_crawler.ai.guardrails import (
+        ActionGuard,
+        GuardrailAction,
+        GuardrailRule,
+    )
+
+    rules = [
+        GuardrailRule(
+            name="c1", check=lambda a, c: (True, "1"), action=GuardrailAction.CONFIRM
+        ),
+        GuardrailRule(
+            name="c2", check=lambda a, c: (True, "2"), action=GuardrailAction.CONFIRM
+        ),
+    ]
+    guard = ActionGuard(extra_rules=rules, on_confirm=lambda name, detail: True)
+    result = guard.check({"action_type": "navigate", "params": {"url": "https://example.com"}})
+    assert not result.denied
+
+
+# ===========================================================================
+# 扩展：async check / add_rule
+# ===========================================================================
+
+
+def test_guard_check_async_behaves_like_sync() -> None:
+    """check_async 行为与 check 一致。"""
+    import asyncio
+
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard()
+    action = {"action_type": "navigate", "params": {"url": "http://example.com"}}
+    result = asyncio.run(guard.check_async(action))
+    assert result.denied
+
+
+def test_guard_add_rule_appends() -> None:
+    """add_rule 追加自定义规则。"""
+    from web_crawler.ai.guardrails import (
+        ActionGuard,
+        GuardrailAction,
+        GuardrailRule,
+    )
+
+    guard = ActionGuard()
+    initial_count = len(guard._rules)
+    guard.add_rule(
+        GuardrailRule(
+            name="custom-block",
+            check=lambda a, c: (a.get("action_type") == "navigate", "blocked"),
+            action=GuardrailAction.DENY,
+        )
+    )
+    assert len(guard._rules) == initial_count + 1
+
+
+# ===========================================================================
+# 扩展：_check_localhost_nav 分支
+# ===========================================================================
+
+
+def test_guard_localhost_allows_when_allow_localhost_true() -> None:
+    """allow_localhost=True 时 localhost 导航不被拦截。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard(allow_localhost=True)
+    result = guard.check({"action_type": "navigate", "params": {"url": "http://127.0.0.1/admin"}})
+    assert not result.denied
+
+
+def test_guard_localhost_not_navigate_action_skips() -> None:
+    """非 navigate 动作不触发 localhost 检查。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard(allow_localhost=False)
+    result = guard.check({"action_type": "click", "params": {"selector": "a"}})
+    assert not result.denied
+
+
+def test_guard_localhost_empty_url_skips() -> None:
+    """空 URL 不触发 localhost 检查。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard(allow_localhost=False)
+    result = guard.check({"action_type": "navigate", "params": {"url": ""}})
+    assert not result.denied
+
+
+def test_guard_localhost_no_host_skips() -> None:
+    """URL 无 host 时不触发 localhost 检查。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard(allow_localhost=False)
+    result = guard.check({"action_type": "navigate", "params": {"url": "about:blank"}})
+    assert not result.denied
+
+
+def test_guard_localhost_blocks_private_ip() -> None:
+    """内网私有 IP 被拦截。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard(allow_localhost=False)
+    for ip in ("10.0.0.1", "172.16.0.1", "192.168.1.1"):
+        result = guard.check({"action_type": "navigate", "params": {"url": f"http://{ip}/"}})
+        assert result.denied, f"应拦截 {ip}"
+
+
+# ===========================================================================
+# 扩展：_check_https_only 分支
+# ===========================================================================
+
+
+def test_guard_https_only_empty_url_skips() -> None:
+    """空 URL 不触发 https 检查。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard()
+    result = guard.check({"action_type": "navigate", "params": {"url": ""}})
+    assert not result.denied
+
+
+def test_guard_https_only_http_with_allow_localhost_allowed() -> None:
+    """allow_localhost=True 时 http URL 允许（dev 模式）。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard(allow_localhost=True)
+    result = guard.check({"action_type": "navigate", "params": {"url": "http://example.com"}})
+    assert not result.denied
+
+
+def test_guard_https_only_blocks_unsafe_scheme() -> None:
+    """file/ftp 等非 https/http/about 协议被拦截。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard()
+    result = guard.check({"action_type": "navigate", "params": {"url": "file:///etc/passwd"}})
+    assert result.denied
+
+
+def test_guard_https_only_about_blank_allowed() -> None:
+    """about:blank 允许。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard()
+    result = guard.check({"action_type": "navigate", "params": {"url": "about:blank"}})
+    assert not result.denied
+
+
+# ===========================================================================
+# 扩展：_check_domain_whitelist 分支
+# ===========================================================================
+
+
+def test_guard_whitelist_not_navigate_skips() -> None:
+    """非 navigate 动作不触发域名白名单检查。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard(allowed_domains=["example.com"])
+    result = guard.check({"action_type": "click", "params": {"selector": "a"}})
+    assert not result.denied
+
+
+def test_guard_whitelist_empty_url_skips() -> None:
+    """空 URL 不触发域名白名单检查。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard(allowed_domains=["example.com"])
+    result = guard.check({"action_type": "navigate", "params": {"url": ""}})
+    assert not result.denied
+
+
+def test_guard_whitelist_no_host_skips() -> None:
+    """URL 无 host 时不触发白名单检查。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard(allowed_domains=["example.com"])
+    result = guard.check({"action_type": "navigate", "params": {"url": "about:blank"}})
+    assert not result.denied
+
+
+def test_guard_whitelist_wildcard_star_allowed() -> None:
+    """allowed_domains 含 '*' 时全部允许。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    # ["*"] 不会注册 domain-whitelist 规则（__init__ 中过滤）
+    guard = ActionGuard(allowed_domains=["*"])
+    result = guard.check({"action_type": "navigate", "params": {"url": "https://evil.com/"}})
+    assert not result.denied
+
+
+def test_guard_whitelist_star_mixed_with_domain_allows_any() -> None:
+    """allowed_domains=['*', 'example.com'] 时 '*' 分支允许任意域名。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard(allowed_domains=["*", "example.com"])
+    # '*' 在遍历时命中 → return False, ""（放行），覆盖 _check_domain_whitelist 的 * 分支
+    result = guard.check({"action_type": "navigate", "params": {"url": "https://evil.com/"}})
+    assert not result.denied
+
+
+def test_guard_whitelist_empty_allowed_domains_skips() -> None:
+    """空 allowed_domains 列表不触发拦截。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard(allowed_domains=[])
+    result = guard.check({"action_type": "navigate", "params": {"url": "https://example.com/"}})
+    assert not result.denied
+
+
+# ===========================================================================
+# 扩展：_check_dangerous_script 分支
+# ===========================================================================
+
+
+def test_guard_dangerous_script_empty_script_skips() -> None:
+    """inject_hook 但 script 为空时不触发。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard()
+    result = guard.check({"action_type": "inject_hook", "params": {"script": ""}})
+    assert not result.denied
+
+
+def test_guard_dangerous_script_no_pattern_matched() -> None:
+    """inject_hook 含安全脚本时不触发。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard()
+    result = guard.check(
+        {"action_type": "inject_hook", "params": {"script": "console.log('safe')"}}
+    )
+    assert not result.denied
+
+
+def test_guard_dangerous_script_not_inject_hook_skips() -> None:
+    """非 inject_hook 动作不触发危险脚本检查。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard()
+    result = guard.check({"action_type": "click", "params": {"selector": "a"}})
+    assert not result.denied
+
+
+# ===========================================================================
+# 扩展：_check_dangerous_click 分支
+# ===========================================================================
+
+
+def test_guard_dangerous_click_empty_selector_skips() -> None:
+    """click 但 selector 为空时不触发。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard()
+    result = guard.check({"action_type": "click", "params": {"selector": ""}})
+    assert not result.denied
+
+
+def test_guard_dangerous_click_not_click_hover_skips() -> None:
+    """非 click/hover 动作不触发危险点击检查。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard()
+    result = guard.check({"action_type": "type", "params": {"selector": "input"}})
+    assert not result.denied
+
+
+# ===========================================================================
+# 扩展：_check_selector_injection 分支
+# ===========================================================================
+
+
+def test_guard_selector_injection_empty_selector_skips() -> None:
+    """selector 为空时不触发注入检查。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard()
+    result = guard.check({"action_type": "click", "params": {"selector": ""}})
+    assert not result.denied
+
+
+def test_guard_selector_injection_not_selector_action_skips() -> None:
+    """非使用 selector 的动作不触发注入检查。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard()
+    result = guard.check({"action_type": "navigate", "params": {"url": "https://example.com"}})
+    assert not result.denied
+
+
+# ===========================================================================
+# 扩展：_action_to_dict 分支
+# ===========================================================================
+
+
+def test_guard_action_to_dict_dict_passthrough() -> None:
+    """dict 直接返回。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    action = {"action_type": "click", "params": {"selector": "a"}}
+    assert ActionGuard._action_to_dict(action) is action
+
+
+def test_guard_action_to_dict_to_dict_method() -> None:
+    """有 to_dict 方法的对象调用 to_dict。"""
+
+    class FakeAction:
+        def to_dict(self) -> dict:
+            return {"action_type": "fake"}
+
+    from web_crawler.ai.guardrails import ActionGuard
+
+    assert ActionGuard._action_to_dict(FakeAction()) == {"action_type": "fake"}
+
+
+def test_guard_action_to_dict_object_with_dict_attr() -> None:
+    """有 __dict__ 的对象转为 dict。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    class FakeAction:
+        def __init__(self) -> None:
+            self.action_type = "click"
+            self.params = {"selector": "a"}
+
+    result = ActionGuard._action_to_dict(FakeAction())
+    assert result["action_type"] == "click"
+    assert result["params"] == {"selector": "a"}
+
+
+def test_guard_action_to_dict_fallback_to_str() -> None:
+    """无 dict 属性的对象回退到 {'action_type': str(obj)}。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    # int 无 __dict__ 也无 to_dict
+    result = ActionGuard._action_to_dict(42)  # type: ignore[arg-type]
+    assert result == {"action_type": "42"}
+

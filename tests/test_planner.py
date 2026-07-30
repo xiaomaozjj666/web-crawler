@@ -270,6 +270,13 @@ class TestPlannerMakePlan:
         plan = planner.make_plan("task", _Observation())
         assert plan.subgoals == []
 
+    def test_make_plan_returns_empty_when_json_block_invalid(self) -> None:
+        """LLM 返回含 {...} 但 JSON 非法时返回空 Plan。"""
+        provider = _FakeProvider(["Result: { not valid json }"])
+        planner = Planner(provider)
+        plan = planner.make_plan("task", _Observation())
+        assert plan.subgoals == []
+
     def test_make_plan_skips_non_dict_subgoal_entries(self) -> None:
         """subgoals 列表中非 dict 项应被跳过。"""
         reply = json.dumps(

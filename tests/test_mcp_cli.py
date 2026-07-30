@@ -572,6 +572,34 @@ def test_cmd_run_save_script_os_error(
     assert "保存脚本失败" in captured.err
 
 
+def test_cmd_run_with_allowed_domains(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """cmd_run 传入 --allowed-domains 时正确解析为列表。"""
+
+    class _MockAgent:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        def run(self, url: str, task: str = "") -> dict:
+            return {"success": True, "steps": 1}
+
+        def close(self) -> None:
+            pass
+
+    class _MockProvider:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+    monkeypatch.setattr("web_crawler.ai.llm.DeepSeekProvider", _MockProvider)
+    monkeypatch.setattr("web_crawler.ai.reverse_agent.ReverseAgent", _MockAgent)
+    args = _parse_args(
+        ["run", "--url", "http://x", "--allowed-domains", "a.com, b.com"]
+    )
+    code = cli_module.cmd_run(args)
+    assert code == 0
+
+
 # -- cmd_interactive REPL ---------------------------------------------------
 
 

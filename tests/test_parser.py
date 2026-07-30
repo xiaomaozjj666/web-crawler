@@ -410,3 +410,186 @@ def test_css_attr_pseudo_class_with_space() -> None:
     # p1 同时有 product 和 link 两个 class
     val = page.css_first(".product.link::attr(id)")
     assert val == "p1"
+
+
+# ===========================================================================
+# 扩展：未覆盖分支补齐
+# ===========================================================================
+
+
+def test_siblings_on_root_element_returns_empty() -> None:
+    """根元素无 parent，siblings 返回空 ResultList。"""
+    page = Selector("<html><body>x</body></html>")
+    # html 是根元素，getparent() 返回 None
+    root = page  # page 本身就是根 <html>
+    siblings = root.siblings
+    assert len(siblings) == 0
+
+
+def test_find_by_text_skips_non_str_tags() -> None:
+    """find_by_text 跳过注释/PI 等非 str tag 节点。"""
+    # HTML 含注释，lxml 解析后注释节点的 tag 是函数不是 str
+    html = "<div><!-- a comment --><p>hello</p></div>"
+    page = Selector(html)
+    matches = page.find_by_text("hello")
+    assert len(matches) == 1
+    assert matches[0].tag == "p"
+
+
+def test_find_by_regex_skips_non_str_tags() -> None:
+    """find_by_regex 跳过注释/PI 等非 str tag 节点。"""
+    html = "<div><!-- comment --><p>target42</p></div>"
+    page = Selector(html)
+    matches = page.find_by_regex(r"target\d+")
+    assert len(matches) == 1
+    assert matches[0].tag == "p"
+
+
+def test_find_similar_with_adaptive_enabled(tmp_storage: AdaptiveStorage) -> None:
+    """adaptive=True 时 find_similar 走 Adaptors.find_similar 路径。"""
+    page = Selector(
+        '<div><a id="p1" class="product">Product 1</a><a id="p2" class="product">Product 2</a></div>',
+        url="https://shop.example.com",
+        adaptive=True,
+        storage=tmp_storage,
+    )
+    ref = page.css_first("#p1")
+    similar = page.find_similar(ref, threshold=0.3)
+    # Product 2 结构相似
+    assert len(similar) > 0
+    tags = [s.tag for s in similar]
+    assert "a" in tags
+
+
+def test_xpath_adaptive_lookup_returns_relocated(tmp_storage: AdaptiveStorage) -> None:
+    """xpath 在 adaptive=True 且 xpath 无结果时走 adaptive 重定位。"""
+    # 先用 auto_save 保存（identifier = xpath 选择器字符串）
+    page1 = Selector(
+        '<div><a id="p1" class="product">Widget</a></div>',
+        url="https://shop.example.com",
+        adaptive=True,
+        storage=tmp_storage,
+    )
+    page1.xpath_first("//a[@id='p1']", auto_save=True)
+
+    # v2: id 没了，xpath //a[@id='p1'] 无结果，但 adaptive 重定位能找到
+    page2 = Selector(
+        '<div><span><a data-id="p1" class="product new">Widget</a></span></div>',
+        url="https://shop.example.com",
+        adaptive=True,
+        storage=tmp_storage,
+    )
+    relocated = page2.xpath("//a[@id='p1']", adaptive=True, threshold=0.3)
+    assert len(relocated) == 1
+    assert "Widget" in str(relocated.first.text)
+
+
+def test_xpath_adaptive_lookup_with_attr_pseudo(tmp_storage: AdaptiveStorage) -> None:
+    """xpath adaptive + ::attr(name) 伪元素组合。"""
+    page1 = Selector(
+        '<div><a id="p1" class="product">Widget</a></div>',
+        url="https://shop.example.com",
+        adaptive=True,
+        storage=tmp_storage,
+    )
+    page1.xpath_first("//a[@id='p1']", auto_save=True)
+
+    page2 = Selector(
+        '<div><span><a data-id="p1" class="product new">Widget</a></span></div>',
+        url="https://shop.example.com",
+        adaptive=True,
+        storage=tmp_storage,
+    )
+    relocated = page2.xpath("//a[@id='p1']::attr(class)", adaptive=True, threshold=0.3)
+    assert len(relocated) == 1
+
+
+def test_xpath_adaptive_lookup_no_match_returns_empty(
+    tmp_storage: AdaptiveStorage,
+) -> None:
+    """xpath adaptive 查找无存储记录时返回空 ResultList。"""
+    page = Selector(
+        "<div><p>just text</p></div>",
+        url="https://shop.example.com",
+        adaptive=True,
+        storage=tmp_storage,
+    )
+    result = page.xpath("//a", adaptive=True, threshold=0.5)
+    assert len(result) == 0
+
+
+def test_relocate_with_empty_fingerprint_returns_empty(
+    tmp_storage: AdaptiveStorage,
+) -> None:
+    """relocate 传入 fingerprint 为空的 dict 时返回空。"""
+    page = Selector(
+        "<div><a>x</a></div>",
+        url="https://shop.example.com",
+        adaptive=True,
+        storage=tmp_storage,
+    )
+    result = page.relocate({"fingerprint": ""}, threshold=0.5)
+    assert len(result) == 0
+
+
+def test_relocate_with_raw_lxml_element(tmp_storage: AdaptiveStorage) -> None:
+    """relocate 接受原始 lxml element（非 dict / 非 Selector）。"""
+
+    page1 = Selector(
+        '<div><a id="p1" class="product">Widget</a></div>',
+        url="https://shop.example.com",
+        adaptive=True,
+        storage=tmp_storage,
+    )
+    raw_el = page1.css_first("#p1").element  # lxml element
+
+    page2 = Selector(
+        '<div><a id="x" class="product">Widget</a></div>',
+        url="https://shop.example.com",
+        adaptive=True,
+        storage=tmp_storage,
+    )
+    relocated = page2.relocate(raw_el, threshold=0.3)
+    assert len(relocated) == 1
+    assert "Widget" in str(relocated.first.text)
+
+
+def test_adaptors_find_similar_with_reference_in_candidates(
+    tmp_storage: AdaptiveStorage,
+) -> None:
+    """Adaptors.find_similar 正确跳过 reference 自身。"""
+    page = Selector(
+        '<div><a id="p1" class="product">A</a><a id="p2" class="product">B</a></div>',
+        url="https://shop.example.com",
+        adaptive=True,
+        storage=tmp_storage,
+    )
+    ref = page.css_first("#p1")
+    # find_similar 应跳过 ref 自身，返回 p2
+    similar = page.find_similar(ref, threshold=0.1, limit=5)
+    ids = [s.attr("id") for s in similar]
+    assert "p1" not in ids  # ref 自身被跳过
+
+
+def test_css_adaptive_lookup_with_attr_pseudo(tmp_storage: AdaptiveStorage) -> None:
+    """css adaptive + ::attr(name) 伪元素组合：重定位后取属性值。"""
+    page1 = Selector(
+        '<div><a id="p1" class="product">Widget</a></div>',
+        url="https://shop.example.com",
+        adaptive=True,
+        storage=tmp_storage,
+    )
+    page1.css_first("#p1", auto_save=True)
+
+    page2 = Selector(
+        '<div><span><a data-id="p1" class="product new">Widget</a></span></div>',
+        url="https://shop.example.com",
+        adaptive=True,
+        storage=tmp_storage,
+    )
+    # css('#p1::attr(class)') 在 page2 上 #p1 不存在 → adaptive 重定位 → 取 class 属性
+    relocated = page2.css("#p1::attr(class)", adaptive=True, threshold=0.3)
+    assert len(relocated) == 1
+    val = str(relocated[0])
+    assert "product" in val
+

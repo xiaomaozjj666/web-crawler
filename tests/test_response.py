@@ -33,6 +33,13 @@ def test_response_css_and_xpath_delegate_to_selector() -> None:
     assert str(r.xpath_first("//a").text) == "Hi"
 
 
+def test_response_xpath_returns_list() -> None:
+    """xpath() 方法应返回 ResultList（非 xpath_first）。"""
+    r = Response("https://shop.example.com", 200, b"<div><a id='x'>Hi</a><a id='y'>Bye</a></div>")
+    results = r.xpath("//a")
+    assert len(results) == 2
+
+
 def test_response_selector_is_lazy_and_cached() -> None:
     r = Response("u", 200, b"<p>x</p>")
     assert r._selector is None

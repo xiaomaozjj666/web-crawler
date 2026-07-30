@@ -365,7 +365,7 @@ class DomPruner:
             arr = json.loads(m.group(0))
         except json.JSONDecodeError:
             return {}
-        if not isinstance(arr, list):
+        if not isinstance(arr, list):  # pragma: no cover - 正则匹配 [.*] 后 json.loads 必为 list
             return {}
         out: dict[int, float] = {}
         for item in arr:
@@ -403,7 +403,7 @@ class DomPruner:
         candidates: list[_Candidate] = []
         for m in pattern.finditer(html):
             tag_match = re.match(r"<(\w+)", m.group(0), re.IGNORECASE)
-            if not tag_match:
+            if not tag_match:  # pragma: no cover - pattern 已确保以 <tag 开头，tag_match 必非 None
                 continue
             tag = tag_match.group(1).lower()
             candidates.append(

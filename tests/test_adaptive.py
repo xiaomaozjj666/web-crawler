@@ -119,3 +119,38 @@ def test_similarity_weighted_towards_text_and_tag() -> None:
     a = compute_fingerprint(_el('<a id="1" class="c">Same</a>'))
     b = compute_fingerprint(_el('<a id="2" data-x="y">Same</a>'))
     assert similarity_score(a, b) > 0.7
+
+
+# ===========================================================================
+# 扩展：_normalize_text / _ratio 边界分支
+# ===========================================================================
+
+
+def test_normalize_text_returns_empty_for_falsy_value() -> None:
+    """_normalize_text(None) 和空字符串应返回空串。"""
+    from web_crawler.parser.adaptive import _normalize_text
+
+    assert _normalize_text(None) == ""
+    assert _normalize_text("") == ""
+
+
+def test_ratio_returns_one_for_both_empty_strings() -> None:
+    """_ratio 在两个空字符串时返回 1.0（完全相等）。"""
+    from web_crawler.parser.adaptive import _ratio
+
+    assert _ratio("", "") == 1.0
+
+
+def test_ratio_returns_one_for_both_empty_lists() -> None:
+    """_ratio 在两个空列表时返回 1.0。"""
+    from web_crawler.parser.adaptive import _ratio
+
+    assert _ratio([], []) == 1.0
+
+
+def test_ratio_returns_zero_for_one_empty_list() -> None:
+    """_ratio 在一空一非空列表时返回 0.0。"""
+    from web_crawler.parser.adaptive import _ratio
+
+    assert _ratio([], ["a"]) == 0.0
+    assert _ratio(["a"], []) == 0.0

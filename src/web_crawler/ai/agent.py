@@ -123,7 +123,7 @@ class RobotsPolicy:
 
     def allowed(self, url: str, fetch_text: Any) -> bool:
         rp = self._parser_for(url, fetch_text)
-        if rp is None:
+        if rp is None:  # pragma: no cover - _parser_for 始终返回 RobotFileParser
             return True
         return rp.can_fetch(self.user_agent, url)
 
