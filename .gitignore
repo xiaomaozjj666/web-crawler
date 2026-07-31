@@ -53,3 +53,4 @@ reverse_checkpoints/
 .item_state.json
 coverage_final.txt
 coverage_out.txt
+crawler_data.db
