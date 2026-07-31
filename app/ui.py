@@ -27,6 +27,7 @@ if _APP_DIR not in sys.path:
 _log = logging.getLogger(__name__)
 
 import crawler as web_resource_crawler  # 需先设 sys.dont_write_bytecode 再导入
+import db as database
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -506,6 +507,7 @@ PAGE = """<!doctype html>
     <div class="tabs">
       <button class="tab active" data-tab="crawler">[采集器] 网页资源采集器</button>
       <button class="tab" data-tab="reverse">[逆向 Agent] JS 逆向 Agent</button>
+      <button class="tab" data-tab="history">[历史] 任务历史</button>
       <button class="theme-toggle" type="button" onclick="toggleTheme()" title="切换主题">主题</button>
     </div>
 
@@ -1530,6 +1532,186 @@ PAGE = """<!doctype html>
     /* 页面加载时拉取历史任务列表 */
     loadReverseHistory();
   </script>
+
+  <!-- ========== Tab 3: 任务历史 ========== -->
+  <div id="tab-history" class="tab-content">
+    <div style="max-width:1200px;margin:0 auto;padding:16px">
+      <h2 style="margin:0 0 12px">任务历史</h2>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
+        <select id="history-filter" onchange="loadHistory(1)" style="padding:6px 12px;border-radius:6px;border:1px solid var(--border,#ddd);background:var(--bg-card,#fff);color:var(--text,#222)">
+          <option value="all">全部状态</option>
+          <option value="done">已完成</option>
+          <option value="running">运行中</option>
+          <option value="error">出错</option>
+          <option value="cancelled">已取消</option>
+        </select>
+        <button onclick="loadHistory()" style="padding:6px 16px;border-radius:6px;border:1px solid var(--border,#ddd);background:var(--bg-card,#fff);color:var(--text,#222);cursor:pointer">刷新</button>
+        <span id="history-total" style="margin-left:auto;color:var(--text-muted,#888);font-size:14px"></span>
+      </div>
+      <div id="history-list" style="display:flex;flex-direction:column;gap:8px"></div>
+      <div id="history-pagination" style="display:flex;gap:8px;justify-content:center;margin-top:16px"></div>
+    </div>
+
+    <!-- 结果查看模态 -->
+    <div id="results-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:9999;overflow:auto">
+      <div style="max-width:1100px;margin:20px auto;background:var(--bg-card,#fff);border-radius:12px;padding:20px;box-shadow:0 8px 32px rgba(0,0,0,0.2)">
+        <div style="display:flex;align-items:center;margin-bottom:12px">
+          <h3 id="results-title" style="margin:0;flex:1">采集结果</h3>
+          <input id="results-search" placeholder="搜索 URL/路径/类型..." oninput="loadResults(1)" style="padding:6px 12px;border-radius:6px;border:1px solid var(--border,#ddd);background:var(--bg-card,#fff);color:var(--text,#222);width:240px">
+          <button onclick="closeResults()" style="margin-left:12px;padding:6px 16px;border-radius:6px;border:none;background:#ef4444;color:#fff;cursor:pointer">关闭</button>
+        </div>
+        <div style="overflow-x:auto">
+          <table id="results-table" style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead>
+              <tr style="text-align:left;border-bottom:2px solid var(--border,#ddd)">
+                <th style="padding:8px">URL</th>
+                <th style="padding:8px">类型</th>
+                <th style="padding:8px">大小</th>
+                <th style="padding:8px">分类</th>
+                <th style="padding:8px">状态</th>
+              </tr>
+            </thead>
+            <tbody id="results-body"></tbody>
+          </table>
+        </div>
+        <div id="results-pagination" style="display:flex;gap:8px;justify-content:center;margin-top:12px"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    var historyPage = 1;
+    var resultsTaskId = null;
+    var resultsPage = 1;
+
+    function fmtSize(bytes) {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1048576) return (bytes/1024).toFixed(1) + ' KB';
+      return (bytes/1048576).toFixed(1) + ' MB';
+    }
+    function fmtTime(ts) {
+      if (!ts) return '-';
+      var d = new Date(ts * 1000);
+      return d.toLocaleString();
+    }
+    function statusColor(s) {
+      return {done:'#16a34a',running:'#3b82f6',error:'#ef4444',cancelled:'#6b7280',paused:'#eab308'}[s] || '#6b7280';
+    }
+
+    function loadHistory(page) {
+      if (page) historyPage = page;
+      var filter = document.getElementById('history-filter').value;
+      fetch('/jobs?page=' + historyPage + '&page_size=15&status=' + filter)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var list = document.getElementById('history-list');
+          list.innerHTML = '';
+          if (!data.tasks.length) {
+            list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted,#888)">暂无任务</div>';
+          }
+          data.tasks.forEach(function(t) {
+            var card = document.createElement('div');
+            card.style.cssText = 'padding:12px 16px;border-radius:8px;border:1px solid var(--border,#e0e0e0);background:var(--bg-card,#fff);display:flex;align-items:center;gap:12px';
+            var pct = t.total_resources ? Math.round(t.processed_resources * 100 / t.total_resources) : 0;
+            card.innerHTML =
+              '<div style="width:8px;height:36px;border-radius:4px;background:' + statusColor(t.status) + ';flex-shrink:0"></div>' +
+              '<div style="flex:1;min-width:0">' +
+                '<div style="font-weight:600;color:var(--text,#222);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (t.url || '-') + '</div>' +
+                '<div style="font-size:12px;color:var(--text-muted,#888);margin-top:2px">' +
+                  fmtTime(t.created_at) + ' · ' + t.processed_resources + '/' + t.total_resources + ' 资源 · ' + t.pages_scanned + ' 页' +
+                '</div>' +
+              '</div>' +
+              '<span style="font-size:12px;font-weight:600;color:' + statusColor(t.status) + ';padding:2px 8px;border-radius:4px;background:' + statusColor(t.status) + '15">' + t.status + '</span>' +
+              '<div style="display:flex;gap:6px">' +
+                (t.status === 'done' ? '<button onclick="showResults(\'' + t.id + '\',\'' + (t.url||'').replace(/'/g,'') + '\')" style="padding:4px 10px;border-radius:4px;border:1px solid var(--border,#ddd);background:var(--bg-card,#fff);color:var(--text,#222);cursor:pointer;font-size:12px">查看结果</button>' : '') +
+                '<button onclick="deleteTask(\'' + t.id + '\')" style="padding:4px 10px;border-radius:4px;border:1px solid #ef4444;background:transparent;color:#ef4444;cursor:pointer;font-size:12px">删除</button>' +
+              '</div>';
+            list.appendChild(card);
+          });
+          // 分页
+          var pg = document.getElementById('history-pagination');
+          pg.innerHTML = '';
+          var totalPages = Math.ceil(data.total / data.page_size);
+          for (var i = 1; i <= Math.max(1, totalPages); i++) {
+            var btn = document.createElement('button');
+            btn.textContent = i;
+            btn.onclick = function(p) { return function() { loadHistory(p); }; }(i);
+            btn.style.cssText = 'padding:4px 12px;border-radius:4px;border:1px solid var(--border,#ddd);background:' + (i === historyPage ? '#3b82f6' : 'var(--bg-card,#fff)') + ';color:' + (i === historyPage ? '#fff' : 'var(--text,#222)') + ';cursor:pointer;font-size:13px';
+            pg.appendChild(btn);
+          }
+          document.getElementById('history-total').textContent = '共 ' + data.total + ' 个任务';
+        });
+    }
+
+    function deleteTask(id) {
+      if (!confirm('确认删除此任务及其结果？')) return;
+      fetch('/jobs/' + id, { method: 'DELETE' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.ok) loadHistory(); else alert('删除失败');
+        });
+    }
+
+    function showResults(taskId, url) {
+      resultsTaskId = taskId;
+      resultsPage = 1;
+      document.getElementById('results-search').value = '';
+      document.getElementById('results-title').textContent = '采集结果 - ' + (url || taskId);
+      document.getElementById('results-modal').style.display = 'block';
+      loadResults(1);
+    }
+
+    function loadResults(page) {
+      if (page) resultsPage = page;
+      var search = document.getElementById('results-search').value;
+      var url = '/jobs/' + resultsTaskId + '/results?page=' + resultsPage + '&page_size=50';
+      if (search) url += '&q=' + encodeURIComponent(search);
+      fetch(url)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var body = document.getElementById('results-body');
+          body.innerHTML = '';
+          if (!data.results.length) {
+            body.innerHTML = '<tr><td colspan="5" style="padding:24px;text-align:center;color:var(--text-muted,#888)">无结果</td></tr>';
+          }
+          data.results.forEach(function(r) {
+            var tr = document.createElement('tr');
+            tr.style.borderBottom = '1px solid var(--border,#eee)';
+            tr.innerHTML =
+              '<td style="padding:8px;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (r.url||'') + '">' + (r.url||'-') + '</td>' +
+              '<td style="padding:8px">' + (r.content_type||'-') + '</td>' +
+              '<td style="padding:8px">' + fmtSize(r.bytes||0) + '</td>' +
+              '<td style="padding:8px">' + (r.category||'-') + '</td>' +
+              '<td style="padding:8px;font-size:12px;color:' + (r.status.startsWith('ok') ? '#16a34a' : '#ef4444') + '">' + (r.status||'-') + '</td>';
+            body.appendChild(tr);
+          });
+          // 分页
+          var pg = document.getElementById('results-pagination');
+          pg.innerHTML = '';
+          var totalPages = Math.ceil(data.total / data.page_size);
+          for (var i = 1; i <= Math.max(1, totalPages); i++) {
+            var btn = document.createElement('button');
+            btn.textContent = i;
+            btn.onclick = function(p) { return function() { loadResults(p); }; }(i);
+            btn.style.cssText = 'padding:4px 12px;border-radius:4px;border:1px solid var(--border,#ddd);background:' + (i === resultsPage ? '#3b82f6' : 'var(--bg-card,#fff)') + ';color:' + (i === resultsPage ? '#fff' : 'var(--text,#222)') + ';cursor:pointer;font-size:13px';
+            pg.appendChild(btn);
+          }
+        });
+    }
+
+    function closeResults() {
+      document.getElementById('results-modal').style.display = 'none';
+    }
+
+    // 切换到历史 Tab 时自动加载
+    document.querySelectorAll('.tab').forEach(function(tab) {
+      var orig = tab.onclick;
+      tab.onclick = function() {
+        if (orig) orig.call(tab);
+        if (tab.dataset.tab === 'history') loadHistory(1);
+      };
+    });
+  </script>
 </body>
 </html>
 """
@@ -1637,6 +1819,24 @@ def run_job(job: JobState) -> None:
             job.exit_code = 1
             job.status = "error"
         job.append(f"\n任务出错：{exc}\n")
+    finally:
+        # 持久化到数据库
+        try:
+            database.update_task_status(
+                job.id, job.status,
+                exit_code=job.exit_code,
+                log=job.log,
+                total_resources=job.total_resources,
+                processed_resources=job.processed_resources,
+                pages_scanned=job.pages_scanned,
+                current_url=job.current_url,
+            )
+            # 采集成功时导入结果清单
+            if job.status == "done":
+                count = database.import_results(job.id, job.output_dir)
+                job.append(f"已导入 {count} 条结果到数据库\n")
+        except Exception:  # pragma: no cover
+            _log.debug("db persist failed for %s", job.id, exc_info=True)
 
 
 def wait_for_resume(job: JobState) -> None:
@@ -2023,6 +2223,7 @@ def run_reverse_job(job: ReverseJobState) -> None:
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
+        path = urlparse(self.path).path
         if self.path in {"/", "/index.html"}:
             self.respond(
                 200,
@@ -2129,6 +2330,29 @@ class Handler(BaseHTTPRequestHandler):
                 since = 0.0
             self.respond_json({"events": rjob.events_since(since), "id": rjob.id})
             return
+        # ── 任务历史 API ──────────────────────────────────────────
+        query = parse_qs(urlparse(self.path).query)
+        if path == "/jobs":
+            page = int(query.get("page", ["1"])[0])
+            page_size = int(query.get("page_size", ["20"])[0])
+            status = query.get("status", [None])[0]
+            self.respond_json(database.list_tasks(page, page_size, status))
+            return
+        if path.startswith("/jobs/") and "/results" not in path:
+            task_id = path.split("/jobs/")[1]
+            task = database.get_task(task_id)
+            if not task:
+                self.respond(404, b'{"error":"task not found"}', "application/json; charset=utf-8")
+                return
+            self.respond_json(task)
+            return
+        if path.startswith("/jobs/") and "/results" in path:
+            task_id = path.split("/jobs/")[1].split("/results")[0]
+            page = int(query.get("page", ["1"])[0])
+            page_size = int(query.get("page_size", ["50"])[0])
+            search = query.get("q", [None])[0]
+            self.respond_json(database.get_results(task_id, page, page_size, search))
+            return
         self.send_error(404)
 
     def do_POST(self) -> None:
@@ -2147,6 +2371,13 @@ class Handler(BaseHTTPRequestHandler):
                         j = JOBS[jid]
                         if j.status in ("done", "error", "cancelled"):
                             del JOBS[jid]
+            # 写入数据库
+            try:
+                config = {k: getattr(args, k) for k in dir(args)
+                          if not k.startswith("_") and not callable(getattr(args, k, None))}
+                database.create_task(job_id, args.url, config, job.output_dir)
+            except Exception:  # pragma: no cover
+                _log.debug("db create_task failed", exc_info=True)
             threading.Thread(target=run_job, args=(job,), daemon=True).start()
             self.respond_json({"id": job_id, "status": "running"})
             return
@@ -2168,6 +2399,11 @@ class Handler(BaseHTTPRequestHandler):
                 job.pause_event.set()
                 with job.lock:
                     job.status = "cancelled"
+            # 同步状态到数据库
+            try:
+                database.update_task_status(job.id, job.status)
+            except Exception:  # pragma: no cover
+                _log.debug("db update_task_status failed", exc_info=True)
             self.respond_json({"ok": True})
             return
         if path == "/open-output":
@@ -2250,6 +2486,15 @@ class Handler(BaseHTTPRequestHandler):
             self.respond_json({"config": normalized})
             return
         self.send_error(404)
+
+    def do_DELETE(self) -> None:
+        path = urlparse(self.path).path
+        if path.startswith("/jobs/"):
+            task_id = path.split("/jobs/")[1]
+            deleted = database.delete_task(task_id)
+            self.respond_json({"ok": deleted})
+            return
+        self.send_error(404)  # pragma: no cover
 
     def read_form(self) -> dict[str, list[str]]:
         length = int(self.headers.get("content-length", "0"))
@@ -2358,6 +2603,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     import argparse as _ap
+
+    database.init_db()
 
     _parser = _ap.ArgumentParser(description="Web Resource Crawler UI")
     _parser.add_argument("--open", action="store_true", help="Automatically open browser")

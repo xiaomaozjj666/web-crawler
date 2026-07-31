@@ -1566,3 +1566,96 @@ class TestReadJsonBodyEmpty:
             headers={"content-type": "application/json"},
         )
         assert "error" in resp.json()
+
+
+# ========== 任务历史 API ==========
+
+
+class TestJobsHistoryApi:
+    """/jobs 系列任务历史 API 集成测试，使用临时 SQLite 数据库隔离。"""
+
+    @pytest.fixture(autouse=True)
+    def temp_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """每个测试使用独立的临时数据库，避免污染真实数据。"""
+        monkeypatch.setattr(ui.database, "_DB_PATH", str(tmp_path / "test_jobs.db"))
+        ui.database.init_db()
+        yield
+
+    def test_get_jobs_empty(self, http_server: str) -> None:
+        """GET /jobs 在空数据库上返回空任务列表。"""
+        resp = httpx.get(f"{http_server}/jobs")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["tasks"] == []
+        assert data["total"] == 0
+        assert data["page"] == 1
+        assert data["page_size"] == 20
+
+    def test_get_jobs_after_create(self, http_server: str) -> None:
+        """创建任务后 GET /jobs 返回该任务。"""
+        ui.database.create_task(
+            "job-1", "https://example.com", {"max_pages": 1}, "/tmp/out"
+        )
+        resp = httpx.get(f"{http_server}/jobs")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["tasks"][0]["id"] == "job-1"
+        assert data["tasks"][0]["url"] == "https://example.com"
+
+    def test_get_job_detail(self, http_server: str) -> None:
+        """GET /jobs/<id> 返回单个任务详情。"""
+        ui.database.create_task(
+            "job-2", "https://detail.example.com", {"k": "v"}, "/tmp/out2"
+        )
+        resp = httpx.get(f"{http_server}/jobs/job-2")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == "job-2"
+        assert data["url"] == "https://detail.example.com"
+        assert data["config"] == {"k": "v"}
+
+    def test_get_job_detail_not_found(self, http_server: str) -> None:
+        """GET /jobs/<不存在的id> 返回 404。"""
+        resp = httpx.get(f"{http_server}/jobs/nonexistent-id")
+        assert resp.status_code == 404
+
+    def test_get_job_results_empty(self, http_server: str) -> None:
+        """GET /jobs/<id>/results 在无采集结果时返回空列表。"""
+        ui.database.create_task(
+            "job-3", "https://results.example.com", {}, "/tmp/out3"
+        )
+        resp = httpx.get(f"{http_server}/jobs/job-3/results")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["results"] == []
+        assert data["total"] == 0
+
+    def test_delete_job_success(self, http_server: str) -> None:
+        """DELETE /jobs/<id> 成功删除已存在任务。"""
+        ui.database.create_task(
+            "job-4", "https://del.example.com", {}, "/tmp/out4"
+        )
+        resp = httpx.delete(f"{http_server}/jobs/job-4")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert ui.database.get_task("job-4") is None
+
+    def test_delete_job_not_found(self, http_server: str) -> None:
+        """DELETE /jobs/<不存在的id> 返回 ok:false。"""
+        resp = httpx.delete(f"{http_server}/jobs/nonexistent-id")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is False
+
+    def test_post_run_writes_db(self, http_server: str) -> None:
+        """POST /run 后数据库中存在对应的任务记录。"""
+        with patch.object(ui, "run_job"):
+            resp = httpx.post(
+                f"{http_server}/run",
+                data={"url": "https://run.example.com", "out": "", "max_pages": "1"},
+            )
+            assert resp.status_code == 200
+            job_id = resp.json()["id"]
+            task = ui.database.get_task(job_id)
+        assert task is not None
+        assert task["url"] == "https://run.example.com"
