@@ -1623,8 +1623,8 @@ PAGE = """<!doctype html>
               '</div>' +
               '<span style="font-size:12px;font-weight:600;color:' + statusColor(t.status) + ';padding:2px 8px;border-radius:4px;background:' + statusColor(t.status) + '15">' + t.status + '</span>' +
               '<div style="display:flex;gap:6px">' +
-                (t.status === 'done' ? '<button onclick="showResults(\'' + t.id + '\',\'' + (t.url||'').replace(/'/g,'') + '\')" style="padding:4px 10px;border-radius:4px;border:1px solid var(--border,#ddd);background:var(--bg-card,#fff);color:var(--text,#222);cursor:pointer;font-size:12px">查看结果</button>' : '') +
-                '<button onclick="deleteTask(\'' + t.id + '\')" style="padding:4px 10px;border-radius:4px;border:1px solid #ef4444;background:transparent;color:#ef4444;cursor:pointer;font-size:12px">删除</button>' +
+                (t.status === 'done' ? '<button data-results-id="' + t.id + '" data-results-url="' + (t.url||'').replace(/"/g,'&quot;') + '" class="btn-results" style="padding:4px 10px;border-radius:4px;border:1px solid var(--border,#ddd);background:var(--bg-card,#fff);color:var(--text,#222);cursor:pointer;font-size:12px">查看结果</button>' : '') +
+                '<button data-delete-id="' + t.id + '" class="btn-delete" style="padding:4px 10px;border-radius:4px;border:1px solid #ef4444;background:transparent;color:#ef4444;cursor:pointer;font-size:12px">删除</button>' +
               '</div>';
             list.appendChild(card);
           });
@@ -1651,6 +1651,17 @@ PAGE = """<!doctype html>
           if (data.ok) loadHistory(); else alert('删除失败');
         });
     }
+
+    // 事件委托：点击查看结果/删除按钮
+    document.getElementById('history-list').addEventListener('click', function(e) {
+      var btn = e.target.closest('button');
+      if (!btn) return;
+      if (btn.classList.contains('btn-results')) {
+        showResults(btn.dataset.resultsId, btn.dataset.resultsUrl);
+      } else if (btn.classList.contains('btn-delete')) {
+        deleteTask(btn.dataset.deleteId);
+      }
+    });
 
     function showResults(taskId, url) {
       resultsTaskId = taskId;
