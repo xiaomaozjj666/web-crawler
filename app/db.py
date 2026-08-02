@@ -20,21 +20,41 @@ _DB_PATH = os.environ.get(
     str(Path(__file__).resolve().parent.parent / "crawler_data.db"),
 )
 
-_lock = threading.Lock()
+_local = threading.local()
+_write_lock = threading.Lock()
 
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+def _get_conn() -> sqlite3.Connection:
+    """返回当前线程的持久化 SQLite 连接（线程安全，自动创建）。
+
+    若 _DB_PATH 在两次调用之间被更动（测试夹具常见操作），自动关闭旧连接
+    并创建新的。
+    """
+    current_path = _DB_PATH  # 模块级变量，测试中可能被 monkeypatch
+    need_new = (
+        not hasattr(_local, "conn")
+        or _local.conn is None
+        or getattr(_local, "_conn_path", None) != current_path
+    )
+    if need_new:
+        if hasattr(_local, "conn") and _local.conn is not None:
+            try:
+                _local.conn.close()
+            except Exception:
+                pass
+        _local.conn = sqlite3.connect(current_path, check_same_thread=False)
+        _local.conn.row_factory = sqlite3.Row
+        _local.conn.execute("PRAGMA journal_mode=WAL")
+        _local.conn.execute("PRAGMA foreign_keys=ON")
+        _local.conn.execute("PRAGMA busy_timeout=5000")
+        _local._conn_path = current_path
+    return _local.conn
 
 
 def init_db() -> None:
     """建表（幂等），在 UI 启动时调用一次。"""
-    with _lock:
-        conn = _connect()
+    with _write_lock:
+        conn = _get_conn()
         try:
             conn.executescript(
                 """
@@ -79,7 +99,7 @@ def init_db() -> None:
             )
             conn.commit()
         finally:
-            conn.close()
+            pass  # 线程级连接不关闭，线程结束时由 SQLite 自动清理
 
 
 def create_task(
@@ -89,19 +109,16 @@ def create_task(
     output_dir: str,
 ) -> None:
     """任务启动时写入数据库。"""
-    with _lock:
-        conn = _connect()
-        try:
-            conn.execute(
-                """INSERT INTO tasks
-                   (id, url, config, output_dir, status, created_at)
-                   VALUES (?, ?, ?, ?, 'running', ?)""",
-                (task_id, url, json.dumps(config, ensure_ascii=False),
-                 output_dir, time.time()),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+    with _write_lock:
+        conn = _get_conn()
+        conn.execute(
+            """INSERT INTO tasks
+               (id, url, config, output_dir, status, created_at)
+               VALUES (?, ?, ?, ?, 'running', ?)""",
+            (task_id, url, json.dumps(config, ensure_ascii=False),
+             output_dir, time.time()),
+        )
+        conn.commit()
 
 
 def update_task_status(
@@ -142,13 +159,10 @@ def update_task_status(
         vals.append(time.time())
     vals.append(task_id)
     sql = f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?"
-    with _lock:
-        conn = _connect()
-        try:
-            conn.execute(sql, vals)
-            conn.commit()
-        finally:
-            conn.close()
+    with _write_lock:
+        conn = _get_conn()
+        conn.execute(sql, vals)
+        conn.commit()
 
 
 def finish_task(task_id: str, status: str, exit_code: int) -> None:  # pragma: no cover
@@ -181,36 +195,33 @@ def import_results(task_id: str, output_dir: str) -> int:
     if not rows:  # pragma: no cover
         return 0
 
-    with _lock:
-        conn = _connect()
-        try:
-            conn.executemany(
-                """INSERT INTO results
-                   (task_id, url, saved_path, content_type, bytes, category,
-                    found_in, kind, page_url, page_title, sha256, status, diagnostic)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                [
-                    (
-                        task_id,
-                        r.get("url", ""),
-                        r.get("saved_path", ""),
-                        r.get("content_type", ""),
-                        int(r.get("bytes", 0) or 0),
-                        r.get("category", ""),
-                        r.get("found_in", ""),
-                        r.get("kind", ""),
-                        r.get("page_url", ""),
-                        r.get("page_title", ""),
-                        r.get("sha256", ""),
-                        r.get("status", ""),
-                        r.get("diagnostic", ""),
-                    )
-                    for r in rows
-                ],
-            )
-            conn.commit()
-        finally:
-            conn.close()
+    with _write_lock:
+        conn = _get_conn()
+        conn.executemany(
+            """INSERT INTO results
+               (task_id, url, saved_path, content_type, bytes, category,
+                found_in, kind, page_url, page_title, sha256, status, diagnostic)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                (
+                    task_id,
+                    r.get("url", ""),
+                    r.get("saved_path", ""),
+                    r.get("content_type", ""),
+                    int(r.get("bytes", 0) or 0),
+                    r.get("category", ""),
+                    r.get("found_in", ""),
+                    r.get("kind", ""),
+                    r.get("page_url", ""),
+                    r.get("page_title", ""),
+                    r.get("sha256", ""),
+                    r.get("status", ""),
+                    r.get("diagnostic", ""),
+                )
+                for r in rows
+            ],
+        )
+        conn.commit()
     return len(rows)
 
 
@@ -224,22 +235,18 @@ def list_tasks(
     where = "WHERE status = ?" if status and status != "all" else ""
     params: list[Any] = [status] if status and status != "all" else []
 
-    with _lock:
-        conn = _connect()
-        try:
-            count_sql = f"SELECT COUNT(*) FROM tasks {where}"
-            total = conn.execute(count_sql, params).fetchone()[0]
+    conn = _get_conn()
+    count_sql = f"SELECT COUNT(*) FROM tasks {where}"
+    total = conn.execute(count_sql, params).fetchone()[0]
 
-            list_sql = (
-                f"SELECT id, url, status, exit_code, output_dir, "
-                f"total_resources, processed_resources, pages_scanned, "
-                f"created_at, finished_at "
-                f"FROM tasks {where} "
-                f"ORDER BY created_at DESC LIMIT ? OFFSET ?"
-            )
-            rows = conn.execute(list_sql, params + [page_size, offset]).fetchall()
-        finally:
-            conn.close()
+    list_sql = (
+        f"SELECT id, url, status, exit_code, output_dir, "
+        f"total_resources, processed_resources, pages_scanned, "
+        f"created_at, finished_at "
+        f"FROM tasks {where} "
+        f"ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    )
+    rows = conn.execute(list_sql, params + [page_size, offset]).fetchall()
 
     tasks = []
     for r in rows:
@@ -260,14 +267,10 @@ def list_tasks(
 
 def get_task(task_id: str) -> dict[str, Any] | None:
     """查询单个任务详情。"""
-    with _lock:
-        conn = _connect()
-        try:
-            r = conn.execute(
-                "SELECT * FROM tasks WHERE id = ?", (task_id,)
-            ).fetchone()
-        finally:
-            conn.close()
+    conn = _get_conn()
+    r = conn.execute(
+        "SELECT * FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
     if not r:
         return None
     return {
@@ -289,14 +292,11 @@ def get_task(task_id: str) -> dict[str, Any] | None:
 
 def delete_task(task_id: str) -> bool:
     """删除任务及其结果（级联删除）。返回是否删除成功。"""
-    with _lock:
-        conn = _connect()
-        try:
-            cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            conn.close()
+    with _write_lock:
+        conn = _get_conn()
+        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        conn.commit()
+        return cur.rowcount > 0
 
 
 def get_results(
@@ -314,21 +314,17 @@ def get_results(
         kw = f"%{search}%"
         params += [kw, kw, kw]
 
-    with _lock:
-        conn = _connect()
-        try:
-            total = conn.execute(
-                f"SELECT COUNT(*) FROM results {where}", params
-            ).fetchone()[0]
-            rows = conn.execute(
-                f"""SELECT url, saved_path, content_type, bytes, category,
-                          found_in, kind, page_url, page_title, sha256, status
-                   FROM results {where}
-                   ORDER BY id LIMIT ? OFFSET ?""",
-                params + [page_size, offset],
-            ).fetchall()
-        finally:
-            conn.close()
+    conn = _get_conn()
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM results {where}", params
+    ).fetchone()[0]
+    rows = conn.execute(
+        f"""SELECT url, saved_path, content_type, bytes, category,
+                  found_in, kind, page_url, page_title, sha256, status
+           FROM results {where}
+           ORDER BY id LIMIT ? OFFSET ?""",
+        params + [page_size, offset],
+    ).fetchall()
 
     results = []
     for r in rows:

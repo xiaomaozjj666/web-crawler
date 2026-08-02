@@ -240,6 +240,9 @@ class OpenAICompatibleProvider:
         # 允许实例级覆盖类级 capabilities，便于按模型名动态协商
         if capabilities is not None:
             self.capabilities = capabilities
+        # 延迟初始化的持久连接（复用连接池，避免每次调用新建 TCP/TSL 握手）
+        self._client: Any = None
+        self._async_client: Any = None
 
     # -- helpers ------------------------------------------------------------
     def _headers(self) -> dict[str, str]:
@@ -279,7 +282,9 @@ class OpenAICompatibleProvider:
                 f"no API key for provider {self.name!r}; pass api_key= or set "
                 f"the {self.api_key_env} environment variable"
             )
-        import httpx  # 延迟导入，保持顶层 import 轻量
+        if self._client is None:
+            import httpx
+            self._client = httpx.Client(timeout=self.timeout)
 
         payload: dict[str, Any] = {
             "model": self.model,
@@ -292,11 +297,10 @@ class OpenAICompatibleProvider:
             payload["response_format"] = response_format
         payload.update(kwargs)
 
-        resp = httpx.post(
+        resp = self._client.post(
             self._endpoint(),
             headers=self._headers(),
             json=payload,
-            timeout=self.timeout,
         )
         resp.raise_for_status()
         return self._parse(resp.json(), self.model)
@@ -316,7 +320,9 @@ class OpenAICompatibleProvider:
                 f"no API key for provider {self.name!r}; pass api_key= or set "
                 f"the {self.api_key_env} environment variable"
             )
-        import httpx
+        if self._async_client is None:
+            import httpx
+            self._async_client = httpx.AsyncClient(timeout=self.timeout)
 
         payload: dict[str, Any] = {
             "model": self.model,
@@ -329,10 +335,11 @@ class OpenAICompatibleProvider:
             payload["response_format"] = response_format
         payload.update(kwargs)
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(self._endpoint(), headers=self._headers(), json=payload)
-            resp.raise_for_status()
-            return self._parse(resp.json(), self.model)
+        resp = await self._async_client.post(
+            self._endpoint(), headers=self._headers(), json=payload
+        )
+        resp.raise_for_status()
+        return self._parse(resp.json(), self.model)
 
     # -- convenience --------------------------------------------------------
     def complete(self, prompt: str, *, system: str | None = None, **kwargs: Any) -> str:
@@ -342,6 +349,25 @@ class OpenAICompatibleProvider:
             messages.append(LLMMessage("system", system))
         messages.append(LLMMessage("user", prompt))
         return self.chat(messages, **kwargs).content
+
+    # -- lifecycle ----------------------------------------------------------
+    def close(self) -> None:
+        """Close the persistent synchronous HTTP client."""
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+            self._client = None
+
+    async def aclose(self) -> None:
+        """Close the persistent asynchronous HTTP client."""
+        if self._async_client is not None:
+            try:
+                await self._async_client.aclose()
+            except Exception:
+                pass
+            self._async_client = None
 
 
 class DeepSeekProvider(OpenAICompatibleProvider):
