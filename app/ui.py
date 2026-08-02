@@ -2588,14 +2588,18 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 if new_events:
                     self.wfile.flush()
-                # 同时推一次完整快照（前端用于更新统计卡片）
-                snap = rjob.snapshot()
-                self.wfile.write(
-                    b"event: snapshot\ndata: "
-                    + json.dumps(snap, ensure_ascii=False).encode("utf-8")
-                    + b"\n\n"
-                )
-                self.wfile.flush()
+                    # 有新事件时才推送完整快照（前端用于更新统计卡片）
+                    snap = rjob.snapshot()
+                    self.wfile.write(
+                        b"event: snapshot\ndata: "
+                        + json.dumps(snap, ensure_ascii=False).encode("utf-8")
+                        + b"\n\n"
+                    )
+                    self.wfile.flush()
+                else:
+                    # 无新事件时：发送 SSE 保活注释，避免浏览器超时断开
+                    self.wfile.write(b": keep-alive\n\n")
+                    self.wfile.flush()
                 _time.sleep(0.8)
         except (BrokenPipeError, ConnectionResetError):  # pragma: no cover - 客户端断开连接时触发
             # 客户端关闭连接

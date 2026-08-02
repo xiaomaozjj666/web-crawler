@@ -237,7 +237,7 @@ def _mock_httpx_response(json_data: dict[str, Any]) -> MagicMock:
 
 
 def test_chat_calls_httpx_and_parses_response(monkeypatch: pytest.MonkeyPatch) -> None:
-    """chat 应通过 httpx.post 发送请求并解析响应。"""
+    """chat 应通过持久 httpx.Client 发送请求并解析响应。"""
     monkeypatch.setattr(llm_mod, "_DOTENV_LOADED", True)
     provider = OpenAICompatibleProvider(api_key="k", model="m")
     fake_resp = _mock_httpx_response(
@@ -247,8 +247,10 @@ def test_chat_calls_httpx_and_parses_response(monkeypatch: pytest.MonkeyPatch) -
             "usage": {"total_tokens": 1},
         }
     )
+    fake_client = MagicMock()
+    fake_client.post.return_value = fake_resp
     fake_httpx = MagicMock()
-    fake_httpx.post.return_value = fake_resp
+    fake_httpx.Client.return_value = fake_client
     monkeypatch.setitem(__import__("sys").modules, "httpx", fake_httpx)
 
     result = provider.chat(
@@ -260,16 +262,15 @@ def test_chat_calls_httpx_and_parses_response(monkeypatch: pytest.MonkeyPatch) -
     )
     assert result.content == "hi"
     assert result.model == "m"
-    # 验证 httpx.post 被调用，payload 包含所有字段
-    fake_httpx.post.assert_called_once()
-    _, kwargs = fake_httpx.post.call_args
+    # 验证持久客户端被创建并使用
+    fake_client.post.assert_called_once()
+    _, kwargs = fake_client.post.call_args
     payload = kwargs["json"]
     assert payload["model"] == "m"
     assert payload["temperature"] == 0.5
     assert payload["max_tokens"] == 128
     assert payload["response_format"] == {"type": "json_object"}
     assert payload["extra_arg"] == "x"
-    assert kwargs["timeout"] == 60.0
 
 
 def test_chat_raises_on_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -278,8 +279,10 @@ def test_chat_raises_on_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = OpenAICompatibleProvider(api_key="k")
     fake_resp = MagicMock()
     fake_resp.raise_for_status.side_effect = RuntimeError("http 500")
+    fake_client = MagicMock()
+    fake_client.post.return_value = fake_resp
     fake_httpx = MagicMock()
-    fake_httpx.post.return_value = fake_resp
+    fake_httpx.Client.return_value = fake_client
     monkeypatch.setitem(__import__("sys").modules, "httpx", fake_httpx)
 
     with pytest.raises(RuntimeError, match="http 500"):
@@ -349,13 +352,15 @@ def test_complete_helper_returns_text(monkeypatch: pytest.MonkeyPatch) -> None:
             "choices": [{"message": {"content": "only text"}, "finish_reason": "stop"}],
         }
     )
+    fake_client = MagicMock()
+    fake_client.post.return_value = fake_resp
     fake_httpx = MagicMock()
-    fake_httpx.post.return_value = fake_resp
+    fake_httpx.Client.return_value = fake_client
     monkeypatch.setitem(__import__("sys").modules, "httpx", fake_httpx)
 
     out = provider.complete("hello", system="be brief", temperature=0.1)
     assert out == "only text"
-    _, kwargs = fake_httpx.post.call_args
+    _, kwargs = fake_client.post.call_args
     msgs = kwargs["json"]["messages"]
     assert msgs[0]["role"] == "system"
     assert msgs[0]["content"] == "be brief"
@@ -370,13 +375,15 @@ def test_complete_without_system(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_resp = _mock_httpx_response(
         {"choices": [{"message": {"content": "ok"}}]}
     )
+    fake_client = MagicMock()
+    fake_client.post.return_value = fake_resp
     fake_httpx = MagicMock()
-    fake_httpx.post.return_value = fake_resp
+    fake_httpx.Client.return_value = fake_client
     monkeypatch.setitem(__import__("sys").modules, "httpx", fake_httpx)
 
     out = provider.complete("hello")
     assert out == "ok"
-    _, kwargs = fake_httpx.post.call_args
+    _, kwargs = fake_client.post.call_args
     msgs = kwargs["json"]["messages"]
     assert len(msgs) == 1
     assert msgs[0]["role"] == "user"

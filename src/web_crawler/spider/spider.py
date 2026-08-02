@@ -12,6 +12,7 @@ so the same spider can run against :class:`~web_crawler.fetchers.Fetcher`,
 from __future__ import annotations
 
 import asyncio
+import heapq
 import json
 import logging
 import time
@@ -113,6 +114,7 @@ class Spider:
         self.stats = SpiderStats()
         self._seen: set[str] = set()
         self._paused = False
+        self._heap_counter = 0
         if not self.name:
             self.name = self.__class__.__name__
 
@@ -269,13 +271,22 @@ class Spider:
             raise SpiderError("Spider.run requires a fetcher; pass fetcher= to the constructor")
 
         path = self._state_path(state_file)
+        # queue is a min-heap of ``(-priority, counter, Request)`` — heapq
+        # yields the smallest tuple first, so negating priority gives
+        # highest-priority-first ordering.
+        queue: list[tuple[int, int, Request]] = []
         if resume:
-            queue, restored = self._load_state(path)
+            loaded, restored = self._load_state(path)
             if restored:
-                logger.info("resumed spider %s with %d queued requests", self.name, len(queue))
+                logger.info("resumed spider %s with %d queued requests", self.name, len(loaded))
+                for r in loaded:
+                    self._heap_counter += 1
+                    heapq.heappush(queue, (-r.priority, self._heap_counter, r))
         else:
-            queue = sorted(self.start_requests(), key=lambda r: -r.priority)
-            for r in queue:
+            for r in self.start_requests():
+                self._heap_counter += 1
+                heapq.heappush(queue, (-r.priority, self._heap_counter, r))
+            for _, _, r in queue:
                 self._seen.add(r.url)
 
         items: list[Any] = []
@@ -285,7 +296,7 @@ class Spider:
         while queue and not self._paused:
             if max_requests is not None and self.stats.pages_crawled >= max_requests:
                 break
-            request = queue.pop(0)
+            _, _, request = heapq.heappop(queue)
             self.stats.requests_scheduled += 1
             try:
                 response = self._fetch_sync(request)
@@ -307,15 +318,15 @@ class Spider:
             for out in outputs:
                 if isinstance(out, Request):
                     if self._filter(out):
-                        queue.append(out)
-                        queue.sort(key=lambda r: -r.priority)
+                        self._heap_counter += 1
+                        heapq.heappush(queue, (-out.priority, self._heap_counter, out))
                 else:
                     items.append(out)
                     self.stats.items_scraped += 1
 
         self.stats.end_time = time.monotonic()
         if self._paused or queue:
-            self._dump_state(queue, path)
+            self._dump_state([r for _, _, r in queue], path)
             logger.info("state saved to %s (%d requests remaining)", path, len(queue))
         elif path.exists():
             path.unlink()
@@ -328,73 +339,17 @@ class Spider:
         state_file: str | Path | None = None,
         resume: bool = False,
     ) -> list[Any]:
-        """Async variant: fetches concurrently up to :attr:`max_concurrency`."""
+        """Async variant: fetches concurrently up to :attr:`max_concurrency`.
+
+        Delegates to :meth:`stream` so the core worker loop is defined once.
+        """
         if self.fetcher is None:
             raise SpiderError("Spider.async_run requires a fetcher")
-
-        path = self._state_path(state_file)
-        if resume:
-            queue, restored = self._load_state(path)
-            if restored:
-                logger.info("resumed spider %s with %d queued requests", self.name, len(queue))
-        else:
-            queue = sorted(self.start_requests(), key=lambda r: -r.priority)
-            for r in queue:
-                self._seen.add(r.url)
-
-        items: list[Any] = []
-        sem = asyncio.Semaphore(self.max_concurrency)
-        self.stats.start_time = time.monotonic()
-        self._paused = False
-
-        async def worker(request: Request) -> list[Any]:
-            async with sem:
-                self.stats.requests_scheduled += 1
-                try:
-                    response = await self._fetch_async(request)
-                except Exception as exc:
-                    self.stats.requests_failed += 1
-                    logger.warning("request failed: %s (%s)", request.url, exc)
-                    return []
-                self.stats.pages_crawled += 1
-                if self.download_delay:
-                    await asyncio.sleep(self.download_delay)
-                try:
-                    return self._dispatch(response, request)
-                except Exception as exc:
-                    raise SpiderError(
-                        f"callback {request.callback!r} raised on {request.url}: {exc}"
-                    ) from exc
-
-        while queue and not self._paused:
-            if max_requests is not None and self.stats.pages_crawled >= max_requests:
-                break
-            # 批量大小需考虑剩余配额，避免超出 max_requests
-            remaining = (
-                max_requests - self.stats.pages_crawled if max_requests is not None else len(queue)
-            )
-            batch_size = min(self.max_concurrency, len(queue), max(0, remaining))
-            if batch_size <= 0:  # pragma: no cover - 防御性：上层已保证 remaining>0
-                break
-            batch = [queue.pop(0) for _ in range(batch_size)]
-            results = await asyncio.gather(*[worker(r) for r in batch])
-            for outputs in results:
-                for out in outputs:
-                    if isinstance(out, Request):
-                        if self._filter(out):
-                            queue.append(out)
-                            queue.sort(key=lambda r: -r.priority)
-                    else:
-                        items.append(out)
-                        self.stats.items_scraped += 1
-
-        self.stats.end_time = time.monotonic()
-        if self._paused or queue:
-            self._dump_state(queue, path)
-            logger.info("state saved to %s (%d requests remaining)", path, len(queue))
-        elif path.exists():
-            path.unlink()
-        return items
+        return [item async for item in self.stream(
+            max_requests=max_requests,
+            state_file=state_file,
+            resume=resume,
+        )]
 
     async def stream(
         self,
@@ -417,20 +372,27 @@ class Spider:
             raise SpiderError("Spider.stream requires a fetcher")
 
         path = self._state_path(state_file)
+        queue: list[tuple[int, int, Request]] = []
         if resume:
-            queue, restored = self._load_state(path)
+            loaded, restored = self._load_state(path)
             if restored:
-                logger.info("resumed spider %s with %d queued requests", self.name, len(queue))
+                logger.info("resumed spider %s with %d queued requests", self.name, len(loaded))
+                for r in loaded:
+                    self._heap_counter += 1
+                    heapq.heappush(queue, (-r.priority, self._heap_counter, r))
         else:
-            queue = sorted(self.start_requests(), key=lambda r: -r.priority)
-            for r in queue:
+            for r in self.start_requests():
+                self._heap_counter += 1
+                heapq.heappush(queue, (-r.priority, self._heap_counter, r))
+            for _, _, r in queue:
                 self._seen.add(r.url)
 
         sem = asyncio.Semaphore(self.max_concurrency)
         self.stats.start_time = time.monotonic()
         self._paused = False
 
-        async def worker(request: Request) -> list[Any]:
+        async def worker(item: tuple[int, int, Request]) -> list[Any]:
+            _, _, request = item
             async with sem:
                 self.stats.requests_scheduled += 1
                 try:
@@ -458,21 +420,21 @@ class Spider:
             batch_size = min(self.max_concurrency, len(queue), max(0, remaining))
             if batch_size <= 0:  # pragma: no cover - 防御性：上层已保证 remaining>0
                 break
-            batch = [queue.pop(0) for _ in range(batch_size)]
+            batch = [heapq.heappop(queue) for _ in range(batch_size)]
             results = await asyncio.gather(*[worker(r) for r in batch])
             for outputs in results:
                 for out in outputs:
                     if isinstance(out, Request):
                         if self._filter(out):
-                            queue.append(out)
-                            queue.sort(key=lambda r: -r.priority)
+                            self._heap_counter += 1
+                            heapq.heappush(queue, (-out.priority, self._heap_counter, out))
                         continue
                     self.stats.items_scraped += 1
                     yield out
 
         self.stats.end_time = time.monotonic()
         if self._paused or queue:
-            self._dump_state(queue, path)
+            self._dump_state([r for _, _, r in queue], path)
             logger.info("state saved to %s (%d requests remaining)", path, len(queue))
         elif path.exists():
             path.unlink()
