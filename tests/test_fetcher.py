@@ -276,7 +276,11 @@ def test_fetcher_raises_when_no_backend(monkeypatch) -> None:
 
 
 def test_fetcher_build_httpx_sync_client(monkeypatch) -> None:
-    """httpx 回退路径下 _build_httpx_sync_client 应返回 httpx.Client。"""
+    """httpx 回退路径下 _build_httpx_sync_client 应返回 httpx.Client。
+
+    使用 ``spec=["Client"]`` 防止 MagicMock 自动创建 ``HTTPTransport`` 等属性，
+    确保 hasattr 检查失败时走 proxy= 降级路径。
+    """
     from web_crawler.fetchers import fetcher as fetcher_mod
 
     monkeypatch.setattr(fetcher_mod, "HAS_CURL_CFFI", False)
@@ -291,7 +295,7 @@ def test_fetcher_build_httpx_sync_client(monkeypatch) -> None:
         def close(self) -> None:
             pass
 
-    fake_httpx = MagicMock()
+    fake_httpx = MagicMock(spec=["Client"])
     fake_httpx.Client = _FakeClient
     monkeypatch.setattr(fetcher_mod, "_load_httpx_backend", lambda: fake_httpx)
 
@@ -308,7 +312,11 @@ def test_fetcher_build_httpx_sync_client(monkeypatch) -> None:
 
 
 def test_fetcher_build_httpx_async_client(monkeypatch) -> None:
-    """httpx 回退路径下 _build_httpx_async_client 应返回 httpx.AsyncClient。"""
+    """httpx 回退路径下 _build_httpx_async_client 应返回 httpx.AsyncClient。
+
+    使用 ``spec=["AsyncClient"]`` 防止 MagicMock 自动创建 ``HTTPTransport`` 等属性，
+    确保 hasattr 检查失败时走 proxy= 降级路径。
+    """
     from web_crawler.fetchers import fetcher as fetcher_mod
 
     monkeypatch.setattr(fetcher_mod, "HAS_CURL_CFFI", False)
@@ -323,7 +331,7 @@ def test_fetcher_build_httpx_async_client(monkeypatch) -> None:
         async def aclose(self) -> None:
             pass
 
-    fake_httpx = MagicMock()
+    fake_httpx = MagicMock(spec=["AsyncClient"])
     fake_httpx.AsyncClient = _FakeAsyncClient
     monkeypatch.setattr(fetcher_mod, "_load_httpx_backend", lambda: fake_httpx)
 
@@ -331,7 +339,8 @@ def test_fetcher_build_httpx_async_client(monkeypatch) -> None:
         f = Fetcher(timeout=9.0, http2=True)
     client = f._build_httpx_async_client(None)
     assert isinstance(client, _FakeAsyncClient)
-    assert captured["proxy"] is None
+    # proxy=None 时不传 proxy/mounts 参数（等同默认行为）
+    assert "proxy" not in captured
     assert captured["http2"] is True
     assert captured["timeout"] == 9.0
     f.close()

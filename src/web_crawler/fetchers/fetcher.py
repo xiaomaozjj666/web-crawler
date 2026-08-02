@@ -176,23 +176,37 @@ class _FetcherCore(BaseFetcher):
 
     def _build_httpx_sync_client(self, proxy: str | None = None) -> Any:
         httpx = _load_httpx_backend()
-        return httpx.Client(
-            http2=self.http2,
-            proxy=proxy,
-            follow_redirects=self.follow_redirects,
-            verify=self.verify,
-            timeout=self.timeout,
-        )
+        kwargs: dict[str, Any] = {
+            "http2": self.http2,
+            "follow_redirects": self.follow_redirects,
+            "verify": self.verify,
+            "timeout": self.timeout,
+        }
+        if proxy:
+            # httpx >= 0.28 deprecates ``proxy=`` in favor of ``mounts=``;
+            # use HTTPTransport when available, fall back for older httpx.
+            if hasattr(httpx, "HTTPTransport"):
+                kwargs["mounts"] = {"all://": httpx.HTTPTransport(proxy=proxy)}
+            else:
+                kwargs["proxy"] = proxy
+        return httpx.Client(**kwargs)
 
     def _build_httpx_async_client(self, proxy: str | None = None) -> Any:
         httpx = _load_httpx_backend()
-        return httpx.AsyncClient(
-            http2=self.http2,
-            proxy=proxy,
-            follow_redirects=self.follow_redirects,
-            verify=self.verify,
-            timeout=self.timeout,
-        )
+        kwargs: dict[str, Any] = {
+            "http2": self.http2,
+            "follow_redirects": self.follow_redirects,
+            "verify": self.verify,
+            "timeout": self.timeout,
+        }
+        if proxy:
+            if hasattr(httpx, "AsyncHTTPTransport"):
+                kwargs["mounts"] = {"all://": httpx.AsyncHTTPTransport(proxy=proxy)}
+            elif hasattr(httpx, "HTTPTransport"):
+                kwargs["mounts"] = {"all://": httpx.HTTPTransport(proxy=proxy)}
+            else:
+                kwargs["proxy"] = proxy
+        return httpx.AsyncClient(**kwargs)
 
     def _ensure_sync_session(self) -> Any:
         if self._session is None:

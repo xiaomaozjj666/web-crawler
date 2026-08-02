@@ -353,6 +353,44 @@ def _import_stealth_fetcher() -> Any:
     return Fetcher
 
 
+# Module-level stealth fetcher cache so curl_cffi's TLS session is reused
+# across requests within the same job rather than re-created each call.
+_stealth_fetcher: Any = None
+_stealth_fetcher_key: tuple[str, str | None, str] = ("", None, "")
+
+
+def _get_stealth_fetcher(
+    impersonate: str,
+    timeout: float,
+    proxy: str | None,
+) -> Any:
+    """Return a cached :class:`Fetcher` matching *impersonate*/*timeout*/*proxy*.
+
+    The returned object supports ``get(url, headers=…)`` with per-request
+    headers layered on top of the session's impersonation defaults.
+    """
+    global _stealth_fetcher, _stealth_fetcher_key
+    key = (impersonate, proxy, str(timeout))
+    if _stealth_fetcher is not None and _stealth_fetcher_key == key:
+        return _stealth_fetcher
+    if _stealth_fetcher is not None:
+        try:
+            _stealth_fetcher.close()
+        except Exception:
+            pass
+    Fetcher_cls = _import_stealth_fetcher()
+    if Fetcher_cls is None:
+        raise RuntimeError("stealth fetcher unavailable")
+    _stealth_fetcher = Fetcher_cls(
+        impersonate=impersonate,
+        timeout=float(timeout),
+        proxy=proxy,
+        retries=0,
+    )
+    _stealth_fetcher_key = key
+    return _stealth_fetcher
+
+
 def _stealth_fetch(
     url: str,
     headers: dict[str, str],
@@ -364,18 +402,12 @@ def _stealth_fetch(
 
     Returns ``(content, content_type, status)``. Raises on transport errors so
     the caller's retry loop can handle them uniformly.
+
+    The underlying ``Fetcher`` (TLS session) is cached at module level so
+    repeated stealth requests reuse the same connection pool.
     """
-    Fetcher = _import_stealth_fetcher()
-    if Fetcher is None:
-        raise RuntimeError("stealth fetcher unavailable")
-    with Fetcher(
-        impersonate=impersonate,
-        timeout=float(timeout),
-        proxy=proxy,
-        extra_headers=headers,
-        retries=0,
-    ) as fetcher:
-        resp = fetcher.get(url)
+    fetcher = _get_stealth_fetcher(impersonate, float(timeout), proxy)
+    resp = fetcher.get(url, headers=headers)
     content_type = resp.headers.get("content-type", "") or resp.headers.get("Content-Type", "")
     return resp.content, content_type, resp.status
 
@@ -733,7 +765,7 @@ def fetch(
             if attempt < retries and status not in (401, 403, 404):
                 time.sleep(1 + attempt * 2)
 
-        except (URLError, TimeoutError, ValueError, OSError) as exc:
+        except (URLError, TimeoutError, OSError) as exc:
             last_error = exc
             if attempt < retries:
                 time.sleep(1 + attempt * 2)
@@ -1036,54 +1068,27 @@ def strip_page_overlays(html: str, aggressive: bool = False) -> str:
             continue  # skip overaggressive pattern unless --aggressive
         result = pattern.sub("", result)
 
-    # Remove common overlay containers by known IDs
-    overlay_ids = (
-        "mask",
-        "overlay",
-        "shadow",
-        "shade",
-        "dialog",
-        "lightbox",
-        "modal",
-        "popup",
-        "subscribe",
-        "subscribe-box",
-        "signin",
-        "login",
-        "paywall",
-        "vip",
-        "member",
-        "register",
-        "download-app",
-        "cookie-notice",
-        "cookieConsent",
-        "announce",
-        "notice-bar",
-        "guide",
-        "guideLayer",
-        "tips",
-        "toast",
-        "alertBox",
-        "videoAd",
-        "playerAd",
-        "adContainer",
-        "floatingAd",
+    # Remove common overlay containers by known IDs — use a single compiled
+    # alternation regex per attribute (id= / class=) so each page is scanned
+    # exactly twice rather than 2 * len(ids) = ~60 times.
+    overlay_ids_alt = (
+        "mask|overlay|shadow|shade|dialog|lightbox|modal|popup|subscribe|"
+        "subscribe-box|signin|login|paywall|vip|member|register|download-app|"
+        "cookie-notice|cookieConsent|announce|notice-bar|guide|guideLayer|"
+        "tips|toast|alertBox|videoAd|playerAd|adContainer|floatingAd"
     )
-    for oid in overlay_ids:
-        # id="..."  and  id='...'
-        result = re.sub(
-            rf'<div[^>]*\bid\s*=\s*["\']{oid}["\'][^>]*>.*?</div>',
-            "",
-            result,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-        # Also try the reverse: class="..." before id
-        result = re.sub(
-            rf'<div[^>]*\bclass\s*=\s*["\'][^"\']*{oid}[^"\']*["\'][^>]*>.*?</div>',
-            "",
-            result,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
+    result = re.sub(
+        rf'<div[^>]*\bid\s*=\s*["\']({overlay_ids_alt})["\'][^>]*>.*?</div>',
+        "",
+        result,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    result = re.sub(
+        rf'<div[^>]*\bclass\s*=\s*["\'][^"\']*({overlay_ids_alt})[^"\']*["\'][^>]*>.*?</div>',
+        "",
+        result,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
 
     return result
 

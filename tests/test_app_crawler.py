@@ -1421,7 +1421,7 @@ class TestImportStealthFetcher:
 
 class TestStealthFetch:
     def test_stealth_fetch_success(self) -> None:
-        """_stealth_fetch 通过 Fetcher 获取内容。"""
+        """_stealth_fetch 通过缓存的 Fetcher 实例获取内容。"""
         fake_resp = Mock()
         fake_resp.headers = {"content-type": "text/html"}
         fake_resp.content = b"<html>stealth</html>"
@@ -1429,10 +1429,14 @@ class TestStealthFetch:
 
         fake_fetcher_instance = Mock()
         fake_fetcher_instance.get.return_value = fake_resp
+        fake_fetcher_instance.close = Mock()
 
-        fake_fetcher_cls = Mock()
-        fake_fetcher_cls.return_value.__enter__ = Mock(return_value=fake_fetcher_instance)
-        fake_fetcher_cls.return_value.__exit__ = Mock(return_value=None)
+        fake_fetcher_cls = Mock(return_value=fake_fetcher_instance)
+
+        # 清空模块级缓存，避免跨测试缓存污染
+        import app.crawler as cr_mod
+        cr_mod._stealth_fetcher = None
+        cr_mod._stealth_fetcher_key = ("", None, "")
 
         with patch.object(cr, "_import_stealth_fetcher", return_value=fake_fetcher_cls):
             content, ct, status = cr._stealth_fetch(
@@ -1441,9 +1445,15 @@ class TestStealthFetch:
         assert content == b"<html>stealth</html>"
         assert ct == "text/html"
         assert status == 200
+        # 验证 get() 被调用（而非 __enter__）
+        fake_fetcher_instance.get.assert_called_once()
 
     def test_stealth_fetch_unavailable_raises(self) -> None:
         """Fetcher 不可用时抛 RuntimeError。"""
+        import app.crawler as cr_mod
+        cr_mod._stealth_fetcher = None
+        cr_mod._stealth_fetcher_key = ("", None, "")
+
         with (
             patch.object(cr, "_import_stealth_fetcher", return_value=None),
             pytest.raises(RuntimeError, match="stealth fetcher unavailable"),
@@ -1459,10 +1469,13 @@ class TestStealthFetch:
 
         fake_fetcher_instance = Mock()
         fake_fetcher_instance.get.return_value = fake_resp
+        fake_fetcher_instance.close = Mock()
 
-        fake_fetcher_cls = Mock()
-        fake_fetcher_cls.return_value.__enter__ = Mock(return_value=fake_fetcher_instance)
-        fake_fetcher_cls.return_value.__exit__ = Mock(return_value=None)
+        fake_fetcher_cls = Mock(return_value=fake_fetcher_instance)
+
+        import app.crawler as cr_mod
+        cr_mod._stealth_fetcher = None
+        cr_mod._stealth_fetcher_key = ("", None, "")
 
         with patch.object(cr, "_import_stealth_fetcher", return_value=fake_fetcher_cls):
             _content, ct, _status = cr._stealth_fetch(
@@ -1631,24 +1644,24 @@ class TestFetchAdvanced:
             data, _ct = cr.fetch("https://x.com", 30, {}, 2, None)
         assert data == b"ok"
 
-    def test_value_error_retry(self) -> None:
-        """ValueError 重试后成功。"""
+    def test_value_error_no_retry(self) -> None:
+        """ValueError（如 max_bytes 超限）不再重试，直接向上传播。"""
         success_response = MagicMock()
         success_response.headers.get.return_value = "text/html"
         success_response.read.side_effect = [b"ok", b""]
 
         mock_opener = MagicMock()
         mock_opener.open.side_effect = [
-            ValueError("bad url"),
+            ValueError("file exceeds --max-bytes (100)"),
             success_response,
         ]
 
         with (
             patch.object(cr, "_get_opener", return_value=mock_opener),
             patch.object(cr.time, "sleep"),
+            pytest.raises(ValueError, match="file exceeds"),
         ):
-            data, _ct = cr.fetch("https://x.com", 30, {}, 1, None)
-        assert data == b"ok"
+            cr.fetch("https://x.com", 30, {}, 1, None)
 
     def test_os_error_retry(self) -> None:
         """OSError 重试后成功。"""
