@@ -45,7 +45,7 @@ _BACKOFF_STATUS = frozenset({429, 503})
 _BLOCK_STATUS = frozenset({401, 403})
 
 # 反爬/验证码/人机验证的页面正文标记（小写匹配）。
-# 借鉴 BrowserAct 的 "stuck 时移交人工" 思路：命中即停手交人工，绝不尝试绕过。
+# Anti-bot detection markers: stop and hand off to human when hit
 _BLOCK_MARKERS: tuple[str, ...] = (
     "captcha",
     "recaptcha",
