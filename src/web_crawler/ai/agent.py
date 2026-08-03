@@ -1,8 +1,7 @@
-"""Compliance-aware AI scraping agent.
+"""合规优先的 AI 爬虫。
 
-Ties the existing fetchers (JS-rendering :class:`DynamicFetcher`, or the plain
-:class:`Fetcher`) together with :class:`~web_crawler.ai.extractor.AIExtractor`
-into a small orchestrator that behaves like a *polite* crawler:
+把现有的 fetcher（JS 渲染 :class:`DynamicFetcher` 或普通 :class:`Fetcher`）
+和 :class:`~web_crawler.ai.extractor.AIExtractor` 串成一个小型爬取循环：
 
 - honours ``robots.txt`` (``respect_robots=True`` by default),
 - applies a configurable minimum delay between requests (rate limiting),
@@ -129,7 +128,7 @@ class RobotsPolicy:
 
 
 class AIScrapeAgent:
-    """Polite, AI-assisted scraping orchestrator.
+    """AI 辅助爬虫，自带速率控制。
 
     Parameters
     ----------
