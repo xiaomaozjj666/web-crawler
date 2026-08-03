@@ -1,23 +1,7 @@
-"""结构化抽取 schema 验证模块。
+"""Structured extraction — validate LLM JSON output against expected schema.
 
-借鉴 instructor / Marvin 的 Pydantic-driven structured output 思路：当 Agent
-从 LLM 拿到 JSON 时，不能直接信，必须按预期 schema 校验。校验失败时给出
-明确的字段级错误，便于上层做 ``repair``（再次调用 LLM 补字段）或降级。
-
-能力清单
---------
-- :class:`SchemaValidator` — 同步/异步双入口的 schema 验证器；
-- :class:`ValidationResult` — 归一化验证结果（valid / errors / coerced）；
-- :class:`ExtractedParams` — 内置的"目标参数抽取"schema；
-- :class:`HookRecord` — 内置的"Hook 数据记录"schema；
-- :class:`WebPageState` — 内置的"网页状态摘要"schema；
-
-设计要点
---------
-- Pydantic 为软依赖：未安装时退化为纯 dict + 关键字段存在性检查；
-- 已安装时启用 v2 风格（``model_validate`` / ``TypeAdapter``），失败时
-  返回字段级错误列表（``loc`` / ``msg`` / ``type``）；
-- 不引入额外依赖：仅在需要时 lazy import pydantic。
+- :class:`SchemaValidator` — JSON schema validation
+- :class:`StructuredExtractor` — LLM structured extraction with auto-retry
 """
 
 from __future__ import annotations
