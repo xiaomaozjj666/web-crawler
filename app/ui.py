@@ -2299,7 +2299,7 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(urlparse(self.path).query)
             rjob = REVERSE_JOBS.get(query.get("id", [""])[0])
             if not rjob:
-                self.send_error(404, "任务不存在")
+                self.send_error(404, "Task not found")
                 return  # pragma: no cover - 截图端点防御性 404
             try:
                 step_num = int(query.get("step", ["0"])[0])
@@ -2319,12 +2319,12 @@ class Handler(BaseHTTPRequestHandler):
                         shot_path = s.get("path", "")
                         break
             if not shot_path:
-                self.send_error(404, "截图不存在")
+                self.send_error(404, "Screenshot not found")
                 return  # pragma: no cover - 截图端点防御性 404
             try:
                 png = Path(shot_path).read_bytes()
             except OSError:
-                self.send_error(404, "截图文件丢失")
+                self.send_error(404, "Screenshot file lost")
                 return  # pragma: no cover - 截图端点防御性 404
             self.respond(200, png, "image/png")
             return
