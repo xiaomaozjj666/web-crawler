@@ -16,6 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+pytest.importorskip("playwright", reason="CamoufoxFetcher requires playwright (install with pip install playwright && playwright install chromium)")
+
 
 # ---------------------------------------------------------------------------
 # 共享 mock 工厂：构造伪造的 Playwright sync/async 对象图

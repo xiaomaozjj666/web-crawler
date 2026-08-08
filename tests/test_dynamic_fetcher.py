@@ -362,6 +362,7 @@ def test_post_load_async_is_noop_by_default() -> None:
 # ---------------------------------------------------------------------------
 # _ensure_browser / _render_page / fetch 同步路径
 # ---------------------------------------------------------------------------
+@pytest.mark.skipif(not compat.HAS_PLAYWRIGHT, reason="playwright not installed")
 @patch("playwright.sync_api.sync_playwright")
 def test_ensure_browser_starts_playwright_and_launches_chromium(mock_sync_pw: MagicMock) -> None:
     """首次调用时启动 Playwright driver 并启动 chromium，二次调用复用。"""
@@ -559,6 +560,7 @@ def test_fetch_passes_proxy_settings_to_render() -> None:
 # ---------------------------------------------------------------------------
 # _ensure_async_browser / _render_page_async / async_fetch 异步路径
 # ---------------------------------------------------------------------------
+@pytest.mark.skipif(not compat.HAS_PLAYWRIGHT, reason="playwright not installed")
 @patch("playwright.async_api.async_playwright")
 def test_ensure_async_browser_starts_driver_and_launches(mock_async_pw: Any) -> None:
     """首次异步调用启动 async_playwright driver + chromium；二次复用。"""
