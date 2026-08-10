@@ -123,11 +123,12 @@ src/web_crawler/          # Scrapling-aligned core library
   py.typed                # PEP 561 type marker
 app/                      # application layer
   crawler.py              # resource downloader (concurrent, resume, dedup, UI-driven)
+  db.py                   # SQLite persistence (tasks + results, thread-safe)
   ui.py                   # local web UI
 tests/                    # pytest suite
 benchmarks.py             # parser/fetcher micro-benchmarks
 demo.py / demo.bat        # interactive usage demo
-start.bat                 # launch the local web UI
+start-ui.bat              # launch the local web UI
 CHANGELOG.md              # version history
 ```
 
@@ -226,6 +227,27 @@ python app/ui.py --open     # launch the local web UI
 `--stealth` routes page-HTML and non-resumable fetches through the library's
 `Fetcher` (curl_cffi TLS fingerprinting) to bypass JA3/JA4 fingerprint blocking.
 Large/resumable downloads keep the streaming urllib path.
+
+### Task history & results (SQLite persistence)
+
+Every task created from the web UI is persisted to a local SQLite database
+(`crawler_data.db` in the project root; override the location with the
+`CRAWLER_DB_PATH` environment variable). `app/db.py` implements the persistence
+layer with the standard-library `sqlite3` only (thread-safe WAL connections,
+zero extra dependencies): a `tasks` table (id, url, config, output_dir, status,
+exit code, log, resource counters) and a `results` table (downloaded resources
+with title, size, status, and file path), with pagination and cascade delete.
+
+The UI records a task on create and updates it on progress, finish, and cancel.
+A Task History tab offers status filters, per-task detail, a results viewer
+modal, and delete:
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /jobs` | paginated task list (`?page=`, `?page_size=`, `?status=`) |
+| `GET /jobs/<id>` | task detail (config, log, resource counters) |
+| `GET /jobs/<id>/results` | paginated results (`?page=`, `?page_size=`, `?q=` search) |
+| `DELETE /jobs/<id>` | delete a task and its results (cascade) |
 
 ## JS reverse-engineering agent
 

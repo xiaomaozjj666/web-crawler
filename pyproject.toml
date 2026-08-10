@@ -41,10 +41,10 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "httpx>=0.27",
-    "beautifulsoup4>=4.12",
-    "lxml>=5.2",
-    "cssselect>=1.2",
+    "httpx>=0.27,<1",
+    "beautifulsoup4>=4.12,<5",
+    "lxml>=5.2,<7",
+    "cssselect>=1.2,<2",
 ]
 
 [project.urls]
@@ -62,41 +62,41 @@ web-crawler-reverse = "web_crawler.mcp.cli:main"
 
 [project.optional-dependencies]
 visual = [
-    "Pillow>=10.0",
+    "Pillow>=10.0,<13",
 ]
 all = [
-    "curl_cffi>=0.9",
-    "playwright>=1.40",
-    "pydantic>=2.5",
+    "curl_cffi>=0.9,<1",
+    "playwright>=1.40,<2",
+    "pydantic>=2.5,<3",
 ]
 camoufox = [
-    "camoufox[geoip]>=0.4.4",
+    "camoufox[geoip]>=0.4.4,<1",
 ]
 captcha = [
-    "ddddocr>=1.5",
-    "numpy>=1.26",
+    "ddddocr>=1.5,<2",
+    "numpy>=1.26,<3",
 ]
 crypto = [
-    "pycryptodome>=3.20",
+    "pycryptodome>=3.20,<4",
 ]
 mcp = [
-    "mcp>=1.0",
-    "camoufox[geoip]>=0.4.4",
-    "pydantic>=2.5",
+    "mcp>=1.0,<2",
+    "camoufox[geoip]>=0.4.4,<1",
+    "pydantic>=2.5,<3",
 ]
 dev = [
-    "pytest>=8.0",
-    "pytest-cov>=5.0",
-    "pytest-asyncio>=0.24",
-    "ruff>=0.9",
-    "mypy>=1.10",
-    "types-beautifulsoup4>=4.12",
-    "pydantic>=2.5",
+    "pytest>=8.0,<9",
+    "pytest-cov>=5.0,<8",
+    "pytest-asyncio>=0.24,<1",
+    "ruff>=0.9,<1",
+    "mypy>=1.10,<2",
+    "types-beautifulsoup4>=4.12,<5",
+    "pydantic>=2.5,<3",
 ]
 docs = [
-    "mkdocs>=1.6",
-    "mkdocs-material>=9.5",
-    "mkdocstrings[python]>=0.27",
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9.5,<10",
+    "mkdocstrings[python]>=0.27,<1",
 ]
 
 [tool.ruff]
