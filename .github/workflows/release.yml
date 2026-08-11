@@ -27,7 +27,7 @@ jobs:
           name: dist
           path: dist/
 
-  publish:
+  release:
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -39,10 +39,8 @@ jobs:
         with:
           name: dist
           path: dist/
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          password: ${{ secrets.pypi_password }}
+      # PyPI 发布已移除：发行名 web-crawler 在 PyPI 已被占用，无法同名发布。
+      # 如需发布 PyPI，请先为发行版更名再添加 publish 步骤。
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
