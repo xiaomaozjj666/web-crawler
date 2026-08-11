@@ -14,8 +14,6 @@ import time
 from dataclasses import dataclass
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-
-import pytest
 from typing import Any
 from unittest.mock import MagicMock, Mock, patch
 
