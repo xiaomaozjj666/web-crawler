@@ -755,11 +755,14 @@ class TestRunLoop:
             finally:
                 agent.close()
 
-    def test_screenshot_enabled(self) -> None:
+    def test_screenshot_enabled(self, tmp_path: Path) -> None:
         """enable_screenshot=True → _observe 中截图，result 含 screenshots。"""
         with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
             "web_crawler.ai.reverse_agent.time.sleep"
-        ), patch.object(Path, "mkdir"):
+        ), patch.object(Path, "mkdir"), patch(
+            "web_crawler.ai.reverse_agent.ReverseAgent._screenshot_dir",
+            return_value=tmp_path,
+        ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
                 enable_screenshot=True,
