@@ -1,140 +1,39 @@
 # web-crawler
 
-A Scrapling-aligned stealth web scraping library for Python: **adaptive selectors**, **TLS-fingerprint stealth HTTP**, **JS rendering**, and a **callback-driven spider framework** — plus an application layer that downloads web resources.
+Scrapling 风格的隐身网页爬虫库：**自适应选择器**、**TLS 指纹隐身 HTTP**、**JS 渲染**与**回调式 Spider 框架**，另附一套应用层资源下载器与本地 Web UI。适用于需要稳定、低反爬风险的网页数据采集、动态页面渲染与加密参数逆向分析的开发者。
 
-## Highlights
+## 功能特性
 
-- **Adaptive parser** — `Selector` over `lxml` with element fingerprinting and structural-similarity relocation. When a site's markup changes, stored fingerprints re-find the element automatically (Scrapling's signature feature). Public `save`/`retrieve`/`relocate` API lets you manage fingerprints explicitly. Includes `find_by_regex`, `re`/`re_first`, `get_all_text`, `prettify`, full DOM traversal (`parent`/`children`/`siblings`/`next`/`previous`/`path`), and `ResultList` batch helpers (`css`/`xpath`/`get`/`getall`/`.first`/`.last`).
-- **Stealth HTTP** — `Fetcher` uses `curl_cffi` to replay a real browser's TLS/JA3 fingerprint and HTTP/2 frame ordering, so requests are indistinguishable from Chrome at the network layer. Supports `ja4_fingerprint` for fine-grained TLS extension customization (passed through to `curl_cffi`'s `ja3` parameter, overriding the `impersonate` preset). Degrades to `httpx` (with a warning) when `curl_cffi` is absent. `AsyncFetcher` provides a pure async-only API surface.
-- **Lazy imports** — `import web_crawler` never forces `playwright` or `curl_cffi` to load; heavy submodules resolve on first access (Scrapling-style).
-- **JS rendering** — `DynamicFetcher` drives Playwright/Chromium to render dynamic pages, block resources for speed, and wait on selectors.
-- **Anti-bot** — `StealthyFetcher` injects fingerprint-patching JS, humanizes mouse/scroll, and best-effort solves Cloudflare challenges.
-- **Proxy rotation** — `ProxyPool` with round-robin/random strategies and per-proxy failure cooldown.
-- **Spider framework** — `Spider`/`Request` with callback dispatch, priority scheduling, domain filtering, dedup, and JSON-based pause/resume.
-- **Unified `Response`** — every fetcher returns the same `Response` with `.css()` / `.xpath()` / `.json()` helpers.
-- **AI-assisted scraping** — `AIExtractor` turns a plain-language field schema into validated CSS selectors; `AIScrapeAgent` orchestrates fetch + extract with robots.txt respect, 429/503 back-off (`Retry-After` honored), and "stuck → hand-off to human" semantics.
-- **JS reverse-engineering agent** — `ReverseAgent` runs an observe→think→act loop over a target URL using `CamoufoxFetcher` + DeepSeek-V4-Pro: injects JS hooks (fetch / XHR / cookie / `crypto.subtle` / webpack / console), captures network traffic, splits webpack bundles, then asks the LLM to deobfuscate and reimplement signing algorithms in Python. Supports 6 real browser interaction actions (`click` / `type` / `scroll` / `press` / `hover` / `select_option`) via Playwright, plus 3 multi-tab actions (`new_tab` / `switch_tab` / `close_tab`) and humanized input trajectories (hover-before-click, per-keystroke random delay). Dangerous-click guardrails and selector-injection blocking built in. Exposed via both an MCP server (`web-crawler-mcp`) and a CLI (`web-crawler-reverse`). Web UI uses SSE real-time push (`/reverse/stream`) for live step events.
-- **Image captcha solver** — `ImageCaptchaSolver` recognizes three image-challenge families without a browser: text OCR (4–8 char alphanumeric), slider gap localization (Pillow + numpy template matching), and click-order coordinate recognition (Vision-LLM). Falls back across backends: local `ddddocr` → `numpy` template match → LLM Vision (`gpt-4o` / Claude / Qwen-VL / DeepSeek-vision). `CaptchaSolver` injects the image solver automatically when `ReverseAgentConfig.enable_image_captcha=True` (default); hCaptcha / reCAPTCHA v2 image challenges and GeeTest puzzles are then auto-solved end-to-end. Exposed as the `solve_captcha_image` MCP tool and `captcha-image` CLI subcommand.
-- **Lightweight pentest toolkit** — `web_crawler.pentest` subpackage provides pure-Python, dependency-free reconnaissance utilities inspired by PentAGI's tool-integration approach: `PortScanner` (TCP connect + TOP-100), `DirBruter` (60+ common paths), `SubdomainEnumerator` (80+ prefix dictionary), `VulnScanner` (SQL injection / XSS / path traversal detection, rule-based with optional LLM analysis), `HeaderChecker` (8 security headers + A–F grade), aggregated by `PentestReport`. Exposed as the `pentest_recon` MCP tool and `pentest` CLI subcommand. Compliance notice: authorized testing only.
+- **自适应解析器** — `Selector` 基于 `lxml`，支持元素指纹计算与结构相似度重定位：站点改版导致选择器失效时，已保存的指纹会自动在新页面中重新找到对应元素（Scrapling 的标志性能力）。公开 `save` / `retrieve` / `relocate` API 便于显式管理指纹；内置 `find_by_regex`、`re` / `re_first`、`get_all_text`、`prettify`、完整 DOM 遍历（`parent` / `children` / `siblings` / `next` / `previous` / `path`），以及 `ResultList` 批量辅助方法（`css` / `xpath` / `get` / `getall` / `.first` / `.last`）。支持 Scrapling 风格 `::attr(name)` 伪元素直接取属性。
+- **隐身 HTTP** — `Fetcher` 通过 `curl_cffi` 重放真实浏览器的 TLS/JA3 指纹与 HTTP/2 帧序，使请求在网络层与 Chrome 难以区分；支持 `impersonate="chrome131"` 等浏览器预设，并可通过 `ja4_fingerprint` 透传到 `curl_cffi` 的 `ja3` 参数做细粒度 TLS 扩展定制。`curl_cffi` 缺失时自动降级到 `httpx`（带警告）。`AsyncFetcher` 提供纯异步 API。
+- **懒加载** — `import web_crawler` 不会强制加载 `playwright` / `curl_cffi`，重型子模块在首次访问时才解析（Scrapling 同款模式），仅需解析功能的用户无需安装浏览器依赖。
+- **JS 渲染** — `DynamicFetcher` 驱动 Playwright/Chromium 渲染动态页面，支持按资源类型屏蔽、按选择器等待。
+- **反爬处理** — `StealthyFetcher` 注入指纹补丁 JS、人类化鼠标/滚动轨迹，并对 Cloudflare 挑战做尽力而为的处理。
+- **代理轮换** — `ProxyPool` 支持轮询/随机策略与按代理失败次数冷却。
+- **Spider 框架** — `Spider` / `Request` 提供回调分发、优先级调度、域名过滤、URL 去重与基于 JSON 的暂停/续跑。
+- **统一 `Response`** — 所有 fetcher 返回同一 `Response` 对象，内置 `.css()` / `.xpath()` / `.json()` / `urljoin()` 辅助方法。
+- **AI 辅助抓取** — `AIExtractor` 把自然语言字段描述转换为校验过的 CSS 选择器（含自愈能力）；`AIScrapeAgent` 编排抓取与抽取，遵守 `robots.txt`，对 429/503 退避（遵循 `Retry-After`），遇到卡死会返回"转人工处理"。
+- **JS 逆向 Agent** — `ReverseAgent` 通过 **观察 → 思考 → 行动** 循环（`CamoufoxFetcher` + DeepSeek-V4-Pro）逆向目标站点的加密逻辑：注入 JS Hook（fetch / XHR / cookie / `crypto.subtle` / webpack / console）、捕获网络流量、拆分 webpack 包，再让 LLM 反混淆并在 Python 中重实现签名算法。内置 6 种真实浏览器交互动作（`click` / `type` / `scroll` / `press` / `hover` / `select_option`）、3 种多标签动作（`new_tab` / `switch_tab` / `close_tab`）与人类化输入轨迹；危险点击护栏与选择器注入拦截。同时通过 MCP 服务（`web-crawler-mcp`）、命令行（`web-crawler-reverse`）与 Web UI（SSE 实时推送 `/reverse/stream`）暴露。
+- **图片验证码识别** — `ImageCaptchaSolver` 无需浏览器即可识别三类图片挑战：文本 OCR（4–8 位字母数字）、滑块缺口定位（Pillow + numpy 模板匹配）、点选坐标识别（视觉 LLM）。后端按 `ddddocr` → numpy 模板匹配 → LLM Vision 依次降级。`CaptchaManager` 在 `enable_image_captcha=True`（默认）时自动注入图片求解器，端到端处理 hCaptcha / reCAPTCHA v2 图片挑战与 GeeTest 拼图。
+- **轻量渗透辅助** — `web_crawler.pentest` 子包提供纯 Python、无外部命令依赖的侦察工具：`PortScanner`（TCP connect + TOP-100 端口）、`DirBruter`（60+ 常见路径）、`SubdomainEnumerator`（80+ 子域前缀字典）、`VulnScanner`（SQL 注入 / XSS / 路径穿越规则检测，可选 LLM 分析）、`HeaderChecker`（8 项安全头检测 + A–F 评级），由 `PentestReport` 聚合。**仅限已获授权的安全测试**。
+- **生产级 Agent 能力** — `ReverseAgent` 对齐 browser-use / Skyvern 等主流 Agent 框架，内置 DOM 焦点裁剪（`DomPruner`，约 80% token 削减）、断点续跑（`CheckpointManager`）、动作置信度评分（`ConfidenceScorer`）、动作护栏（`ActionGuard`）、Planner/Actor 双脑分离（`Planner`）、循环检测与上下文压缩（`LoopDetector` / `ContextCompressor`）、独立任务裁决（`TaskJudge`）、成功路径录制（`RunRecorder`）、事件总线与崩溃自愈（`watchdog`）、Pydantic 结构化校验（`SchemaValidator`）。全部能力可经 `ReverseAgentConfig` 独立开关。
 
-## Requirements
+## 技术栈
 
-- Python 3.10+
-- `lxml`, `cssselect`, `httpx`, `beautifulsoup4`
-- `curl_cffi` (stealth HTTP) — optional but recommended
-- `playwright` (JS rendering) — optional; run `playwright install chromium` after installing
+- **语言**：Python 3.10+，全量类型标注（含 PEP 561 `py.typed`）
+- **解析**：`lxml`、`cssselect`、`beautifulsoup4`
+- **网络**：`httpx`（核心依赖）、`curl_cffi`（TLS 隐身，可选）、`playwright`（JS 渲染，可选）、`camoufox`（抗指纹 Firefox，可选）
+- **AI / 逆向**：OpenAI 兼容 LLM 抽象层（默认 DeepSeek-V4-Pro，仅依赖 httpx）、`pydantic`（结构化校验，可选）、`pycryptodome`（AES 解密，可选）
+- **验证码**：`ddddocr`、`numpy`、`Pillow`（可选）
+- **存储**：SQLite（标准库 `sqlite3`，用于自适应指纹与任务记录）
+- **Web UI**：标准库 `http.server`（`ThreadingHTTPServer`），SSE 实时推送
+- **质量工具**：`pytest` / `pytest-asyncio` / `pytest-cov`、`ruff`、`mypy`
+- **文档**：MkDocs + Material + mkdocstrings
+- **CI**：GitHub Actions（`.github/workflows/ci.yml`）
 
-## Installation
+## 快速开始
 
-Install from PyPI:
-
-```bash
-pip install web-crawler
-```
-
-Recommended: editable install via the packaged entry points.
-
-```bash
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"          # parser + tests + lint/types
-# Optional extras (combine as needed):
-pip install -e ".[all]"          # + curl_cffi TLS stealth + Playwright JS rendering
-pip install -e ".[camoufox]"     # + Camoufox fingerprint-resistant Firefox
-pip install -e ".[mcp]"           # + MCP server / CLI (implies camoufox)
-playwright install chromium       # only needed for DynamicFetcher / StealthyFetcher
-```
-
-This installs the `web_crawler` package plus the `web-crawler`, `crawler-ui`,
-`web-crawler-mcp`, and `web-crawler-reverse` console commands, so no
-`PYTHONPATH` tweaking is needed.
-
-Alternatively, run from the source tree without installing:
-
-```bash
-pip install httpx beautifulsoup4 lxml cssselect pytest pytest-asyncio ruff mypy
-PYTHONPATH=src pytest
-```
-
-## Docker
-
-```bash
-# 构建镜像
-docker build -t web-crawler .
-
-# 运行容器
-docker run -p 8765:8765 -e DEEPSEEK_API_KEY=your-key web-crawler
-
-# 或用 docker-compose
-docker-compose up -d
-```
-
-## Architecture
-
-```
-src/web_crawler/          # Scrapling-aligned core library
-  _types.py               # TextHandler / Attrs / ResultList
-  compat.py               # optional-dependency detection (graceful degradation)
-  response.py             # unified Response (selector helpers, meta, urljoin)
-  crawler.py              # async same-domain crawler (robots.txt-aware)
-  parser/
-    selector.py           # Selector + Adaptors (CSS/XPath/text/similarity/adaptive)
-    adaptive.py           # compute_fingerprint + similarity_score + best_match
-    storage.py            # AdaptiveStorage (thread-safe SQLite for fingerprints)
-    visual.py             # VisualExtractor (PixelRAG-style screenshot-tile VLM)
-  fetchers/
-    _base.py              # BaseFetcher (shared config + response building)
-    fetcher.py            # Fetcher + AsyncFetcher (curl_cffi TLS stealth, httpx fallback)
-    dynamic.py            # DynamicFetcher (Playwright JS rendering)
-    stealthy.py           # StealthyFetcher (anti-bot / Cloudflare)
-    camoufox.py           # CamoufoxFetcher (fingerprint-resistant Firefox)
-    proxy.py              # ProxyPool (rotation + cooldown)
-  spider/
-    spider.py             # Spider + Request + SpiderStats (pause/resume)
-  ai/                     # AI-assisted scraping + JS reverse-engineering suite
-    llm.py                # LLMProvider (OpenAI-compatible, DeepSeek default)
-    extractor.py          # AIExtractor (CSS selector generation + self-heal)
-    agent.py              # AIScrapeAgent (robots-aware polite crawler)
-    hooks.py              # JS Hook library (fetch/XHR/cookie/crypto/webpack/console)
-    analyzer.py           # JSAnalyzer (webpack module extraction + AI deobfuscation)
-    captcha.py            # CaptchaManager (detect + humanize + image_solver injection)
-    image_captcha.py     # ImageCaptchaSolver (OCR / slider gap / click coord, LLM Vision + ddddocr/Pillow fallback)
-    reverse_agent.py      # ReverseAgent (observe→think→act loop)
-    planner.py            # Planner/Actor 双脑分离 + 周期重规划
-    loop.py               # LoopDetector + ContextCompressor (循环检测 + 历史压缩)
-    judge.py               # TaskJudge (done 二次验证，防止 LLM 幻觉)
-    watchdog.py           # EventBus + Heartbeat + CrashRecovery (崩溃自愈)
-    recorder.py           # RunRecorder (成功路径编译为确定性脚本)
-    schema.py             # SchemaValidator (结构化抽取 Pydantic 校验)
-    dom_pruner.py         # DomPruner (DOM 焦点裁剪，Skyvern/browser-use 风格)
-    checkpoint.py         # CheckpointManager (断点续跑 + 状态持久化)
-    confidence.py         # ConfidenceScorer (动作置信度评分，规则 + LLM 双路径)
-    guardrails.py         # ActionGuard (危险动作护栏，白名单 + 跨域拦截)
-  pentest/                # 轻量渗透辅助工具集（纯 Python，无外部命令依赖）
-    port_scanner.py       # PortScanner（TCP connect + TOP-100 + 服务名映射）
-    dir_bruter.py         # DirBruter（目录/文件路径爆破 + 标题提取）
-    subdomain.py          # SubdomainEnumerator（80+ 子域前缀字典枚举）
-    vuln_scanner.py       # VulnScanner（SQL 注入 / XSS / 路径穿越规则检测）
-    header_check.py       # HeaderChecker（8 项安全头检测 + A–F 评级）
-    report.py             # PentestReport（聚合所有结果 + summary/to_dict/to_json）
-  mcp/                    # MCP server + CLI exposing the reverse-agent tools
-    server.py             # ReverseMCPServer (JSON-RPC over stdio)
-    cli.py                # web-crawler-reverse command-line interface
-  py.typed                # PEP 561 type marker
-app/                      # application layer
-  crawler.py              # resource downloader (concurrent, resume, dedup, UI-driven)
-  db.py                   # SQLite persistence (tasks + results, thread-safe)
-  ui.py                   # local web UI
-tests/                    # pytest suite
-benchmarks.py             # parser/fetcher micro-benchmarks
-demo.py / demo.bat        # interactive usage demo
-start-ui.bat              # launch the local web UI
-CHANGELOG.md              # version history
-```
-
-## Quick start
-
-### Stealth HTTP fetch
+### 隐身 HTTP 抓取
 
 ```python
 from web_crawler import Fetcher
@@ -144,23 +43,23 @@ with Fetcher(impersonate="chrome131", timeout=30.0) as f:
     print(resp.status, resp.css_first("h1").text)
 ```
 
-### Adaptive parsing (survives markup changes)
+### 自适应解析（站点改版也能定位元素）
 
 ```python
 from web_crawler import Selector, AdaptiveStorage
 
-storage = AdaptiveStorage()  # ~/.web_crawler/adaptive.sqlite3
+storage = AdaptiveStorage()  # 默认存于 ~/.web_crawler/adaptive.sqlite3
 
-# First run: save the element fingerprint
+# 第一次运行：保存元素指纹
 page = Selector(html_v1, url="https://shop.example.com", adaptive=True, storage=storage)
 title = page.css_first("#product-title", auto_save=True)
 
-# Later, after the site redesigns and the id is gone...
+# 站点改版、id 消失后……
 page2 = Selector(html_v2, url="https://shop.example.com", adaptive=True, storage=storage)
-relocated = page2.css_first("#product-title", adaptive=True)  # found by similarity
+relocated = page2.css_first("#product-title", adaptive=True)  # 按相似度自动重定位
 ```
 
-### Spider framework
+### Spider 框架
 
 ```python
 from web_crawler import Spider, Request, Fetcher
@@ -179,26 +78,26 @@ class QuotesSpider(Spider):
 
 
 items = QuotesSpider(fetcher=Fetcher(impersonate="chrome131")).run()
-# Pause mid-run, resume later:
-# spider.run(state_file="state.json")          # pauses -> state saved
+# 中途暂停、之后续跑：
+# spider.run(state_file="state.json")
 # QuotesSpider(fetcher=Fetcher()).run(state_file="state.json", resume=True)
 ```
 
-### JS rendering & anti-bot
+### JS 渲染与反爬
 
 ```python
 from web_crawler import DynamicFetcher, StealthyFetcher
 
-# Render a JS-heavy page
+# 渲染 JS 重页面
 with DynamicFetcher(headless=True, wait_selector="div.content") as f:
     resp = f.fetch("https://spa.example.com")
 
-# Stealth mode: humanized input + Cloudflare-aware
+# 隐身模式：人类化输入 + Cloudflare 感知
 with StealthyFetcher(google_search=True, humanize=True) as f:
     resp = f.fetch("https://protected.example.com")
 ```
 
-### Proxy rotation
+### 代理轮换
 
 ```python
 from web_crawler import Fetcher, ProxyPool
@@ -213,240 +112,141 @@ with Fetcher(proxy=pool, impersonate="chrome131") as f:
     resp = f.get("https://example.com")
 ```
 
-## Application: resource downloader
+## 安装与运行
 
-`app/crawler.py` is a concurrent web resource downloader with resume, dedup,
-sitemap discovery, and a local web UI (`app/ui.py`).
+> 注意：PyPI 上名为 `web-crawler` 的包已被其他项目占用（与本项目无关）。直接 `pip install web-crawler` 会装到错误的包。请使用以下源码安装方式，或先为发行版更名后再发布。
 
 ```bash
-python app/crawler.py --url https://example.com --out ./out --workers 8
-python app/crawler.py --url https://example.com --stealth --impersonate chrome131
-python app/ui.py --open     # launch the local web UI
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+
+# 核心 + 开发工具（解析、测试、lint、类型检查）
+pip install -e ".[dev]"
+
+# 可选能力（按需组合）：
+pip install -e ".[all]"            # + curl_cffi TLS 隐身 + Playwright JS 渲染
+pip install -e ".[camoufox]"       # + Camoufox 抗指纹 Firefox
+pip install -e ".[mcp]"            # + MCP 服务 / CLI（隐含 camoufox）
+playwright install chromium        # 仅 DynamicFetcher / StealthyFetcher 需要
 ```
 
-`--stealth` routes page-HTML and non-resumable fetches through the library's
-`Fetcher` (curl_cffi TLS fingerprinting) to bypass JA3/JA4 fingerprint blocking.
-Large/resumable downloads keep the streaming urllib path.
+安装后自动注册以下命令（无需配置 PYTHONPATH）：
 
-### Task history & results (SQLite persistence)
-
-Every task created from the web UI is persisted to a local SQLite database
-(`crawler_data.db` in the project root; override the location with the
-`CRAWLER_DB_PATH` environment variable). `app/db.py` implements the persistence
-layer with the standard-library `sqlite3` only (thread-safe WAL connections,
-zero extra dependencies): a `tasks` table (id, url, config, output_dir, status,
-exit code, log, resource counters) and a `results` table (downloaded resources
-with title, size, status, and file path), with pagination and cascade delete.
-
-The UI records a task on create and updates it on progress, finish, and cancel.
-A Task History tab offers status filters, per-task detail, a results viewer
-modal, and delete:
-
-| Endpoint | Description |
+| 命令 | 作用 |
 | --- | --- |
-| `GET /jobs` | paginated task list (`?page=`, `?page_size=`, `?status=`) |
-| `GET /jobs/<id>` | task detail (config, log, resource counters) |
-| `GET /jobs/<id>/results` | paginated results (`?page=`, `?page_size=`, `?q=` search) |
-| `DELETE /jobs/<id>` | delete a task and its results (cascade) |
+| `web-crawler` | 资源下载器 CLI |
+| `crawler-ui` | 本地 Web UI |
+| `web-crawler-mcp` | MCP 服务（JSON-RPC over stdio） |
+| `web-crawler-reverse` | JS 逆向 Agent 命令行 |
 
-## JS reverse-engineering agent
+### 直接运行
 
-The `web_crawler.ai.reverse_agent.ReverseAgent` orchestrates a Camoufox-driven
-browser session through an **observe → think → act** loop, calling DeepSeek-V4-Pro
-(or any OpenAI-compatible LLM) at each step. It injects JS hooks, captures network
-traffic, splits webpack bundles, then asks the LLM to deobfuscate and reimplement
-the signing algorithm in Python.
+```bash
+# 资源下载器
+python app/crawler.py --url https://example.com --out ./out --workers 8
+python app/crawler.py --url https://example.com --stealth --impersonate chrome131
 
-Two entry points expose the same capabilities:
+# 本地 Web UI（默认 http://127.0.0.1:8765，--open 自动打开浏览器）
+python app/ui.py --open
 
-### MCP server (for Claude Desktop / Cursor / etc.)
+# 演示脚本（Windows 也可双击 demo.bat）
+python demo.py
+```
+
+### Docker
+
+```bash
+docker build -t web-crawler .
+docker run -p 8765:8765 -e DEEPSEEK_API_KEY=<your-key> web-crawler
+docker-compose up -d
+```
+
+### MCP 接入（Claude Desktop / Cursor 等）
 
 ```bash
 pip install -e ".[mcp]"
-export DEEPSEEK_API_KEY=sk-...        # Windows: set DEEPSEEK_API_KEY=...
-web-crawler-mcp                       # speaks JSON-RPC over stdio
+set DEEPSEEK_API_KEY=<your-key>    # Windows: set DEEPSEEK_API_KEY=...
+web-crawler-mcp                    # 通过 stdio 通信
 ```
 
-Register in your AI client's MCP config:
+在 AI 客户端的 MCP 配置中注册：
 
 ```json
 {
   "mcpServers": {
     "js-reverse": {
       "command": "web-crawler-mcp",
-      "env": {"DEEPSEEK_API_KEY": "sk-..."}
+      "env": {"DEEPSEEK_API_KEY": "<your-key>"}
     }
   }
 }
 ```
 
-The `reverse_engineer_url` tool returns the full runtime state in one call:
-`analysis`, `compiled_script`, `judge_result`, plus `budget_summary`,
-`last_confidence`, `checkpoints`, `screenshots`, and `error_screenshot` — so
-upstream AI clients can render progress / step lists / screenshot galleries
-without polling a second endpoint.
-
-### CLI (for shell scripts and interactive REPL)
+### JS 逆向 CLI
 
 ```bash
 web-crawler-reverse https://example.com --target-params anti_content sign
-web-crawler-reverse analyze script.js            # deobfuscate a JS snippet
-web-crawler-reverse webpack bundle.js            # extract webpack modules
+web-crawler-reverse analyze script.js              # 反混淆 JS 片段
+web-crawler-reverse webpack bundle.js              # 提取 webpack 模块
 web-crawler-reverse reimplement algo.js --lang python
 web-crawler-reverse capture https://example.com --wait 8
-web-crawler-reverse interactive                  # REPL: type `tools` to list
+web-crawler-reverse interactive                     # REPL，输入 tools 查看命令
+web-crawler-reverse run --url https://example.com --task "提取签名参数" --headless
 ```
 
-### CLI `run` subcommand (full agent, no MCP)
+## 配置
 
-`run` constructs a `ReverseAgent` directly and calls `run()`, bypassing the MCP
-transport. It exposes the full set of guard / checkpoint / screenshot
-flags, can save the success-path script to a file, and emits a complete JSON
-result (`last_confidence`, `checkpoints`, `screenshots`,
-`error_screenshot`) to stdout or `--output`:
+以下环境变量均可通过命令行 `api_key=...` 参数或项目根目录的 `.env` 文件（进程启动时自动读取，不覆盖已存在的环境变量）注入。**所有值均为占位符，请替换为你自己的密钥。**
 
-```bash
-# Headless run, save the compiled script, write JSON result to result.json
-web-crawler-reverse run \
-  --url https://target.example.com \
-  --task "提取 Anti-Content 签名参数" \
-  --target-params anti_content,sign \
-  --max-steps 20 --headless \
-  --enable-checkpoint \
-  --min-confidence 0.4 \
-  --enable-screenshot \
-  --save-script ./out/sign.py \
-  --output ./out/result.json
-
-# Quick foreground run with visible browser, stdout JSON
-web-crawler-reverse run --url https://example.com
-```
-
-`--enable-screenshot` (default on) saves a PNG per observation step and on every
-error path to `reverse_screenshots/<task_id>_step<N>[_error].png`; failures are
-swallowed so the main loop never crashes on a screenshot error.
-
-**Compliance note** — the agent only simulates normal user interaction; it does
-not forge login credentials or bypass paywalls. Image-based captchas (text OCR,
-slider gap, click-order) are auto-solved via `ImageCaptchaSolver` when
-`enable_image_captcha=True` (default); for unsolvable challenges the agent
-stops and returns a "hand-off to human" status.
-
-### Mainstream-agent alignment
-
-Beyond the base observe→think→act loop, `ReverseAgent` integrates the
-following capabilities commonly seen in production agent frameworks
-(browser-use / Skyvern / PentAGI / LangGraph):
-
-| Capability | Module | Purpose |
+| 变量 | 用途 | 示例 |
 | --- | --- | --- |
-| DOM focus pruning | `ai.dom_pruner.DomPruner` | Rule + LLM rerank, keeps only encryption-related elements (≈80% token cut) |
-| Checkpoint / resume | `ai.checkpoint.CheckpointManager` | Step-end state persisted; resume after crash or interrupt |
-| Action confidence | `ai.confidence.ConfidenceScorer` | Rule + LLM dual-path scoring; low-confidence actions trigger fallback |
-| Action guardrails | `ai.guardrails.ActionGuard` | Domain whitelist, blocks localhost/non-HTTPS/cross-origin/dangerous scripts |
-| Planner / Actor split | `ai.planner.Planner` | High-level sub-goal planning + periodic replanning |
-| Loop detection | `ai.loop.LoopDetector` | Page-state fingerprint; auto-replan on repeated states |
-| Context compression | `ai.loop.ContextCompressor` | Rolling summary of history; `force_compress` on budget overflow |
-| Task judge | `ai.judge.TaskJudge` | Independent LLM verifies `done` to prevent hallucinated success |
-| Success recorder | `ai.recorder.RunRecorder` | Compile a successful trace into a deterministic Python script |
-| Event bus + watchdog | `ai.watchdog` | Pub/sub events, heartbeat stall detection, browser crash auto-recovery |
-| Structured schema | `ai.schema.SchemaValidator` | Pydantic-based result validation with auto-repair hints |
+| `DEEPSEEK_API_KEY` | DeepSeek OpenAI 兼容接口密钥（AI 抽取 / 逆向 Agent 默认 provider） | `DEEPSEEK_API_KEY=<your-key>` |
+| `LLM_API_KEY` | 自定义 OpenAI 兼容 provider 的密钥（可选） | `LLM_API_KEY=<your-key>` |
+| `CRAWLER_DB_PATH` | 覆盖 Web UI 任务记录 SQLite 数据库路径 | `CRAWLER_DB_PATH=/path/to/crawler_data.db` |
 
-All capabilities are optional and individually toggleable via
-`ReverseAgentConfig` fields (e.g. `enable_checkpoint=True`,
-`min_confidence=0.4`, `enable_guard=True`).
+## 项目结构
 
-### Multi-tab management & humanized input
-
-`ReverseAgent` supports 3 multi-tab actions on top of the 6 browser
-interaction actions:
-
-| Action | Params | Behavior |
-| --- | --- | --- |
-| `new_tab` | `url`, `name` (optional) | Open a new tab, navigate, switch `self._page` to it; main page registered as `"main"` |
-| `switch_tab` | `name` **or** `index` | Switch active page by name or insertion-order index; calls `bring_to_front` |
-| `close_tab` | `name` | Close the tab; if it was active, `self._page` falls back to `main` |
-
-`ReverseAgentConfig.humanize_input=True` (default) enables trajectory
-simulation to evade anti-bot detection:
-
-- **`click`** — `hover(selector)` moves the cursor first, then a random
-  50–200 ms delay, then `click`
-- **`type`** — `focus(selector)`, a 100–300 ms "thinking" pause, then
-  `type(text, delay=30–150ms)` for per-keystroke rhythm
-
-Both sync (`run`) and async (`arun`) paths implement the humanized variants;
-mock objects that don't accept `delay=` auto-degrade via `TypeError` fallback.
-
-### JA4 fingerprint customization
-
-`Fetcher(ja4_fingerprint=...)` passes a JA3/JA4 TLS extension string through
-to `curl_cffi`'s `ja3` parameter, overriding the `impersonate` preset's
-default TLS fingerprint. This enables fine-grained customization of the
-TLS ClientHello (cipher order, extensions, supported groups) beyond the
-built-in browser presets:
-
-```python
-from web_crawler import Fetcher
-
-# Use Chrome 131's HTTP/2 frame ordering but a custom JA4 TLS fingerprint
-with Fetcher(
-    impersonate="chrome131",
-    ja4_fingerprint="t13d1516h2_8daaf6152771_b0da82dd1658",
-) as f:
-    resp = f.get("https://example.com")
+```
+src/web_crawler/          # 核心库
+  _types.py               # TextHandler / Attrs / ResultList
+  compat.py               # 可选依赖探测（优雅降级）
+  response.py             # 统一 Response（选择器辅助、meta、urljoin）
+  crawler.py              # 同域异步爬虫（robots.txt 感知）
+  parser/                 # Selector + 自适应引擎 + 指纹存储 + 截图瓦片 VLM
+  fetchers/               # Fetcher / AsyncFetcher / DynamicFetcher / StealthyFetcher / CamoufoxFetcher / ProxyPool
+  spider/                 # Spider + Request + SpiderStats（暂停/续跑）
+  ai/                     # LLM 层 + AIExtractor + AIScrapeAgent + JS 逆向套件 + 生产级 Agent 能力
+  pentest/                # 轻量渗透辅助工具集（纯 Python，无外部命令依赖）
+  mcp/                    # ReverseMCPServer（JSON-RPC over stdio）+ CLI
+  py.typed                # PEP 561 类型标记
+app/                      # 应用层
+  crawler.py              # 并发资源下载器（续传、去重、sitemap、UI 驱动）
+  db.py                   # SQLite 持久化（任务 + 结果，线程安全）
+  ui.py                   # 本地 Web UI（SSE 实时推送）
+tests/                    # pytest 测试套件
+benchmarks.py             # 解析器/fetcher 微基准 + 回归检测
+demo.py / demo.bat        # 交互式使用演示
+docs/ + mkdocs.yml        # MkDocs 文档站点
 ```
 
-When `curl_cffi` is not installed (httpx fallback), `ja4_fingerprint` is
-silently ignored (httpx has no TLS fingerprint capability). Both sync
-`Fetcher` and `AsyncFetcher` honor the parameter.
-
-### Single-model strategy
-
-`ReverseAgent` uses a **single DeepSeek V4 Pro** instance shared by every
-sub-component — Planner, Actor, Judge, DomPruner, ConfidenceScorer,
-JSAnalyzer all reuse the same `DeepSeekProvider(model="deepseek-v4-pro")`.
-There is no per-component model routing, no LLM-as-judge rerank, no
-capability-based provider selection. Override only if you bring your own multi-model
-setup; the defaults assume DeepSeek V4 Pro everywhere.
-
-
-## Documentation
-
-An API documentation site is built with [MkDocs Material](https://squidfunk.github.io/mkdocs-material/)
-+ [mkdocstrings](https://mkdocstrings.github.io/). Source lives in `docs/`,
-config in `mkdocs.yml`.
+## 测试与质量
 
 ```bash
-pip install -e ".[docs]"
-mkdocs serve          # http://127.0.0.1:8000
-mkdocs build          # static site in site/
+ruff check .                          # 静态检查
+mypy src                              # 类型检查
+pytest -m "not slow"                  # 运行测试（跳过慢速集成测试）
+pytest --cov=web_crawler --cov=app    # 带覆盖率
+python benchmarks.py --check-regression   # 性能回归检查（CI 模式）
 ```
 
-The site covers:
+GitHub Actions 在每次 push 时运行 lint、类型检查、带覆盖率的测试、基准回归检查与文档构建（`--strict`）；标记为 `@pytest.mark.slow` 的慢速测试（如 Camoufox 端到端套件）默认被排除。
 
-- **Home / quick start** — install + minimal examples
-- **Architecture** — module tree + per-layer responsibilities + data flow
-- **JS reverse agent** — full usage guide, all actions, all config fields
-- **API reference** — auto-generated from docstrings via mkdocstrings
+## 合规说明
 
+- 逆向 Agent 仅模拟正常用户交互，不伪造登录凭证、不绕过付费墙。
+- 图片验证码（OCR / 滑块 / 点选）通过 `ImageCaptchaSolver` 自动识别；当页面返回 401/403 或出现无法处理的挑战时，Agent 会停止并返回"转人工处理"。
+- `web_crawler.pentest` 仅用于**已获书面授权**的安全测试；未经授权对他人系统使用任何模块均属违法。
 
-## Development
+## 许可证
 
-```bash
-ruff check .          # lint
-ruff format .         # format
-mypy src              # type-check
-pytest --cov=web_crawler   # tests + coverage
-python benchmarks.py       # parser/adaptive micro-benchmarks
-python benchmarks.py --check-regression   # CI: fail on >20% regression vs built-in baseline
-```
-
-CI (`.gitlab-ci.yml`) runs lint, type-check, tests with coverage, a
-benchmark regression check, and a docs build on every push. Slow tests
-(marked `@pytest.mark.slow`, e.g. the Camoufox end-to-end suite) are
-excluded from the default CI test run via `-m "not slow"`.
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+MIT，见 [LICENSE](LICENSE)。
