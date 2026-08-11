@@ -2289,9 +2289,7 @@ class ReverseAgent:
             if error:
                 self._last_error_screenshot = str(path)
             return str(path)
-        except Exception as _exc:
-            import sys as _sys
-            print(f"[DIAG-TEMP] _take_screenshot swallowed: {_exc!r}", file=_sys.stderr)
+        except Exception:
             # 截图失败不影响主循环：仅返回空路径
             return ""
 
