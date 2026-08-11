@@ -8,11 +8,14 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from dataclasses import dataclass
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+
+import pytest
 from typing import Any
 from unittest.mock import MagicMock, Mock, patch
 
@@ -1353,6 +1356,7 @@ class TestMain:
 
 
 class TestOpenFolder:
+    @pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows-only: uses os.startfile")
     def test_open_folder_win32(self, tmp_path: Path) -> None:
         """_open_folder 在 Windows 上调用 os.startfile。"""
         with patch("os.startfile") as mock_startfile:
