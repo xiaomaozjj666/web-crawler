@@ -56,11 +56,6 @@ markdown_extensions:
 
 nav:
   - 首页: index.md
-  - 快速开始: index.md#快速开始
   - 架构说明: architecture.md
   - JS 逆向 Agent: reverse-agent.md
-  - API 参考:
-      - 概览: api-reference.md
-      - Fetcher: api-reference.md#fetcher
-      - Selector: api-reference.md#selector
-      - ReverseAgent: api-reference.md#reverseagent
+  - API 参考: api-reference.md

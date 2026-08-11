@@ -53,9 +53,9 @@ Server: Any
 stdio_server: Any
 types: Any
 try:  # pragma: no cover - 取决于是否安装了 mcp 包
-    from mcp import types
-    from mcp.server import Server
-    from mcp.server.stdio import stdio_server
+    from mcp import types  # type: ignore[no-redef]
+    from mcp.server import Server  # type: ignore[no-redef]
+    from mcp.server.stdio import stdio_server  # type: ignore[no-redef]
 
     _HAS_MCP = True
 except ImportError:  # pragma: no cover
