@@ -46,16 +46,19 @@ SAMPLE_HTML = """
 
 # 内置基线（ms/op）：基于当前测试环境的典型值，CI 回归检测时使用。
 # 基线值留有 20% 的容差区间，仅拦截显著退化。
+# 注：xpath/fingerprint/similarity 三项基线按 GitHub Actions runner
+# （共享 CPU、Python 3.12 + 发行版 lxml）实测值校准——本地 Python 3.14
+# 下这三项明显更快，基线取 CI 环境典型值并保留容差。
 BASELINE: dict[str, float] = {
     "Selector(str) — 500 elements": 2.5,
     "page.css('.product')": 2.0,
     "page.css_first('.product .name')": 4.5,
     "page.css('[data-id=\"250\"]')": 0.6,
-    "page.xpath('//div[@class=\"product\"]')": 0.5,
+    "page.xpath('//div[@class=\"product\"]')": 0.85,
     "el.text": 0.01,
     "el.get_all_text()": 0.01,
-    "compute_fingerprint(el)": 0.2,
-    "similarity_score(fp, fp)": 0.2,
+    "compute_fingerprint(el)": 0.3,
+    "similarity_score(fp, fp)": 0.34,
     "css_first(adaptive=True)": 0.4,
 }
 
