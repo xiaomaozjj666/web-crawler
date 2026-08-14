@@ -131,6 +131,41 @@ class _Candidate:
     text_preview: str = ""
 
 
+def _bounded_text(tag: Tag, limit: int) -> str:
+    """惰性遍历子节点收集文本，累计到 ``limit`` 即停（避免全树 get_text）。"""
+    parts: list[str] = []
+    total = 0
+    for s in tag.strings:
+        chunk = s.strip()
+        if not chunk:
+            continue
+        parts.append(chunk)
+        total += len(chunk)
+        if total >= limit:
+            break
+    return " ".join(parts)[:limit]
+
+
+def _tag_fragment(tag: Tag, text: str) -> str:
+    """只序列化开标签 + 受限文本，不复制整个子树。
+
+    属性值里的引号做简单转义，避免破坏片段结构；无值属性（None）跳过。
+    """
+    name = tag.name or ""
+    attr_parts: list[str] = []
+    for k, v in (tag.attrs or {}).items():
+        if v is None:
+            continue
+        if isinstance(v, list):
+            v = " ".join(str(x) for x in v)
+        if not isinstance(v, str):
+            v = str(v)
+        attr_parts.append(f'{k}="{v.replace(chr(34), "&quot;")}"')
+    inner = " ".join(attr_parts)
+    start = f"<{name} {inner}>" if inner else f"<{name}>"
+    return f"{start}{text}"
+
+
 class DomPruner:
     """DOM 焦点裁剪器。
 
@@ -252,7 +287,7 @@ class DomPruner:
             return None
 
         attrs = tag.attrs or {}
-        text = (tag.get_text(" ", strip=True) or "")[:200]
+        text = _bounded_text(tag, 200)
         # 规则打分：起始 1.0
         score = 1.0
 
@@ -287,8 +322,9 @@ class DomPruner:
         if name in {"div", "span", "p"} and not text and not attrs:
             score = 0.5
 
-        # 序列化为 HTML 片段（控制长度）
-        html_str = str(tag)
+        # 只序列化开标签 + 受限文本，避免 str(tag) 把整个子树复制一遍
+        # （深层 DOM 上是近似 O(n·depth) 的重复序列化）
+        html_str = _tag_fragment(tag, text)
         # 单候选字符上限，避免一个超大 script 吃光预算
         if len(html_str) > 500:
             html_str = html_str[:500] + f"...</{name}>"

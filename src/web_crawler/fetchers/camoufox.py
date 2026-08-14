@@ -38,9 +38,6 @@ if TYPE_CHECKING:
 
     from ..parser.adaptive import AdaptiveStorage
 
-# 会与 Camoufox 生成指纹冲突、因此在 new_context 时禁止覆盖的字段
-ListOrStr = "str | list[str]"
-
 
 class CamoufoxFetcher(DynamicFetcher):
     """A :class:`DynamicFetcher` that renders with the Camoufox anti-detect Firefox.
@@ -143,6 +140,20 @@ class CamoufoxFetcher(DynamicFetcher):
         kwargs.update(self.camoufox_options)
         return kwargs
 
+    # -- context kwargs -----------------------------------------------------
+    def _context_kwargs(
+        self,
+        *,
+        viewport: dict[str, int] | None = None,
+        proxy: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        # 关键区别：不传 user_agent/locale/viewport（也不传 proxy——代理在启动时
+        # 交给 Camoufox），保留 Camoufox 生成的指纹，避免指纹冲突泄漏自动化痕迹。
+        return {
+            "extra_http_headers": self.extra_headers or None,
+            "ignore_https_errors": not self.verify,
+        }
+
     # -- sync browser lifecycle --------------------------------------------
     def _ensure_browser(self) -> Any:
         if self._browser is None:
@@ -156,11 +167,7 @@ class CamoufoxFetcher(DynamicFetcher):
     def _render_page(self, browser: Any, url: str, proxy_settings: Any) -> Any:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-        # 关键区别：不传 user_agent/locale/viewport，保留 Camoufox 生成的指纹。
-        context = browser.new_context(
-            extra_http_headers=self.extra_headers or None,
-            ignore_https_errors=not self.verify,
-        )
+        context = browser.new_context(**self._context_kwargs())
         try:
             page = context.new_page()
             self._setup_page(page)
@@ -202,10 +209,7 @@ class CamoufoxFetcher(DynamicFetcher):
     async def _render_page_async(self, browser: Any, url: str, proxy_settings: Any) -> Any:
         from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-        context = await browser.new_context(
-            extra_http_headers=self.extra_headers or None,
-            ignore_https_errors=not self.verify,
-        )
+        context = await browser.new_context(**self._context_kwargs())
         try:
             page = await context.new_page()
             await self._setup_page_async(page)

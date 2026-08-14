@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -143,12 +144,27 @@ class CheckpointStore:
         self._rotate(cp.task_id)
         return target
 
+    @staticmethod
+    def _step_of(path: Path) -> int:
+        """从 step-XXXX.json 文件名解析步号；无法解析返回 -1。"""
+        name = path.stem
+        if name.startswith("step-"):
+            try:
+                return int(name[5:])
+            except ValueError:
+                return -1
+        return -1
+
+    def _sorted_by_step(self, files: Iterable[Path]) -> list[Path]:
+        """按文件内 step 整数排序（字符串排序在 step >= 10000 时会错乱）。"""
+        return sorted(files, key=self._step_of)
+
     def load_latest(self, task_id: str) -> Checkpoint | None:
         """加载最新 checkpoint，没有则返回 None。"""
         task_dir = self._task_dir(task_id)
         if not task_dir.is_dir():
             return None
-        files = sorted(task_dir.glob("step-*.json"))
+        files = self._sorted_by_step(task_dir.glob("step-*.json"))
         if not files:
             return None
         try:
@@ -174,7 +190,7 @@ class CheckpointStore:
         task_dir = self._task_dir(task_id)
         if not task_dir.is_dir():
             return []
-        return sorted(task_dir.glob("step-*.json"))
+        return self._sorted_by_step(task_dir.glob("step-*.json"))
 
     def clear(self, task_id: str) -> None:
         """清理某个任务的所有 checkpoint。"""
@@ -236,9 +252,18 @@ class CheckpointManager:
         if not self.task_id:
             import hashlib
 
-            raw = f"{url}|{task}|{time.time()}"
+            # 稳定标识：url+task 哈希（不含时间戳），保证跨进程/跨 run 可续跑
+            raw = f"{url}|{task}"
             self.task_id = hashlib.md5(raw.encode("utf-8")).hexdigest()[:12]
         return self.task_id
+
+    def ensure_task_id(self, url: str = "", task: str = "") -> str:
+        """为当前任务生成/返回稳定的 task_id（url+task 哈希，不含时间戳）。
+
+        供 Agent 主循环在加载断点前调用，确保跨进程重启后仍能命中同一
+        checkpoint 目录。
+        """
+        return self._ensure_task_id(url, task)
 
     def save(self, cp: Checkpoint) -> Path | None:
         """保存 checkpoint。``enable=False`` 时返回 None。"""

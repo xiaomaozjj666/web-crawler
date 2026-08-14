@@ -12,6 +12,7 @@ so the same spider can run against :class:`~web_crawler.fetchers.Fetcher`,
 from __future__ import annotations
 
 import asyncio
+import base64
 import heapq
 import json
 import logging
@@ -132,11 +133,14 @@ class Spider:
 
     # -- helpers -----------------------------------------------------------
     def allowed(self, url: str) -> bool:
-        """Return True if ``url``'s domain is permitted."""
+        """Return True if ``url``'s host is permitted (忽略端口与 userinfo)."""
         if not self.allowed_domains:
             return True
-        host = urlparse(url).netloc.lower()
-        return any(host == d or host.endswith("." + d) for d in self.allowed_domains)
+        host = urlparse(url).hostname
+        if not host:
+            return False
+        host = host.lower()
+        return any(host == d.lower() or host.endswith("." + d.lower()) for d in self.allowed_domains)
 
     def urljoin(self, base: str, url: str) -> str:
         from urllib.parse import urljoin
@@ -204,6 +208,9 @@ class Spider:
                     "meta": r.meta,
                     "priority": r.priority,
                     "dont_filter": r.dont_filter,
+                    "retries": r.retries,
+                    # body 是 bytes，base64 编码以便 JSON 序列化（恢复时原样还原）
+                    "body": base64.b64encode(r.body).decode("ascii") if r.body is not None else None,
                 }
                 for r in queue
             ],
@@ -214,7 +221,10 @@ class Spider:
                 "requests_failed": self.stats.requests_failed,
             },
         }
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        # default=str：meta 等自由字段即使含不可序列化对象（如 bytes）也不让暂停崩溃
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+        )
 
     def _load_state(self, path: Path) -> tuple[list[Request], bool]:
         if not path.exists():
@@ -233,6 +243,9 @@ class Spider:
                 meta=item.get("meta", {}),
                 priority=item.get("priority", 0),
                 dont_filter=item.get("dont_filter", False),
+                retries=item.get("retries", 0),
+                # 兼容旧状态文件：body 字段缺失时视为无 body
+                body=base64.b64decode(item["body"]) if item.get("body") else None,
             )
             for item in payload.get("queue", [])
         ]
@@ -271,6 +284,11 @@ class Spider:
             raise SpiderError("Spider.run requires a fetcher; pass fetcher= to the constructor")
 
         path = self._state_path(state_file)
+        # 状态文件仅由"暂停"或显式管理（state_file/resume）触发读写：
+        # 全新运行不得覆盖/删除既有的暂停状态文件，max_requests 提前结束
+        # 也不得在未显式管理时向 CWD 落盘。
+        manage_state = state_file is not None or resume
+        owns_state = resume  # resume 从该文件恢复，视为本次运行消费该文件
         # queue is a min-heap of ``(-priority, counter, Request)`` — heapq
         # yields the smallest tuple first, so negating priority gives
         # highest-priority-first ordering.
@@ -325,10 +343,11 @@ class Spider:
                     self.stats.items_scraped += 1
 
         self.stats.end_time = time.monotonic()
-        if self._paused or queue:
+        if self._paused or (manage_state and queue):
             self._dump_state([r for _, _, r in queue], path)
+            owns_state = True
             logger.info("state saved to %s (%d requests remaining)", path, len(queue))
-        elif path.exists():
+        elif manage_state and owns_state and path.exists():
             path.unlink()
         return items
 
@@ -372,6 +391,9 @@ class Spider:
             raise SpiderError("Spider.stream requires a fetcher")
 
         path = self._state_path(state_file)
+        # 与 run() 相同的状态文件生命周期：仅暂停或显式管理时读写
+        manage_state = state_file is not None or resume
+        owns_state = resume
         queue: list[tuple[int, int, Request]] = []
         if resume:
             loaded, restored = self._load_state(path)
@@ -433,10 +455,11 @@ class Spider:
                     yield out
 
         self.stats.end_time = time.monotonic()
-        if self._paused or queue:
+        if self._paused or (manage_state and queue):
             self._dump_state([r for _, _, r in queue], path)
+            owns_state = True
             logger.info("state saved to %s (%d requests remaining)", path, len(queue))
-        elif path.exists():
+        elif manage_state and owns_state and path.exists():
             path.unlink()
 
 

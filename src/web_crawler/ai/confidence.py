@@ -54,6 +54,10 @@ _VALID_ACTIONS: frozenset[str] = frozenset(
         "press",
         "hover",
         "select_option",
+        # 多标签页动作（与 prompt 动作清单一致）
+        "new_tab",
+        "switch_tab",
+        "close_tab",
     }
 )
 
@@ -291,6 +295,10 @@ class ConfidenceScorer:
             "press": {"key": str},
             "hover": {"selector": str},
             "select_option": {"selector": str, "value": str},
+            # 多标签页动作（new_tab 的 url 为空时仅创建标签页，不强校验）
+            "new_tab": {},
+            "switch_tab": {},  # name / index 至少提供一个，不强校验
+            "close_tab": {"name": str},
         }
         req: dict[str, type | tuple[type, ...]] = required.get(at, {})
         if not req:

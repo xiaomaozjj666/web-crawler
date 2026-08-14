@@ -21,15 +21,11 @@
 
 from __future__ import annotations
 
-import json
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from ._jsonutil import extract_json as _extract_json
 from .llm import LLMMessage, LLMProvider
-
-_JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
-_CODE_FENCE_RE = re.compile(r"^```(?:\w+)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
 
 _PLANNER_SYSTEM_PROMPT = (
     "你是一名 JS 逆向任务的总规划师。你的职责是把高层任务拆成 3-7 个有序子目标，"
@@ -89,24 +85,6 @@ class Plan:
             "current_index": self.current_index,
             "created_at_step": self.created_at_step,
         }
-
-
-def _extract_json(text: str) -> dict[str, Any]:
-    text = text.strip()
-    fence = _CODE_FENCE_RE.match(text)
-    if fence:
-        text = fence.group(1).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    m = _JSON_BLOCK_RE.search(text)
-    if m:
-        try:
-            return json.loads(m.group(0))
-        except json.JSONDecodeError:
-            return {}
-    return {}
 
 
 class Planner:

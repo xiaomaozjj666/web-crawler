@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
 import httpx
@@ -37,7 +37,10 @@ class Crawler:
         self.timeout = timeout
         self.user_agent = user_agent
         self.respect_robots = respect_robots
-        self._robot_parsers: dict[str, RobotFileParser | None] = {}
+        # 值可能是已完成的 parser、进行中的 robots 拉取任务（single-flight）或 None
+        self._robot_parsers: dict[
+            str, RobotFileParser | asyncio.Task[RobotFileParser | None] | None
+        ] = {}
         # 按域名记录上次请求时间，避免全局延迟误伤不同域名
         self._last_fetch: dict[str, float] = {}
 
@@ -61,10 +64,15 @@ class Crawler:
         parsed = urlparse(url)
         domain = parsed.netloc
         if domain not in self._robot_parsers:
-            self._robot_parsers[domain] = await self._get_robot_parser(
-                parsed.scheme or "https", domain
+            # single-flight：同一域名并发首访共享同一次 robots.txt 拉取，
+            # 避免每个 worker 各自请求一次
+            self._robot_parsers[domain] = asyncio.create_task(
+                self._get_robot_parser(parsed.scheme or "https", domain)
             )
         rp = self._robot_parsers[domain]
+        if isinstance(rp, asyncio.Task):
+            rp = await rp
+            self._robot_parsers[domain] = rp
         if rp is None:
             return True
         return rp.can_fetch(self.user_agent, url)
@@ -131,17 +139,49 @@ class Crawler:
         return results
 
     @staticmethod
+    def _normalize_url(url: str) -> str | None:
+        """规范化 URL：仅保留 http/https，域名小写、剥默认端口、去 fragment。
+
+        返回规范化后的绝对 URL；scheme 非 http/https、host 缺失或端口非法时
+        返回 ``None``，调用方直接丢弃该链接。
+        """
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https"):
+            return None
+        host = parts.hostname
+        if not host:
+            return None
+        try:
+            port = parts.port
+        except ValueError:
+            return None
+        if port is not None and (
+            (parts.scheme == "http" and port == 80) or (parts.scheme == "https" and port == 443)
+        ):
+            port = None
+        netloc = host.lower() if port is None else f"{host.lower()}:{port}"
+        return urlunsplit((parts.scheme, netloc, parts.path, parts.query, ""))
+
+    @staticmethod
     def _extract_links(base_url: str, html: str) -> list[str]:
         """Extract deduplicated same-domain links from ``html``."""
         from bs4 import BeautifulSoup
 
-        base_domain = urlparse(base_url).netloc
+        base = Crawler._normalize_url(base_url)
+        if base is None:
+            return []
+        base_domain = urlsplit(base).netloc
         soup = BeautifulSoup(html, "lxml")
         links: list[str] = []
         seen: set[str] = set()
         for anchor in soup.find_all("a", href=True):
-            absolute = urljoin(base_url, str(anchor["href"]))
-            if urlparse(absolute).netloc == base_domain and absolute not in seen:
-                seen.add(absolute)
-                links.append(absolute)
+            normalized = Crawler._normalize_url(urljoin(base_url, str(anchor["href"])))
+            if normalized is None:
+                continue
+            # 同域比较基于规范化后的 netloc（大小写/默认端口已归一）
+            if urlsplit(normalized).netloc != base_domain:
+                continue
+            if normalized not in seen:
+                seen.add(normalized)
+                links.append(normalized)
         return links
