@@ -524,3 +524,67 @@ def test_checkpoint_store_save_creates_parent_dir(tmp_path) -> None:
     saved = store.save(cp)
     assert saved.exists()
     assert saved.parent.is_dir()
+
+
+def test_ensure_task_id_stable_without_timestamp() -> None:
+    """同一 url+task 的自动 task_id 跨实例稳定（不含时间戳，可续跑）。"""
+    from web_crawler.ai.checkpoint import CheckpointManager
+
+    mgr1 = CheckpointManager()
+    mgr2 = CheckpointManager()
+    id1 = mgr1.ensure_task_id("https://x.example", "task-a")
+    id2 = mgr2.ensure_task_id("https://x.example", "task-a")
+    assert id1 == id2
+    assert id1 != ""
+    # 不同任务得到不同 id
+    assert mgr1.ensure_task_id("https://x.example", "task-b") == id1  # 已设置不再变
+
+
+def test_load_latest_sorts_by_integer_step(tmp_path) -> None:
+    """step 超过 9999 时按整数排序，load_latest 应取 step 最大者。"""
+    from web_crawler.ai.checkpoint import Checkpoint, CheckpointStore
+
+    store = CheckpointStore(tmp_path)
+    store.save(Checkpoint(task_id="big", step=9999, url="https://x/9999"))
+    store.save(Checkpoint(task_id="big", step=10000, url="https://x/10000"))
+    latest = store.load_latest("big")
+    assert latest is not None
+    assert latest.step == 10000
+    assert latest.url == "https://x/10000"
+
+
+def test_save_then_new_store_load_latest_roundtrip(tmp_path) -> None:
+    """真实存储层：save → 新 store 实例 load_latest 拿到同一 checkpoint。"""
+    from web_crawler.ai.checkpoint import Checkpoint, CheckpointStore
+
+    store1 = CheckpointStore(tmp_path)
+    store1.save(
+        Checkpoint(
+            task_id="rt-task",
+            step=3,
+            url="https://x/3",
+            task="t",
+            target_params_found={"sign": "val"},
+            hooks=["fetch_hook"],
+            history=[{"step": 1, "action": "wait"}],
+            cumulative_summary="sum",
+        )
+    )
+    store2 = CheckpointStore(tmp_path)
+    cp = store2.load_latest("rt-task")
+    assert cp is not None
+    assert cp.step == 3
+    assert cp.target_params_found == {"sign": "val"}
+    assert cp.hooks == ["fetch_hook"]
+    assert cp.cumulative_summary == "sum"
+
+
+def test_checkpoint_store_step_of_invalid_names() -> None:
+    """_step_of 对非法步号与无关文件名返回 -1。"""
+    from pathlib import Path
+
+    from web_crawler.ai.checkpoint import CheckpointStore
+
+    assert CheckpointStore._step_of(Path("step-abc.json")) == -1
+    assert CheckpointStore._step_of(Path("other.json")) == -1
+    assert CheckpointStore._step_of(Path("step-0003.json")) == 3

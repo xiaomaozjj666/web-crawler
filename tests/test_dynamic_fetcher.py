@@ -1127,15 +1127,17 @@ def test_close_cleans_async_handles_via_temp_loop() -> None:
 
 
 def test_close_swallows_async_cleanup_failure() -> None:
-    """close() 对 async 句柄清理异常 best-effort 吞掉。"""
+    """close() 临时事件循环清理失败时保留引用并发出 ResourceWarning。"""
     if not compat.HAS_PLAYWRIGHT:
         pytest.skip("playwright not installed")
     f = DynamicFetcher()
     async_browser_mock = AsyncMock()
     async_browser_mock.close.side_effect = RuntimeError("async close failed")
     f._async_browser = async_browser_mock
-    f.close()
-    assert f._async_browser is None
+    with pytest.warns(ResourceWarning, match="异步浏览器句柄"):
+        f.close()
+    # 清理失败时引用被保留，之后仍可 aclose() 重试
+    assert f._async_browser is async_browser_mock
 
 
 def test_cleanup_async_handles_idempotent() -> None:
@@ -1177,7 +1179,7 @@ def test_cleanup_async_handles_closes_both() -> None:
 
 
 def test_cleanup_async_handles_swallows_exceptions() -> None:
-    """_cleanup_async_handles 对异常 best-effort 吞掉。"""
+    """_cleanup_async_handles 对异常 best-effort 吞掉，并保留引用以便重试。"""
     if not compat.HAS_PLAYWRIGHT:
         pytest.skip("playwright not installed")
 
@@ -1190,8 +1192,9 @@ def test_cleanup_async_handles_swallows_exceptions() -> None:
         f._async_browser = async_browser_mock
         f._async_pw = async_pw_mock
         await f._cleanup_async_handles()
-        assert f._async_browser is None
-        assert f._async_pw is None
+        # 关闭失败时引用保留（不置 None），避免"失败却丢失引用导致进程泄漏"
+        assert f._async_browser is async_browser_mock
+        assert f._async_pw is async_pw_mock
         f.close()
 
     import asyncio
@@ -1356,3 +1359,194 @@ def test_extra_headers_none_passes_none_to_context() -> None:
     f.fetch("https://example.com/x")
     assert browser.new_context.call_args.kwargs["extra_http_headers"] is None
     f.close()
+
+
+# ---------------------------------------------------------------------------
+# SSRF 防护：dynamic 入口拒绝非 http(s) scheme
+# ---------------------------------------------------------------------------
+def test_fetch_rejects_non_http_scheme() -> None:
+    """fetch 入口应拒绝 file:// 等非 http(s) URL（无需启动浏览器）。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+    f = DynamicFetcher()
+    with pytest.raises(ValueError, match="only http/https"):
+        f.fetch("file:///etc/passwd")
+    with pytest.raises(ValueError, match="only http/https"):
+        f.fetch("ftp://example.com/x")
+    f.close()
+
+
+def test_async_fetch_rejects_non_http_scheme() -> None:
+    """async_fetch 入口同样拒绝非 http(s) URL。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+
+    async def go() -> None:
+        f = DynamicFetcher()
+        try:
+            with pytest.raises(ValueError, match="only http/https"):
+                await f.async_fetch("file:///etc/passwd")
+        finally:
+            f.close()
+
+    import asyncio
+
+    asyncio.run(go())
+
+
+def test_screenshot_tiles_rejects_non_http_scheme() -> None:
+    """screenshot_tiles 入口同样拒绝非 http(s) URL。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+    f = DynamicFetcher()
+    with pytest.raises(ValueError, match="only http/https"):
+        f.screenshot_tiles("data:text/plain,hi")
+    f.close()
+
+
+# ---------------------------------------------------------------------------
+# _parse_proxy 边界：无 scheme / IPv6 / 百分号编码凭据
+# ---------------------------------------------------------------------------
+def test_parse_proxy_scheme_less() -> None:
+    """无 scheme 的代理 URL 默认按 http 处理。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+    f = DynamicFetcher()
+    assert f._parse_proxy("1.2.3.4:8080") == {"server": "http://1.2.3.4:8080"}
+    assert f._parse_proxy("user:pass@1.2.3.4:8080") == {
+        "server": "http://1.2.3.4:8080",
+        "username": "user",
+        "password": "pass",
+    }
+    f.close()
+
+
+def test_parse_proxy_ipv6() -> None:
+    """IPv6 代理地址需补回方括号。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+    f = DynamicFetcher()
+    assert f._parse_proxy("http://[::1]:8080") == {"server": "http://[::1]:8080"}
+    f.close()
+
+
+def test_parse_proxy_percent_encoded_credentials() -> None:
+    """百分号编码的 userinfo 应解码后交给 Playwright。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+    f = DynamicFetcher()
+    settings = f._parse_proxy("http://user%40x:p%40ss@1.2.3.4:8080")
+    assert settings["server"] == "http://1.2.3.4:8080"
+    assert settings["username"] == "user@x"
+    assert settings["password"] == "p@ss"
+    f.close()
+
+
+# ---------------------------------------------------------------------------
+# screenshot_tiles max_tiles 上限
+# ---------------------------------------------------------------------------
+def test_screenshot_tiles_max_tiles_cap() -> None:
+    """超过 max_tiles 上限时截断并发出 RuntimeWarning。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+    f = DynamicFetcher(network_idle=False)
+    page = _make_sync_page()
+    page.evaluate.return_value = {"width": 875.0, "height": 5000.0}
+    page.screenshot.side_effect = [b"T0", b"T1", b"T2"]
+    ctx = _make_sync_context(page)
+    browser = _make_sync_browser(ctx)
+    f._browser = browser
+
+    with pytest.warns(RuntimeWarning, match="max_tiles"):
+        tiles = f.screenshot_tiles(
+            "https://example.com/", tile_height=500, max_tiles=3
+        )
+    assert len(tiles) == 3
+    assert tiles[0]["total"] == 3
+    assert tiles[2]["height"] == 500
+    f.close()
+
+
+def test_async_screenshot_tiles_max_tiles_cap() -> None:
+    """异步切片路径同样受 max_tiles 上限约束。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+
+    async def go() -> None:
+        f = DynamicFetcher(network_idle=False)
+        page = _make_async_page()
+        page.evaluate.return_value = {"width": 875.0, "height": 5000.0}
+        page.screenshot.side_effect = [b"A", b"B"]
+        ctx = _make_async_context(page)
+        browser = _make_async_browser(ctx)
+        f._async_browser = browser
+        with pytest.warns(RuntimeWarning, match="max_tiles"):
+            tiles = await f.async_screenshot_tiles(
+                "https://example.com/", tile_height=500, max_tiles=2
+            )
+        assert len(tiles) == 2
+        f.close()
+
+    import asyncio
+
+    asyncio.run(go())
+
+
+# ---------------------------------------------------------------------------
+# close() 事件循环检测：运行中 loop 不启动临时循环，失败保留引用
+# ---------------------------------------------------------------------------
+def test_close_inside_running_loop_warns_and_keeps_handles() -> None:
+    """close() 在运行中的事件循环内被调用时不应启动临时循环，应告警并保留引用。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+
+    async def go() -> None:
+        f = DynamicFetcher()
+        async_browser_mock = AsyncMock()
+        async_pw_mock = AsyncMock()
+        f._async_browser = async_browser_mock
+        f._async_pw = async_pw_mock
+        with pytest.warns(ResourceWarning, match="异步浏览器句柄"):
+            f.close()
+        # 运行中 loop 场景不强行清理：引用保留，随后 aclose() 仍可正常释放
+        assert f._async_browser is async_browser_mock
+        assert f._async_pw is async_pw_mock
+        await f.aclose()
+        assert f._async_browser is None
+        assert f._async_pw is None
+
+    import asyncio
+
+    asyncio.run(go())
+
+
+def test_close_temp_loop_failure_keeps_reference() -> None:
+    """close() 临时事件循环清理失败时保留引用（不静默丢失句柄）。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+    f = DynamicFetcher()
+    async_browser_mock = AsyncMock()
+    async_browser_mock.close.side_effect = RuntimeError("attached to a different loop")
+    f._async_browser = async_browser_mock
+    with pytest.warns(ResourceWarning, match="异步浏览器句柄"):
+        f.close()
+    assert f._async_browser is async_browser_mock
+
+
+def test_close_temp_loop_creation_failure_swallowed() -> None:
+    """close() 临时事件循环创建失败时吞掉异常并告警保留引用。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+    f = DynamicFetcher()
+    async_browser_mock = AsyncMock()
+    f._async_browser = async_browser_mock
+    # new_event_loop 抛错 → 内层 try/except 吞掉，引用保留并告警
+    with (
+        patch(
+            "web_crawler.fetchers.dynamic.asyncio.new_event_loop",
+            side_effect=RuntimeError("no loop available"),
+        ),
+        pytest.warns(ResourceWarning, match="异步浏览器句柄"),
+    ):
+        f.close()
+    assert f._async_browser is async_browser_mock

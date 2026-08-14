@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from web_crawler.ai.agent import AIScrapeAgent, RobotsPolicy, ScrapeResult
+from web_crawler.ai.agent import AIScrapeAgent, RobotsPolicy, ScrapeResult, _http_get_text
 from web_crawler.response import Response
 
 # ---------------------------------------------------------------------------
@@ -596,3 +596,93 @@ def test_detect_block_on_chinese_marker() -> None:
     reason = detect_block(resp)
     assert reason is not None
     assert "请完成验证" in reason
+
+
+# ===========================================================================
+# 回归：robots.txt 轻量拉取（不经重型 fetcher）+ 纳入限速
+# ===========================================================================
+
+
+def test_fetch_robots_uses_lightweight_http_and_throttles() -> None:
+    """robots.txt 拉取走轻量 HTTP 且经过 _throttle，不触碰重型 fetcher。"""
+    heavy = MagicMock()
+    heavy.get.side_effect = AssertionError("robots 拉取不应走重型 fetcher")
+    agent = AIScrapeAgent(
+        fetcher=heavy,
+        extractor=_DummyExtractor(),
+        respect_robots=True,
+        min_delay=5.0,
+    )
+    # 置为"刚请求过"，让 _throttle 触发 sleep
+    agent._last_request_ts = time.monotonic()
+    with (
+        patch(
+            "web_crawler.ai.agent._http_get_text",
+            return_value="User-agent: *\nDisallow: /private",
+        ) as mock_get,
+        patch("web_crawler.ai.agent.time.sleep") as mock_sleep,
+        pytest.raises(PermissionError, match="robots.txt disallows"),
+    ):
+        agent.fetch("https://example.com/private/x")
+    mock_get.assert_called_once()
+    heavy.get.assert_not_called()
+    # robots 拉取前有一次 _throttle（限速生效）
+    assert mock_sleep.call_count >= 1
+
+
+def test_fetch_robots_http_failure_allows() -> None:
+    """robots.txt 拉取失败（网络错误）时回退为允许访问。"""
+    heavy = MagicMock()
+    heavy.get.return_value = _make_response(status=200, body=b"<html>ok</html>")
+    agent = AIScrapeAgent(
+        fetcher=heavy,
+        extractor=_DummyExtractor(),
+        respect_robots=True,
+        min_delay=0.0,
+    )
+    with (
+        patch("web_crawler.ai.agent._http_get_text", return_value=""),
+        patch("web_crawler.ai.agent.time.sleep"),
+    ):
+        resp = agent.fetch("https://example.com/page")
+    assert resp.status == 200
+
+
+# ===========================================================================
+# 回归：Retry-After / 指数退避上限
+# ===========================================================================
+
+
+def test_retry_after_header_capped() -> None:
+    """超大 Retry-After 头应被钳制到 _MAX_RETRY_AFTER。"""
+    resp = _make_response(headers={"Retry-After": "999999"})
+    assert AIScrapeAgent._retry_after(resp, 0) == 300.0
+
+
+def test_retry_after_exponential_backoff_capped() -> None:
+    """指数退避兜底也应设上限。"""
+    resp = _make_response()
+    assert AIScrapeAgent._retry_after(resp, 10) == 60.0
+
+
+# ===========================================================================
+# _http_get_text：robots.txt 轻量拉取（stdlib only）
+# ===========================================================================
+
+
+def test_http_get_text_success() -> None:
+    """轻量 GET 成功时返回解码后的文本。"""
+    fake_resp = MagicMock()
+    fake_resp.read.return_value = b"User-agent: *\nDisallow: /private\n"
+    fake_resp.__enter__.return_value = fake_resp
+    fake_resp.__exit__.return_value = False
+    with patch("urllib.request.urlopen", return_value=fake_resp):
+        text = _http_get_text("https://example.com/robots.txt")
+    assert text == "User-agent: *\nDisallow: /private\n"
+
+
+def test_http_get_text_failure_returns_empty() -> None:
+    """轻量 GET 抛异常（网络错误/超时）→ 回退为空串。"""
+    with patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
+        text = _http_get_text("https://example.com/robots.txt")
+    assert text == ""

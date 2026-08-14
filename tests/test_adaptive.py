@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from lxml import etree
 
 from web_crawler.parser.adaptive import (
@@ -154,3 +155,13 @@ def test_ratio_returns_zero_for_one_empty_list() -> None:
 
     assert _ratio([], ["a"]) == 0.0
     assert _ratio(["a"], []) == 0.0
+
+
+def test_storage_close_is_idempotent_and_guards_use(tmp_path) -> None:
+    """close() 幂等可重复调用；关闭后再使用抛明确错误（Fix9）。"""
+    store = AdaptiveStorage(tmp_path / "close.sqlite3")
+    store.save("d", "i", "fp")
+    store.close()
+    store.close()  # 幂等：重复 close 不抛错
+    with pytest.raises(RuntimeError, match="closed"):
+        store.save("d", "i2", "fp")

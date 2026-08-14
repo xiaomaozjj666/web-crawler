@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from pathlib import Path
 from typing import Any
@@ -1001,3 +1002,128 @@ def test_spider_stream_post_request() -> None:
 
     items = asyncio.run(collect())
     assert any(it.get("submitted") for it in items)
+
+
+# ===========================================================================
+# 回归：暂停/恢复状态序列化与状态文件生命周期（Fix1/2/3）
+# ===========================================================================
+
+
+def test_spider_pause_resume_preserves_post_body(tmp_path: Path) -> None:
+    """带 body 的 POST 请求暂停后恢复仍为 POST 且 body 完整（base64 往返）。"""
+    state_file = tmp_path / "post_state.json"
+    recorded: list[tuple[str, str, bytes | None]] = []
+
+    class RecFetcher:
+        def get(self, url: str, **kwargs: Any) -> Response:
+            recorded.append((url, "GET", kwargs.get("data")))
+            return Response(url, 200, b"<p>ok</p>")
+
+        def post(self, url: str, **kwargs: Any) -> Response:
+            recorded.append((url, "POST", kwargs.get("data")))
+            return Response(url, 200, b"<p>posted</p>")
+
+    class S(Spider):
+        name = "poster"
+        start_urls = ["https://shop.example.com/"]
+
+        def parse(self, response: Response) -> Any:
+            if response.url == "https://shop.example.com/":
+                # 仅在 start 页调度 POST 并暂停；恢复后不再 pause
+                yield Request(
+                    "https://shop.example.com/submit",
+                    method="POST",
+                    body=b"k=v",
+                    retries=2,
+                )
+                self.pause()
+            else:
+                yield {"posted": True}
+
+    spider = S(fetcher=RecFetcher())
+    spider.run(state_file=state_file)
+    # 暂停前只抓了 start 页，POST 请求留在队列里
+    assert recorded == [("https://shop.example.com/", "GET", None)]
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert state["queue"][0]["method"] == "POST"
+    assert state["queue"][0]["retries"] == 2
+    assert base64.b64decode(state["queue"][0]["body"]) == b"k=v"
+
+    spider2 = S(fetcher=RecFetcher())
+    items2 = spider2.run(state_file=state_file, resume=True)
+    # 恢复后仍按 POST + 原始 body 发送
+    assert recorded[-1] == ("https://shop.example.com/submit", "POST", b"k=v")
+    assert items2 == [{"posted": True}]
+    # 队列消费完毕，状态文件被清理
+    assert not state_file.exists()
+
+
+def test_spider_fresh_run_does_not_delete_existing_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """全新运行（未传 state_file/resume）完成时不得删除既有的暂停状态文件。"""
+    monkeypatch.chdir(tmp_path)
+    state_path = tmp_path / ".item_state.json"
+    state_path.write_text(
+        json.dumps({"seen": [], "queue": [], "stats": {}}), encoding="utf-8"
+    )
+
+    spider = ItemSpider(fetcher=FakeFetcher(PAGES))
+    spider.run()
+    # 既有状态文件保留，未被全新运行误删
+    assert state_path.exists()
+
+
+def test_spider_max_requests_does_not_write_default_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """max_requests 提前结束（未暂停、未传 state_file）不得向 CWD 写状态文件。"""
+    monkeypatch.chdir(tmp_path)
+    spider = ItemSpider(fetcher=FakeFetcher(PAGES))
+    spider.run(max_requests=1)
+    assert spider.stats.pages_crawled == 1
+    assert not (tmp_path / ".item_state.json").exists()
+
+
+def test_spider_pause_with_bytes_meta_serializes(tmp_path: Path) -> None:
+    """meta 含 bytes 时暂停落盘不崩溃（default=str 兜底序列化）。"""
+    state_file = tmp_path / "meta_state.json"
+
+    class S(Spider):
+        name = "meta_bytes"
+        start_urls = ["https://shop.example.com/"]
+
+        def parse(self, response: Response) -> Any:
+            yield {"x": 1}
+            self.pause()
+            yield Request("https://shop.example.com/page2", meta={"raw": b"\x00\x01payload"})
+
+    spider = S(fetcher=FakeFetcher(PAGES))
+    items = spider.run(state_file=state_file)
+    assert len(items) == 1
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    # bytes 经 default=str 序列化为 "b'...'" 字符串，不再抛 TypeError
+    assert "payload" in state["queue"][0]["meta"]["raw"]
+
+
+def test_spider_allowed_ignores_port_and_userinfo() -> None:
+    """allowed() 用 hostname 比较，忽略端口与 userinfo。"""
+
+    class S(Spider):
+        allowed_domains = ["example.com"]
+
+    spider = S()
+    assert spider.allowed("http://example.com:8080/") is True
+    assert spider.allowed("https://user:pass@example.com/x") is True
+    assert spider.allowed("https://sub.example.com:8443/") is True
+    assert spider.allowed("https://other.org/") is False
+
+
+def test_spider_allowed_missing_host_returns_false() -> None:
+    """URL 无 host（如 about:blank）时 allowed() 返回 False。"""
+
+    class S(Spider):
+        allowed_domains = ["example.com"]
+
+    spider = S()
+    assert spider.allowed("about:blank") is False
