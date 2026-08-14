@@ -171,6 +171,7 @@ class ReverseJobState:
     config: dict  # ReverseAgentConfig 的可序列化形式
     status: str = "running"  # running / done / error / cancelled
     created_at: float = field(default_factory=time.time)
+    finished_at: float | None = None  # 进入终态的时间（前端据此展示固定耗时）
     current_step: int = 0
     max_steps: int = 20
 
@@ -280,6 +281,7 @@ class ReverseJobState:
             current_step_copy = self.current_step
             exit_code_copy = self.exit_code
             error_copy = self.error
+            finished_at_copy = self.finished_at
         # 计算平均步时（毫秒）—— 锁外计算避免长持有
         durations_ms = [d * 1000.0 for d in step_durations_copy if d >= 0]
         avg_step_ms = sum(durations_ms) / len(durations_ms) if durations_ms else 0.0
@@ -313,6 +315,7 @@ class ReverseJobState:
             "avg_step_ms": round(avg_step_ms, 1),
             "exit_code": exit_code_copy,
             "error": error_copy,
+            "finished_at": finished_at_copy,
         }
 
     def job_summary(self) -> dict[str, object]:
@@ -755,6 +758,7 @@ class ReverseAgentRunner:
                     job.status = "error"
                     if not job.error:
                         job.error = "Agent 未成功完成目标参数提取"
+                job.finished_at = time.time()
         except Exception as exc:
             with job.state_lock:
                 job.status = "error"
@@ -1049,19 +1053,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error(404, "Screenshot file lost")
                 return  # pragma: no cover - 截图端点防御性 404
             self.respond(200, png, "image/png")
-            return
-        if self.path.startswith("/reverse/events"):
-            # 增量事件查询：?id=...&since=TS
-            query = parse_qs(urlparse(self.path).query)
-            rjob = REVERSE_JOBS.get(query.get("id", [""])[0])
-            if not rjob:
-                self.respond_json({"error": "任务不存在"})
-                return
-            try:
-                since = float(query.get("since", ["0"])[0])
-            except ValueError:
-                since = 0.0
-            self.respond_json({"events": rjob.events_since(since), "id": rjob.id})
             return
         # ── 任务历史 API ──────────────────────────────────────────
         query = parse_qs(urlparse(self.path).query)
@@ -1413,12 +1404,20 @@ def main() -> None:
     _parser.add_argument("--open", action="store_true", help="Automatically open browser")
     _parser.add_argument("--host", default=HOST, help=f"Server host (default: {HOST})")
     _parser.add_argument("--port", type=int, default=PORT, help=f"Server port (default: {PORT})")
+    _parser.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="允许绑定非回环地址（如 0.0.0.0，供 Docker/远程访问）。"
+        "注意：控制面无鉴权，仅建议在可信网络使用",
+    )
     _args = _parser.parse_args()
 
-    # 安全边界：控制面只允许绑定回环地址,禁止 0.0.0.0 暴露到局域网
-    if not _is_loopback_host(_args.host):
+    # 安全边界：控制面默认只允许绑定回环地址，禁止 0.0.0.0 暴露到局域网；
+    # 容器/远程场景需显式 --allow-remote 放行（Dockerfile CMD 使用）
+    if not _is_loopback_host(_args.host) and not _args.allow_remote:
         _parser.error(
-            f"--host 只允许回环地址（127.x / ::1 / localhost），收到: {_args.host!r}"
+            f"--host 只允许回环地址（127.x / ::1 / localhost），收到: {_args.host!r}；"
+            "远程绑定请显式加 --allow-remote"
         )
 
     server = ThreadingHTTPServer((_args.host, _args.port), Handler)

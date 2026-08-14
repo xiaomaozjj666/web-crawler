@@ -523,6 +523,14 @@ class Fetcher(_FetcherCore):
         ``curl_cffi`` browser fingerprint to impersonate (default ``"chrome131"``).
     http2:
         Enable HTTP/2 (default ``True``).
+    max_redirects:
+        Maximum number of redirect hops to follow manually (default ``5``).
+        Each hop is re-validated against the allowed URL schemes (SSRF guard)
+        and cross-origin hops strip the ``Authorization`` header.
+    ja3_fingerprint:
+        Optional JA3 TLS-fingerprint string to override the impersonation
+        preset (e.g. a custom cipher/extension ordering). Only used on the
+        ``curl_cffi`` backend; ignored when falling back to ``httpx``.
     """
 
     # -- synchronous transport ----------------------------------------------

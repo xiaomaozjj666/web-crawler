@@ -1147,25 +1147,6 @@ class TestHandlerGetRoutes:
         resp = httpx.get(f"{http_server}/reverse/screenshot?id=sh3&step=1")
         assert resp.status_code >= 400
 
-    def test_get_reverse_events(self, http_server: str) -> None:
-        """GET /reverse/events?id=X&since=TS 返回增量事件。"""
-        rjob = _make_reverse_job(id="ev1")
-        rjob.append_event({"type": "evt1", "ts": 1.0})
-        rjob.append_event({"type": "evt2", "ts": 2.0})
-        rjob.append_event({"type": "evt3", "ts": 3.0})
-        ui.REVERSE_JOBS["ev1"] = rjob
-
-        resp = httpx.get(f"{http_server}/reverse/events?id=ev1&since=1.5")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data["events"]) == 2
-
-    def test_get_reverse_events_missing(self, http_server: str) -> None:
-        """GET /reverse/events?id=missing 返回错误。"""
-        resp = httpx.get(f"{http_server}/reverse/events?id=nonexistent")
-        assert resp.status_code == 200
-        assert "error" in resp.json()
-
     def test_get_404(self, http_server: str) -> None:
         """GET /unknown 返回 404。"""
         resp = httpx.get(f"{http_server}/unknown-path")
@@ -1636,19 +1617,6 @@ class TestHandlerScreenshotEdge:
 
         resp = httpx.get(f"{http_server}/reverse/screenshot?id=sn1&step=99")
         assert resp.status_code >= 400
-
-
-class TestHandlerEventsEdge:
-    def test_events_invalid_since(self, http_server: str) -> None:
-        """since 参数非数字时回退为 0。"""
-        rjob = _make_reverse_job(id="ei1")
-        rjob.append_event({"type": "evt", "ts": 1.0})
-        ui.REVERSE_JOBS["ei1"] = rjob
-
-        resp = httpx.get(f"{http_server}/reverse/events?id=ei1&since=notanumber")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data["events"]) == 1
 
 
 class TestJobsCleanup:
