@@ -137,11 +137,13 @@ class QuotesSpider(Spider):
     """抓取 quotes.toscrape.com 的示范爬虫。
 
     这是专门给学习者用的沙盒站点，适合演示。
+
+    注意：爬虫引擎只认 ``run(max_requests=N)`` 的 kwarg（见 demo_5_spider），
+    类属性 ``max_requests`` 不会生效，所以这里不再声明它。
     """
 
     start_urls = ["https://quotes.toscrape.com/"]
     allowed_domains = ["quotes.toscrape.com"]
-    max_requests = 3  # 限制只抓 3 页，避免示范跑太久
 
     def parse(self, response):
         """首页及翻页回调。"""
@@ -165,7 +167,8 @@ def demo_5_spider() -> None:
     print("\n=== 场景 5：Spider 框架 ===")
     with Fetcher(impersonate="chrome131", timeout=15.0) as fetcher:
         spider = QuotesSpider(fetcher=fetcher)
-        results = spider.run()
+        # 限制只抓 3 页，避免示范跑太久（max_requests 是 run() 的 kwarg）
+        results = spider.run(max_requests=3)
 
     print(f"  抓取到 {len(results)} 条引言，前 3 条：")
     for item in results[:3]:

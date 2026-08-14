@@ -7,6 +7,7 @@ fetch（mock opener）以及 crawl 集成测试（mock fetch）。
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import sys
@@ -2126,10 +2127,10 @@ class TestDiscoverSitemapNested:
 
 class TestLoadConfigNotFound:
     def test_missing_file_exits(self, tmp_path: Path) -> None:
-        """配置文件不存在时 sys.exit(1)。"""
+        """配置文件不存在时 sys.exit(2)（配置错误码，区别于 1=取消）。"""
         with pytest.raises(SystemExit) as exc_info:
             cr.load_config_from_file(str(tmp_path / "nonexistent.json"))
-        assert exc_info.value.code == 1
+        assert exc_info.value.code == 2
 
 
 # ========== is_video_candidate ==========
@@ -3293,6 +3294,41 @@ class TestCrawlJsonlWriteException:
         # 即使 JSONL 写入失败也返回 0
         assert exit_code == 0
 
+    def test_jsonl_append_and_finalize_fail(self, tmp_path: Path) -> None:
+        """逐条追加与收尾 flush 失败时仅记 warning，不影响抓取。"""
+
+        class _FailingJsonlFile:
+            """write/flush 抛 OSError（模拟磁盘满），close 正常。"""
+
+            def write(self, s: str) -> int:
+                raise OSError("disk full")
+
+            def flush(self) -> None:
+                raise OSError("flush fail")
+
+            def close(self) -> None:
+                pass
+
+        html = b'<html><body><img src="https://example.com/img.png"></body></html>'
+        original_open = Path.open
+
+        def selective_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+            if "resources_manifest.jsonl" in str(self):
+                return _FailingJsonlFile()
+            return original_open(self, *args, **kwargs)
+
+        with (
+            patch.object(cr, "fetch", return_value=(html, "text/html")),
+            patch.object(Path, "open", selective_open),
+        ):
+            args = cr.build_parser().parse_args([
+                "--url", "https://example.com",
+                "--out", str(tmp_path),
+                "--workers", "1",
+            ])
+            exit_code = cr.crawl(args)
+        assert exit_code == 0
+
 
 class TestCrawlExtractTextEmpty:
     def test_extract_text_empty_content(self, tmp_path: Path) -> None:
@@ -3608,3 +3644,59 @@ class TestCrawlPostProcessingTolerance:
             ])
             exit_code = cr.crawl(args)
         assert exit_code == 0
+
+
+class TestConfigRoundTrip:
+    """--save-config → --load-config 往返兼容（save 产物可直接 load 运行）。"""
+
+    def test_save_config_contains_new_fields(self, tmp_path: Path) -> None:
+        """save 产物包含 include_pattern/stealth 等新增参数。"""
+        config_path = tmp_path / "roundtrip.json"
+        args = cr.build_parser().parse_args([
+            "--url", "https://example.com",
+            "--out", str(tmp_path),
+            "--workers", "2",
+            "--include-pattern", r"\.(jpg|png)$",
+            "--stealth",
+            "--impersonate", "chrome131",
+        ])
+        cr.save_config_to_file(args, str(config_path))
+        saved = json.loads(config_path.read_text(encoding="utf-8"))
+        assert saved["include_pattern"] == r"\.(jpg|png)$"
+        assert saved["stealth"] is True
+        assert saved["impersonate"] == "chrome131"
+        assert "proxy" in saved
+
+    def test_load_config_with_saved_file_does_not_crash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """save 产物 load 后可直接进入 crawl（缺省字段由 parser 默认值兜底）。"""
+        config_path = tmp_path / "roundtrip.json"
+        args = cr.build_parser().parse_args([
+            "--url", "https://example.com",
+            "--out", str(tmp_path),
+            "--workers", "1",
+        ])
+        cr.save_config_to_file(args, str(config_path))
+
+        # 用 main() 走真实 --load-config 路径：load 后不抛 AttributeError，
+        # crawl 收到完整 Namespace（含 include_pattern 等缺省字段）
+        captured: dict[str, object] = {}
+
+        def _fake_crawl(crawl_args: argparse.Namespace) -> int:
+            captured["args"] = crawl_args
+            return 0
+
+        monkeypatch.setattr("sys.argv", ["crawler", "--load-config", str(config_path)])
+        with (
+            patch.object(cr, "crawl", side_effect=_fake_crawl),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cr.main()
+        assert exc_info.value.code == 0
+        crawl_args = captured["args"]
+        assert isinstance(crawl_args, argparse.Namespace)
+        assert crawl_args.include_pattern is None  # 缺省字段存在
+        assert crawl_args.stealth is False
+        assert crawl_args.save_config is None  # 不再 AttributeError
+        assert crawl_args.url == "https://example.com"

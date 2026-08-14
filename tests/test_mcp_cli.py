@@ -1001,11 +1001,11 @@ def test_cmd_interactive_repl_alias(
 def test_main_no_command_prints_help_and_exits(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """无子命令时 main 打印帮助并以 0 退出。"""
+    """无子命令时 main 打印帮助并以 2 退出（缺必需命令属用法错误）。"""
     monkeypatch.setattr("sys.argv", ["web-crawler-reverse"])
     with pytest.raises(SystemExit) as exc_info:
         cli_module.main()
-    assert exc_info.value.code == 0
+    assert exc_info.value.code == 2
     captured = capsys.readouterr()
     assert "子命令" in captured.out or "usage" in captured.out.lower()
 

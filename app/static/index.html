@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Web Crawler 控制台</title>
+  <link rel="icon" href="data:,">
   <style>
     :root {
       --bg: #f6f7f9; --card: #fff; --border: #e3e7ee; --text: #111827;
@@ -13,6 +14,8 @@
       --accent-purple: #a855f7; --accent-orange: #f97316; --accent-blue: #3b82f6;
       --accent-green: #22c55e; --accent-yellow: #eab308; --accent-red: #ef4444;
       --shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
+      /* 历史 Tab / 结果弹窗（与 --card/--muted 同值，保持深色一致） */
+      --bg-card: #fff; --text-muted: #5b6472;
     }
     [data-theme="dark"] {
       --bg: #0f172a; --card: #1e293b; --border: #334155; --text: #f1f5f9;
@@ -20,6 +23,7 @@
       --primary: #3b82f6; --primary-hover: #60a5fa; --danger: #ef4444;
       --bar-bg: #334155; --bar-fill: #22c55e;
       --shadow: 0 1px 3px rgba(0,0,0,.3), 0 1px 2px rgba(0,0,0,.2);
+      --bg-card: #1e293b; --text-muted: #94a3b8;
     }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--text); font-family: "Microsoft YaHei", Arial, sans-serif; }
@@ -28,8 +32,8 @@
     .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
     .subtitle { color: var(--muted); margin: 0 0 18px; font-size: 14px; }
 
-    /* Tab 栏 */
-    .tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--border); margin-bottom: 18px; align-items: flex-end; }
+    /* Tab 栏（窄屏允许换行，避免文字裁切） */
+    .tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 2px solid var(--border); margin-bottom: 18px; align-items: flex-end; }
     .tab { background: none; border: 0; border-bottom: 3px solid transparent; padding: 10px 18px; font-size: 15px; font-weight: 600; cursor: pointer; color: var(--muted); border-radius: 0; transition: color .15s, border-color .15s; }
     .tab:hover { color: var(--text); }
     .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
@@ -235,7 +239,7 @@
           </div>
           <div class="row" style="margin-top:14px">
             <div><label for="timeout">超时秒数</label><input id="timeout" name="timeout" type="number" min="1" value="30"></div>
-            <div><label for="max_bytes">单文件上限（字节）</label><input id="max_bytes" name="max_bytes" type="number" min="0" value="0"></div>
+            <div><label for="max_bytes">单文件上限（字节，0 = 不限）</label><input id="max_bytes" name="max_bytes" type="number" min="0" value="0"></div>
             <div></div><div></div>
           </div>
 
@@ -405,7 +409,7 @@
           <section class="reverse-center">
             <div class="reverse-status-bar">
               <span class="step-counter">步数 <strong id="rev-current-step">0</strong>/<span id="rev-max-steps">20</span></span>
-              <span class="status-badge running" id="rev-status" role="status" aria-live="polite">等待启动</span>
+              <span class="status-badge" id="rev-status" role="status" aria-live="polite">等待启动</span>
             </div>
             <h3>执行轨迹 (Trace)</h3>
             <div id="rev-trace" class="trace-list" role="log" aria-live="polite" aria-label="执行轨迹">
@@ -530,10 +534,11 @@
       pauseButton.disabled = !active;
       cancelButton.disabled = !active;
     }
-    /* URL 校验：必须含 http(s):// 前缀 */
+    /* URL 校验：必须含 http(s):// 前缀
+       （注意：正则字面量中斜杠必须转义 \/，此前写 \\/ 会终止正则导致整段脚本 SyntaxError） */
     function validateUrl(value) {
       if (!value) { return 'URL 不能为空'; }
-      if (!/^https?:\\/\\/[^\\s]+$/i.test(value)) { return 'URL 必须以 http:// 或 https:// 开头'; }
+      if (!/^https?:\/\/[^\s]+$/i.test(value)) { return 'URL 必须以 http:// 或 https:// 开头'; }
       return null;
     }
     /* 状态查询失败重试计数器：连续失败 3 次后停止轮询 */
@@ -564,11 +569,10 @@
       bar.setAttribute('aria-valuenow', String(pct));
       statusEl.textContent = (result.status || '') + ' | ' + (result.processed_resources || 0) + '/' + (result.total_resources || 0) + ' | 页面 ' + (result.pages_scanned || 0) + ' | ' + (result.current_url || '');
       if (result.status === 'paused') { pauseButton.disabled = true; resumeButton.disabled = false; }
-      else { resumeButton.disabled = true; }
-      if (['done', 'error', 'cancelled', 'missing'].indexOf(result.status) >= 0) {
-        if (timer) { clearInterval(timer); timer = null; }
-        setRunning(false); pauseButton.disabled = true; resumeButton.disabled = true;
+      else if (['done', 'error', 'cancelled', 'missing'].indexOf(result.status) >= 0) {
+        pauseButton.disabled = true; resumeButton.disabled = true;
       }
+      else { pauseButton.disabled = false; resumeButton.disabled = true; }
     }
     form.addEventListener('submit', async function(event) {
       event.preventDefault();
@@ -600,7 +604,12 @@
     async function ctrl(path) {
       if (!jobId) return;
       try { await post(path + '?id=' + encodeURIComponent(jobId)); await poll(); }
-      catch(e) { statusEl.textContent = '操作失败：' + e.message; }
+      catch(e) {
+        /* 写入状态行 + 日志区：状态行会被下次 poll 覆盖，日志区持久可见 */
+        statusEl.textContent = '操作失败：' + e.message;
+        if (log.textContent) { log.textContent += '\\n操作失败：' + e.message; }
+        else { log.textContent = '操作失败：' + e.message; }
+      }
     }
     pauseButton.onclick = function() { ctrl('/pause'); };
     resumeButton.onclick = function() { ctrl('/resume'); };
@@ -692,33 +701,47 @@
         var isError = s.error || (errorScreenshot && s.path === errorScreenshot);
         var imgUrl = '/reverse/screenshot?id=' + encodeURIComponent(jobId) + '&step=' + s.step + (isError ? '&error=1' : '');
         var label = 'Step ' + s.step + (isError ? ' (错误)' : '');
-        return '<div class="screenshot-card' + (isError ? ' error' : '') + '" data-src="' + imgUrl + '">' +
+        return '<div class="screenshot-card' + (isError ? ' error' : '') + '" data-src="' + imgUrl + '" role="button" tabindex="0" aria-label="放大 ' + escapeHtml(label) + '">' +
           '<img src="' + imgUrl + '" alt="' + escapeHtml(label) + '" loading="lazy">' +
           '<div class="screenshot-label">' + escapeHtml(label) + '</div>' +
           '</div>';
       }).join('');
       wrap.innerHTML = html;
-      /* 点击放大 */
+      /* 点击放大（含键盘 Enter/Space 触发） */
       wrap.querySelectorAll('.screenshot-card').forEach(function(card) {
-        card.onclick = function() {
+        var open = function() {
           var src = card.getAttribute('data-src');
           openScreenshotModal(src);
+        };
+        card.onclick = open;
+        card.onkeydown = function(e) {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
         };
       });
     }
 
-    /* 截图放大弹窗 */
+    /* 截图放大弹窗（Esc 关闭，焦点归还触发元素） */
     var screenshotModal = document.getElementById('rev-screenshot-modal');
     var screenshotModalImg = document.getElementById('rev-screenshot-modal-img');
+    var screenshotModalOpener = null;
     function openScreenshotModal(src) {
       screenshotModalImg.src = src;
       screenshotModal.classList.add('show');
+      screenshotModalOpener = document.activeElement;
     }
     function closeScreenshotModal() {
       screenshotModal.classList.remove('show');
       screenshotModalImg.src = '';
+      if (screenshotModalOpener) { try { screenshotModalOpener.focus(); } catch(_) {} screenshotModalOpener = null; }
     }
     screenshotModal.onclick = closeScreenshotModal;
+    /* 全局 Esc：关闭截图/结果弹窗 */
+    document.addEventListener('keydown', function(e) {
+      if (e.key !== 'Escape') return;
+      if (screenshotModal && screenshotModal.classList.contains('show')) { closeScreenshotModal(); return; }
+      var resultsModal = document.getElementById('results-modal');
+      if (resultsModal && resultsModal.style.display === 'block') { closeResults(); }
+    });
 
     async function pollReverse() {
       if (!currentReverseJobId) return;
@@ -840,6 +863,10 @@
         try {
           var data = JSON.parse(e.data);
           updateReverseUI(data);
+          /* 终态快照含截图列表：SSE 主路径也需渲染（此前只有轮询降级路径能出图） */
+          if (!reverseLogCleared) {
+            renderScreenshots(data.screenshots, data.error_screenshot, currentReverseJobId);
+          }
         } catch(err) {}
         if (reverseSSE) { reverseSSE.close(); reverseSSE = null; }
       });
@@ -909,7 +936,13 @@
       statusBadge.className = 'status-badge ' + (data.status || '');
       document.getElementById('rev-stat-steps').textContent = data.current_step || 0;
       document.getElementById('rev-stat-avg-ms').textContent = Math.round(data.avg_step_ms || 0) + ' ms';
-      var elapsed = Math.max(0, Math.floor((Date.now() / 1000) - (data.created_at || 0)));
+      /* 总耗时：终态用 finished_at 固定值，running 才显示动态墙钟值 */
+      var elapsed;
+      if (['done','error','cancelled','missing','stopped'].indexOf(data.status) >= 0 && data.finished_at) {
+        elapsed = Math.max(0, Math.floor(data.finished_at - (data.created_at || 0)));
+      } else {
+        elapsed = Math.max(0, Math.floor((Date.now() / 1000) - (data.created_at || 0)));
+      }
       document.getElementById('rev-stat-elapsed').textContent = elapsed + 's';
       document.getElementById('rev-stat-hooks').textContent = data.hook_count || 0;
       document.getElementById('rev-stat-net').textContent = data.network_count != null ? data.network_count : (data.network_requests || []).length;
@@ -1238,6 +1271,7 @@
           <option value="all">全部状态</option>
           <option value="done">已完成</option>
           <option value="running">运行中</option>
+          <option value="paused">已暂停</option>
           <option value="error">出错</option>
           <option value="cancelled">已取消</option>
         </select>
@@ -1283,7 +1317,8 @@
     function fmtSize(bytes) {
       if (bytes < 1024) return bytes + ' B';
       if (bytes < 1048576) return (bytes/1024).toFixed(1) + ' KB';
-      return (bytes/1048576).toFixed(1) + ' MB';
+      if (bytes < 1073741824) return (bytes/1048576).toFixed(1) + ' MB';
+      return (bytes/1073741824).toFixed(1) + ' GB';
     }
     function fmtTime(ts) {
       if (!ts) return '-';
@@ -1297,10 +1332,14 @@
     function loadHistory(page) {
       if (page) historyPage = page;
       var filter = document.getElementById('history-filter').value;
-      fetch('/jobs?page=' + historyPage + '&page_size=15&status=' + filter)
-        .then(function(r) { return r.json(); })
+      var list = document.getElementById('history-list');
+      list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted,#888)">加载中...</div>';
+      fetch('/jobs?page=' + historyPage + '&page_size=15&status=' + encodeURIComponent(filter))
+        .then(function(r) {
+          if (!r.ok) { throw new Error('HTTP ' + r.status); }
+          return r.json();
+        })
         .then(function(data) {
-          var list = document.getElementById('history-list');
           list.innerHTML = '';
           if (!data.tasks.length) {
             list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted,#888)">暂无任务</div>';
@@ -1312,30 +1351,35 @@
             card.innerHTML =
               '<div style="width:8px;height:36px;border-radius:4px;background:' + statusColor(t.status) + ';flex-shrink:0"></div>' +
               '<div style="flex:1;min-width:0">' +
-                '<div style="font-weight:600;color:var(--text,#222);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (t.url || '-') + '</div>' +
+                '<div style="font-weight:600;color:var(--text,#222);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(t.url || '-') + '</div>' +
                 '<div style="font-size:12px;color:var(--text-muted,#888);margin-top:2px">' +
                   fmtTime(t.created_at) + ' · ' + t.processed_resources + '/' + t.total_resources + ' 资源 · ' + t.pages_scanned + ' 页' +
                 '</div>' +
               '</div>' +
-              '<span style="font-size:12px;font-weight:600;color:' + statusColor(t.status) + ';padding:2px 8px;border-radius:4px;background:' + statusColor(t.status) + '15">' + t.status + '</span>' +
+              '<span style="font-size:12px;font-weight:600;color:' + statusColor(t.status) + ';padding:2px 8px;border-radius:4px;background:' + statusColor(t.status) + '15">' + escapeHtml(t.status) + '</span>' +
               '<div style="display:flex;gap:6px">' +
-                (t.status === 'done' ? '<button data-results-id="' + t.id + '" data-results-url="' + (t.url||'').replace(/"/g,'&quot;') + '" class="btn-results" style="padding:4px 10px;border-radius:4px;border:1px solid var(--border,#ddd);background:var(--bg-card,#fff);color:var(--text,#222);cursor:pointer;font-size:12px">查看结果</button>' : '') +
-                '<button data-delete-id="' + t.id + '" class="btn-delete" style="padding:4px 10px;border-radius:4px;border:1px solid #ef4444;background:transparent;color:#ef4444;cursor:pointer;font-size:12px">删除</button>' +
+                (t.status === 'done' ? '<button data-results-id="' + escapeHtml(t.id) + '" data-results-url="' + escapeHtml(t.url || '') + '" class="btn-results" style="padding:4px 10px;border-radius:4px;border:1px solid var(--border,#ddd);background:var(--bg-card,#fff);color:var(--text,#222);cursor:pointer;font-size:12px">查看结果</button>' : '') +
+                '<button data-delete-id="' + escapeHtml(t.id) + '" class="btn-delete" style="padding:4px 10px;border-radius:4px;border:1px solid #ef4444;background:transparent;color:#ef4444;cursor:pointer;font-size:12px">删除</button>' +
               '</div>';
             list.appendChild(card);
           });
-          // 分页
+          // 分页（0 条时不渲染页码）
           var pg = document.getElementById('history-pagination');
           pg.innerHTML = '';
           var totalPages = Math.ceil(data.total / data.page_size);
-          for (var i = 1; i <= Math.max(1, totalPages); i++) {
-            var btn = document.createElement('button');
-            btn.textContent = i;
-            btn.onclick = function(p) { return function() { loadHistory(p); }; }(i);
-            btn.style.cssText = 'padding:4px 12px;border-radius:4px;border:1px solid var(--border,#ddd);background:' + (i === historyPage ? '#3b82f6' : 'var(--bg-card,#fff)') + ';color:' + (i === historyPage ? '#fff' : 'var(--text,#222)') + ';cursor:pointer;font-size:13px';
-            pg.appendChild(btn);
+          if (totalPages > 0) {
+            for (var i = 1; i <= totalPages; i++) {
+              var btn = document.createElement('button');
+              btn.textContent = i;
+              btn.onclick = function(p) { return function() { loadHistory(p); }; }(i);
+              btn.style.cssText = 'padding:4px 12px;border-radius:4px;border:1px solid var(--border,#ddd);background:' + (i === historyPage ? '#3b82f6' : 'var(--bg-card,#fff)') + ';color:' + (i === historyPage ? '#fff' : 'var(--text,#222)') + ';cursor:pointer;font-size:13px';
+              pg.appendChild(btn);
+            }
           }
           document.getElementById('history-total').textContent = '共 ' + data.total + ' 个任务';
+        })
+        .catch(function(err) {
+          list.innerHTML = '<div style="text-align:center;padding:40px;color:#ef4444">加载失败：' + escapeHtml(err.message) + '，请刷新重试</div>';
         });
     }
 
@@ -1345,7 +1389,8 @@
         .then(function(r) { return r.json(); })
         .then(function(data) {
           if (data.ok) loadHistory(); else alert('删除失败');
-        });
+        })
+        .catch(function(err) { alert('删除失败：' + err.message); });
     }
 
     // 事件委托：点击查看结果/删除按钮
@@ -1374,7 +1419,10 @@
       var url = '/jobs/' + resultsTaskId + '/results?page=' + resultsPage + '&page_size=50';
       if (search) url += '&q=' + encodeURIComponent(search);
       fetch(url)
-        .then(function(r) { return r.json(); })
+        .then(function(r) {
+          if (!r.ok) { throw new Error('HTTP ' + r.status); }
+          return r.json();
+        })
         .then(function(data) {
           var body = document.getElementById('results-body');
           body.innerHTML = '';
@@ -1384,25 +1432,32 @@
           data.results.forEach(function(r) {
             var tr = document.createElement('tr');
             tr.style.borderBottom = '1px solid var(--border,#eee)';
+            /* 结果字段来自被抓站点（content_type/status/url 等），必须转义防存储型 XSS */
             tr.innerHTML =
-              '<td style="padding:8px;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (r.url||'') + '">' + (r.url||'-') + '</td>' +
-              '<td style="padding:8px">' + (r.content_type||'-') + '</td>' +
-              '<td style="padding:8px">' + fmtSize(r.bytes||0) + '</td>' +
-              '<td style="padding:8px">' + (r.category||'-') + '</td>' +
-              '<td style="padding:8px;font-size:12px;color:' + (r.status.startsWith('ok') ? '#16a34a' : '#ef4444') + '">' + (r.status||'-') + '</td>';
+              '<td style="padding:8px;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(r.url || '') + '">' + escapeHtml(r.url || '-') + '</td>' +
+              '<td style="padding:8px">' + escapeHtml(r.content_type || '-') + '</td>' +
+              '<td style="padding:8px">' + fmtSize(r.bytes || 0) + '</td>' +
+              '<td style="padding:8px">' + escapeHtml(r.category || '-') + '</td>' +
+              '<td style="padding:8px;font-size:12px;color:' + (String(r.status).startsWith('ok') ? '#16a34a' : '#ef4444') + '">' + escapeHtml(r.status || '-') + '</td>';
             body.appendChild(tr);
           });
-          // 分页
+          // 分页（0 条时不渲染页码）
           var pg = document.getElementById('results-pagination');
           pg.innerHTML = '';
           var totalPages = Math.ceil(data.total / data.page_size);
-          for (var i = 1; i <= Math.max(1, totalPages); i++) {
-            var btn = document.createElement('button');
-            btn.textContent = i;
-            btn.onclick = function(p) { return function() { loadResults(p); }; }(i);
-            btn.style.cssText = 'padding:4px 12px;border-radius:4px;border:1px solid var(--border,#ddd);background:' + (i === resultsPage ? '#3b82f6' : 'var(--bg-card,#fff)') + ';color:' + (i === resultsPage ? '#fff' : 'var(--text,#222)') + ';cursor:pointer;font-size:13px';
-            pg.appendChild(btn);
+          if (totalPages > 0) {
+            for (var i = 1; i <= totalPages; i++) {
+              var btn = document.createElement('button');
+              btn.textContent = i;
+              btn.onclick = function(p) { return function() { loadResults(p); }; }(i);
+              btn.style.cssText = 'padding:4px 12px;border-radius:4px;border:1px solid var(--border,#ddd);background:' + (i === resultsPage ? '#3b82f6' : 'var(--bg-card,#fff)') + ';color:' + (i === resultsPage ? '#fff' : 'var(--text,#222)') + ';cursor:pointer;font-size:13px';
+              pg.appendChild(btn);
+            }
           }
+        })
+        .catch(function(err) {
+          var body = document.getElementById('results-body');
+          body.innerHTML = '<tr><td colspan="5" style="padding:24px;text-align:center;color:#ef4444">加载失败：' + escapeHtml(err.message) + '</td></tr>';
         });
     }
 
