@@ -297,3 +297,16 @@ def test_attrs_contains_case_insensitive() -> None:
     assert "content-type" in a
     assert "CONTENT-TYPE" in a
     assert "x-missing" not in a
+
+
+def test_ensure_list_passes_through_generators() -> None:
+    """ensure_list 对生成器/range 等任意 Iterable 透传（Fix6）。"""
+    assert ensure_list(iter([1, 2])) == [1, 2]
+    assert ensure_list(range(3)) == [0, 1, 2]
+    assert sorted(ensure_list({1, 2})) == [1, 2]
+
+
+def test_ensure_list_keeps_str_and_bytes_as_single_item() -> None:
+    """str/bytes 虽可迭代，但作为单个值包裹。"""
+    assert ensure_list("ab") == ["ab"]
+    assert ensure_list(b"ab") == [b"ab"]

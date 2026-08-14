@@ -702,3 +702,112 @@ def test_run_recorder_records_property_returns_copy() -> None:
     records = rec.records
     records.append(ActionRecord(step=99, action_type="fake"))
     assert len(rec.records) == 1
+
+
+# ---------------------------------------------------------------------------
+# 扩展：编译产物必须是合法 Python（SyntaxError 回归）
+# ---------------------------------------------------------------------------
+
+
+def _compile_ok(src: str) -> None:
+    """断言编译产物是合法 Python 源码。"""
+    compile(src, "<replay_script>", "exec")
+
+
+def test_compile_extract_with_result_is_valid_python() -> None:
+    """带 result_value 的 extract 产物可被 compile（原 {param_name!r} 破句法）。"""
+    rec = RunRecorder()
+    rec.set_target("https://target.example/")
+    rec.record(step=1, action_type="navigate", params={"url": "https://target.example/"})
+    rec.record(
+        step=2,
+        action_type="extract",
+        params={"param_name": "sign"},
+        result_value="abcdef",
+    )
+    script = rec.compile_script()
+    _compile_ok(script)
+    # 断言消息应使用安全字面量（不含裸引号拼接）
+    assert 'assert _found is not None, "param sign not found in hook data"' in script
+
+
+def test_compile_type_with_newline_text_is_valid_python() -> None:
+    """type 文本含换行时产物仍可编译。"""
+    rec = RunRecorder()
+    rec.record(
+        step=1,
+        action_type="type",
+        params={"selector": "#q", "text": "line1\nline2"},
+    )
+    script = rec.compile_script()
+    _compile_ok(script)
+    assert "\\n" in script
+
+
+def test_compile_extract_value_with_newline_is_valid_python() -> None:
+    """extract 结果值含换行时，返回值字面量仍可编译。"""
+    rec = RunRecorder()
+    rec.record(
+        step=1,
+        action_type="extract",
+        params={"param_name": "body"},
+        result_value="a\nb",
+    )
+    script = rec.compile_script()
+    _compile_ok(script)
+
+
+def test_compile_scroll_selector_with_quote_is_valid_python() -> None:
+    """scroll 的 selector 含单引号/双引号时产物仍可编译。"""
+    rec = RunRecorder()
+    rec.record(
+        step=1,
+        action_type="scroll",
+        params={"selector": "div[data-x='it\\'s']", "y": 100},
+    )
+    script = rec.compile_script()
+    _compile_ok(script)
+
+
+def test_compile_url_with_newline_is_valid_python() -> None:
+    """navigate URL 含换行等控制符时产物仍可编译。"""
+    rec = RunRecorder()
+    rec.record(
+        step=1,
+        action_type="navigate",
+        params={"url": "https://x.example/\npath"},
+    )
+    script = rec.compile_script()
+    _compile_ok(script)
+
+
+def test_compile_empty_records_self_check_passes() -> None:
+    """空记录产物也应能通过 compile 自检。"""
+    script = RunRecorder().compile_script()
+    _compile_ok(script)
+
+
+def test_run_recorder_update_last_updates_current_record() -> None:
+    """update_last 只更新最近一条记录，不误标上一步。"""
+    rec = RunRecorder()
+    rec.record(step=1, action_type="wait")
+    rec.record(step=2, action_type="click", params={"selector": "#x"})
+    rec.update_last(success=False, result_value=None)
+    records = rec.records
+    assert records[0].success is True
+    assert records[1].success is False
+    # 空记录时 update_last 不抛错
+    RunRecorder().update_last(success=False)
+
+
+def test_compile_syntax_error_raises_runtime_error(monkeypatch) -> None:
+    """编译产物含语法错误时抛 RuntimeError（不静默返回坏产物）。"""
+    from web_crawler.ai.recorder import ScriptCompiler
+
+    def _bad_compiler(rec: ActionRecord, **_: object) -> list[str]:
+        return ["    this is not valid python !!!"]
+
+    monkeypatch.setattr(ScriptCompiler, "_compile_click", staticmethod(_bad_compiler))
+    compiler = ScriptCompiler()
+    with pytest.raises(RuntimeError, match="compiled replay script invalid"):
+        compiler.compile([ActionRecord(step=1, action_type="click", params={"selector": "#x"})])

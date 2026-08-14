@@ -28,6 +28,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from web_crawler.ai.captcha import CaptchaType
+from web_crawler.ai.guardrails import GuardrailAction, GuardrailResult
 from web_crawler.ai.llm import LLMResponse, ProviderCapabilities
 from web_crawler.ai.reverse_agent import (
     Action,
@@ -335,6 +336,7 @@ class TestReverseAgentConfig:
         assert cfg.enable_screenshot is True
         assert cfg.humanize_input is True
         assert cfg.enable_image_captcha is True
+        assert cfg.should_stop is None  # 默认不启用停止回调
 
 
 # ---------------------------------------------------------------------------
@@ -552,6 +554,18 @@ class TestObserve:
             assert obs.dom_summary == ""
             assert obs.captcha_type == CaptchaType.NONE
             assert obs.scripts == []
+        finally:
+            agent.close()
+
+    def test_observe_clears_network_log_after_read(self) -> None:
+        """_observe 每步只取增量请求并清空 _network_log，防止跨步累积。"""
+        agent = _make_agent()
+        try:
+            page = _SyncPage(url="https://x.example", content_html="<html></html>")
+            agent._network_log.append({"url": "https://n.example", "method": "GET"})
+            obs = agent._observe(page, step=1)
+            assert len(obs.network_requests) == 1
+            assert agent._network_log == []
         finally:
             agent.close()
 
@@ -884,6 +898,7 @@ class TestFallbackAction:
             agent.close()
 
     def test_fallback_with_no_target_params(self) -> None:
+        """无目标参数时 fallback 降级为 wait，避免空操作 extract 空转。"""
         agent = _make_agent()
         try:
             obs = Observation(
@@ -896,8 +911,8 @@ class TestFallbackAction:
                 dom_summary="d",
             )
             action = agent._fallback_action(obs)
-            assert action.action_type == "extract"
-            assert action.params == {"param_name": ""}
+            assert action.action_type == "wait"
+            assert action.params == {"seconds": 2.0}
         finally:
             agent.close()
 
@@ -1029,18 +1044,19 @@ class TestActBranches:
         finally:
             agent.close()
 
-    def test_act_unknown_action_returns_none(self) -> None:
+    def test_act_unknown_action_raises(self) -> None:
+        """未知动作类型应抛 ValueError（进入 act_error 路径写 history）。"""
         agent = _make_agent()
         try:
             page = MagicMock()
             action = Action(action_type="totally_unknown", params={})
-            result = agent._act(page, action, step=1)
-            assert result is None
+            with pytest.raises(ValueError, match="未知动作类型"):
+                agent._act(page, action, step=1)
         finally:
             agent.close()
 
     def test_act_done_returns_none(self) -> None:
-        """done 在 _act 中无专门分支，应返回 None（主循环在外层处理 done）。"""
+        """done 在 _act 中无专门执行分支，应返回 None（主循环在外层处理 done）。"""
         agent = _make_agent()
         try:
             page = MagicMock()
@@ -1164,12 +1180,13 @@ class TestActAsyncBranches:
 
     @pytest.mark.asyncio
     async def test_act_async_unknown_action(self) -> None:
+        """未知动作类型应抛 ValueError（进入 act_error 路径写 history）。"""
         agent = _make_agent()
         try:
             page = MagicMock()
             action = Action(action_type="totally_unknown", params={})
-            result = await agent._act_async(page, action, step=1)
-            assert result is None
+            with pytest.raises(ValueError, match="未知动作类型"):
+                await agent._act_async(page, action, step=1)
         finally:
             agent.close()
 
@@ -2579,6 +2596,19 @@ class TestFormatHookSummary:
         assert "k1=v1" in result
         assert "body:" in result
 
+    def test_truncates_long_header_values(self) -> None:
+        """header 值超过 200 字符应被截断，防止 token 膨胀与提示注入。"""
+        long_value = "x" * 500
+        result = ReverseAgent._format_hook_summary(
+            {
+                "records": [
+                    {"type": "fetch", "method": "GET", "url": "u", "headers": {"X-Long": long_value}}
+                ]
+            }
+        )
+        assert "x" * 200 in result
+        assert "x" * 201 not in result
+
     def test_limits_to_last_20_records(self) -> None:
         records = [{"type": "fetch", "method": "GET", "url": f"u-{i}"} for i in range(30)]
         result = ReverseAgent._format_hook_summary({"records": records})
@@ -2871,9 +2901,12 @@ class TestTryRecoverPage:
         agent = _make_agent()
         try:
             # 让 _create_page 返回 mock 对象
-            agent._create_page = MagicMock(return_value=(MagicMock(), MagicMock()))  # type: ignore[assignment]
-            result = agent._try_recover_page("https://x.example")
-            assert result is True
+            new_page = MagicMock()
+            agent._create_page = MagicMock(return_value=(MagicMock(), new_page))  # type: ignore[assignment]
+            ok, page = agent._try_recover_page("https://x.example")
+            assert ok is True
+            assert page is new_page
+            assert agent._page is new_page
             agent._create_page.assert_called_once()
         finally:
             agent.close()
@@ -2882,8 +2915,9 @@ class TestTryRecoverPage:
         agent = _make_agent()
         try:
             agent._create_page = MagicMock(side_effect=RuntimeError("create fail"))  # type: ignore[assignment]
-            result = agent._try_recover_page("https://x.example")
-            assert result is False
+            ok, page = agent._try_recover_page("https://x.example")
+            assert ok is False
+            assert page is None
         finally:
             agent.close()
 
@@ -2895,8 +2929,10 @@ class TestTryRecoverPage:
             page = MagicMock()
             page.goto = AsyncMock()
             agent._create_page_async = AsyncMock(return_value=(ctx, page))  # type: ignore[assignment]
-            result = await agent._try_recover_page_async("https://x.example")
-            assert result is True
+            ok, new_page = await agent._try_recover_page_async("https://x.example")
+            assert ok is True
+            assert new_page is page
+            assert agent._page is page
         finally:
             agent.close()
 
@@ -2905,8 +2941,9 @@ class TestTryRecoverPage:
         agent = _make_agent()
         try:
             agent._create_page_async = AsyncMock(side_effect=RuntimeError("create fail"))  # type: ignore[assignment]
-            result = await agent._try_recover_page_async("https://x.example")
-            assert result is False
+            ok, page = await agent._try_recover_page_async("https://x.example")
+            assert ok is False
+            assert page is None
         finally:
             agent.close()
 
@@ -2917,6 +2954,23 @@ class TestTryRecoverPage:
 
 
 class TestAnalyzeCapturedJs:
+    @staticmethod
+    def _fake_httpx_client(responses: list[Any]) -> MagicMock:
+        """构造带 __enter__ 自返的 httpx.Client mock，get 依次返回给定响应。"""
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.get.side_effect = responses
+        return client
+
+    @staticmethod
+    def _fake_resp(url: str, status: int = 200, text: str = "") -> MagicMock:
+        resp = MagicMock()
+        resp.status_code = status
+        resp.text = text
+        resp.url = url
+        resp.content = text.encode("utf-8")
+        return resp
+
     def test_returns_none_when_no_scripts(self) -> None:
         agent = _make_agent()
         try:
@@ -2926,11 +2980,12 @@ class TestAnalyzeCapturedJs:
             agent.close()
 
     def test_returns_none_when_all_scripts_fail_to_fetch(self) -> None:
-        """httpx.get 抛异常时所有 fragment 失败，返回 None。"""
+        """httpx.Client.get 抛异常时所有 fragment 失败，返回 None。"""
         agent = _make_agent()
         try:
-            with patch("httpx.get") as mock_get:
-                mock_get.side_effect = RuntimeError("network fail")
+            client = self._fake_httpx_client([])
+            client.get.side_effect = RuntimeError("network fail")
+            with patch("httpx.Client", return_value=client):
                 result = agent._analyze_captured_js(
                     ["https://x.example/a.js", "https://x.example/b.js"], ["sign"]
                 )
@@ -2941,11 +2996,10 @@ class TestAnalyzeCapturedJs:
     def test_returns_none_when_status_not_200(self) -> None:
         agent = _make_agent()
         try:
-            with patch("httpx.get") as mock_get:
-                resp = MagicMock()
-                resp.status_code = 404
-                resp.text = ""
-                mock_get.return_value = resp
+            client = self._fake_httpx_client(
+                [self._fake_resp("https://x.example/a.js", status=404)]
+            )
+            with patch("httpx.Client", return_value=client):
                 result = agent._analyze_captured_js(["https://x.example/a.js"], ["sign"])
                 assert result is None
         finally:
@@ -2954,13 +3008,77 @@ class TestAnalyzeCapturedJs:
     def test_returns_none_when_text_empty(self) -> None:
         agent = _make_agent()
         try:
-            with patch("httpx.get") as mock_get:
-                resp = MagicMock()
-                resp.status_code = 200
-                resp.text = ""
-                mock_get.return_value = resp
+            client = self._fake_httpx_client([self._fake_resp("https://x.example/a.js")])
+            with patch("httpx.Client", return_value=client):
                 result = agent._analyze_captured_js(["https://x.example/a.js"], ["sign"])
                 assert result is None
+        finally:
+            agent.close()
+
+    def test_skips_unsafe_script_url(self) -> None:
+        """内网/localhost 或非白名单域的脚本 URL 不应被拉取。"""
+        agent = _make_agent()
+        try:
+            client = self._fake_httpx_client(
+                [self._fake_resp("http://127.0.0.1/a.js", status=200, text="code")]
+            )
+            with patch("httpx.Client", return_value=client):
+                result = agent._analyze_captured_js(["http://127.0.0.1/a.js"], ["sign"])
+                assert result is None
+            client.get.assert_not_called()
+        finally:
+            agent.close()
+
+    def test_skips_script_fetch_above_size_cap(self) -> None:
+        """超过内容大小上限的脚本应被跳过。"""
+        agent = _make_agent()
+        try:
+            big = self._fake_resp("https://x.example/big.js", text="x" * (agent._MAX_JS_FETCH_BYTES + 1))
+            client = self._fake_httpx_client([big])
+            with patch("httpx.Client", return_value=client):
+                result = agent._analyze_captured_js(["https://x.example/big.js"], ["sign"])
+                assert result is None
+        finally:
+            agent.close()
+
+    def test_skips_script_outside_allowed_domains(self) -> None:
+        """配置 allowed_domains 白名单时，白名单外脚本不应被拉取。"""
+        cfg = ReverseAgentConfig(
+            enable_screenshot=False,
+            enable_guard=False,
+            enable_judge=False,
+            enable_recorder=False,
+            planner_interval=None,
+            humanize_input=False,
+            allowed_domains=["example.com"],
+        )
+        agent = ReverseAgent(config=cfg, provider=StubProvider())
+        try:
+            client = self._fake_httpx_client(
+                [self._fake_resp("https://evil.com/a.js", text="code")]
+            )
+            with patch("httpx.Client", return_value=client):
+                result = agent._analyze_captured_js(["https://evil.com/a.js"], ["sign"])
+                assert result is None
+            client.get.assert_not_called()
+        finally:
+            agent.close()
+
+    @pytest.mark.asyncio
+    async def test_analyze_captured_js_async_skips_unsafe_url(self) -> None:
+        """异步路径同样拒绝内网脚本 URL（httpx.AsyncClient）。"""
+        agent = _make_agent()
+        try:
+            client = self._fake_httpx_client(
+                [self._fake_resp("http://127.0.0.1/a.js", text="code")]
+            )
+            client.__aenter__.return_value = client
+            with patch("httpx.AsyncClient", return_value=client):
+                result = await agent._analyze_captured_js_async(
+                    ["http://127.0.0.1/a.js"], ["sign"]
+                )
+                assert result is None
+            client.get.assert_not_called()
         finally:
             agent.close()
 
@@ -2977,14 +3095,13 @@ class TestAnalyzeCapturedJs:
             bad_result.inputs = []
             agent.analyzer.analyze_fragment = MagicMock(side_effect=[bad_result, good_result])  # type: ignore[assignment]
 
-            with patch("httpx.get") as mock_get:
-                resp1 = MagicMock()
-                resp1.status_code = 200
-                resp1.text = "var x = 1;"
-                resp2 = MagicMock()
-                resp2.status_code = 200
-                resp2.text = "var sign = function() {};"
-                mock_get.side_effect = [resp1, resp2]
+            client = self._fake_httpx_client(
+                [
+                    self._fake_resp("https://x.example/a.js", text="var x = 1;"),
+                    self._fake_resp("https://x.example/b.js", text="var sign = function() {};"),
+                ]
+            )
+            with patch("httpx.Client", return_value=client):
                 result = agent._analyze_captured_js(
                     ["https://x.example/a.js", "https://x.example/b.js"], ["sign"]
                 )
@@ -3004,11 +3121,13 @@ class TestAnalyzeCapturedJs:
                 side_effect=[RuntimeError("analyze fail"), good_result]
             )  # type: ignore[assignment]
 
-            with patch("httpx.get") as mock_get:
-                resp = MagicMock()
-                resp.status_code = 200
-                resp.text = "code"
-                mock_get.return_value = resp
+            client = self._fake_httpx_client(
+                [
+                    self._fake_resp("https://x.example/a.js", text="code"),
+                    self._fake_resp("https://x.example/b.js", text="code"),
+                ]
+            )
+            with patch("httpx.Client", return_value=client):
                 result = agent._analyze_captured_js(
                     ["https://x.example/a.js", "https://x.example/b.js"], []
                 )
@@ -3063,6 +3182,64 @@ class TestScreenshotHelpers:
                 lambda self: (_ for _ in ()).throw(RuntimeError("no tid"))
             )
             assert agent._screenshot_task_id() == "default"
+        finally:
+            agent.close()
+
+    def test_screenshot_filename_sanitized(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """task_id 含路径分隔符时应被清理，防止路径穿越。"""
+        cfg = ReverseAgentConfig(
+            enable_screenshot=True,
+            enable_guard=False,
+            enable_judge=False,
+            enable_recorder=False,
+            planner_interval=None,
+            humanize_input=False,
+        )
+        agent = ReverseAgent(config=cfg, provider=StubProvider())
+        try:
+            monkeypatch.chdir(tmp_path)
+            agent.checkpoint_manager.task_id = "../../evil"
+            page = MagicMock()
+            page.screenshot.return_value = b""
+            path = agent._take_screenshot(page, 1)
+            # 文件名中不应出现 "/" 或 ".."，分隔符被替换为 "_"
+            assert ".." not in path
+            assert "/" not in path.split(tmp_path.name)[-1]
+            assert path.endswith("_step1.png")
+        finally:
+            agent.close()
+
+    def test_screenshot_rotation_keeps_latest(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """超出保留上限时按任务清理最旧截图。"""
+        cfg = ReverseAgentConfig(
+            enable_screenshot=True,
+            enable_guard=False,
+            enable_judge=False,
+            enable_recorder=False,
+            planner_interval=None,
+            humanize_input=False,
+        )
+        agent = ReverseAgent(config=cfg, provider=StubProvider())
+        try:
+            monkeypatch.chdir(tmp_path)
+            agent.checkpoint_manager.task_id = "task-rot"
+            page = MagicMock()
+
+            def _fake_screenshot(*, path: str = "", **kwargs: Any) -> bytes:
+                Path(path).write_bytes(b"x")
+                return b"x"
+
+            page.screenshot = _fake_screenshot
+            # 预填超过上限的旧截图
+            out_dir = agent._screenshot_dir()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for i in range(agent._MAX_SCREENSHOTS_PER_TASK + 5):
+                (out_dir / f"task-rot_step{i}.png").write_bytes(b"x")
+            agent._take_screenshot(page, 999)
+            remaining = list(out_dir.glob("task-rot_step*.png"))
+            assert len(remaining) <= agent._MAX_SCREENSHOTS_PER_TASK
+            # 最新的 step999 应保留
+            assert (out_dir / "task-rot_step999.png").exists()
         finally:
             agent.close()
 
@@ -3339,5 +3516,258 @@ class TestResolveTab:
             agent._tabs = {"first": "p1", "second": "p2"}
             assert agent._resolve_tab(name=None, index=0) == "p1"
             assert agent._resolve_tab(name=None, index=1) == "p2"
+        finally:
+            agent.close()
+
+
+# ---------------------------------------------------------------------------
+# _do_new_tab / _do_new_tab_async：导航 URL 被护栏拒绝
+# ---------------------------------------------------------------------------
+
+
+class TestDoNewTabGuardDenied:
+    def _denied_result(self) -> GuardrailResult:
+        return GuardrailResult(
+            action=GuardrailAction.DENY,
+            matched_rules=["blocked_domain"],
+            details=["denied"],
+        )
+
+    def test_new_tab_guard_denied_skips_goto(self) -> None:
+        """护栏拒绝 new_tab 的导航 URL → 不 goto，仅发 guard.deny 事件。"""
+        agent = _make_agent(enable_guard=True)
+        try:
+            page = MagicMock()
+            new_page = MagicMock()
+            agent._context = MagicMock()
+            agent._context.new_page.return_value = new_page
+            agent.fetcher = MagicMock()
+            agent.guard.check_navigation_url = MagicMock(  # type: ignore[assignment,union-attr]
+                return_value=self._denied_result()
+            )
+            events: list[Any] = []
+            agent.event_bus.subscribe(events.append)
+            action = Action(
+                action_type="new_tab", params={"url": "https://evil.example", "name": "t1"}
+            )
+            agent._do_new_tab(page, action, step=1)
+            new_page.goto.assert_not_called()
+            assert any(getattr(e, "type", None) == "guard.deny" for e in events)
+            # 页面仍应切换到新标签
+            assert agent._page is new_page
+        finally:
+            agent.close()
+
+    @pytest.mark.asyncio
+    async def test_new_tab_async_guard_denied_skips_goto(self) -> None:
+        """异步路径护栏拒绝 new_tab 的导航 URL → 不 goto，仅发 guard.deny 事件。"""
+        agent = _make_agent(enable_guard=True)
+        try:
+            page = MagicMock()
+            new_page = MagicMock()
+            new_page.goto = AsyncMock()
+            agent._context = MagicMock()
+            agent._context.new_page = AsyncMock(return_value=new_page)
+            agent.fetcher = MagicMock()
+            agent.fetcher._setup_page_async = AsyncMock()
+            agent.guard.check_navigation_url = MagicMock(  # type: ignore[assignment,union-attr]
+                return_value=self._denied_result()
+            )
+            events: list[Any] = []
+            agent.event_bus.subscribe(events.append)
+            action = Action(
+                action_type="new_tab", params={"url": "https://evil.example", "name": "t1"}
+            )
+            with patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()):
+                await agent._do_new_tab_async(page, action, step=1)
+            new_page.goto.assert_not_called()
+            assert any(getattr(e, "type", None) == "guard.deny" for e in events)
+            assert agent._page is new_page
+        finally:
+            agent.close()
+
+
+# ---------------------------------------------------------------------------
+# _is_safe_script_url：SSRF 防护各分支
+# ---------------------------------------------------------------------------
+
+
+class TestIsSafeScriptUrl:
+    def test_invalid_url_returns_false(self) -> None:
+        """urlparse 解析失败（非法 IPv6 括号）→ 不安全。"""
+        agent = _make_agent()
+        try:
+            assert agent._is_safe_script_url("http://[::1") is False
+        finally:
+            agent.close()
+
+    def test_non_http_scheme_returns_false(self) -> None:
+        """非 http/https 方案（ftp/file/data）→ 不安全。"""
+        agent = _make_agent()
+        try:
+            assert agent._is_safe_script_url("ftp://example.com/a.js") is False
+            assert agent._is_safe_script_url("file:///etc/passwd") is False
+            assert agent._is_safe_script_url("data:text/javascript,alert(1)") is False
+        finally:
+            agent.close()
+
+    def test_empty_host_returns_false(self) -> None:
+        """host 为空（http:///path）→ 不安全。"""
+        agent = _make_agent()
+        try:
+            assert agent._is_safe_script_url("http:///a.js") is False
+        finally:
+            agent.close()
+
+    def test_private_link_local_ip_returns_false(self) -> None:
+        """内网/回环/链路本地 IP → 不安全。"""
+        agent = _make_agent()
+        try:
+            assert agent._is_safe_script_url("http://10.0.0.1/a.js") is False
+            assert agent._is_safe_script_url("http://127.0.0.1/a.js") is False
+            assert agent._is_safe_script_url("http://169.254.1.1/a.js") is False
+        finally:
+            agent.close()
+
+    def test_allowed_domains_wildcard_entry(self) -> None:
+        """白名单含 "*" 条目 → 任意域名放行。"""
+        agent = _make_agent(allowed_domains=["*", "example.com"])
+        try:
+            assert agent._is_safe_script_url("https://any.example/a.js") is True
+        finally:
+            agent.close()
+
+    def test_allowed_domains_subdomain_wildcard(self) -> None:
+        """白名单 "*.example.com" → 根域与子域命中。"""
+        agent = _make_agent(allowed_domains=["*.example.com"])
+        try:
+            assert agent._is_safe_script_url("https://example.com/a.js") is True
+            assert agent._is_safe_script_url("https://cdn.example.com/a.js") is True
+            assert agent._is_safe_script_url("https://evil.net/a.js") is False
+        finally:
+            agent.close()
+
+    def test_allowed_domains_exact_match(self) -> None:
+        """白名单精确域名命中。"""
+        agent = _make_agent(allowed_domains=["example.com"])
+        try:
+            assert agent._is_safe_script_url("https://example.com/a.js") is True
+            assert agent._is_safe_script_url("https://other.com/a.js") is False
+        finally:
+            agent.close()
+
+
+# ---------------------------------------------------------------------------
+# _analyze_captured_js 补充：重定向后目标不安全
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyzeCapturedJsRedirect:
+    def test_skips_redirect_to_unsafe_final_url(self) -> None:
+        """重定向后的最终 URL 不安全（内网 IP）→ 跳过该脚本。"""
+        agent = _make_agent()
+        try:
+            client = MagicMock()
+            client.__enter__.return_value = client
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.text = "var x = 1;"
+            resp.url = "http://169.254.169.254/latest"  # 重定向到链路本地
+            resp.content = b"var x = 1;"
+            client.get.side_effect = [resp]
+            with patch("httpx.Client", return_value=client):
+                result = agent._analyze_captured_js(["https://x.example/a.js"], ["sign"])
+                assert result is None
+        finally:
+            agent.close()
+
+    @pytest.mark.asyncio
+    async def test_analyze_captured_js_async_all_branches(self) -> None:
+        """异步路径覆盖重定向不安全/非200/超限/异常/成功各分支。"""
+        agent = _make_agent()
+        try:
+            good_result = MagicMock()
+            good_result.confidence = 0.9
+            good_result.inputs = ["sign-input"]
+            agent.analyzer.analyze_fragment = MagicMock(  # type: ignore[assignment]
+                return_value=good_result
+            )
+
+            def _resp(url: str, status: int = 200, text: str = "") -> MagicMock:
+                r = MagicMock()
+                r.status_code = status
+                r.text = text
+                r.url = url
+                r.content = text.encode("utf-8")
+                return r
+
+            redirect_bad = _resp("http://169.254.169.254/latest", text="x")
+            not_200 = _resp("https://x.example/b.js", status=404, text="nope")
+            too_big = _resp(
+                "https://x.example/c.js",
+                text="x" * (agent._MAX_JS_FETCH_BYTES + 1),
+            )
+            ok = _resp("https://x.example/d.js", text="var sign = function() {};")
+
+            client = AsyncMock()
+            client.__aenter__.return_value = client
+            client.__aexit__ = AsyncMock(return_value=False)
+            client.get.side_effect = [redirect_bad, not_200, too_big, ok, RuntimeError("boom")]
+            with patch("httpx.AsyncClient", return_value=client):
+                result = await agent._analyze_captured_js_async(
+                    [
+                        "https://x.example/a.js",
+                        "https://x.example/b.js",
+                        "https://x.example/c.js",
+                        "https://x.example/d.js",
+                        "https://x.example/e.js",
+                    ],
+                    ["sign"],
+                )
+                # 只有 ok 响应进入 fragments → 返回该分析结果
+                assert result is good_result
+        finally:
+            agent.close()
+
+
+# ---------------------------------------------------------------------------
+# _rotate_screenshots：清理异常容错
+# ---------------------------------------------------------------------------
+
+
+class TestRotateScreenshots:
+    def test_unlink_failure_swallowed(self) -> None:
+        """删除旧截图抛 OSError → 吞掉，不中断。"""
+
+        class _FakePath:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def __lt__(self, other: Any) -> bool:
+                return self.name < other.name
+
+            def unlink(self) -> None:
+                raise OSError("file locked")
+
+        class _FakeDir:
+            def glob(self, pattern: str) -> list[_FakePath]:
+                return [_FakePath(f"t_step{i}.png") for i in range(51)]
+
+        agent = _make_agent()
+        try:
+            agent._rotate_screenshots(_FakeDir(), "t")  # 不抛异常
+        finally:
+            agent.close()
+
+    def test_glob_failure_swallowed(self) -> None:
+        """glob 抛 OSError（目录不存在）→ 吞掉。"""
+
+        class _FakeDir:
+            def glob(self, pattern: str) -> list[Any]:
+                raise OSError("no such directory")
+
+        agent = _make_agent()
+        try:
+            agent._rotate_screenshots(_FakeDir(), "t")  # 不抛异常
         finally:
             agent.close()

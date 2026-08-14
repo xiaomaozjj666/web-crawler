@@ -600,3 +600,326 @@ def test_guard_action_to_dict_fallback_to_str() -> None:
     result = ActionGuard._action_to_dict(42)  # type: ignore[arg-type]
     assert result == {"action_type": "42"}
 
+
+# ===========================================================================
+# 扩展：new_tab 动作也应过 URL 护栏（防绕过）
+# ===========================================================================
+
+
+def test_guard_denies_new_tab_to_localhost() -> None:
+    """new_tab 导航到 localhost 应被拦截（原 navigate 独享检查的绕过）。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard(allow_localhost=False)
+    result = guard.check(
+        {"action_type": "new_tab", "params": {"url": "http://127.0.0.1/admin"}}
+    )
+    assert result.denied
+    assert "no-localhost-nav" in result.matched_rules
+
+
+def test_guard_denies_new_tab_non_https() -> None:
+    """new_tab 导航到 http 应被拦截。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard()
+    result = guard.check(
+        {"action_type": "new_tab", "params": {"url": "http://example.com/login"}}
+    )
+    assert result.denied
+    assert "https-only" in result.matched_rules
+
+
+def test_guard_new_tab_domain_whitelist() -> None:
+    """new_tab 跨白名单域名应被拦截，白名单内放行。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard(allowed_domains=["example.com"])
+    blocked = guard.check(
+        {"action_type": "new_tab", "params": {"url": "https://evil.com/x"}}
+    )
+    assert blocked.denied
+    assert "domain-whitelist" in blocked.matched_rules
+    ok = guard.check(
+        {"action_type": "new_tab", "params": {"url": "https://example.com/x"}}
+    )
+    assert not ok.denied
+
+
+def test_guard_check_navigation_url_api() -> None:
+    """check_navigation_url 对裸 URL 做 URL 类规则检查。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard(allowed_domains=["example.com"], allow_localhost=False)
+    assert guard.check_navigation_url("http://127.0.0.1/x").denied
+    assert guard.check_navigation_url("https://evil.com/x").denied
+    assert not guard.check_navigation_url("https://example.com/x").denied
+
+
+# ===========================================================================
+# 扩展：编码 IP（十进制/十六进制/八进制）SSRF 绕过
+# ===========================================================================
+
+
+def test_guard_blocks_decimal_encoded_ip() -> None:
+    """十进制编码的 127.0.0.1（2130706433）应被拦截。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard(allow_localhost=False)
+    result = guard.check(
+        {"action_type": "navigate", "params": {"url": "http://2130706433/"}}
+    )
+    assert result.denied
+    assert "no-localhost-nav" in result.matched_rules
+
+
+def test_guard_blocks_hex_encoded_ip() -> None:
+    """十六进制编码的 127.0.0.1（0x7f000001）应被拦截。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard(allow_localhost=False)
+    result = guard.check(
+        {"action_type": "navigate", "params": {"url": "http://0x7f000001/"}}
+    )
+    assert result.denied
+
+
+def test_guard_blocks_octal_dotted_ip() -> None:
+    """八进制点分 127.0.0.1（0177.0.0.1）应被拦截。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard(allow_localhost=False)
+    result = guard.check(
+        {"action_type": "navigate", "params": {"url": "http://0177.0.0.1/"}}
+    )
+    assert result.denied
+
+
+def test_guard_encoded_ip_new_tab_also_blocked() -> None:
+    """new_tab 使用编码 IP 同样应被拦截。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    guard = ActionGuard(allow_localhost=False)
+    result = guard.check(
+        {"action_type": "new_tab", "params": {"url": "http://2130706433/"}}
+    )
+    assert result.denied
+
+
+# ===========================================================================
+# 扩展：CONFIRM 无 on_confirm 时降级 DENY + async on_confirm
+# ===========================================================================
+
+
+def test_guard_confirm_without_callback_denies() -> None:
+    """CONFIRM 规则命中但未提供 on_confirm 时，应降级为 DENY 而非放行。"""
+    from web_crawler.ai.guardrails import ActionGuard, GuardrailAction, GuardrailRule
+
+    custom = GuardrailRule(
+        name="needs-confirm",
+        check=lambda action, ctx: (True, "needs user confirm"),
+        action=GuardrailAction.CONFIRM,
+    )
+    guard = ActionGuard(extra_rules=[custom])  # 无 on_confirm
+    result = guard.check({"action_type": "navigate", "params": {"url": "https://example.com"}})
+    assert result.denied
+
+
+def test_guard_check_async_awaits_coroutine_confirm() -> None:
+    """check_async 对协程版 on_confirm 应 await 而非当 truthy 处理。"""
+    import asyncio
+
+    from web_crawler.ai.guardrails import ActionGuard, GuardrailAction, GuardrailRule
+
+    confirmed: list[str] = []
+
+    async def on_confirm(name: str, detail: str) -> bool:
+        confirmed.append(name)
+        return True
+
+    custom = GuardrailRule(
+        name="needs-confirm-async",
+        check=lambda action, ctx: (True, "needs confirm"),
+        action=GuardrailAction.CONFIRM,
+    )
+    guard = ActionGuard(extra_rules=[custom], on_confirm=on_confirm)
+    result = asyncio.run(
+        guard.check_async({"action_type": "navigate", "params": {"url": "https://example.com"}})
+    )
+    assert not result.denied
+    assert confirmed == ["needs-confirm-async"]
+
+
+def test_guard_check_async_confirm_without_callback_denies() -> None:
+    """check_async 下 CONFIRM 规则命中但无 on_confirm 时，应降级为 DENY。"""
+    import asyncio
+
+    from web_crawler.ai.guardrails import ActionGuard, GuardrailAction, GuardrailRule
+
+    custom = GuardrailRule(
+        name="needs-confirm-async",
+        check=lambda action, ctx: (True, "needs confirm"),
+        action=GuardrailAction.CONFIRM,
+    )
+    guard = ActionGuard(extra_rules=[custom])  # 无 on_confirm
+    result = asyncio.run(
+        guard.check_async({"action_type": "navigate", "params": {"url": "https://example.com"}})
+    )
+    assert result.denied
+
+
+def test_guard_check_async_sync_confirm_callback_called_directly() -> None:
+    """check_async 对同步 on_confirm 直接调用（不 await）。"""
+    import asyncio
+
+    from web_crawler.ai.guardrails import ActionGuard, GuardrailAction, GuardrailRule
+
+    calls: list[str] = []
+
+    def on_confirm(name: str, detail: str) -> bool:
+        calls.append(name)
+        return True
+
+    custom = GuardrailRule(
+        name="sync-confirm",
+        check=lambda action, ctx: (True, "needs confirm"),
+        action=GuardrailAction.CONFIRM,
+    )
+    guard = ActionGuard(extra_rules=[custom], on_confirm=on_confirm)
+    result = asyncio.run(
+        guard.check_async({"action_type": "navigate", "params": {"url": "https://example.com"}})
+    )
+    assert not result.denied
+    assert calls == ["sync-confirm"]
+
+
+def test_guard_check_async_confirm_callback_returns_false_denies() -> None:
+    """check_async 下异步 on_confirm 返回 False 时降级为 DENY。"""
+    import asyncio
+
+    from web_crawler.ai.guardrails import ActionGuard, GuardrailAction, GuardrailRule
+
+    async def on_confirm(name: str, detail: str) -> bool:
+        return False
+
+    custom = GuardrailRule(
+        name="deny-me",
+        check=lambda action, ctx: (True, "needs confirm"),
+        action=GuardrailAction.CONFIRM,
+    )
+    guard = ActionGuard(extra_rules=[custom], on_confirm=on_confirm)
+    result = asyncio.run(
+        guard.check_async({"action_type": "navigate", "params": {"url": "https://example.com"}})
+    )
+    assert result.denied
+
+
+# ===========================================================================
+# 扩展：_decode_encoded_ip 各失败分支（空 host / 非法 hex / 越界 / 非法八进制）
+# ===========================================================================
+
+
+def test_decode_encoded_ip_empty_host_returns_none() -> None:
+    """空 host 直接返回 None。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    assert ActionGuard._decode_encoded_ip("") is None
+    assert ActionGuard._decode_encoded_ip("   ") is None
+
+
+def test_decode_encoded_ip_invalid_hex_returns_none() -> None:
+    """非法十六进制编码返回 None。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    assert ActionGuard._decode_encoded_ip("0xzzzz") is None
+    assert ActionGuard._decode_encoded_ip("0x") is None
+
+
+def test_decode_encoded_ip_decimal_out_of_ip_range_returns_none() -> None:
+    """十进制整数超出 IPv4/IPv6 范围时返回 None。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    assert ActionGuard._decode_encoded_ip(str(10**40)) is None
+
+
+def test_decode_encoded_ip_invalid_octal_returns_none() -> None:
+    """八进制点分含非法数字（如 9）时返回 None。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    assert ActionGuard._decode_encoded_ip("0177.0.0.9") is None
+
+
+def test_decode_encoded_ip_wrong_shape_returns_none() -> None:
+    """非 4 段或段值越界的八进制点分返回 None。"""
+    from web_crawler.ai.guardrails import ActionGuard
+
+    assert ActionGuard._decode_encoded_ip("0177.0.1") is None
+    assert ActionGuard._decode_encoded_ip("0777.0777.0777.0777") is None
+
+
+# ===========================================================================
+# 扩展：_host_is_private DNS 兜底分支（编码 IP 形态 host 的 getaddrinfo 解析）
+# ===========================================================================
+
+
+def test_host_is_private_dns_fallback_resolves_private() -> None:
+    """编码 IP 形态 host（127.1）经 DNS 兜底解析为私网地址 → 判定为私网。"""
+    from unittest import mock
+
+    from web_crawler.ai.guardrails import ActionGuard
+
+    addrs = [(2, 1, 6, "", ("127.0.0.1", 0))]
+    with mock.patch("web_crawler.ai.guardrails.socket.getaddrinfo", return_value=addrs):
+        assert ActionGuard._host_is_private("127.1") is True
+
+
+def test_host_is_private_dns_fallback_resolves_public() -> None:
+    """DNS 兜底解析到公网地址 → 非私网。"""
+    from unittest import mock
+
+    from web_crawler.ai.guardrails import ActionGuard
+
+    addrs = [(2, 1, 6, "", ("93.184.216.34", 0))]
+    with mock.patch("web_crawler.ai.guardrails.socket.getaddrinfo", return_value=addrs):
+        assert ActionGuard._host_is_private("127.1") is False
+
+
+def test_host_is_private_dns_getaddrinfo_oserror_returns_false() -> None:
+    """getaddrinfo 抛 OSError（解析失败）→ 视为非私网（不阻塞导航）。"""
+    from unittest import mock
+
+    from web_crawler.ai.guardrails import ActionGuard
+
+    with mock.patch(
+        "web_crawler.ai.guardrails.socket.getaddrinfo",
+        side_effect=OSError("resolve failed"),
+    ):
+        assert ActionGuard._host_is_private("127.1") is False
+
+
+def test_host_is_private_dns_invalid_addr_entry_skipped() -> None:
+    """DNS 返回的地址条目无法解析为 IP 时跳过该条目并返回 False。"""
+    from unittest import mock
+
+    from web_crawler.ai.guardrails import ActionGuard
+
+    addrs = [(2, 1, 6, "", ("not-an-ip", 0))]
+    with mock.patch("web_crawler.ai.guardrails.socket.getaddrinfo", return_value=addrs):
+        assert ActionGuard._host_is_private("127.1") is False
+
+
+def test_host_is_private_decode_result_invalid_ip_skipped() -> None:
+    """_decode_encoded_ip 返回的字符串无法解析为 IP 时跳过直译分支（防御性）。"""
+    from unittest import mock
+
+    from web_crawler.ai.guardrails import ActionGuard
+
+    with (
+        mock.patch.object(ActionGuard, "_decode_encoded_ip", return_value="999.999.999.999"),
+        mock.patch(
+            "web_crawler.ai.guardrails.socket.getaddrinfo",
+            side_effect=OSError("resolve failed"),
+        ),
+    ):
+        assert ActionGuard._host_is_private("127.1") is False
+

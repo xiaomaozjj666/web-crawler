@@ -244,3 +244,142 @@ class TestGetResults:
         page2 = db.get_results("r3", page=2, page_size=50)
         assert len(page1["results"]) == 50
         assert len(page2["results"]) == 10
+
+
+class TestImportResultsTolerance:
+    """import_results 逐行容错：坏行跳过、bytes 安全转换、JSONL 损坏回退 CSV。"""
+
+    def test_skips_malformed_lines(self, tmp_path: Path) -> None:
+        """坏行（非法 JSON / 非 dict / 空行）被跳过,其余正常导入。"""
+        jsonl = tmp_path / "resources_manifest.jsonl"
+        jsonl.write_text(
+            json.dumps({"url": "https://a.com/ok.png", "bytes": 10, "status": "ok"})
+            + "\n"
+            + "this is not json\n"
+            + '["not", "a", "dict"]\n'
+            + "\n"
+            + json.dumps({"url": "https://a.com/ok2.png", "bytes": 20, "status": "ok"})
+            + "\n",
+            encoding="utf-8",
+        )
+        db.create_task("t1", "https://a.com", {}, str(tmp_path))
+        count = db.import_results("t1", str(tmp_path))
+        assert count == 2
+        result = db.get_results("t1")
+        assert result["total"] == 2
+
+    def test_bytes_field_non_numeric_defaults_to_zero(self, tmp_path: Path) -> None:
+        """bytes 字段为非数字时不中断导入,回退 0。"""
+        jsonl = tmp_path / "resources_manifest.jsonl"
+        jsonl.write_text(
+            json.dumps({"url": "https://a.com/x.png", "bytes": "abc", "status": "ok"})
+            + "\n"
+            + json.dumps({"url": "https://a.com/y.png", "bytes": 42, "status": "ok"})
+            + "\n",
+            encoding="utf-8",
+        )
+        db.create_task("t2", "https://a.com", {}, str(tmp_path))
+        count = db.import_results("t2", str(tmp_path))
+        assert count == 2
+        results = db.get_results("t2")["results"]
+        sizes = {r["url"]: r["bytes"] for r in results}
+        assert sizes["https://a.com/x.png"] == 0
+        assert sizes["https://a.com/y.png"] == 42
+
+    def test_fallback_to_csv_when_jsonl_unreadable(self, tmp_path: Path) -> None:
+        """JSONL 完全不可读时回退 CSV。"""
+        (tmp_path / "resources_manifest.jsonl").write_text(
+            "garbage\nnot json\n", encoding="utf-8"
+        )
+        (tmp_path / "resources_manifest.csv").write_text(
+            "url,saved_path,content_type,bytes,category,found_in,kind,page_url,page_title,sha256,status,diagnostic\n"
+            "https://b.com/x.js,/out/x.js,application/javascript,2048,script,script,resource,https://b.com,B,ghi,ok,\n",
+            encoding="utf-8",
+        )
+        db.create_task("t3", "https://b.com", {}, str(tmp_path))
+        count = db.import_results("t3", str(tmp_path))
+        assert count == 1
+        result = db.get_results("t3")
+        assert result["total"] == 1
+        assert result["results"][0]["url"] == "https://b.com/x.js"
+
+    def test_safe_int_variants(self) -> None:
+        """_safe_int 对 bool/数字/字符串/None/任意对象都安全。"""
+        assert db._safe_int(True) == 1
+        assert db._safe_int(False) == 0
+        assert db._safe_int("12") == 12
+        assert db._safe_int(12.7) == 12
+        assert db._safe_int("abc") == 0
+        assert db._safe_int(None) == 0
+        assert db._safe_int(object()) == 0
+
+    def test_get_conn_ignores_stale_close_error(self, tmp_path: Path) -> None:
+        """旧连接关闭失败时仍创建新连接（容错分支）。"""
+
+        class _BadConn:
+            def close(self) -> None:
+                raise OSError("boom")
+
+        original_path = db._DB_PATH
+        try:
+            db._local.conn = _BadConn()  # type: ignore[assignment]
+            db._local._conn_path = str(tmp_path / "old.db")
+            db._DB_PATH = str(tmp_path / "new.db")
+            conn = db._get_conn()
+            assert db._local.conn is conn
+            assert db._local._conn_path == db._DB_PATH
+        finally:
+            db._DB_PATH = original_path
+
+
+class TestConnectionLifecycle:
+    """线程级连接登记与统一关闭（消除 ResourceWarning）。"""
+
+    def test_get_conn_registers_and_path_switch_unregisters(self) -> None:
+        """创建连接时登记；DB 路径切换关闭旧连接并移除登记。"""
+        conn = db._get_conn()
+        assert conn in db._all_conns
+        original_path = db._DB_PATH
+        try:
+            db._DB_PATH = str(Path(original_path).parent / "other.db")
+            new_conn = db._get_conn()
+            assert new_conn is not conn
+            assert conn not in db._all_conns
+            assert new_conn in db._all_conns
+        finally:
+            db._DB_PATH = original_path
+
+    def test_close_thread_connection_idempotent(self) -> None:
+        """close_thread_connection 关闭当前线程连接并移除登记；再次调用无副作用。"""
+        conn = db._get_conn()
+        db.close_thread_connection()
+        assert conn not in db._all_conns
+        assert not hasattr(db._local, "conn") or db._local.conn is None
+        db.close_thread_connection()  # 幂等：不再抛错
+        # 关闭后可正常重建
+        assert db._get_conn() is not None
+
+    def test_close_all_connections_idempotent(self) -> None:
+        """close_all_connections 清空登记表；再次调用无副作用。"""
+        db._get_conn()
+        db.close_all_connections()
+        assert db._all_conns == set()
+        db.close_all_connections()  # 幂等
+        # 关闭后仍可正常使用（下次 _get_conn 重建）
+        db.create_task("lc1", "https://example.com", {}, "/tmp")
+        assert db.get_task("lc1") is not None
+
+    def test_close_swallows_close_errors(self) -> None:
+        """连接 close 抛异常时静默吞掉并继续清理（容错分支）。"""
+
+        class _BadConn:
+            def close(self) -> None:
+                raise OSError("boom")
+
+        # close_thread_connection 的异常分支
+        db._local.conn = _BadConn()  # type: ignore[assignment]
+        db.close_thread_connection()  # 不应抛
+        # close_all_connections 的异常分支
+        db._all_conns.add(_BadConn())  # type: ignore[arg-type]
+        db.close_all_connections()  # 不应抛
+        assert db._all_conns == set()

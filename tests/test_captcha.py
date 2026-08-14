@@ -811,8 +811,39 @@ def test_solve_geetest_bounding_box_exception_returns_false() -> None:
         assert solver._solve_geetest(page, info) is False
 
 
+def test_solve_geetest_with_image_solver_no_slider_returns_false() -> None:
+    """image_solver 已注入但页面上无滑块元素 → 交人工返回 False。"""
+    img_solver = MagicMock(spec=ImageCaptchaSolver)
+    solver = CaptchaSolver(max_wait=10.0, humanize=False, image_solver=img_solver)
+    info = CaptchaInfo(type=CaptchaType.GEETEST)
+    page = _make_page({})  # 无滑块元素
+    assert solver._solve_geetest(page, info) is False
+
+
+def test_solve_geetest_with_image_solver_bounding_box_exception_returns_false() -> None:
+    """image_solver 已注入但 bounding_box 抛错 → box=None → 交人工返回 False。"""
+    img_solver = MagicMock(spec=ImageCaptchaSolver)
+    solver = CaptchaSolver(max_wait=10.0, humanize=False, image_solver=img_solver)
+    info = CaptchaInfo(type=CaptchaType.GEETEST)
+    slider = MagicMock()
+    slider.bounding_box.side_effect = RuntimeError("snap fail")
+    page = _make_page({".geetest_slider_button": slider})
+    assert solver._solve_geetest(page, info) is False
+
+
+def test_solve_geetest_with_image_solver_no_bounding_box_returns_false() -> None:
+    """image_solver 已注入但 bounding_box 返回 None → 交人工返回 False。"""
+    img_solver = MagicMock(spec=ImageCaptchaSolver)
+    solver = CaptchaSolver(max_wait=10.0, humanize=False, image_solver=img_solver)
+    info = CaptchaInfo(type=CaptchaType.GEETEST)
+    slider = MagicMock()
+    slider.bounding_box.return_value = None
+    page = _make_page({".geetest_slider_button": slider})
+    assert solver._solve_geetest(page, info) is False
+
+
 def test_solve_geetest_with_image_solver_offset_drags_and_passes() -> None:
-    """image_solver 识别缺口偏移 → 拖拽 → token 通过。"""
+    """image_solver 识别缺口偏移 → 按按钮半宽修正后拖拽 → token 通过。"""
     img_solver = MagicMock(spec=ImageCaptchaSolver)
     solver = CaptchaSolver(max_wait=10.0, humanize=False, image_solver=img_solver)
     info = CaptchaInfo(type=CaptchaType.GEETEST)
@@ -827,42 +858,58 @@ def test_solve_geetest_with_image_solver_offset_drags_and_passes() -> None:
         result = solver._solve_geetest(page, info)
     assert result is True
     mock_drag.assert_called_once()
-    # 验证拖拽终点 x = start_x + offset
+    # 按钮半宽修正：拖拽距离 = 缺口偏移 250 - 按钮半宽 (40/2=20) = 230
     start, end = mock_drag.call_args.args[1:]
-    assert end[0] == start[0] + 250.0
+    assert end[0] == start[0] + 230.0
 
 
-def test_solve_geetest_random_offset_when_no_image_solver() -> None:
-    """无 image_solver 时用随机偏移兜底。"""
+def test_solve_geetest_no_image_solver_hands_off() -> None:
+    """无 image_solver 时不随机盲拖，直接交人工（返回 False）。"""
     solver = CaptchaSolver(max_wait=10.0, humanize=False)
     info = CaptchaInfo(type=CaptchaType.GEETEST)
     slider = MagicMock()
     slider.bounding_box.return_value = {"x": 0, "y": 0, "width": 50, "height": 50}
+    page = _make_page({".geetest_slider_button": slider})
+    with (
+        patch.object(solver, "_humanize_drag") as mock_drag,
+        patch.object(solver, "_wait_for_token") as mock_wait,
+    ):
+        result = solver._solve_geetest(page, info)
+    assert result is False
+    mock_drag.assert_not_called()
+    mock_wait.assert_not_called()
+
+
+def test_solve_geetest_offset_failure_hands_off() -> None:
+    """image_solver 存在但缺口识别失败 → 交人工，不随机拖拽。"""
+    img_solver = MagicMock(spec=ImageCaptchaSolver)
+    solver = CaptchaSolver(max_wait=10.0, humanize=False, image_solver=img_solver)
+    info = CaptchaInfo(type=CaptchaType.GEETEST)
+    slider = MagicMock()
+    slider.bounding_box.return_value = {"x": 10, "y": 20, "width": 40, "height": 40}
     page = _make_page({".geetest_slider_button": slider})
     with (
         patch.object(solver, "_geetest_detect_offset", return_value=None),
         patch.object(solver, "_humanize_drag") as mock_drag,
-        patch.object(solver, "_wait_for_token", return_value=True),
-        patch("web_crawler.ai.captcha.random.uniform", return_value=280.0),
+        patch.object(solver, "_wait_for_token") as mock_wait,
     ):
         result = solver._solve_geetest(page, info)
-    assert result is True
-    _start, end = mock_drag.call_args.args[1:]
-    # start_x = 0 + 50/2 = 25, offset=280 → end_x = 305
-    assert end[0] == 25.0 + 280.0
+    assert result is False
+    mock_drag.assert_not_called()
+    mock_wait.assert_not_called()
 
 
 def test_solve_geetest_token_fail_returns_false() -> None:
-    solver = CaptchaSolver(max_wait=10.0, humanize=False)
+    img_solver = MagicMock(spec=ImageCaptchaSolver)
+    solver = CaptchaSolver(max_wait=10.0, humanize=False, image_solver=img_solver)
     info = CaptchaInfo(type=CaptchaType.GEETEST)
     slider = MagicMock()
     slider.bounding_box.return_value = {"x": 0, "y": 0, "width": 50, "height": 50}
     page = _make_page({".geetest_slider_button": slider})
     with (
-        patch.object(solver, "_geetest_detect_offset", return_value=None),
+        patch.object(solver, "_geetest_detect_offset", return_value=280.0),
         patch.object(solver, "_humanize_drag"),
         patch.object(solver, "_wait_for_token", return_value=False),
-        patch("web_crawler.ai.captcha.random.uniform", return_value=280.0),
     ):
         result = solver._solve_geetest(page, info)
     assert result is False
@@ -1467,3 +1514,45 @@ def test_humanize_click_bounding_box_exception_humanize_on_sleeps() -> None:
     with patch("web_crawler.ai.captcha.time.sleep"):
         solver._humanize_click(page, selector)
     selector.click.assert_called_once()
+
+
+# ===========================================================================
+# 回归：点击坐标钳制到 iframe 范围
+# ===========================================================================
+
+
+def test_solve_image_challenge_clamps_out_of_bounds_coords() -> None:
+    """LLM 返回越界坐标时钳制到 iframe 可视范围内再点击。"""
+    img_solver = MagicMock(spec=ImageCaptchaSolver)
+    img_solver.solve_click.return_value = ClickSolution(points=[(5000, 5000)])
+    solver = CaptchaSolver(image_solver=img_solver, humanize=False)
+    iframe = MagicMock()
+    iframe.bounding_box.return_value = {"x": 100, "y": 200, "width": 300, "height": 300}
+    iframe.screenshot.return_value = b"png"
+    page = _make_page({_HCAPTCHA_IFRAME: iframe})
+    info = CaptchaInfo(type=CaptchaType.HCAPTCHA, container_selector=_HCAPTCHA_IFRAME)
+
+    result = solver._solve_image_challenge(page, info)
+
+    assert result is True
+    # offset(100,200) + 钳制后 (299,299) → (399,499)
+    assert page.mouse.click.call_args.args == (399.0, 499.0)
+
+
+# ===========================================================================
+# 回归：hcaptcha/recaptcha 探测分支的 query_selector 异常保护
+# ===========================================================================
+
+
+def test_detector_hcaptcha_query_exception_returns_none() -> None:
+    """hcaptcha 分支 query_selector 抛错应返回 None 而非向上抛。"""
+    page = MagicMock()
+    page.query_selector.side_effect = RuntimeError("context destroyed")
+    assert CaptchaDetector()._detect_hcaptcha(page) is None
+
+
+def test_detector_recaptcha_query_exception_returns_none() -> None:
+    """recaptcha 分支 query_selector 抛错应返回 None 而非向上抛。"""
+    page = MagicMock()
+    page.query_selector.side_effect = RuntimeError("context destroyed")
+    assert CaptchaDetector()._detect_recaptcha(page) is None

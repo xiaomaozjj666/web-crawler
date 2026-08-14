@@ -239,11 +239,10 @@ def test_dom_pruner_skips_non_content_tags() -> None:
 def test_dom_pruner_long_candidate_truncated() -> None:
     """单个超长候选（>500 字符）应被截断并附加 </tag>。"""
     pruner = DomPruner(max_chars=8000, max_candidates=50)
-    # 构造一个超长 script 标签
-    long_content = "var x = '" + "a" * 600 + "';"
-    html = f"<script>{long_content}</script>"
+    # 超长属性会让开标签片段超过 500 字符，触发截断后缀
+    long_attr = "x" * 600
+    html = f'<script src="{long_attr}"></script>'
     result = pruner.prune(html)
-    # 应被截断
     assert "...</script>" in result.text
 
 
@@ -557,3 +556,53 @@ def test_dom_pruner_falls_back_to_html_parser(monkeypatch: pytest.MonkeyPatch) -
     assert call_count["lxml"] == 1
     assert call_count["html_parser"] == 1
     assert result.element_count >= 0
+
+
+# ===========================================================================
+# 回归：候选片段不做全树序列化（避免深层 DOM 的 O(n·depth) 复制）
+# ===========================================================================
+
+
+def test_tag_to_candidate_fragment_is_bounded() -> None:
+    """大子树容器的候选片段只含开标签+受限文本，不含子孙标记。"""
+    from bs4 import BeautifulSoup
+
+    inner = "".join("<span>a</span>" for _ in range(2000))
+    html = f"<div id='big'>{inner}</div>"
+    soup = BeautifulSoup(html, "html.parser")
+    div = soup.find("div")
+
+    pruner = DomPruner(max_chars=8000, max_candidates=50)
+    cand = pruner._tag_to_candidate(div)
+
+    assert cand is not None
+    assert "<span" not in cand.html  # 未把 2000 个 span 的标记复制进来
+    assert len(cand.html) <= 500
+
+
+# ===========================================================================
+# 扩展：_tag_fragment 属性值边界（无值属性跳过 / 非字符串属性转 str）
+# ===========================================================================
+
+
+def test_tag_fragment_skips_valueless_attr() -> None:
+    """无值属性（attr=None）应被跳过，不产生残缺片段。"""
+    from types import SimpleNamespace
+
+    from web_crawler.ai.dom_pruner import _tag_fragment
+
+    # bs4 4.15 会把 None 属性值过滤掉，用命名空间对象直接注入 None 覆盖跳过分支
+    tag = SimpleNamespace(name="div", attrs={"data-x": None})
+    frag = _tag_fragment(tag, "text")
+    assert frag == "<div>text"
+
+
+def test_tag_fragment_stringifies_non_str_attr() -> None:
+    """非字符串属性值（如 int）应转为 str 后序列化。"""
+    from types import SimpleNamespace
+
+    from web_crawler.ai.dom_pruner import _tag_fragment
+
+    tag = SimpleNamespace(name="div", attrs={"data-n": 5})
+    frag = _tag_fragment(tag, "hi")
+    assert 'data-n="5"' in frag

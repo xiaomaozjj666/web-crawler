@@ -575,3 +575,106 @@ class TestBuildPrompt:
         """task="" 时显示 (未指定)。"""
         prompt = TaskJudge._build_prompt(_Action(), _Observation(), {}, "", None)
         assert "(未指定)" in prompt
+
+
+# ===========================================================================
+# 回归：verified 严格布尔解析（字符串 "false"/"yes" 不得判为 True）
+# ===========================================================================
+
+
+class TestVerifiedStrictParsing:
+    def test_verified_string_false_is_not_true(self) -> None:
+        """模型输出 "verified": "false"（字符串）时必须判为 False。"""
+        provider = _FakeProvider(['{"verified": "false", "missing": [], "reasoning": "x"}'])
+        judge = TaskJudge(provider, strict=False)
+        result = judge.validate(
+            action=_Action(),
+            observation=_Observation(),
+            target_params_found={},
+            task="task",
+        )
+        assert result.verified is False
+
+    def test_verified_yes_string_is_not_true(self) -> None:
+        """"verified": "yes" 也不得判为 True。"""
+        provider = _FakeProvider(['{"verified": "yes"}'])
+        judge = TaskJudge(provider, strict=False)
+        result = judge.validate(
+            action=_Action(),
+            observation=_Observation(),
+            target_params_found={},
+            task="task",
+        )
+        assert result.verified is False
+
+    def test_verified_string_true_is_true(self) -> None:
+        """"verified": "true"（字符串）应判为 True。"""
+        provider = _FakeProvider(['{"verified": "true", "missing": []}'])
+        judge = TaskJudge(provider, strict=False)
+        result = judge.validate(
+            action=_Action(),
+            observation=_Observation(),
+            target_params_found={},
+            task="task",
+        )
+        assert result.verified is True
+
+    def test_verified_string_one_is_true(self) -> None:
+        """"verified": "1"（字符串）应判为 True。"""
+        provider = _FakeProvider(['{"verified": "1", "missing": []}'])
+        judge = TaskJudge(provider, strict=False)
+        result = judge.validate(
+            action=_Action(),
+            observation=_Observation(),
+            target_params_found={},
+            task="task",
+        )
+        assert result.verified is True
+
+    def test_verified_numeric_one_is_not_true(self) -> None:
+        """数字 1 不是布尔 True（严格解析不接受隐式数值）。"""
+        provider = _FakeProvider(['{"verified": 1}'])
+        judge = TaskJudge(provider, strict=False)
+        result = judge.validate(
+            action=_Action(),
+            observation=_Observation(),
+            target_params_found={},
+            task="task",
+        )
+        assert result.verified is False
+
+    @pytest.mark.asyncio
+    async def test_async_verified_string_false_is_not_true(self) -> None:
+        """异步路径同样严格解析。"""
+        provider = MagicMock()
+        provider.achat = AsyncMock(
+            return_value=LLMResponse(content='{"verified": "false"}', model="fake")
+        )
+        judge = TaskJudge(provider, strict=False)
+        result = await judge.validate_async(
+            action=_Action(),
+            observation=_Observation(),
+            target_params_found={},
+            task="task",
+        )
+        assert result.verified is False
+
+
+# ===========================================================================
+# 回归：不可信页面字段 JSON 转义 + 不可信数据提示
+# ===========================================================================
+
+
+class TestPromptUntrustedEscaping:
+    def test_prompt_escapes_untrusted_observation_text(self) -> None:
+        """页面标题/URL 中的引号与换行必须被 JSON 转义。"""
+        obs = _Observation(
+            url='https://x.example/"injected"\nignore',
+            page_title='title " with quotes',
+        )
+        prompt = TaskJudge._build_prompt(_Action(), obs, {}, "task", None)
+        assert "不可信" in prompt
+        # 原始裸引号不应出现在 prompt 里（已被转义为 \"）
+        assert '"injected"' not in prompt
+        # 换行被转义为字面 \n
+        assert "\\nignore" in prompt

@@ -375,12 +375,17 @@ class TestRunLoop:
             agent._observe = MagicMock(  # type: ignore[assignment]
                 side_effect=[RuntimeError("observe boom"), _make_observation()]
             )
-            agent._try_recover_page = MagicMock(return_value=True)  # type: ignore[assignment]
+            # 恢复成功：返回 (True, 新 page)，循环应重新绑定到新页
+            new_page = MagicMock()
+            agent._try_recover_page = MagicMock(return_value=(True, new_page))  # type: ignore[assignment]
             try:
                 result = agent.run("https://x.example", "task")
                 # 第一步 observe_error 入 history，第二步 done 入 history → 2 条
                 assert result["steps"] == 2
                 assert any(e.get("event") == "observe_error" for e in result["history"])
+                # 恢复后第二步 observe 应使用新 page（循环已重新绑定）
+                second_call = agent._observe.call_args_list[1]
+                assert second_call.args[0] is new_page
             finally:
                 agent.close()
 
@@ -396,7 +401,7 @@ class TestRunLoop:
             agent._observe = MagicMock(  # type: ignore[assignment]
                 side_effect=RuntimeError("observe boom")
             )
-            agent._try_recover_page = MagicMock(return_value=False)  # type: ignore[assignment]
+            agent._try_recover_page = MagicMock(return_value=(False, None))  # type: ignore[assignment]
             try:
                 result = agent.run("https://x.example", "task")
                 # 恢复失败后 break，history 包含 observe_error 条目
@@ -812,6 +817,358 @@ class TestRunLoop:
             finally:
                 agent.close()
 
+    def test_new_tab_loop_observes_new_page(self) -> None:
+        """new_tab 后循环后续 observe 应使用新标签页（修复循环持有旧 page）。"""
+        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
+            "web_crawler.ai.reverse_agent.time.sleep"
+        ):
+            agent, page, _ = _make_loop_agent(
+                replies=[
+                    '{"action_type": "new_tab", "params": {"url": "https://tab.example", "name": "t2"}}',
+                    '{"action_type": "done"}',
+                ],
+                max_steps=5,
+            )
+            new_page = _LoopPage(url="https://tab.example", title="Tab")
+            ctx = MagicMock()
+            ctx.new_page.return_value = new_page
+            # 覆盖 _create_page，让 run() 使用能创建新标签页的 ctx
+            agent._create_page = MagicMock(return_value=(ctx, page))  # type: ignore[assignment]
+            # spy：记录 _observe 收到的 page，验证循环页切换
+            agent._observe = MagicMock(wraps=agent._observe)  # type: ignore[assignment]
+            try:
+                agent.run("https://x.example", "task")
+                # 第 1 步 observe 在主页面，第 2 步 observe 在新标签页
+                calls = agent._observe.call_args_list
+                assert calls[0].args[0] is page
+                assert calls[1].args[0] is new_page
+            finally:
+                agent.close()
+
+    def test_switch_tab_loop_observes_switched_page(self) -> None:
+        """switch_tab 后循环后续 observe 应使用切换后的标签页。"""
+        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
+            "web_crawler.ai.reverse_agent.time.sleep"
+        ):
+            agent, page, _ = _make_loop_agent(
+                replies=[
+                    '{"action_type": "new_tab", "params": {"url": "", "name": "t2"}}',
+                    '{"action_type": "switch_tab", "params": {"name": "t2"}}',
+                    '{"action_type": "done"}',
+                ],
+                max_steps=5,
+            )
+            new_page = _LoopPage(url="https://tab.example", title="Tab")
+            ctx = MagicMock()
+            ctx.new_page.return_value = new_page
+            agent._create_page = MagicMock(return_value=(ctx, page))  # type: ignore[assignment]
+            # spy：记录 _observe 收到的 page
+            agent._observe = MagicMock(wraps=agent._observe)  # type: ignore[assignment]
+            try:
+                agent.run("https://x.example", "task")
+                calls = agent._observe.call_args_list
+                # 第 1 步在主页面；new_tab 后第 2 步 observe 新标签页；
+                # switch_tab 后第 3 步 observe 仍是新标签页
+                assert calls[0].args[0] is page
+                assert calls[1].args[0] is new_page
+                assert calls[2].args[0] is new_page
+            finally:
+                agent.close()
+
+    def test_resume_from_real_checkpoint_file(self, tmp_path: Path) -> None:
+        """真实存储层 resume：save → 新实例 load → 从正确 step 继续。"""
+        from web_crawler.ai.checkpoint import Checkpoint, CheckpointStore
+
+        store = CheckpointStore(base_dir=tmp_path)
+        store.save(
+            Checkpoint(
+                task_id="resume-task",
+                step=2,
+                url="https://resumed.example",
+                task="task",
+                target_params_found={"sign": "val"},
+                target_params=["sign"],
+                hooks=["fetch_hook"],
+                history=[{"step": 1, "action": "wait"}],
+                cumulative_summary="past summary",
+            )
+        )
+        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
+            "web_crawler.ai.reverse_agent.time.sleep"
+        ):
+            agent, page, _ = _make_loop_agent(
+                replies=['{"action_type": "done"}'],
+                enable_checkpoint=True,
+                max_steps=10,
+            )
+            agent.checkpoint_manager.store = store
+            agent.checkpoint_manager.task_id = "resume-task"
+            agent._inject_hooks = MagicMock(return_value=True)  # type: ignore[assignment]
+            try:
+                result = agent.run("https://init.example", "task")
+                # 应导航回 resume URL 并续跑
+                assert page.goto_calls[0]["url"] == "https://resumed.example"
+                agent._inject_hooks.assert_called_once()
+                assert result["target_params_found"] == {"sign": "val"}
+                # 续跑从 step 3 开始（step 2 已完成）
+                steps = [h.get("step") for h in result["history"] if h.get("step")]
+                assert 3 in steps
+            finally:
+                agent.close()
+
+    def test_checkpoint_task_id_auto_set_from_url(self, tmp_path: Path) -> None:
+        """enable_checkpoint 时 run() 自动用 url 设置稳定 task_id。"""
+        from web_crawler.ai.checkpoint import CheckpointStore
+
+        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
+            "web_crawler.ai.reverse_agent.time.sleep"
+        ):
+            agent, _page, _ = _make_loop_agent(
+                replies=['{"action_type": "done"}'],
+                enable_checkpoint=True,
+            )
+            agent.checkpoint_manager.store = CheckpointStore(base_dir=tmp_path)
+            agent.checkpoint_manager.save = MagicMock()  # type: ignore[assignment]
+            try:
+                agent.run("https://init.example", "task")
+                tid = agent.checkpoint_manager.task_id
+                assert tid != ""
+                # 同一 url+task 在"新实例"上应得到相同 id（可跨进程续跑）
+                from web_crawler.ai.checkpoint import CheckpointManager
+
+                assert CheckpointManager().ensure_task_id("https://init.example", "task") == tid
+            finally:
+                agent.close()
+
+    def test_plan_advances_on_extract_success(self) -> None:
+        """extract 成功 → Planner 当前子目标推进到下一个。"""
+        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
+            "web_crawler.ai.reverse_agent.time.sleep"
+        ):
+            agent, _page, _ = _make_loop_agent(
+                replies=[
+                    (
+                        '{"subgoals": [{"description": "p1", "success_criteria": "ok"}, '
+                        '{"description": "p2", "success_criteria": "ok"}]}'
+                    ),
+                    '{"action_type": "extract", "params": {"param_name": "sign"}}',
+                    '{"action_type": "done"}',
+                ],
+                planner_interval=100,
+                target_params=["sign"],
+                max_steps=10,
+                hook_records=[{"headers": {"sign": "val"}, "url": "", "body": ""}],
+            )
+            try:
+                result = agent.run("https://x.example", "task")
+                plan = result["plan"]
+                assert plan is not None
+                assert plan["subgoals"][0]["completed"] is True
+                assert plan["current_index"] == 1
+            finally:
+                agent.close()
+
+    def test_plan_advances_on_judge_verified(self) -> None:
+        """done 通过 judge 验证 → Planner 当前子目标推进。"""
+        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
+            "web_crawler.ai.reverse_agent.time.sleep"
+        ):
+            agent, _page, _ = _make_loop_agent(
+                replies=[
+                    '{"subgoals": [{"description": "p1", "success_criteria": "ok"}]}',
+                    '{"action_type": "done"}',
+                ],
+                planner_interval=100,
+                enable_judge=True,
+                judge_verified=True,
+                max_steps=10,
+            )
+            try:
+                result = agent.run("https://x.example", "task")
+                plan = result["plan"]
+                assert plan is not None
+                assert plan["subgoals"][0]["completed"] is True
+            finally:
+                agent.close()
+
+    async def test_plan_advances_on_extract_success_async(self) -> None:
+        """异步循环：extract 成功 → Planner 当前子目标推进到下一个。"""
+        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
+            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        ):
+            agent, _page, _ = _make_loop_agent(
+                replies=[
+                    (
+                        '{"subgoals": [{"description": "p1", "success_criteria": "ok"}, '
+                        '{"description": "p2", "success_criteria": "ok"}]}'
+                    ),
+                    '{"action_type": "extract", "params": {"param_name": "sign"}}',
+                    '{"action_type": "done"}',
+                ],
+                async_mode=True,
+                planner_interval=100,
+                target_params=["sign"],
+                max_steps=10,
+                hook_records=[{"headers": {"sign": "val"}, "url": "", "body": ""}],
+            )
+            try:
+                result = await agent.arun("https://x.example", "task")
+                plan = result["plan"]
+                assert plan is not None
+                assert plan["subgoals"][0]["completed"] is True
+                assert plan["current_index"] == 1
+            finally:
+                agent.close()
+
+    async def test_plan_advances_on_judge_verified_async(self) -> None:
+        """异步循环：done 通过 judge 验证 → Planner 当前子目标推进。"""
+        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
+            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        ):
+            agent, _page, _ = _make_loop_agent(
+                replies=[
+                    '{"subgoals": [{"description": "p1", "success_criteria": "ok"}]}',
+                    '{"action_type": "done"}',
+                ],
+                async_mode=True,
+                planner_interval=100,
+                enable_judge=True,
+                judge_verified=True,
+                max_steps=10,
+            )
+            try:
+                result = await agent.arun("https://x.example", "task")
+                plan = result["plan"]
+                assert plan is not None
+                assert plan["subgoals"][0]["completed"] is True
+            finally:
+                agent.close()
+
+    def test_heartbeat_stall_detected_during_loop(self) -> None:
+        """think 前 check_stall 检测到卡死 → 发布 stall 事件。"""
+        import time as _time
+
+        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
+            "web_crawler.ai.reverse_agent.time.sleep"
+        ):
+            agent, _page, _ = _make_loop_agent(replies=['{"action_type": "done"}'])
+            agent.heartbeat.max_interval = 1.0
+            events: list[Any] = []
+            agent.event_bus.subscribe(events.append)
+            orig_reset = agent.heartbeat.reset
+
+            def _reset_and_age() -> None:
+                orig_reset()
+                agent.heartbeat._last_tick_time = _time.time() - 100  # 制造超时
+
+            agent.heartbeat.reset = _reset_and_age  # type: ignore[method-assign]
+            try:
+                agent.run("https://x.example", "task")
+                assert any(getattr(e, "type", None) == "stall" for e in events)
+            finally:
+                agent.close()
+
+    def test_unknown_action_recorded_in_history(self) -> None:
+        """未知 action_type → act_error 写入 history（不再静默空转）。"""
+        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
+            "web_crawler.ai.reverse_agent.time.sleep"
+        ):
+            agent, _page, _ = _make_loop_agent(
+                replies=[
+                    '{"action_type": "totally_unknown", "params": {}}',
+                    '{"action_type": "done"}',
+                ],
+                max_steps=5,
+            )
+            try:
+                result = agent.run("https://x.example", "task")
+                acts = [h for h in result["history"] if h.get("event") == "act_error"]
+                assert acts and "未知动作类型" in acts[0]["error"]
+            finally:
+                agent.close()
+
+    def test_should_stop_breaks_loop_early(self) -> None:
+        """should_stop 返回 True → 循环提前中断，结果状态标为 stopped。"""
+        calls = {"n": 0}
+
+        def should_stop() -> bool:
+            calls["n"] += 1
+            return calls["n"] >= 2  # 第 2 步循环顶部返回 True
+
+        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
+            "web_crawler.ai.reverse_agent.time.sleep"
+        ):
+            agent, _page, _ = _make_loop_agent(
+                replies=['{"action_type": "wait", "params": {"seconds": 0.1}}'],
+                max_steps=10,
+                should_stop=should_stop,
+            )
+            events: list[Any] = []
+            agent.event_bus.subscribe(events.append)
+            try:
+                result = agent.run("https://x.example", "task")
+                assert result["status"] == "stopped"
+                assert result["steps"] == 1  # 只执行了第 1 步
+                assert any(getattr(e, "type", None) == "agent.stopped" for e in events)
+            finally:
+                agent.close()
+
+    def test_should_stop_false_runs_to_completion(self) -> None:
+        """should_stop 恒返回 False → 正常完成，状态为 completed。"""
+        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
+            "web_crawler.ai.reverse_agent.time.sleep"
+        ):
+            agent, _page, _ = _make_loop_agent(
+                replies=['{"action_type": "done"}'],
+                max_steps=10,
+                should_stop=lambda: False,
+            )
+            try:
+                result = agent.run("https://x.example", "task")
+                assert result["status"] == "completed"
+            finally:
+                agent.close()
+
+    def test_act_error_marks_current_record_only(self) -> None:
+        """act 异常只把当前步记录标失败，不误标上一步（修复 recorder 记录错位）。"""
+        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
+            "web_crawler.ai.reverse_agent.time.sleep"
+        ):
+            agent, _page, _ = _make_loop_agent(
+                replies=[
+                    '{"action_type": "wait", "params": {"seconds": 0.1}}',
+                    '{"action_type": "click", "params": {}}',  # 无 selector → ValueError
+                    '{"action_type": "done"}',
+                ],
+                enable_recorder=True,
+                max_steps=5,
+            )
+            try:
+                result = agent.run("https://x.example", "task")
+                assert any(h.get("event") == "act_error" for h in result["history"])
+                assert agent.recorder is not None
+                recs = agent.recorder.records
+                assert recs[0].action_type == "wait" and recs[0].success is True
+                assert recs[1].action_type == "click" and recs[1].success is False
+            finally:
+                agent.close()
+
+    def test_result_hook_data_merged_with_cache(self) -> None:
+        """结果 dict 的 hook_data 应合并最后一次观察缓存，而非近空。"""
+        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
+            "web_crawler.ai.reverse_agent.time.sleep"
+        ):
+            agent, _page, _ = _make_loop_agent(
+                replies=['{"action_type": "done"}'],
+                hook_records=[{"headers": {"sign": "val"}, "url": "", "body": ""}],
+            )
+            try:
+                result = agent.run("https://x.example", "task")
+                assert result["hook_data"]["count"] >= 1
+                assert any("sign" in str(r) for r in result["hook_data"]["records"])
+            finally:
+                agent.close()
+
 
 # ---------------------------------------------------------------------------
 # 异步 arun() 主循环测试
@@ -908,12 +1265,19 @@ class TestArunLoop:
             agent._observe_async = AsyncMock(  # type: ignore[assignment]
                 side_effect=[RuntimeError("observe boom"), _make_observation()]
             )
-            agent._try_recover_page_async = AsyncMock(return_value=True)  # type: ignore[assignment]
+            # 恢复成功：返回 (True, 新 page)，循环应重新绑定到新页
+            new_page = MagicMock()
+            agent._try_recover_page_async = AsyncMock(  # type: ignore[assignment]
+                return_value=(True, new_page)
+            )
             try:
                 result = await agent.arun("https://x.example", "task")
                 # 第一步 observe_error 入 history，第二步 done 入 history → 2 条
                 assert result["steps"] == 2
                 assert any(e.get("event") == "observe_error" for e in result["history"])
+                # 恢复后第二步 observe 应使用新 page（循环已重新绑定）
+                second_call = agent._observe_async.call_args_list[1]
+                assert second_call.args[0] is new_page
             finally:
                 agent.close()
 
@@ -930,7 +1294,9 @@ class TestArunLoop:
             agent._observe_async = AsyncMock(  # type: ignore[assignment]
                 side_effect=RuntimeError("observe boom")
             )
-            agent._try_recover_page_async = AsyncMock(return_value=False)  # type: ignore[assignment]
+            agent._try_recover_page_async = AsyncMock(  # type: ignore[assignment]
+                return_value=(False, None)
+            )
             try:
                 result = await agent.arun("https://x.example", "task")
                 assert any(e.get("event") == "observe_error" for e in result["history"])
@@ -1221,6 +1587,58 @@ class TestArunLoop:
             try:
                 result = await agent.arun("https://x.example", "task")
                 assert len(result["history"]) >= 1
+            finally:
+                agent.close()
+
+    async def test_new_tab_async_loop_observes_new_page(self) -> None:
+        """异步：new_tab 后循环后续 observe 应使用新标签页。"""
+        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
+            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        ):
+            agent, page, _ = _make_loop_agent(
+                replies=[
+                    '{"action_type": "new_tab", "params": {"url": "https://tab.example", "name": "t2"}}',
+                    '{"action_type": "done"}',
+                ],
+                async_mode=True,
+                max_steps=5,
+            )
+            new_page = _AsyncLoopPage(url="https://tab.example", title="Tab")
+            ctx = MagicMock()
+            ctx.new_page = AsyncMock(return_value=new_page)
+            # 覆盖 _create_page_async，让 arun() 使用能创建新标签页的 ctx
+            agent._create_page_async = AsyncMock(return_value=(ctx, page))  # type: ignore[assignment]
+            # spy：记录 _observe_async 收到的 page
+            agent._observe_async = AsyncMock(wraps=agent._observe_async)  # type: ignore[assignment]
+            try:
+                await agent.arun("https://x.example", "task")
+                calls = agent._observe_async.call_args_list
+                assert calls[0].args[0] is page
+                assert calls[1].args[0] is new_page
+            finally:
+                agent.close()
+
+    async def test_should_stop_breaks_loop_early_async(self) -> None:
+        """异步：should_stop 返回 True → arun 提前中断，状态标为 stopped。"""
+        calls = {"n": 0}
+
+        def should_stop() -> bool:
+            calls["n"] += 1
+            return calls["n"] >= 2
+
+        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
+            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        ):
+            agent, _page, _ = _make_loop_agent(
+                replies=['{"action_type": "wait", "params": {"seconds": 0.1}}'],
+                async_mode=True,
+                max_steps=10,
+                should_stop=should_stop,
+            )
+            try:
+                result = await agent.arun("https://x.example", "task")
+                assert result["status"] == "stopped"
+                assert result["steps"] == 1
             finally:
                 agent.close()
 
