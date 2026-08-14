@@ -25,7 +25,9 @@ Quick start
 
 from __future__ import annotations
 
+import asyncio
 import os
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -37,15 +39,39 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 
 # .env 只加载一次（进程级）
 _DOTENV_LOADED = False
+# 除 cwd 外向上搜索 .env 的祖先目录级数上限：
+# ai 目录 → 包目录 → src → 项目根。避免误加载主目录/盘符根等无关 .env。
+_ENV_SEARCH_PARENT_DEPTH = 4
+
+# LLM 调用重试：429 / 5xx / 网络错误走指数退避，最多重试 _MAX_LLM_RETRIES 次
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+_MAX_LLM_RETRIES = 3
+_MAX_BACKOFF_SECONDS = 30.0
+
+
+def _is_httpx_transport_error(exc: BaseException) -> bool:
+    """判定是否为 httpx 传输层错误（连接/超时等网络错误）。
+
+    httpx 被 mock 成非类型对象（测试环境）时安全降级为 False。
+    """
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - httpx 是核心依赖
+        return False
+    try:
+        return isinstance(exc, httpx.TransportError)
+    except TypeError:  # pragma: no cover - httpx 被 mock 成非类型对象
+        return False
 
 
 def _load_dotenv_once() -> None:
     """Best-effort, dependency-free ``.env`` loader.
 
-    Looks for a ``.env`` file in the current working directory and then in the
-    package's parent directories (project root), loading ``KEY=VALUE`` lines
-    into :data:`os.environ` **without overwriting** already-set variables.
-    Runs at most once per process; silently does nothing if no file is found.
+    Looks for a ``.env`` file in the current working directory and then in up
+    to ``_ENV_SEARCH_PARENT_DEPTH`` ancestor levels of this module (i.e. the
+    package root vicinity), loading ``KEY=VALUE`` lines into :data:`os.environ`
+    **without overwriting** already-set variables. Runs at most once per
+    process; silently does nothing if no file is found.
     """
     global _DOTENV_LOADED
     if _DOTENV_LOADED:
@@ -53,7 +79,10 @@ def _load_dotenv_once() -> None:
     _DOTENV_LOADED = True
     from pathlib import Path
 
-    candidates = [Path.cwd(), *Path(__file__).resolve().parents]
+    candidates = [
+        Path.cwd(),
+        *list(Path(__file__).resolve().parents)[:_ENV_SEARCH_PARENT_DEPTH],
+    ]
     for base in candidates:
         env_path = base / ".env"
         if not env_path.is_file():
@@ -188,7 +217,10 @@ def _normalize_messages(
         if isinstance(m, LLMMessage):
             out.append(m.to_dict())
         elif isinstance(m, dict):
-            out.append({"role": m["role"], "content": m["content"]})
+            # 缺 role/content 的 dict 做兜底，避免 KeyError
+            out.append(
+                {"role": m.get("role", "user"), "content": m.get("content", "")}
+            )
         elif isinstance(m, str):
             out.append({"role": "user", "content": m})
         else:  # pragma: no cover - defensive
@@ -258,8 +290,15 @@ class OpenAICompatibleProvider:
     def _parse(data: dict[str, Any], fallback_model: str) -> LLMResponse:
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
+        content = message.get("content", "") or ""
+        if isinstance(content, list):
+            # 多模态/兼容端点可能返回 content 片段数组，归一化为纯文本
+            content = "".join(
+                str(part.get("text", "")) if isinstance(part, dict) else str(part)
+                for part in content
+            )
         return LLMResponse(
-            content=message.get("content", "") or "",
+            content=content,
             model=data.get("model", fallback_model),
             finish_reason=choice.get("finish_reason"),
             usage=data.get("usage", {}) or {},
@@ -282,8 +321,9 @@ class OpenAICompatibleProvider:
                 f"no API key for provider {self.name!r}; pass api_key= or set "
                 f"the {self.api_key_env} environment variable"
             )
+        import httpx  # 延迟导入：模块级 import 会拖慢 web_crawler 首包
+
         if self._client is None:
-            import httpx
             self._client = httpx.Client(timeout=self.timeout)
 
         payload: dict[str, Any] = {
@@ -297,13 +337,29 @@ class OpenAICompatibleProvider:
             payload["response_format"] = response_format
         payload.update(kwargs)
 
-        resp = self._client.post(
-            self._endpoint(),
-            headers=self._headers(),
-            json=payload,
-        )
-        resp.raise_for_status()
-        return self._parse(resp.json(), self.model)
+        # 429/5xx/网络错误指数退避重试；其他状态码与不可重试错误直接抛出
+        attempt = 0
+        while True:
+            try:
+                resp = self._client.post(
+                    self._endpoint(),
+                    headers=self._headers(),
+                    json=payload,
+                )
+                resp.raise_for_status()
+                return self._parse(resp.json(), self.model)
+            except Exception as exc:
+                resp_obj = getattr(exc, "response", None)
+                status = getattr(resp_obj, "status_code", None) if resp_obj is not None else None
+                if status is not None:
+                    retryable = status in _RETRYABLE_STATUS
+                else:
+                    # 无 HTTP 响应上下文：仅 httpx 传输层错误（连接/超时等）可重试
+                    retryable = _is_httpx_transport_error(exc)
+                if not retryable or attempt >= _MAX_LLM_RETRIES:
+                    raise
+                attempt += 1
+                time.sleep(min(2.0 ** attempt, _MAX_BACKOFF_SECONDS))
 
     async def achat(
         self,
@@ -320,8 +376,9 @@ class OpenAICompatibleProvider:
                 f"no API key for provider {self.name!r}; pass api_key= or set "
                 f"the {self.api_key_env} environment variable"
             )
+        import httpx  # 延迟导入：模块级 import 会拖慢 web_crawler 首包
+
         if self._async_client is None:
-            import httpx
             self._async_client = httpx.AsyncClient(timeout=self.timeout)
 
         payload: dict[str, Any] = {
@@ -335,11 +392,27 @@ class OpenAICompatibleProvider:
             payload["response_format"] = response_format
         payload.update(kwargs)
 
-        resp = await self._async_client.post(
-            self._endpoint(), headers=self._headers(), json=payload
-        )
-        resp.raise_for_status()
-        return self._parse(resp.json(), self.model)
+        # 429/5xx/网络错误指数退避重试；其他状态码与不可重试错误直接抛出
+        attempt = 0
+        while True:
+            try:
+                resp = await self._async_client.post(
+                    self._endpoint(), headers=self._headers(), json=payload
+                )
+                resp.raise_for_status()
+                return self._parse(resp.json(), self.model)
+            except Exception as exc:
+                resp_obj = getattr(exc, "response", None)
+                status = getattr(resp_obj, "status_code", None) if resp_obj is not None else None
+                if status is not None:
+                    retryable = status in _RETRYABLE_STATUS
+                else:
+                    # 无 HTTP 响应上下文：仅 httpx 传输层错误（连接/超时等）可重试
+                    retryable = _is_httpx_transport_error(exc)
+                if not retryable or attempt >= _MAX_LLM_RETRIES:
+                    raise
+                attempt += 1
+                await asyncio.sleep(min(2.0 ** attempt, _MAX_BACKOFF_SECONDS))
 
     # -- convenience --------------------------------------------------------
     def complete(self, prompt: str, *, system: str | None = None, **kwargs: Any) -> str:
@@ -457,7 +530,8 @@ class AnthropicProvider(OpenAICompatibleProvider):
 
     默认模型 ``claude-sonnet-4-5``，支持 vision；从 ``ANTHROPIC_API_KEY``
     读密钥。Anthropic 也提供 OpenAI 兼容端点 ``/v1/openai/v1/chat/completions``，
-    本预置走该路径以便复用 :class:`OpenAICompatibleProvider` 的实现。
+    本预置的 ``base_url`` 对齐该路径以便复用 :class:`OpenAICompatibleProvider`
+    的实现。
     """
 
     name = "anthropic"
@@ -476,7 +550,7 @@ class AnthropicProvider(OpenAICompatibleProvider):
         *,
         model: str = "claude-sonnet-4-5",
         api_key: str | None = None,
-        base_url: str = "https://api.anthropic.com/v1",
+        base_url: str = "https://api.anthropic.com/v1/openai/v1",
         timeout: float = 60.0,
         default_headers: dict[str, str] | None = None,
     ) -> None:

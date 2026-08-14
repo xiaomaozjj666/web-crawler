@@ -43,10 +43,16 @@ class AdaptiveStorage:
         self._path = path
         # 实例级锁：不同 AdaptiveStorage 实例（不同 DB）互不阻塞
         self._lock = threading.Lock()
+        self._closed = False
         # check_same_thread=False because crawlers use thread pools.
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+
+    def _check_open(self) -> None:
+        """使用前校验连接仍可用：关闭后给出明确错误而非 ProgrammingError。"""
+        if self._closed:
+            raise RuntimeError("AdaptiveStorage has been closed")
 
     def save(
         self,
@@ -58,6 +64,7 @@ class AdaptiveStorage:
         url: str = "",
     ) -> None:
         with self._lock:
+            self._check_open()
             self._conn.execute(
                 "INSERT INTO adaptive_elements (domain, identifier, fingerprint, tag, text, url) "
                 "VALUES (?, ?, ?, ?, ?, ?) "
@@ -69,6 +76,7 @@ class AdaptiveStorage:
 
     def load(self, domain: str, identifier: str) -> dict[str, Any] | None:
         with self._lock:
+            self._check_open()
             cur = self._conn.execute(
                 "SELECT fingerprint, tag, text, url FROM adaptive_elements "
                 "WHERE domain=? AND identifier=?",
@@ -81,6 +89,7 @@ class AdaptiveStorage:
 
     def load_all(self, domain: str) -> list[dict[str, Any]]:
         with self._lock:
+            self._check_open()
             cur = self._conn.execute(
                 "SELECT identifier, fingerprint, tag, text, url FROM adaptive_elements WHERE domain=?",
                 (domain,),
@@ -93,6 +102,7 @@ class AdaptiveStorage:
 
     def delete(self, domain: str, identifier: str | None = None) -> int:
         with self._lock:
+            self._check_open()
             if identifier is None:
                 cur = self._conn.execute("DELETE FROM adaptive_elements WHERE domain=?", (domain,))
             else:
@@ -104,7 +114,11 @@ class AdaptiveStorage:
             return cur.rowcount
 
     def close(self) -> None:
+        """关闭连接；幂等，可重复调用。"""
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             self._conn.close()
 
     def __enter__(self) -> Self:

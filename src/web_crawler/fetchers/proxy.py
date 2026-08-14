@@ -52,9 +52,22 @@ class ProxyPool:
         self._cooldowns: dict[str, float] = {p: 0.0 for p in self._proxies}
 
     def _available(self) -> list[str]:
-        """Return proxies not currently in cooldown (caller holds the lock)."""
+        """Return proxies not currently in cooldown (caller holds the lock).
+
+        冷却到期的代理恢复可用，并清零其累计失败计数——失败计数按"冷却期内的
+        连续失败"统计，冷却期结束后重新累计，避免代理因历史失败被永久惩罚。
+        """
         now = time.monotonic()
-        return [p for p in self._proxies if self._cooldowns.get(p, 0.0) <= now]
+        available: list[str] = []
+        for p in self._proxies:
+            cooldown_until = self._cooldowns.get(p, 0.0)
+            if cooldown_until <= now:
+                if cooldown_until != 0.0:
+                    # 冷却期刚结束：清零失败计数，重新开始累计
+                    self._failures[p] = 0
+                    self._cooldowns[p] = 0.0
+                available.append(p)
+        return available
 
     def get(self) -> str | None:
         """Return the next available proxy URL, or ``None`` if the pool is empty."""
@@ -77,6 +90,11 @@ class ProxyPool:
     def mark_failed(self, proxy: str) -> None:
         """Record a failure for ``proxy``; cool it down once ``max_failures`` is reached."""
         with self._lock:
+            # 若之前的冷却期已结束，先清零旧计数，重新按"冷却期内连续失败"统计
+            cooldown_until = self._cooldowns.get(proxy, 0.0)
+            if cooldown_until != 0.0 and cooldown_until <= time.monotonic():
+                self._failures[proxy] = 0
+                self._cooldowns[proxy] = 0.0
             count = self._failures.get(proxy, 0) + 1
             self._failures[proxy] = count
             if count >= self._max_failures:

@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import textwrap
 from dataclasses import dataclass, field
 from typing import Any
@@ -101,6 +100,25 @@ class RunRecorder:
             result_summary=result_summary,
         )
         self._records.append(rec)
+
+    def update_last(
+        self,
+        *,
+        result_value: str | None = None,
+        success: bool | None = None,
+    ) -> None:
+        """更新最近一条记录的结果/成功标记（按 step 归属，不误标上一步）。
+
+        主循环在 ``_act`` 前先 ``record`` 占位、执行后调用本方法补结果，
+        异常路径只影响当前步骤的记录。
+        """
+        if not self._records:
+            return
+        last = self._records[-1]
+        if result_value is not None:
+            last.result_value = result_value
+        if success is not None:
+            last.success = success
 
     def reset(self) -> None:
         """清空记录，新任务开始时调用。"""
@@ -202,7 +220,7 @@ class ScriptCompiler:
         body = "\n".join(body_lines) if body_lines else "    pass"
 
         target_url_literal = _py_string_literal(target_url) if target_url else "url"
-        return textwrap.dedent(f'''\
+        source = textwrap.dedent(f'''\
             """Auto-compiled deterministic replay script.
 
             生成自 RunRecorder.compile_script()，重放一次成功 Agent 运行的动作序列。
@@ -245,6 +263,14 @@ class ScriptCompiler:
                         except Exception:
                             pass
             ''')
+        # 生成后立即做语法自检：坏产物直接抛错（由调用方记录 compile_error），
+        # 而不是静默返回一段不可执行的字符串
+        try:
+            compile(source, "<replay_script>", "exec")
+        except SyntaxError as exc:
+            logger.error("compiled replay script has syntax error: %s", exc)
+            raise RuntimeError(f"compiled replay script invalid: {exc}") from exc
+        return source
 
     # -- 各动作的编译器 -----------------------------------------------------
 
@@ -306,6 +332,8 @@ class ScriptCompiler:
         result_value = rec.result_value or ""
         if result_value:
             extract_results.append((param_name, result_value))
+            # 消息用安全字符串字面量拼接，避免 {param_name!r} 的引号破坏单引号字符串
+            assert_msg = _py_string_literal(f"param {param_name} not found in hook data")
             return [
                 f"    # step {rec.step}: extract {param_name!r} (recorded value: redacted)",
                 "    _hook_records = page.evaluate('() => (window.__hook_data__ || []).slice()') or []",
@@ -318,7 +346,7 @@ class ScriptCompiler:
                 "                    _found = str(_v)",
                 "                    break",
                 "        if _found: break",
-                f"    assert _found is not None, 'param {param_name!r} not found in hook data'",
+                f"    assert _found is not None, {assert_msg}",
                 f"    history.append({{'step': {rec.step}, 'action': 'extract', 'param': {param_name!r}, 'value': _found}})",
             ]
         # 没记录到结果值：仅做 best-effort 提取
@@ -384,11 +412,13 @@ class ScriptCompiler:
         y = int(rec.params.get("y", 800))
         lines: list[str] = [f"    # step {rec.step}: scroll"]
         if selector:
-            # selector 嵌入 JS 字符串：用 json.dumps 生成合法 JS 字符串字面量
-            sel_js = json.dumps(str(selector))
-            lines.append(
-                f"    page.evaluate('document.querySelector({sel_js})?.scrollBy({x}, {y})')"
+            # 整个 JS 表达式用 json.dumps 转义后嵌入，避免单引号/换行破坏 Python 源码
+            js_expr = (
+                f"document.querySelector({json.dumps(str(selector), ensure_ascii=True)})"
+                "?.scrollBy("
+                f"{x}, {y})"
             )
+            lines.append(f"    page.evaluate({json.dumps(js_expr, ensure_ascii=True)})")
         else:
             lines.append(f"    page.evaluate('window.scrollBy({x}, {y})')")
         lines.append(
@@ -465,13 +495,15 @@ class ReplayRunner:
 
 # -- 辅助 -------------------------------------------------------------------
 
-_PY_STRING_ESCAPE_RE = re.compile(r'[\\"]')
-
 
 def _py_string_literal(value: str) -> str:
-    """把字符串转成 Python 双引号字符串字面量。"""
-    escaped = _PY_STRING_ESCAPE_RE.sub(lambda m: "\\" + m.group(0), value)
-    return f'"{escaped}"'
+    """把字符串转成合法的 Python 双引号字符串字面量。
+
+    基于 ``json.dumps`` 转义：反斜杠、双引号、换行、制表符、控制字符等
+    全部转为转义序列，保证生成的源码可被 ``compile`` 接受（参数可能来自
+    LLM/页面数据，含任意字符）。
+    """
+    return json.dumps(str(value), ensure_ascii=True)
 
 
 __all__ = [

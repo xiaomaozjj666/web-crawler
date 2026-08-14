@@ -15,16 +15,18 @@ fixed-height screenshot tiles, ready for visual embedding or VLM extraction.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import math
+import warnings
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from typing_extensions import Self
 
 from ..compat import require_playwright
-from ._base import BaseFetcher
+from ._base import BaseFetcher, validate_url_scheme
 from .proxy import ProxyPool
 
 if TYPE_CHECKING:
@@ -115,16 +117,45 @@ class DynamicFetcher(BaseFetcher):
         """Convert a proxy URL into Playwright's ``ProxySettings`` dict."""
         if not proxy:
             return None
+        # 无 scheme 的代理 URL 默认按 http 处理；IPv6 地址需补方括号
+        if "://" not in proxy:
+            proxy = "http://" + proxy
         parsed = urlparse(proxy)
-        server = f"{parsed.scheme}://{parsed.hostname}"
+        host = parsed.hostname or ""
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        server = f"{parsed.scheme}://{host}"
         if parsed.port:
             server += f":{parsed.port}"
         settings: dict[str, str] = {"server": server}
+        # userinfo 可能是百分号编码（如 user%40x），解码后交给 Playwright
         if parsed.username:
-            settings["username"] = parsed.username
+            settings["username"] = unquote(parsed.username)
         if parsed.password:
-            settings["password"] = parsed.password
+            settings["password"] = unquote(parsed.password)
         return settings
+
+    def _context_kwargs(
+        self,
+        *,
+        viewport: dict[str, int] | None = None,
+        proxy: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """构造 ``browser.new_context`` 的参数。
+
+        子类（如 :class:`CamoufoxFetcher`）可覆写此方法以调整指纹策略——
+        例如不传 user_agent/locale/viewport，避免覆盖 Camoufox 生成的指纹。
+        """
+        kwargs: dict[str, Any] = {
+            "user_agent": self.user_agent,
+            "locale": "en-US",
+            "extra_http_headers": self.extra_headers or None,
+            "proxy": proxy,
+            "ignore_https_errors": not self.verify,
+        }
+        if viewport is not None:
+            kwargs["viewport"] = viewport
+        return kwargs
 
     def _blocked_types(self) -> set[str]:
         blocked: set[str] = set()
@@ -166,12 +197,9 @@ class DynamicFetcher(BaseFetcher):
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
         context = browser.new_context(
-            user_agent=self.user_agent,
-            locale="en-US",
-            viewport={"width": 1366, "height": 768},
-            extra_http_headers=self.extra_headers or None,
-            proxy=proxy_settings,
-            ignore_https_errors=not self.verify,
+            **self._context_kwargs(
+                viewport={"width": 1366, "height": 768}, proxy=proxy_settings
+            )
         )
         try:
             page = context.new_page()
@@ -209,6 +237,7 @@ class DynamicFetcher(BaseFetcher):
 
     def fetch(self, url: str, **kwargs: Any) -> Any:
         """Render ``url`` with a headless browser and return a :class:`Response`."""
+        validate_url_scheme(url)
         browser = self._ensure_browser()
         proxy = self._resolve_proxy()
         proxy_settings = self._parse_proxy(proxy)
@@ -239,12 +268,9 @@ class DynamicFetcher(BaseFetcher):
         from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
         context = await browser.new_context(
-            user_agent=self.user_agent,
-            locale="en-US",
-            viewport={"width": 1366, "height": 768},
-            extra_http_headers=self.extra_headers or None,
-            proxy=proxy_settings,
-            ignore_https_errors=not self.verify,
+            **self._context_kwargs(
+                viewport={"width": 1366, "height": 768}, proxy=proxy_settings
+            )
         )
         try:
             page = await context.new_page()
@@ -281,6 +307,7 @@ class DynamicFetcher(BaseFetcher):
 
     async def async_fetch(self, url: str, **kwargs: Any) -> Any:
         """Asynchronously render ``url`` and return a :class:`Response`."""
+        validate_url_scheme(url)
         browser = await self._ensure_async_browser()
         proxy = self._resolve_proxy()
         proxy_settings = self._parse_proxy(proxy)
@@ -299,6 +326,7 @@ class DynamicFetcher(BaseFetcher):
         viewport_width: int = 875,
         format: str = "png",
         quality: int = 80,
+        max_tiles: int = 50,
     ) -> list[dict[str, Any]]:
         """Render ``url`` and slice the full page into fixed-height screenshot tiles.
 
@@ -318,6 +346,9 @@ class DynamicFetcher(BaseFetcher):
             Screenshot image format: ``"png"`` or ``"jpeg"``.
         quality:
             JPEG quality (1-100), ignored for PNG.
+        max_tiles:
+            单次调用最多生成的截图片数上限（防御超长页面/无限滚动导致的
+            内存与耗时失控）；超过上限时截断并发出 RuntimeWarning。
 
         Returns
         -------
@@ -325,6 +356,7 @@ class DynamicFetcher(BaseFetcher):
             Each tile as ``{index, total, b64: str, width, height}`` where
             ``b64`` is a base64-encoded image string suitable for VLM input.
         """
+        validate_url_scheme(url)
         browser = self._ensure_browser()
         proxy = self._resolve_proxy()
         proxy_settings = self._parse_proxy(proxy)
@@ -332,12 +364,9 @@ class DynamicFetcher(BaseFetcher):
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
         context = browser.new_context(
-            user_agent=self.user_agent,
-            locale="en-US",
-            viewport={"width": viewport_width, "height": 768},
-            extra_http_headers=self.extra_headers or None,
-            proxy=proxy_settings,
-            ignore_https_errors=not self.verify,
+            **self._context_kwargs(
+                viewport={"width": viewport_width, "height": 768}, proxy=proxy_settings
+            )
         )
         try:
             page = context.new_page()
@@ -375,6 +404,14 @@ class DynamicFetcher(BaseFetcher):
             page_width = int(dims["width"])
             page_height = int(dims["height"])
             num_tiles = max(1, math.ceil(page_height / tile_height))
+            if num_tiles > max_tiles:
+                warnings.warn(
+                    f"page height {page_height}px exceeds max_tiles={max_tiles}; "
+                    "truncating screenshot tiles",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                num_tiles = max_tiles
 
             clip_format = "jpeg" if format == "jpeg" else "png"
 
@@ -414,8 +451,10 @@ class DynamicFetcher(BaseFetcher):
         viewport_width: int = 875,
         format: str = "png",
         quality: int = 80,
+        max_tiles: int = 50,
     ) -> list[dict[str, Any]]:
         """Async version of :meth:`screenshot_tiles`."""
+        validate_url_scheme(url)
         browser = await self._ensure_async_browser()
         proxy = self._resolve_proxy()
         proxy_settings = self._parse_proxy(proxy)
@@ -423,12 +462,9 @@ class DynamicFetcher(BaseFetcher):
         from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
         context = await browser.new_context(
-            user_agent=self.user_agent,
-            locale="en-US",
-            viewport={"width": viewport_width, "height": 768},
-            extra_http_headers=self.extra_headers or None,
-            proxy=proxy_settings,
-            ignore_https_errors=not self.verify,
+            **self._context_kwargs(
+                viewport={"width": viewport_width, "height": 768}, proxy=proxy_settings
+            )
         )
         try:
             page = await context.new_page()
@@ -465,6 +501,14 @@ class DynamicFetcher(BaseFetcher):
             page_width = int(dims["width"])
             page_height = int(dims["height"])
             num_tiles = max(1, math.ceil(page_height / tile_height))
+            if num_tiles > max_tiles:
+                warnings.warn(
+                    f"page height {page_height}px exceeds max_tiles={max_tiles}; "
+                    "truncating screenshot tiles",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                num_tiles = max_tiles
 
             clip_format = "jpeg" if format == "jpeg" else "png"
 
@@ -515,33 +559,47 @@ class DynamicFetcher(BaseFetcher):
             except Exception:
                 pass
             self._pw = None
-        # 异步句柄 best-effort 清理
+        # 异步句柄 best-effort 清理：仅当当前线程没有运行中的事件循环时才用
+        # 临时事件循环尝试；失败或存在运行中 loop 时保留引用并告警，之后仍可
+        # aclose()（跨事件循环关闭 Playwright 对象必然失败，不能静默丢弃引用）。
         if self._async_browser is not None or self._async_pw is not None:
-            import asyncio
-
             try:
-                loop = asyncio.new_event_loop()
+                asyncio.get_running_loop()
+            except RuntimeError:
                 try:
-                    loop.run_until_complete(self._cleanup_async_handles())
-                finally:
-                    loop.close()
-            except Exception:
-                pass
+                    loop = asyncio.new_event_loop()
+                    try:
+                        loop.run_until_complete(self._cleanup_async_handles())
+                    finally:
+                        loop.close()
+                except Exception:
+                    pass
+            if self._async_browser is not None or self._async_pw is not None:
+                warnings.warn(
+                    "DynamicFetcher.close() 未能关闭异步浏览器句柄（可能绑定在"
+                    "其他事件循环）；请使用 await fetcher.aclose() 释放异步资源。",
+                    ResourceWarning,
+                    stacklevel=2,
+                )
 
     async def _cleanup_async_handles(self) -> None:
-        """关闭 async browser/pw 句柄（供 close() 同步路径调用）。"""
+        """关闭 async browser/pw 句柄（供 aclose() 调用）。
+
+        单个句柄关闭失败时保留引用（不置 None），以便后续 aclose() 重试，
+        避免"清理失败却丢失引用导致进程泄漏"。
+        """
         if self._async_browser is not None:
             try:
                 await self._async_browser.close()
+                self._async_browser = None
             except Exception:
                 pass
-            self._async_browser = None
         if self._async_pw is not None:
             try:
                 await self._async_pw.stop()
+                self._async_pw = None
             except Exception:
                 pass
-            self._async_pw = None
 
     async def aclose(self) -> None:
         """Asynchronously close both sync and async browsers / Playwright drivers."""

@@ -294,7 +294,12 @@ class ContextCompressor:
             if hasattr(self.provider, "achat"):
                 resp = await self.provider.achat(messages, temperature=0.0, max_tokens=400)
             else:
-                resp = self.provider.chat(messages, temperature=0.0, max_tokens=400)
+                # 无异步入口时丢到线程池，避免阻塞事件循环
+                import asyncio
+
+                resp = await asyncio.to_thread(
+                    self.provider.chat, messages, temperature=0.0, max_tokens=400
+                )
             return (resp.content or "").strip()
         except Exception as exc:
             return f"[history compression failed: {exc}]"

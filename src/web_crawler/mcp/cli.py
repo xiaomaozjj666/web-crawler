@@ -208,9 +208,18 @@ def cmd_captcha_image(args: argparse.Namespace) -> int:
 
 
 def cmd_pentest(args: argparse.Namespace) -> int:
-    """执行渗透侦察（合规声明：仅用于已获授权的目标）。"""
+    """执行渗透侦察（合规声明：仅用于已获授权的目标，需 --authorized 确认）。"""
+    if not args.authorized:
+        print(
+            "错误：pentest 仅可用于已获书面授权的目标，请加 --authorized 确认授权",
+            file=sys.stderr,
+        )
+        return 1
     server = _make_server(args.model)
-    payload: dict[str, Any] = {"target": args.target}
+    payload: dict[str, Any] = {
+        "target": args.target,
+        "authorization_confirmed": True,
+    }
     if args.checks:
         payload["checks"] = [c.strip() for c in args.checks.split(",") if c.strip()]
     if args.ports:
@@ -416,8 +425,18 @@ def cmd_interactive(args: argparse.Namespace) -> int:
                 result = server.handle_tool("solve_captcha_image", payload)
                 _print_json(json.loads(result))
             elif cmd == "pentest" and len(parts) >= 2:
+                if "--authorized" not in parts:
+                    print(
+                        "错误：pentest 仅可用于已获书面授权的目标，"
+                        "请在命令中加入 --authorized 确认",
+                        file=sys.stderr,
+                    )
+                    continue
                 pentest_target = parts[1]
-                pentest_payload: dict[str, Any] = {"target": pentest_target}
+                pentest_payload: dict[str, Any] = {
+                    "target": pentest_target,
+                    "authorization_confirmed": True,
+                }
                 if "--checks" in parts:
                     idx = parts.index("--checks")
                     checks_str = parts[idx + 1] if len(parts) > idx + 1 else ""
@@ -537,6 +556,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="自定义端口列表（逗号分隔，仅 ports 检查）",
     )
     p.add_argument("--timeout", type=float, default=30.0, help="整体超时（秒）")
+    p.add_argument(
+        "--authorized",
+        action="store_true",
+        default=False,
+        help="确认已获目标书面授权（pentest 必需，未传将拒绝执行）",
+    )
     p.set_defaults(func=cmd_pentest)
 
     # capture

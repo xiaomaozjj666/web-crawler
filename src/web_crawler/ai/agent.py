@@ -24,6 +24,7 @@ Example
 from __future__ import annotations
 
 import time
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -43,6 +44,10 @@ _BACKOFF_STATUS = frozenset({429, 503})
 
 # 拦截页面的 HTTP 状态码（鉴权/禁止访问）
 _BLOCK_STATUS = frozenset({401, 403})
+
+# Retry-After 头 / 指数退避的上限（秒）：防止恶意响应头或长时间故障拖死爬虫
+_MAX_RETRY_AFTER = 300.0
+_MAX_BACKOFF = 60.0
 
 # 反爬/验证码/人机验证的页面正文标记（小写匹配）。
 # Anti-bot detection markers: stop and hand off to human when hit
@@ -76,6 +81,23 @@ def detect_block(resp: Response) -> str | None:
         if marker in body:
             return f"page marker: {marker!r}"
     return None
+
+
+def _http_get_text(
+    url: str,
+    timeout: float = 10.0,
+    user_agent: str = "web-crawler",
+) -> str:
+    """轻量 GET（stdlib only）：仅用于 robots.txt 等元数据拉取。
+
+    不走重型 fetcher / 渲染，失败返回空串（等价于"无 robots 约束"）。
+    """
+    req = urllib.request.Request(url, headers={"User-Agent": user_agent})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
 
 
 @dataclass
@@ -207,6 +229,13 @@ class AIScrapeAgent:
         resp = self._do_fetch(self._ensure_fetcher(), url)
         return resp.text
 
+    def _fetch_robots_text(self, url: str) -> str:
+        """轻量拉取 robots.txt（stdlib HTTP，不经重型 fetcher/渲染），并纳入限速。"""
+        self._throttle()
+        text = _http_get_text(url, user_agent=self.robots.user_agent)
+        self._last_request_ts = time.monotonic()
+        return text
+
     # -- rate limiting / backoff -------------------------------------------
     def _throttle(self) -> None:
         elapsed = time.monotonic() - self._last_request_ts
@@ -219,15 +248,17 @@ class AIScrapeAgent:
         header = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
         if header:
             try:
-                return max(0.0, float(header))
+                # Retry-After 来自不可信响应头，设上限防恶意大值拖死爬虫
+                return max(0.0, min(float(header), _MAX_RETRY_AFTER))
             except ValueError:
                 pass
-        return float(2**attempt)  # 指数退避兜底
+        # 指数退避兜底（同样设上限）
+        return min(float(2**attempt), _MAX_BACKOFF)
 
     def fetch(self, url: str) -> Response:
         """Fetch ``url`` politely: robots check, throttle, backoff on 429/503."""
         fetcher = self._ensure_fetcher()
-        if self.respect_robots and not self.robots.allowed(url, self._fetch_text):
+        if self.respect_robots and not self.robots.allowed(url, self._fetch_robots_text):
             raise PermissionError(f"robots.txt disallows fetching {url!r}")
 
         attempt = 0

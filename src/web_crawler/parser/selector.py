@@ -103,6 +103,13 @@ class Adaptors:
         record = self.storage.load(self.domain, identifier)
         if not record:
             return None, 0.0
+        # 用存储记录中的 tag 预筛候选：避免对整篇文档逐元素计算指纹
+        # （大文档下 O(N²)），tag 不匹配的元素不可能命中。
+        tag = record.get("tag")
+        if tag:
+            candidates = [c for c in candidates if isinstance(c.tag, str) and c.tag == tag]
+            if not candidates:
+                return None, 0.0
         return best_match(candidates, record["fingerprint"], threshold)
 
     def find_similar(

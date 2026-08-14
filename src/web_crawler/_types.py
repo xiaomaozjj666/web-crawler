@@ -198,7 +198,11 @@ def ensure_list(value: Iterable[T] | T | None) -> list[T]:
     """Wrap a single value into a list; pass through iterables; ``None`` -> ``[]``."""
     if value is None:
         return []
-    if isinstance(value, (list, tuple, set, ResultList)):
+    # str/bytes 虽可迭代，但语义上是"单个值"；其余 Iterable（含生成器、
+    # range、set、dict 等）一律透传为列表
+    if isinstance(value, (str, bytes)):
+        return [cast("T", value)]
+    if isinstance(value, Iterable):
         return list(value)
     # At this point ``value`` is a single item of type T (mypy can't narrow the
     # union that far, so help it with a cast).

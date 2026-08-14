@@ -9,12 +9,30 @@ response into the library-wide :class:`~web_crawler.response.Response`.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 from ..response import Response
 from .proxy import ProxyPool
 
 if TYPE_CHECKING:
     from ..parser.adaptive import AdaptiveStorage
+
+# SSRF 防护：仅允许 http/https 协议
+_ALLOWED_URL_SCHEMES = ("http", "https")
+
+
+def validate_url_scheme(url: str) -> None:
+    """拒绝 scheme 非 http/https 的 URL（SSRF 防护）。
+
+    在每次抓取入口与每一个重定向跳转前调用，确保 ``file://``/``ftp://``/
+    ``data:``/``gopher://`` 等 URL 在到达传输层之前被拒绝——curl_cffi 的
+    libcurl 与 Playwright 都支持 ``file://``，会直接读取本地文件。
+    """
+    scheme = urlparse(url).scheme.lower()
+    if scheme not in _ALLOWED_URL_SCHEMES:
+        raise ValueError(
+            f"URL scheme {scheme or '<none>'!r} is not allowed; only http/https are supported"
+        )
 
 
 class BaseFetcher:
