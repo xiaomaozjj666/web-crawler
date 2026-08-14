@@ -5,7 +5,7 @@ Scrapling 风格的隐身网页爬虫库：**自适应选择器**、**TLS 指纹
 ## 功能特性
 
 - **自适应解析器** — `Selector` 基于 `lxml`，支持元素指纹计算与结构相似度重定位：站点改版导致选择器失效时，已保存的指纹会自动在新页面中重新找到对应元素（Scrapling 的标志性能力）。公开 `save` / `retrieve` / `relocate` API 便于显式管理指纹；内置 `find_by_regex`、`re` / `re_first`、`get_all_text`、`prettify`、完整 DOM 遍历（`parent` / `children` / `siblings` / `next` / `previous` / `path`），以及 `ResultList` 批量辅助方法（`css` / `xpath` / `get` / `getall` / `.first` / `.last`）。支持 Scrapling 风格 `::attr(name)` 伪元素直接取属性。
-- **隐身 HTTP** — `Fetcher` 通过 `curl_cffi` 重放真实浏览器的 TLS/JA3 指纹与 HTTP/2 帧序，使请求在网络层与 Chrome 难以区分；支持 `impersonate="chrome131"` 等浏览器预设，并可通过 `ja4_fingerprint` 透传到 `curl_cffi` 的 `ja3` 参数做细粒度 TLS 扩展定制。`curl_cffi` 缺失时自动降级到 `httpx`（带警告）。`AsyncFetcher` 提供纯异步 API。
+- **隐身 HTTP** — `Fetcher` 通过 `curl_cffi` 重放真实浏览器的 TLS/JA3 指纹与 HTTP/2 帧序，使请求在网络层与 Chrome 难以区分；支持 `impersonate="chrome131"` 等浏览器预设，并可通过 `ja3_fingerprint` 参数透传到 `curl_cffi` 的 `ja3` 参数做细粒度 TLS 扩展定制（`max_redirects` 默认 5，限制重定向跳数）。`curl_cffi` 缺失时自动降级到 `httpx`（带警告）。`AsyncFetcher` 提供纯异步 API。
 - **懒加载** — `import web_crawler` 不会强制加载 `playwright` / `curl_cffi`，重型子模块在首次访问时才解析（Scrapling 同款模式），仅需解析功能的用户无需安装浏览器依赖。
 - **JS 渲染** — `DynamicFetcher` 驱动 Playwright/Chromium 渲染动态页面，支持按资源类型屏蔽、按选择器等待。
 - **反爬处理** — `StealthyFetcher` 注入指纹补丁 JS、人类化鼠标/滚动轨迹，并对 Cloudflare 挑战做尽力而为的处理。
@@ -149,6 +149,9 @@ python app/crawler.py --url https://example.com --stealth --impersonate chrome13
 # 本地 Web UI（默认 http://127.0.0.1:8765，--open 自动打开浏览器）
 python app/ui.py --open
 
+# 远程/容器绑定需显式放行：--allow-remote（控制面无鉴权，仅限可信网络）
+python app/ui.py --host 0.0.0.0 --port 8765 --allow-remote
+
 # 演示脚本（Windows 也可双击 demo.bat）
 python demo.py
 ```
@@ -160,6 +163,12 @@ docker build -t web-crawler .
 docker run -p 8765:8765 -e DEEPSEEK_API_KEY=<your-key> web-crawler
 docker-compose up -d
 ```
+
+> 容器限制：镜像仅安装 Firefox（供 Camoufox / 逆向 Agent 使用），而
+> `DynamicFetcher` 默认驱动 **Chromium**——容器内如需 JS 渲染，请自行执行
+> `playwright install chromium`，或改用 `CamoufoxFetcher`。
+> 镜像 CMD 已带 `--host 0.0.0.0 --port 8765 --allow-remote`；控制面无鉴权，
+> 请勿将容器端口暴露到公网。
 
 ### MCP 接入（Claude Desktop / Cursor 等）
 
@@ -188,7 +197,7 @@ web-crawler-mcp                    # 通过 stdio 通信
 web-crawler-reverse https://example.com --target-params anti_content sign
 web-crawler-reverse analyze script.js              # 反混淆 JS 片段
 web-crawler-reverse webpack bundle.js              # 提取 webpack 模块
-web-crawler-reverse reimplement algo.js --lang python
+web-crawler-reverse reimplement algo.js --language python
 web-crawler-reverse capture https://example.com --wait 8
 web-crawler-reverse interactive                     # REPL，输入 tools 查看命令
 web-crawler-reverse run --url https://example.com --task "提取签名参数" --headless
@@ -196,7 +205,7 @@ web-crawler-reverse run --url https://example.com --task "提取签名参数" --
 
 ## 配置
 
-以下环境变量均可通过命令行 `api_key=...` 参数或项目根目录的 `.env` 文件（进程启动时自动读取，不覆盖已存在的环境变量）注入。**所有值均为占位符，请替换为你自己的密钥。**
+以下环境变量均可通过代码中 `api_key=` 关键字参数或项目根目录的 `.env` 文件 / 环境变量（如 `DEEPSEEK_API_KEY`）注入（`.env` 在进程启动时自动读取，不覆盖已存在的环境变量）。**所有值均为占位符，请替换为你自己的密钥。**
 
 | 变量 | 用途 | 示例 |
 | --- | --- | --- |
@@ -220,9 +229,14 @@ src/web_crawler/          # 核心库
   mcp/                    # ReverseMCPServer（JSON-RPC over stdio）+ CLI
   py.typed                # PEP 561 类型标记
 app/                      # 应用层
-  crawler.py              # 并发资源下载器（续传、去重、sitemap、UI 驱动）
+  crawler.py              # 并发资源下载器（CLI / 主流程 / 网络编排，续传、去重、sitemap、UI 驱动）
+  crawler_models.py       # 共享数据类 Resource / ManifestRow
+  crawler_net.py          # 网络/解析/工具层（限速、去重、URL 分类、HTML 解析）
+  crawler_report.py       # 报告/格式层（清单、摘要、MD/HTML 报告、HTML 重写、智能抽取）
   db.py                   # SQLite 持久化（任务 + 结果，线程安全）
   ui.py                   # 本地 Web UI（SSE 实时推送）
+  static/
+    index.html            # UI 前端模板（运行时读取）
 tests/                    # pytest 测试套件
 benchmarks.py             # 解析器/fetcher 微基准 + 回归检测
 demo.py / demo.bat        # 交互式使用演示
@@ -233,7 +247,7 @@ docs/ + mkdocs.yml        # MkDocs 文档站点
 
 ```bash
 ruff check .                          # 静态检查
-mypy src                              # 类型检查
+mypy src/web_crawler app                # 类型检查
 pytest -m "not slow"                  # 运行测试（跳过慢速集成测试）
 pytest --cov=web_crawler --cov=app    # 带覆盖率
 python benchmarks.py --check-regression   # 性能回归检查（CI 模式）

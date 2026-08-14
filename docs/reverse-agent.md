@@ -49,7 +49,7 @@ web-crawler-mcp                       # 通过 stdio 跑 JSON-RPC
 web-crawler-reverse https://example.com --target-params anti_content sign
 web-crawler-reverse analyze script.js            # 反混淆 JS 片段
 web-crawler-reverse webpack bundle.js            # 抽 webpack 模块
-web-crawler-reverse reimplement algo.js --lang python
+web-crawler-reverse reimplement algo.js --language python
 web-crawler-reverse capture https://example.com --wait 8
 web-crawler-reverse interactive                  # REPL：输入 `tools` 列工具
 ```
@@ -161,7 +161,7 @@ finally:
 | 动作护栏 | `enable_guard` | `True` | 域名白名单，拦截 localhost/非 HTTPS/跨域/危险脚本 |
 | Planner/Actor | `planner_interval` | `5` | 高层子目标规划 + 周期重规划 |
 | 循环检测 | `loop_threshold` | `3` | 页面状态指纹；重复状态自动重规划 |
-| 上下文压缩 | `max_history` | `25` | 历史滚动摘要；预算溢出时 `force_compress` |
+| 上下文压缩 | `max_history` | `25` | 历史滚动摘要；超出 `max_history` 时自动压缩 |
 | 任务裁决 | `enable_judge` | `True` | 独立 LLM 验证 `done`，防幻觉成功 |
 | 成功路径录制 | `enable_recorder` | `True` | 把成功 trace 编译为确定性 Python 脚本 |
 | 截图捕获 | `enable_screenshot` | `True` | 每步观察 + 错误路径保存 PNG |
@@ -177,8 +177,9 @@ finally:
 
 ## 合规说明
 
-Agent 仅模拟正常用户交互；**不**破解图片验证码、**不**伪造登录凭证、**不**绕过付费墙。
-当页面返回 401/403 或出现无法处理的验证码时，Agent 会停止并返回"人工接管"状态。
+Agent 仅识别验证码挑战并模拟正常用户交互（OCR / 滑块 / 点选图片挑战由
+`ImageCaptchaSolver` 自动识别），**不**伪造登录凭证、**不**绕过付费墙。
+当页面返回 401/403 或出现无法处理的挑战时，Agent 会停止并返回"转人工处理"状态。
 
 ## 单模型策略
 

@@ -7,7 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- (none)
+- **SQLite 任务历史与结果持久化**（`app/db.py`）：任务/结果双表、线程安全连接、
+  WAL 模式，数据库默认位于项目根目录 `crawler_data.db`，可通过
+  `CRAWLER_DB_PATH` 环境变量覆盖；进程退出时由 atexit 统一关闭全部连接。
+  Web UI 新增历史 Tab 与历史任务面板（`/jobs`、`/reverse/jobs`），可查看
+  历史任务状态、分页浏览采集结果并删除任务。
+- **`ReverseAgentConfig.should_stop` 回调**：主循环每步检查该回调，返回
+  `True` 时立即中断并发出 `agent.stopped` 事件；Web UI「停止」按钮已接线，
+  可真正中断正在运行的 Agent。
+- **`Fetcher.max_redirects` 参数**（默认 `5`）：限制跟随重定向的最大跳数，
+  配合逐跳 scheme 校验防止被重定向引向内网。
+- **`Fetcher.ja3_fingerprint` 参数**：替代旧 `ja4_fingerprint`（保留为兼容
+  别名，传入时发出 `DeprecationWarning`），透传到 `curl_cffi` 的 `ja3`
+  参数做细粒度 TLS 指纹定制。
+- **MCP 工具参数校验与输入上限**：所有工具入参按 schema 校验类型/必填/
+  枚举，`code` 等字段设 2,000,000 字符上限，非法参数返回明确错误而非
+  抛晦涩异常。
+- **Web UI `--allow-remote` 参数**：远程/容器绑定（非回环地址）需显式
+  开启，控制面无鉴权、仅限可信网络；`Dockerfile` CMD 已启用。
+
+### Changed
+- **LLM 调用指数退避重试**：`OpenAICompatibleProvider.chat` / `achat` 对
+  429 / 5xx / httpx 传输层错误按 `2^n` 秒退避最多重试 3 次（上限 30s），
+  替代原先的一次性调用。
+- **Web UI 模板抽离**：`app/ui.py` 内嵌的 ~1400 行 HTML/CSS/JS 抽为
+  `app/static/index.html`（package-data 打包携带，运行时读取，缺失时显示
+  兜底页）。
+- **`app/crawler.py` 巨型文件拆分**：拆分为 `crawler_models.py`（共享数据
+  类）/ `crawler_net.py`（网络/解析/工具层）/ `crawler_report.py`（报告/
+  格式层），`app.crawler` 保持全部属性兼容。
+- **`app/db.py` 连接生命周期修复**：全局连接登记表 +
+  `close_thread_connection()` / `close_all_connections()`，消除线程级
+  SQLite 连接永不关闭产生的 16 个 `ResourceWarning`；删除死代码
+  `finish_task`。
+
+### Fixed
+- **reverse_agent 崩溃恢复 / 多标签页 / checkpoint 续跑**：主循环统一经
+  `self._page` 取当前页并重新绑定恢复后的页面引用，崩溃恢复与
+  `new_tab` / `switch_tab` / `close_tab` 不再操作已关闭的旧页；checkpoint
+  改用 URL 稳定哈希生成 `task_id`（去掉 `time.time()`），断点续跑真实生效。
+- **judge `verified` 严格布尔解析**：仅 `True` / `"true"` / `"1"` 视为通过，
+  LLM 输出字符串 `"false"` 不再被 `bool()` 误判为 `True`（`verified` 是任务
+  完成判定的唯一安全闸门）。
+- **MCP Windows 超时与事件循环**：pentest 超时真实生效
+  （`shutdown(wait=False, cancel_futures=True)` + DNS 超时）；SDK 路径
+  async handler 经 `asyncio.to_thread` 不阻塞事件循环。
+- **Web UI 日志与取消语义**：爬虫日志经自定义 `logging.Handler` 转发到任务
+  面板（不再依赖进程级 stdout 重定向）；取消统一返回码 1 且各阶段短路。
+
+### Security
+- **`file://` SSRF 拦截**：`validate_url_scheme` 在每次抓取入口与每个重定向
+  跳转前强制仅放行 http/https（拒绝 `file://` / `ftp://` / `data:` /
+  `gopher:`），跨源重定向剥离 `Authorization` 头，`DynamicFetcher` 渲染入口
+  同样校验。
+- **MCP pentest 授权门禁**：`pentest_recon` 必须显式传
+  `authorization_confirmed=true`，并默认拒绝私网/环回/链路本地/云元数据
+  地址（`allow_private=true` 可显式放行）。
+- **本地 API Origin/CSRF 防护**：Web UI 校验 `Origin`/`Referer` 与请求
+  `Host` 同源（`null` Origin 一律拒绝），表单 POST 无法被跨站触发；
+  `/open-output` 限定白名单目录，Cookie 不再写入任务配置。
+- **`analyze_js` 同源限制**：Agent 服务端拉取脚本仅限同源/白名单域、
+  非内网的 http(s) URL（拒绝重定向到内网），并设内容大小上限，防止
+  SSRF 与内网响应数据外带。
 
 ## [0.3.0] - 2026-07-29
 
