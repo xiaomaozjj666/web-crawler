@@ -288,4 +288,44 @@ fetchers（🔴 file:// 已实测）、MCP 工具（🟠）、app 重定向绕�
 
 ---
 
+## 十、体验端优化（第四轮：Web 控制台 + CLI + 文档 ✅）
+
+### Web 控制台前端（app/static/index.html + ui.py）
+
+- 🔴 **修复前端 script 从未执行的致命 bug**：URL 校验正则 `\\/\\/` 中未转义斜杠终止正则字面量 → 整段脚本 SyntaxError（采集器交互此前全部失效）；已修正 `\/\/` 并经 node --check 双 script 语法验证
+- 🔴 **暂停→继续后按钮卡死**：poll 的 running 分支恢复「暂停」按钮（暂停/继续/终态三态统一重算）
+- 🔴 **深色模式历史 Tab 断裂**：补定义 `--bg-card`/`--text-muted` 变量（此前永远回退白底）
+- 🔴 **SSE 主路径截图不渲染**：final 事件补 `renderScreenshots`（此前仅轮询降级路径能出图）
+- 🔴 **历史/结果 Tab 存储型 XSS**：url/content_type/status 等插值点统一 `escapeHtml`（此前直接拼 innerHTML，恶意站点可触发脚本）
+- 🟡 历史 Tab 三个 fetch 链错误兜底（加载失败内联提示）；错误反馈持久化（操作失败写入日志区，不再被 poll 覆盖）；总耗时终态固定值（`finished_at` 字段，running 才显示动态）；移动端 Tab 栏 flex-wrap；截图卡片键盘操作（tabindex/Enter）+ 全局 Esc 关闭弹窗
+- 🔵 favicon（消除 404 噪音）、fmtSize GB 档、状态筛选补 paused、0 条不渲染页码、max_bytes=0 提示、首帧状态徽章矛盾修复、max_bytes hint
+- 💡 状态徽章 aria-live、初始主题读 prefers-color-scheme（可选）
+
+### CLI / 脚本
+
+- 🟠 **Docker 启动即失败修复**：ui.py 新增 `--allow-remote` 显式放行非回环绑定（Dockerfile CMD 与 compose 同步），控制面默认仍只绑回环
+- 🟠 **--save-config → --load-config 往返崩溃修复**：load 时以 parser 默认值为底合并（缺省字段不再 AttributeError）、saver 补全 include_pattern/exclude_pattern/proxy/stealth/impersonate、缺文件 exit 2；新增 2 个往返回归测试
+- 🟡 JSONL 清单**逐条实时追加**（每下载完成即写一行，不再结束时一次性写入），写失败 best-effort 降级
+- 🟡 demo.py `max_requests` 死属性 → `run(max_requests=3)`；demo.bat/start-ui.bat 重写 Python 探测（先验证解释器再单次运行，保留 stderr 与退出码）；mcp/cli.py docstring 示例修正为真实子命令、无子命令 exit 0→2；Fetcher docstring 补 max_redirects/ja3_fingerprint
+- 🔵 `/reverse/events` 死端点删除（含 3 个测试）；退出码语义对齐（0 成功 / 1 取消 / 2 配置错误）
+
+### 文档（README / docs / CHANGELOG / .env.example / Docker）
+
+- CHANGELOG `[Unreleased]` 由 "(none)" 补记为 Added/Changed/Fixed/Security 四小节（约 25 个提交的变更）
+- README/docs：ja4→ja3 改名、补 max_redirects、api_key 注入表述修正、mypy 命令对齐 CI、--lang→--language、结构树补齐拆分模块、Budget 残留清除、验证码合规表述统一（不伪造凭证/不绕过付费墙）、容器浏览器限制注明、--allow-remote 说明
+- .env.example 补 LLM_API_KEY / CRAWLER_DB_PATH
+
+### 第四轮最终验证
+
+| 验证项 | 结果 |
+|---|---|
+| pytest 全量 | ✅ **2858 passed, 3 skipped** |
+| 覆盖率 | ✅ **100%**（10931 语句 0 未覆盖，57 源文件全 100%） |
+| ruff | ✅ 全绿（src + app + tests + demo + benchmarks） |
+| mypy | ✅ src + app 零错误（57 files） |
+| benchmark 回归 | ✅ 通过 |
+| 前端 JS | ✅ node --check 双 script 语法通过 |
+
+---
+
 *本报告由 6 路并行深度审查汇总生成；🔴/🟠 级发现中，file:// 任意文件读取、httpx http2 ImportError、judge bool 强转等关键论断均已本机实测复核。修复后全量验证：2858 passed / 覆盖率 100% / ruff 全绿 / mypy src+app 零错误 / benchmark 通过 / 无 ResourceWarning。*

@@ -13,7 +13,8 @@
 `Fetcher` 是主力 HTTP fetcher，基于 `curl_cffi` 重放真实浏览器的 TLS/JA3 指纹与
 HTTP/2 帧序；`curl_cffi` 缺失时自动降级到 `httpx`（带 warning，无指纹能力）。
 
-支持 `impersonate` 浏览器预设与 `ja4_fingerprint` 细粒度 TLS 指纹定制。
+支持 `impersonate` 浏览器预设、`ja3_fingerprint` 细粒度 TLS 指纹定制与
+`max_redirects`（默认 5）重定向跳数上限。
 
 ::: web_crawler.fetchers.fetcher.Fetcher
 

@@ -19,7 +19,7 @@ src/web_crawler/          # 核心库
     visual.py             # VisualExtractor（PixelRAG 风格截图瓦片 VLM）
   fetchers/
     _base.py              # BaseFetcher（共享配置 + response 构建）
-    fetcher.py            # Fetcher + AsyncFetcher（curl_cffi TLS 隐身, httpx 兜底, JA4 定制）
+    fetcher.py            # Fetcher + AsyncFetcher（curl_cffi TLS 隐身, httpx 兜底, JA3 定制）
     dynamic.py            # DynamicFetcher（Playwright JS 渲染）
     stealthy.py           # StealthyFetcher（反爬 / Cloudflare）
     camoufox.py           # CamoufoxFetcher（抗指纹 Firefox）
@@ -57,8 +57,14 @@ src/web_crawler/          # 核心库
     cli.py                # web-crawler-reverse 命令行
   py.typed                # PEP 561 类型标记
 app/                      # 应用层
-  crawler.py              # 资源下载器（并发、续传、去重、UI 驱动）
+  crawler.py              # 资源下载器（CLI / 主流程 / 网络编排，续传、去重、UI 驱动）
+  crawler_models.py       # 共享数据类 Resource / ManifestRow
+  crawler_net.py          # 网络/解析/工具层（限速、去重、URL 分类、HTML 解析）
+  crawler_report.py       # 报告/格式层（清单、摘要、MD/HTML 报告、HTML 重写、智能抽取）
+  db.py                   # SQLite 持久化（任务 + 结果，线程安全）
   ui.py                   # 本地 Web UI（SSE 实时推送）
+  static/
+    index.html            # UI 前端模板（运行时读取）
 tests/                    # pytest 测试套件
 benchmarks.py             # 解析器/fetcher 微基准 + 内置基线 + 回归检测
 mkdocs.yml                # API 文档站点配置
@@ -83,7 +89,7 @@ demo.py / demo.bat        # 交互式使用 demo
 
 - **`Fetcher`** 主力 HTTP fetcher：`curl_cffi` 重放真实浏览器 TLS/JA3 指纹与 HTTP/2 帧序
   - 支持 `impersonate="chrome131"` 等浏览器预设
-  - **JA4 指纹定制**：`ja4_fingerprint` 参数透传到 `curl_cffi` 的 `ja3` 参数，
+  - **JA3 指纹定制**：`ja3_fingerprint` 参数透传到 `curl_cffi` 的 `ja3` 参数，
     覆盖预设的 TLS 扩展顺序，做细粒度 TLS 指纹定制
   - `curl_cffi` 缺失时自动降级到 `httpx`（带 warning，无指纹能力）
 - **`AsyncFetcher`** 纯异步 fetcher，与 `Fetcher` 共享配置但只暴露 async 方法
@@ -133,7 +139,7 @@ demo.py / demo.bat        # 交互式使用 demo
 | 动作护栏 | `ActionGuard` | 域名白名单，拦截 localhost/非 HTTPS/跨域/危险脚本 |
 | Planner/Actor 分离 | `Planner` | 高层子目标规划 + 周期重规划 |
 | 循环检测 | `LoopDetector` | 页面状态指纹；重复状态自动重规划 |
-| 上下文压缩 | `ContextCompressor` | 历史滚动摘要；预算溢出时 `force_compress` |
+| 上下文压缩 | `ContextCompressor` | 历史滚动摘要；超出 `max_history` 时自动压缩 |
 | 任务裁决 | `TaskJudge` | 独立 LLM 验证 `done`，防幻觉成功 |
 | 成功路径录制 | `RunRecorder` | 把成功 trace 编译为确定性 Python 脚本 |
 | 事件总线 + 看门狗 | `watchdog` | 发布/订阅事件、心跳卡死检测、浏览器崩溃自愈 |
@@ -183,7 +189,7 @@ demo.py / demo.bat        # 交互式使用 demo
                 │  │      - inject_hook/analyze_js    │   │
                 │  └────────────┬────────────────────┘    │
                 │               ▼                          │
-                │   LoopDetector / Judge / Budget          │
+                │   LoopDetector / Judge                 │
                 │   循环到 done 或 max_steps               │
                 └─────────────────────────────────────────┘
 ```
