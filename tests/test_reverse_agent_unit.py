@@ -3202,9 +3202,12 @@ class TestScreenshotHelpers:
             page = MagicMock()
             page.screenshot.return_value = b""
             path = agent._take_screenshot(page, 1)
-            # 文件名中不应出现 "/" 或 ".."，分隔符被替换为 "_"
+            # 文件名中不应出现 ".." 或路径分隔符（Windows 为 \，POSIX 为 /），
+            # 分隔符被替换为 "_"；用 basename 断言以保证平台无关
             assert ".." not in path
-            assert "/" not in path.split(tmp_path.name)[-1]
+            basename = Path(path).name
+            assert "/" not in basename and "\\" not in basename
+            assert basename.endswith("_step1.png")
             assert path.endswith("_step1.png")
         finally:
             agent.close()
