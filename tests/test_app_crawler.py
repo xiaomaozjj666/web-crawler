@@ -823,17 +823,21 @@ class TestFormatBytes:
     def test_bytes(self) -> None:
         assert cr._format_bytes(500) == "500 B"
 
+    def test_kb(self) -> None:
+        """1024 ≤ n < 1024² 返回 KB。"""
+        assert cr._format_bytes(2048) == "2.0 KB"
+
     def test_mb(self) -> None:
-        """1024 ≤ n < 1024² 返回 MB（源码阈值逻辑使 KB 分支不可达）。"""
-        assert cr._format_bytes(2048) == "2.0 MB"
+        """1024² ≤ n < 1024³ 返回 MB。"""
+        assert cr._format_bytes(2 * 1024 * 1024) == "2.0 MB"
 
     def test_gb(self) -> None:
-        """1024² ≤ n < 1024³ 返回 GB。"""
-        assert cr._format_bytes(2 * 1024 * 1024) == "2.0 GB"
+        """1024³ ≤ n < 1024⁴ 返回 GB。"""
+        assert cr._format_bytes(2 * 1024 * 1024 * 1024) == "2.0 GB"
 
     def test_tb(self) -> None:
-        """n ≥ 1024³ 返回 TB。"""
-        assert cr._format_bytes(2 * 1024 * 1024 * 1024) == "2.0 TB"
+        """n ≥ 1024⁴ 返回 TB。"""
+        assert cr._format_bytes(2 * 1024 * 1024 * 1024 * 1024) == "2.0 TB"
 
 
 class TestFormatDuration:
@@ -1161,7 +1165,7 @@ class TestCrawl:
         assert exit_code == 2
 
     def test_cancelled(self, tmp_path: Path) -> None:
-        """should_stop 返回 True 时取消。"""
+        """should_stop 返回 True 时取消,统一返回退出码 1。"""
         html = b"<html></html>"
         stop_flag = [False]
 
@@ -1181,7 +1185,8 @@ class TestCrawl:
             # 第一次 should_stop 返回 False（进入循环前），第二次返回 True
             stop_flag[0] = True
             exit_code = cr.crawl(args)
-        assert exit_code == 0
+        # 主线程取消路径与 worker 取消路径统一为 1
+        assert exit_code == 1
 
 
 # ========== build_parser / main ==========
@@ -1482,6 +1487,221 @@ class TestStealthFetch:
                 "https://example.com", {}, 30, None, "chrome131"
             )
         assert ct == "application/json"
+
+
+class TestSafeRedirectHandler:
+    """重定向安全校验（防 SSRF）：拒绝内网/回环/非 http(s) 目标。"""
+
+    @staticmethod
+    def _handler() -> cr.SafeRedirectHandler:
+        return cr.SafeRedirectHandler()
+
+    @staticmethod
+    def _request() -> Any:
+        from urllib.request import Request
+
+        return Request("https://example.com/start")
+
+    def test_blocks_metadata_redirect(self) -> None:
+        from email.message import Message
+
+        with pytest.raises(ValueError, match="unsafe"):
+            self._handler().redirect_request(
+                self._request(), None, 302, "Found", Message(),
+                "http://169.254.169.254/latest/meta-data/",
+            )
+
+    def test_blocks_loopback_redirect(self) -> None:
+        from email.message import Message
+
+        with pytest.raises(ValueError, match="unsafe"):
+            self._handler().redirect_request(
+                self._request(), None, 302, "Found", Message(),
+                "http://127.0.0.1/admin",
+            )
+
+    def test_blocks_non_http_scheme_redirect(self) -> None:
+        from email.message import Message
+
+        with pytest.raises(ValueError, match="non-http"):
+            self._handler().redirect_request(
+                self._request(), None, 302, "Found", Message(),
+                "file:///etc/passwd",
+            )
+
+    def test_allows_safe_redirect(self) -> None:
+        from email.message import Message
+
+        result = self._handler().redirect_request(
+            self._request(), None, 302, "Found", Message(),
+            "https://cdn.example.com/lib.js",
+        )
+        assert result is not None
+        assert result.full_url == "https://cdn.example.com/lib.js"
+
+
+class TestStealthFetchRedirects:
+    """stealth 路径手动跟随重定向并逐跳校验。"""
+
+    def test_follows_safe_redirect(self) -> None:
+        hop1 = Mock()
+        hop1.status = 302
+        hop1.headers = {"location": "https://cdn.example.com/lib.js"}
+        hop2 = Mock()
+        hop2.status = 200
+        hop2.headers = {"content-type": "application/javascript"}
+        hop2.content = b"var x = 1;"
+
+        instance = Mock()
+        instance.get.side_effect = [hop1, hop2]
+        instance.close = Mock()
+        with patch.object(cr, "_get_stealth_fetcher", return_value=instance):
+            content, ct, status = cr._stealth_fetch(
+                "https://example.com/start", {}, 30, None, "chrome131"
+            )
+        assert content == b"var x = 1;"
+        assert ct == "application/javascript"
+        assert status == 200
+        # 两次请求：起始 URL 与重定向后的目标
+        assert instance.get.call_count == 2
+
+    def test_blocks_unsafe_redirect(self) -> None:
+        hop1 = Mock()
+        hop1.status = 302
+        hop1.headers = {"location": "http://169.254.169.254/latest"}
+        instance = Mock()
+        instance.get.return_value = hop1
+        instance.close = Mock()
+        with (
+            patch.object(cr, "_get_stealth_fetcher", return_value=instance),
+            pytest.raises(ValueError, match="unsafe"),
+        ):
+            cr._stealth_fetch("https://example.com/start", {}, 30, None, "chrome131")
+
+    def test_blocks_relative_to_non_http_redirect(self) -> None:
+        hop1 = Mock()
+        hop1.status = 302
+        hop1.headers = {"location": "file:///etc/passwd"}
+        instance = Mock()
+        instance.get.return_value = hop1
+        instance.close = Mock()
+        with (
+            patch.object(cr, "_get_stealth_fetcher", return_value=instance),
+            pytest.raises(ValueError, match="unsafe"),
+        ):
+            cr._stealth_fetch("https://example.com/start", {}, 30, None, "chrome131")
+
+    def test_too_many_redirects(self) -> None:
+        hop = Mock()
+        hop.status = 302
+        hop.headers = {"location": "https://example.com/again"}
+        instance = Mock()
+        instance.get.return_value = hop
+        instance.close = Mock()
+        with (
+            patch.object(cr, "_get_stealth_fetcher", return_value=instance),
+            pytest.raises(ValueError, match="too many redirects"),
+        ):
+            cr._stealth_fetch("https://example.com/start", {}, 30, None, "chrome131")
+
+
+class TestStealthFetcherCache:
+    """模块级 stealth fetcher 缓存的复用与 key 变更。"""
+
+    def _reset_cache(self) -> None:
+        import app.crawler as cr_mod
+
+        cr_mod._stealth_fetcher = None
+        cr_mod._stealth_fetcher_key = ("", None, "")
+
+    def test_cache_reuse(self) -> None:
+        """相同 key 复用缓存实例,不重复创建/关闭。"""
+        self._reset_cache()
+        fake = Mock()
+        fake.close = Mock()
+        fake_cls = Mock(return_value=fake)
+        with patch.object(cr, "_import_stealth_fetcher", return_value=fake_cls):
+            f1 = cr._get_stealth_fetcher("chrome131", 30.0, None)
+            f2 = cr._get_stealth_fetcher("chrome131", 30.0, None)
+        assert f1 is f2
+        fake.close.assert_not_called()
+        fake_cls.assert_called_once()
+
+    def test_key_change_closes_old(self) -> None:
+        """key 变化时关闭旧实例并创建新实例。"""
+        self._reset_cache()
+        old = Mock()
+        old.close = Mock()
+        new = Mock()
+        new.close = Mock()
+        fake_cls = Mock(side_effect=[old, new])
+        with patch.object(cr, "_import_stealth_fetcher", return_value=fake_cls):
+            f1 = cr._get_stealth_fetcher("chrome131", 30.0, None)
+            f2 = cr._get_stealth_fetcher("chrome120", 30.0, None)
+        assert f1 is old
+        assert f2 is new
+        old.close.assert_called_once()
+
+    def test_key_change_close_error_ignored(self) -> None:
+        """关闭旧实例失败时忽略,仍创建新实例。"""
+        self._reset_cache()
+        old = Mock()
+        old.close.side_effect = OSError("boom")
+        new = Mock()
+        new.close = Mock()
+        fake_cls = Mock(side_effect=[old, new])
+        with patch.object(cr, "_import_stealth_fetcher", return_value=fake_cls):
+            cr._get_stealth_fetcher("chrome131", 30.0, None)
+            f2 = cr._get_stealth_fetcher("chrome120", 30.0, None)
+        assert f2 is new
+
+
+class TestStealthFetchMaxBytes:
+    """stealth 路径 Content-Length 预检。"""
+
+    def test_content_length_over_limit_rejected(self) -> None:
+        resp = Mock()
+        resp.status = 200
+        resp.headers = {"content-length": "2000", "content-type": "image/png"}
+        resp.content = b"x" * 2000
+        instance = Mock()
+        instance.get.return_value = resp
+        with (
+            patch.object(cr, "_get_stealth_fetcher", return_value=instance),
+            pytest.raises(ValueError, match="max-bytes"),
+        ):
+            cr._stealth_fetch("https://x.com/a", {}, 30, None, "chrome131", max_bytes=1000)
+
+    def test_content_length_invalid_ignored(self) -> None:
+        """非数字 Content-Length 忽略,由调用方按实际长度兜底。"""
+        resp = Mock()
+        resp.status = 200
+        resp.headers = {"content-length": "abc", "content-type": "text/plain"}
+        resp.content = b"small"
+        instance = Mock()
+        instance.get.return_value = resp
+        with patch.object(cr, "_get_stealth_fetcher", return_value=instance):
+            content, ct, status = cr._stealth_fetch(
+                "https://x.com/a", {}, 30, None, "chrome131", max_bytes=1000
+            )
+        assert content == b"small"
+        assert ct == "text/plain"
+        assert status == 200
+
+
+class TestImportStealthFetcherSrcInPath:
+    def test_src_path_present_skips_insert(self) -> None:
+        """src 已在 sys.path 时不再重复插入（覆盖跳过分支）。"""
+        original_path = list(sys.path)
+        try:
+            src_path = str(Path(cr.__file__).resolve().parent.parent / "src")
+            if src_path not in sys.path:
+                sys.path.insert(0, src_path)
+            with patch.dict("sys.modules", {"web_crawler": None}, clear=False):
+                result = cr._import_stealth_fetcher()
+            assert result is None
+        finally:
+            sys.path[:] = original_path
 
 
 # ========== fetch 进阶分支 ==========
@@ -2526,8 +2746,9 @@ class TestCrawlDownloadError:
                 "--workers", "1",
             ])
             exit_code = cr.crawl(args)
-        # 取消可能返回 0 或 1，取决于取消时机
-        assert exit_code in (0, 1)
+        # 取消统一返回 1，且跳过后处理（不写清单）
+        assert exit_code == 1
+        assert not (tmp_path / "resources_manifest.json").exists()
 
 
 class TestCrawlExpandPlaylists:
@@ -3119,6 +3340,271 @@ class TestCrawlDownloadLoopCancellation:
                 "--url", "https://example.com",
                 "--out", str(tmp_path),
                 "--workers", "2",
+            ])
+            exit_code = cr.crawl(args)
+        # 主线程取消路径与 worker 取消路径统一返回 1，且跳过后处理
+        assert exit_code == 1
+        assert not (tmp_path / "resources_manifest.json").exists()
+
+
+class TestCrawlCancelSkipsStages:
+    def test_cancel_after_scan_skips_download_phase(self, tmp_path: Path) -> None:
+        """页面扫描结束后、下载阶段开始前触发取消 → 不启动下载、不写后处理。"""
+        html = b'<html><body><img src="https://example.com/img.png"></body></html>'
+        call_count = [0]
+
+        def mock_should_stop(args: Any) -> bool:
+            call_count[0] += 1
+            # 第一次（页面循环入口）返回 False 以完成扫描，之后返回 True
+            return call_count[0] > 1
+
+        def mock_fetch(url: str, *args: Any, **kwargs: Any) -> tuple[bytes, str]:
+            if "img.png" in url:
+                raise AssertionError("取消后不应进入下载阶段")
+            return (html, "text/html")
+
+        with (
+            patch.object(cr, "fetch", side_effect=mock_fetch),
+            patch.object(cr, "should_stop", side_effect=mock_should_stop),
+        ):
+            args = cr.build_parser().parse_args([
+                "--url", "https://example.com",
+                "--out", str(tmp_path),
+                "--workers", "2",
+            ])
+            exit_code = cr.crawl(args)
+        assert exit_code == 1
+        assert not (tmp_path / "resources_manifest.json").exists()
+        assert not (tmp_path / "run_report.json").exists()
+
+
+class TestStealthFetchRedirectNoLocation:
+    """stealth 路径：重定向响应缺少 Location 头时停止跟随。"""
+
+    def test_redirect_without_location_raises(self) -> None:
+        """302 响应没有 Location 头 → break 后统一按 too many redirects 处理。"""
+        hop = Mock()
+        hop.status = 302
+        hop.headers = {}  # 无 location 头
+        instance = Mock()
+        instance.get.return_value = hop
+        instance.close = Mock()
+        with (
+            patch.object(cr, "_get_stealth_fetcher", return_value=instance),
+            pytest.raises(ValueError, match="too many redirects"),
+        ):
+            cr._stealth_fetch("https://example.com/start", {}, 30, None, "chrome131")
+
+
+class TestFormatBytesPB:
+    def test_pb(self) -> None:
+        """n ≥ 1024⁵ 返回 PB。"""
+        assert cr._format_bytes(2 * 1024 ** 5) == "2.0 PB"
+
+
+class TestCrawlWaitPausedCancel:
+    """暂停期间被取消（wait_if_paused 抛 RuntimeError）的取消语义分支。"""
+
+    def test_cancelled_by_pause_in_page_loop(self, tmp_path: Path) -> None:
+        """页面扫描阶段 wait_if_paused 抛 RuntimeError → 按取消处理返回 1。"""
+        def mock_wait() -> None:
+            raise RuntimeError("cancelled by user")
+
+        with patch.object(cr, "fetch", return_value=(b"<html></html>", "text/html")):
+            args = cr.build_parser().parse_args([
+                "--url", "https://example.com",
+                "--out", str(tmp_path),
+                "--workers", "1",
+            ])
+            args.wait_if_paused = mock_wait
+            exit_code = cr.crawl(args)
+        # 暂停期间取消 → cancelled 标志置位，统一退出码 1
+        assert exit_code == 1
+
+    def test_cancelled_by_pause_in_download_loop(self, tmp_path: Path) -> None:
+        """下载循环中 wait_if_paused 抛 RuntimeError → 按取消处理返回 1。"""
+        html = b'<html><body><img src="https://example.com/img.png"></body></html>'
+        wait_calls = [0]
+
+        def mock_wait() -> None:
+            wait_calls[0] += 1
+            if wait_calls[0] > 1:
+                raise RuntimeError("cancelled by user")
+
+        def mock_fetch(url: str, *args: Any, **kwargs: Any) -> tuple[bytes, str]:
+            if url.endswith(".png"):
+                return (b"data", "image/png")
+            return (html, "text/html")
+
+        with patch.object(cr, "fetch", side_effect=mock_fetch):
+            args = cr.build_parser().parse_args([
+                "--url", "https://example.com",
+                "--out", str(tmp_path),
+                "--workers", "1",
+            ])
+            args.wait_if_paused = mock_wait
+            exit_code = cr.crawl(args)
+        # 第一次（页面循环）放行，第二次（下载循环）抛 cancelled
+        assert exit_code == 1
+        assert not (tmp_path / "resources_manifest.json").exists()
+
+    def test_should_stop_in_download_loop_cancels_futures(self, tmp_path: Path) -> None:
+        """下载循环内 should_stop 返回 True → 取消待处理 future 并返回 1。"""
+        html = b'<html><body><img src="https://example.com/img.png"></body></html>'
+        stop_calls = [0]
+
+        def mock_should_stop(args: Any) -> bool:
+            stop_calls[0] += 1
+            # 页面循环入口(1)、下载阶段守卫(2) 返回 False，下载循环体(3) 返回 True
+            return stop_calls[0] >= 3
+
+        def mock_fetch(url: str, *args: Any, **kwargs: Any) -> tuple[bytes, str]:
+            if url.endswith(".png"):
+                return (b"data", "image/png")
+            return (html, "text/html")
+
+        with (
+            patch.object(cr, "fetch", side_effect=mock_fetch),
+            patch.object(cr, "should_stop", side_effect=mock_should_stop),
+        ):
+            args = cr.build_parser().parse_args([
+                "--url", "https://example.com",
+                "--out", str(tmp_path),
+                "--workers", "1",
+            ])
+            exit_code = cr.crawl(args)
+        assert exit_code == 1
+        assert not (tmp_path / "resources_manifest.json").exists()
+
+    def test_post_pause_check_swallows_cancel_exception(self, tmp_path: Path) -> None:
+        """后处理阶段 wait_if_paused 抛 RuntimeError 时吞掉，由 should_stop 统一判定。"""
+        html = b'<html><body><img src="https://example.com/img.png"></body></html>'
+        wait_calls = [0]
+
+        def mock_wait() -> None:
+            wait_calls[0] += 1
+            # 页面循环(1)、下载循环(2) 放行，后处理首次检查(3) 抛 cancelled
+            if wait_calls[0] >= 3:
+                raise RuntimeError("cancelled by user")
+
+        def mock_fetch(url: str, *args: Any, **kwargs: Any) -> tuple[bytes, str]:
+            if url.endswith(".png"):
+                return (b"data", "image/png")
+            return (html, "text/html")
+
+        with patch.object(cr, "fetch", side_effect=mock_fetch):
+            args = cr.build_parser().parse_args([
+                "--url", "https://example.com",
+                "--out", str(tmp_path),
+                "--workers", "1",
+            ])
+            args.wait_if_paused = mock_wait
+            exit_code = cr.crawl(args)
+        # should_stop 未置位 → 视为未取消，后处理继续完成
+        assert exit_code == 0
+        assert (tmp_path / "resources_manifest.json").exists()
+
+
+class TestCrawlPostProcessingTolerance:
+    """后处理单步失败仅记 warning，不影响整体退出码。"""
+
+    def _fetch_page_with_img(self, html: bytes) -> Any:
+        def mock_fetch(url: str, *args: Any, **kwargs: Any) -> tuple[bytes, str]:
+            if url.endswith(".png"):
+                return (b"data", "image/png")
+            return (html, "text/html")
+
+        return mock_fetch
+
+    def test_rewrite_html_failure_only_warns(self, tmp_path: Path) -> None:
+        """offline HTML 重写抛异常 → 仅记 warning，退出码 0。"""
+        html = b'<html><body><img src="https://example.com/img.png"></body></html>'
+        with (
+            patch.object(cr, "fetch", side_effect=self._fetch_page_with_img(html)),
+            patch.object(cr, "rewrite_html", side_effect=RuntimeError("rewrite boom")),
+        ):
+            args = cr.build_parser().parse_args([
+                "--url", "https://example.com",
+                "--out", str(tmp_path),
+                "--rewrite-html",
+                "--workers", "1",
+            ])
+            exit_code = cr.crawl(args)
+        assert exit_code == 0
+
+    def test_write_manifests_failure_only_warns(self, tmp_path: Path) -> None:
+        """写资源清单失败 → 仅记 warning，退出码 0。"""
+        html = b'<html><body><img src="https://example.com/img.png"></body></html>'
+        with (
+            patch.object(cr, "fetch", side_effect=self._fetch_page_with_img(html)),
+            patch.object(cr, "write_manifests", side_effect=OSError("disk full")),
+        ):
+            args = cr.build_parser().parse_args([
+                "--url", "https://example.com",
+                "--out", str(tmp_path),
+                "--workers", "1",
+            ])
+            exit_code = cr.crawl(args)
+        assert exit_code == 0
+
+    def test_write_failed_manifests_failure_only_warns(self, tmp_path: Path) -> None:
+        """写失败资源清单失败 → 仅记 warning，退出码 0。"""
+        html = b'<html><body><img src="https://example.com/img.png"></body></html>'
+        with (
+            patch.object(cr, "fetch", side_effect=self._fetch_page_with_img(html)),
+            patch.object(cr, "write_failed_manifests", side_effect=OSError("disk full")),
+        ):
+            args = cr.build_parser().parse_args([
+                "--url", "https://example.com",
+                "--out", str(tmp_path),
+                "--workers", "1",
+            ])
+            exit_code = cr.crawl(args)
+        assert exit_code == 0
+
+    def test_smart_extract_failure_only_warns(self, tmp_path: Path) -> None:
+        """智能抽取失败 → 仅记 warning，退出码 0。"""
+        html = b'<html><body><img src="https://example.com/img.png"></body></html>'
+        with (
+            patch.object(cr, "fetch", side_effect=self._fetch_page_with_img(html)),
+            patch.object(cr, "smart_extract", side_effect=RuntimeError("llm down")),
+        ):
+            args = cr.build_parser().parse_args([
+                "--url", "https://example.com",
+                "--out", str(tmp_path),
+                "--smart-extract",
+                "--workers", "1",
+            ])
+            exit_code = cr.crawl(args)
+        assert exit_code == 0
+
+    def test_extract_text_failure_only_warns(self, tmp_path: Path) -> None:
+        """正文提取失败 → 仅记 warning，退出码 0。"""
+        html = b'<html><body><img src="https://example.com/img.png"></body></html>'
+        with (
+            patch.object(cr, "fetch", side_effect=self._fetch_page_with_img(html)),
+            patch.object(cr, "extract_readable_text", side_effect=RuntimeError("boom")),
+        ):
+            args = cr.build_parser().parse_args([
+                "--url", "https://example.com",
+                "--out", str(tmp_path),
+                "--extract-text",
+                "--workers", "1",
+            ])
+            exit_code = cr.crawl(args)
+        assert exit_code == 0
+
+    def test_write_run_report_failure_only_warns(self, tmp_path: Path) -> None:
+        """写运行报告失败 → 仅记 warning，退出码 0。"""
+        html = b'<html><body><img src="https://example.com/img.png"></body></html>'
+        with (
+            patch.object(cr, "fetch", side_effect=self._fetch_page_with_img(html)),
+            patch.object(cr, "write_run_report", side_effect=OSError("disk full")),
+        ):
+            args = cr.build_parser().parse_args([
+                "--url", "https://example.com",
+                "--out", str(tmp_path),
+                "--workers", "1",
             ])
             exit_code = cr.crawl(args)
         assert exit_code == 0

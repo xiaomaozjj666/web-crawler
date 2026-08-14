@@ -810,3 +810,45 @@ def test_camoufox_extra_headers_passed_to_context(fetcher: Any) -> None:
 
     fetcher._render_page(browser, "https://example.com/x", None)
     assert browser.new_context.call_args.kwargs["extra_http_headers"] == {"X-Custom": "value"}
+
+
+def test_screenshot_tiles_does_not_override_fingerprint(fetcher: Any) -> None:
+    """screenshot_tiles 不应传 user_agent/locale/viewport，保留 Camoufox 指纹。"""
+    fetcher.network_idle = False
+    page = _make_sync_page()
+    page.evaluate.return_value = {"width": 875.0, "height": 100.0}
+    page.screenshot.return_value = b"PNG"
+    ctx = _make_sync_context(page)
+    browser = _make_sync_browser(ctx)
+    fetcher._browser = browser
+
+    fetcher.screenshot_tiles("https://example.com/")
+    kwargs = browser.new_context.call_args.kwargs
+    # 关键：与 _render_page 一致，不覆盖 UA / locale / viewport
+    assert "user_agent" not in kwargs
+    assert "locale" not in kwargs
+    assert "viewport" not in kwargs
+    assert kwargs["extra_http_headers"] is None
+    assert kwargs["ignore_https_errors"] is False
+
+
+def test_async_screenshot_tiles_does_not_override_fingerprint(fetcher: Any) -> None:
+    """异步截图路径同样不覆盖 Camoufox 指纹字段。"""
+    fetcher.network_idle = False
+    page = _make_async_page()
+    page.evaluate.return_value = {"width": 875.0, "height": 100.0}
+    page.screenshot.return_value = b"PNG"
+    ctx = _make_async_context(page)
+    browser = _make_async_browser(ctx)
+    fetcher._async_browser = browser
+
+    async def go() -> None:
+        await fetcher.async_screenshot_tiles("https://example.com/")
+        kwargs = browser.new_context.call_args.kwargs
+        assert "user_agent" not in kwargs
+        assert "locale" not in kwargs
+        assert "viewport" not in kwargs
+
+    import asyncio
+
+    asyncio.run(go())

@@ -74,6 +74,21 @@ def test_cooldown_expires() -> None:
     assert "a" in served
 
 
+def test_cooldown_expiry_resets_failure_count() -> None:
+    """冷却到期后失败计数清零：之后的一次失败不会立刻再次触发冷却。"""
+    pool = ProxyPool(["a", "b"], max_failures=2, cooldown=0.05)
+    pool.mark_failed("a")
+    pool.mark_failed("a")  # 2 次失败 → 进入冷却
+    assert pool.get() == "b"
+    time.sleep(0.06)
+    # 冷却到期：计数被清零，a 只需再失败 1 次（< max_failures）也不会再冷却
+    pool.mark_failed("a")
+    assert pool._failures["a"] == 1
+    assert pool._cooldowns["a"] == 0.0
+    served = {pool.get() for _ in range(6)}
+    assert "a" in served
+
+
 def test_repr_contains_strategy() -> None:
     pool = ProxyPool(["a"], strategy="round_robin")
     assert "round_robin" in repr(pool)

@@ -118,6 +118,22 @@ def test_inject_adds_missing_param() -> None:
     assert "id=" in injected
 
 
+def test_inject_preserves_other_params_verbatim() -> None:
+    """_inject 只替换目标参数，其余查询串原文保留（%20 不被重编码、顺序不变）。"""
+    url = "https://example.com/?a=%20x&b=1"
+    injected = _inject(url, "q", "new")
+    assert "a=%20x" in injected  # 原文 %20 未被改写成 +
+    assert injected.index("a=") < injected.index("q=")  # 顺序保留
+
+
+def test_inject_replaces_encoded_key_keeps_value_encoding() -> None:
+    """已编码的目标参数名也能被替换，且替换值按 urlencode 风格编码。"""
+    url = "https://example.com/?q=orig%20v&lang=en"
+    injected = _inject(url, "q", "a b")
+    assert "q=a+b" in injected
+    assert "lang=en" in injected
+
+
 def test_parse_json_extracts_embedded_object() -> None:
     """_parse_json 从含额外文本的回复中抽取 JSON。"""
     text = '好的，结果为 {"vulnerable": true, "type": "xss"} 已分析'
@@ -314,6 +330,22 @@ def test_rule_match_xss_detected_with_html_chars() -> None:
     assert finding is not None
     assert finding.type == "xss"
     assert finding.severity == "medium"
+
+
+def test_rule_match_xss_detected_javascript_payload() -> None:
+    """javascript: 前缀 payload 回显时判定 XSS（此前该 payload 永远无法命中）。"""
+    scanner = VulnScanner(fetcher=_FakeHttpxClient())
+    payload = "javascript:alert(1)"
+    finding = scanner._rule_match("q", payload, f'<a href="{payload}">x</a>')
+    assert finding is not None
+    assert finding.type == "xss"
+
+
+def test_rule_match_xss_not_false_positive_for_plain_quote() -> None:
+    """只含引号的 SQL payload 回显不判 XSS（保持原有防误报行为）。"""
+    scanner = VulnScanner(fetcher=_FakeHttpxClient())
+    finding = scanner._rule_match("q", "' OR '1'='1", "reflected: ' OR '1'='1")
+    assert finding is None
 
 
 def test_rule_match_sql_keyword_case_insensitive() -> None:

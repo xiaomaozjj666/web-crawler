@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -414,3 +415,43 @@ def test_crawl_result_dataclass() -> None:
     r2 = CrawlResult(url="https://example.com/", status_code=403, error="blocked")
     assert r2.links == []
     assert r2.error == "blocked"
+
+
+async def test_can_fetch_robots_single_flight() -> None:
+    """同一域名并发首访只拉取一次 robots.txt（single-flight）。"""
+    c = Crawler(respect_robots=True)
+    rp = MagicMock()
+    rp.can_fetch = MagicMock(return_value=True)
+    mock_get = AsyncMock(return_value=rp)
+
+    with patch.object(c, "_get_robot_parser", new=mock_get):
+        results = await asyncio.gather(
+            c._can_fetch("https://example.com/a"),
+            c._can_fetch("https://example.com/b"),
+        )
+
+    assert results == [True, True]
+    mock_get.assert_awaited_once()
+    # 拉取完成后缓存的是解析结果而非任务
+    assert c._robot_parsers["example.com"] is rp
+
+
+# ===========================================================================
+# 扩展：_normalize_url 缺失 host / _extract_links 基准 URL 非法分支
+# ===========================================================================
+
+
+def test_normalize_url_missing_host_returns_none() -> None:
+    """URL 缺 host（如 https:///path）时返回 None。"""
+    assert Crawler._normalize_url("https:///path") is None
+    assert Crawler._normalize_url("http://?q=1") is None
+
+
+def test_normalize_url_invalid_port_returns_none() -> None:
+    """URL 端口非法（如 http://x.example:99999/）时返回 None。"""
+    assert Crawler._normalize_url("http://x.example:99999/") is None
+
+
+def test_extract_links_invalid_base_url_returns_empty() -> None:
+    """base_url 无法规范化（如 ftp://）时 _extract_links 返回空列表。"""
+    assert Crawler._extract_links("ftp://example.com/", "<html><a href='/x'>x</a></html>") == []

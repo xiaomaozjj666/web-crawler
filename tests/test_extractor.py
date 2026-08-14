@@ -153,3 +153,55 @@ def test_extractor_self_heal_breaks_when_no_fixes_returned() -> None:
     assert "title" in result.missing
     # 只调用了 2 次（初始 + 1 次自愈），因为空 fixes 触发 break
     assert len(provider.calls) == 2
+
+
+# ===========================================================================
+# 回归：非法 CSS 不崩溃，按缺失处理并走自愈
+# ===========================================================================
+
+
+def test_extractor_invalid_css_does_not_crash() -> None:
+    """LLM 返回非法选择器时 extract 不应抛异常，字段记为 missing。"""
+    provider = FakeProvider(['{"title": "[unclosed"}', "{}"])
+    extractor = AIExtractor(provider=provider)
+    result = extractor.extract(_response(), {"title": "heading"})
+    assert not result.ok
+    assert "title" in result.missing
+    assert result.data.get("title") is None
+
+
+def test_extractor_self_heals_invalid_css() -> None:
+    """首轮非法 CSS → 自愈轮给出合法选择器 → 字段成功提取。"""
+    provider = FakeProvider(['{"title": "[unclosed"}', '{"title": "h1.title"}'])
+    extractor = AIExtractor(provider=provider, max_heal_rounds=2)
+    result = extractor.extract(_response(), {"title": "heading"})
+    assert result.ok
+    assert result.data["title"] == "Hello World"
+    assert result.rounds == 2
+
+
+def test_extractor_empty_string_value_is_not_missing() -> None:
+    """字段真实值为空字符串（如空 href）时不应被误判为缺失。"""
+    html = '<html><body><a class="more" href="">empty link</a></body></html>'
+    resp = Response("https://example.com", 200, html.encode("utf-8"))
+    provider = FakeProvider(['{"link": "a.more::attr(href)"}'])
+    extractor = AIExtractor(provider=provider)
+    result = extractor.extract(resp, {"link": "the link"})
+    assert result.ok
+    assert result.data["link"] == ""
+
+
+# ===========================================================================
+# 回归：HTML 样本标为不可信输入
+# ===========================================================================
+
+
+def test_build_prompt_marks_html_as_untrusted() -> None:
+    """HTML 样本应带不可信数据提示与定界标记。"""
+    provider = FakeProvider(["{}"])
+    extractor = AIExtractor(provider=provider)
+    messages = extractor._build_prompt("<script>alert(1)</script>", {"title": "x"})
+    joined = "\n".join(str(m.content) for m in messages)
+    assert "untrusted" in joined
+    assert "---HTML-START---" in joined
+    assert "---HTML-END---" in joined

@@ -593,3 +593,50 @@ def test_css_adaptive_lookup_with_attr_pseudo(tmp_storage: AdaptiveStorage) -> N
     val = str(relocated[0])
     assert "product" in val
 
+
+def test_adaptive_lookup_prefilters_by_tag(tmp_storage: AdaptiveStorage) -> None:
+    """adaptive 重定位按存储 tag 预筛候选：文档含大量异 tag 干扰元素仍命中（Fix5）。"""
+    page1 = Selector(
+        '<div><a id="p1" class="product">Widget</a></div>',
+        url="https://shop.example.com",
+        adaptive=True,
+        storage=tmp_storage,
+    )
+    page1.css_first("#p1", auto_save=True)
+
+    # 大量不同 tag（span/div）的干扰元素，只有 <a> 候选应参与指纹比较
+    noisy = "<div>" + "".join(f"<span>noise{i}</span>" for i in range(50)) + "</div>"
+    page2 = Selector(
+        f'<div>{noisy}<a data-id="p1" class="product new">Widget</a></div>',
+        url="https://shop.example.com",
+        adaptive=True,
+        storage=tmp_storage,
+    )
+    relocated = page2.css_first("#p1", adaptive=True, threshold=0.3)
+    assert relocated is not None
+    assert relocated.tag == "a"
+    assert "Widget" in str(relocated.text)
+
+
+def test_adaptive_lookup_tag_prefilter_no_candidates_returns_none(
+    tmp_storage: AdaptiveStorage,
+) -> None:
+    """adaptive 预筛后无同 tag 候选时返回 None（存储 tag 与页面元素不符）。"""
+    page1 = Selector(
+        '<div><a id="p1" class="product">Widget</a></div>',
+        url="https://shop.example.com",
+        adaptive=True,
+        storage=tmp_storage,
+    )
+    page1.css_first("#p1", auto_save=True)
+
+    # 页面里完全没有 <a> 元素：tag 预筛后候选为空 → 不重定位
+    page2 = Selector(
+        '<div><span class="product">Widget</span><div class="product">Widget</div></div>',
+        url="https://shop.example.com",
+        adaptive=True,
+        storage=tmp_storage,
+    )
+    relocated = page2.css_first("#p1", adaptive=True, threshold=0.3)
+    assert relocated is None
+

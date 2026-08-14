@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
+import sys
 from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -17,6 +19,7 @@ from web_crawler.ai.image_captcha import (
     SliderSolution,
     _b64_to_bytes,
     _extract_json,
+    _prepare_vision_image,
     _to_b64,
 )
 from web_crawler.ai.llm import LLMResponse, ProviderCapabilities
@@ -81,7 +84,6 @@ def test_image_solver_config_defaults() -> None:
     assert cfg.use_pillow_slider is True
     assert cfg.detail == "high"
     assert cfg.temperature == 0.0
-    assert cfg.max_retries == 2
     assert cfg.ocr_max_length == 8
 
 
@@ -167,6 +169,19 @@ def test_extract_json_invalid_returns_empty() -> None:
 
 def test_extract_json_empty_string() -> None:
     assert _extract_json("") == {}
+
+
+def test_extract_json_skips_escaped_chars_inside_string() -> None:
+    """括号配平应跳过字符串内的转义反斜杠与转义引号。"""
+    # "a\"}" 中的 \" 与 } 都在字符串内，不参与配平；最外层 } 才闭合对象
+    data = _extract_json('{"k": "a\\"}"} tail')
+    assert data == {"k": 'a"}'}
+
+
+def test_extract_json_balanced_scan_unterminated_returns_empty() -> None:
+    """首个 { 无法配平（字符串未闭合吞掉 }）时应返回空 dict。"""
+    # "b} 未闭合：} 在字符串内被跳过，扫描到底仍不配平 → 返回 {}
+    assert _extract_json('{"a": "b}') == {}
 
 
 # ---------------------------------------------------------------------------
@@ -962,3 +977,191 @@ def test_solve_text_local_ocr_too_long_falls_back_to_llm() -> None:
     with patch.dict("sys.modules", {"ddddocr": fake_ddddocr}):
         result = solver.solve_text(b"fake-png-bytes")
     assert result == "LLM42"
+
+
+# ===========================================================================
+# 回归：base64 解码异常兜底（坏 padding 不抛异常）
+# ===========================================================================
+
+
+def test_local_slider_bad_base64_returns_none() -> None:
+    """_local_slider 遇到坏 padding 的 base64 应返回 None 而非抛异常。"""
+    solver = ImageCaptchaSolver(
+        provider=None, config=ImageSolverConfig(use_llm=False)
+    )
+    # "abcde=" 数据字符数 % 4 == 1，binascii 拒绝解码
+    assert solver._local_slider("abcde=", "aGVsbG8=") is None
+
+
+def test_solve_slider_bad_base64_returns_none() -> None:
+    """solve_slider 对坏 base64 输入返回 None（失败兜底契约）。"""
+    solver = ImageCaptchaSolver(provider=None)  # use_pillow_slider=True
+    assert solver.solve_slider("abcde=", "abcde=") is None
+
+
+def test_b64_to_bytes_bad_padding_raises_binascii() -> None:
+    """坏 padding 的 base64 在 _b64_to_bytes 层抛 binascii.Error（由调用方兜底）。"""
+    import binascii
+
+    with pytest.raises(binascii.Error):
+        _b64_to_bytes("abcde=")
+
+
+# ===========================================================================
+# 回归：送 LLM 前图片尺寸/体积上限与降采样
+# ===========================================================================
+
+
+def _make_big_image_bytes(width: int, height: int) -> bytes:
+    """生成指定尺寸的纯色 PNG。"""
+    from PIL import Image
+
+    img = Image.new("L", (width, height), color=128)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_prepare_vision_image_resizes_large_image() -> None:
+    """超过最长边上限的图片应被等比降采样到上限内。"""
+    pytest.importorskip("PIL")
+    raw = _make_big_image_bytes(2000, 100)
+    result = _prepare_vision_image(raw, mime="image/png")
+    assert result is not None
+    b64, mime, scale = result
+    assert mime == "image/png"  # 降采样后重编码为 PNG
+    assert scale > 1.0
+    from PIL import Image as PILImage
+
+    decoded = PILImage.open(io.BytesIO(base64.b64decode(b64)))
+    assert decoded.size[0] <= 1280
+
+
+def test_prepare_vision_image_small_image_unchanged() -> None:
+    """小图不应被降采样（scale == 1.0，mime 保持原值）。"""
+    pytest.importorskip("PIL")
+    raw = _make_big_image_bytes(100, 50)
+    result = _prepare_vision_image(raw, mime="image/jpeg")
+    assert result is not None
+    b64, mime, scale = result
+    assert scale == 1.0
+    assert mime == "image/jpeg"
+    assert base64.b64decode(b64) == raw
+
+
+def test_prepare_vision_image_undecodable_passes_through() -> None:
+    """无法解码的图片原样透传（scale=1.0，mime 不变），由识别层兜底。"""
+    pytest.importorskip("PIL")
+    result = _prepare_vision_image(b"not an image")
+    assert result is not None
+    b64, mime, scale = result
+    assert scale == 1.0
+    assert mime == "image/png"
+    assert base64.b64decode(b64) == b"not an image"
+
+
+def test_prepare_vision_image_oversize_bytes_returns_none() -> None:
+    """超过体积上限的输入直接拒绝（不依赖 PIL）。"""
+    import web_crawler.ai.image_captcha as ic_mod
+
+    big = b"x" * (ic_mod._MAX_IMAGE_BYTES + 1)
+    assert _prepare_vision_image(big) is None
+
+
+def test_prepare_vision_image_bad_base64_returns_none() -> None:
+    """坏 base64 输入返回 None。"""
+    assert _prepare_vision_image("abcde=") is None
+
+
+def test_llm_slider_rescales_coordinates_after_downscale() -> None:
+    """背景图被降采样后，LLM 返回的 x 应还原回原始像素坐标系。"""
+    pytest.importorskip("PIL")
+    provider = _FakeVisionProvider(chat_response='{"x": 100, "confidence": 0.9}')
+    cfg = ImageSolverConfig(use_pillow_slider=False)
+    solver = ImageCaptchaSolver(provider=provider, config=cfg)  # type: ignore[arg-type]
+    bg = _make_big_image_bytes(2000, 100)
+    slider = _make_test_image_bytes((12, 12), "slider")
+    sol = solver.solve_slider(bg, slider)
+    assert sol is not None
+    # scale = 2000 / 1280 ≈ 1.5625；100 * 1.5625 = 156.25 → round 156
+    assert sol.x == round(100 * (2000 / 1280))
+
+
+# ===========================================================================
+# 扩展：_prepare_vision_image 边界（PIL 缺失 / 超像素）与 prepared=None 分支
+# ===========================================================================
+
+
+def test_prepare_vision_image_without_pillow_passes_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """无 Pillow 时不做尺寸检查/降采样，原样透传（scale=1.0）。"""
+    monkeypatch.setitem(sys.modules, "PIL", None)
+    result = _prepare_vision_image(b"raw image bytes", mime="image/png")
+    assert result is not None
+    b64, mime, scale = result
+    assert base64.b64decode(b64) == b"raw image bytes"
+    assert mime == "image/png"
+    assert scale == 1.0
+
+
+def test_prepare_vision_image_pixel_limit_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """超过像素上限的图片返回 None（拒绝送 LLM）。"""
+    pytest.importorskip("PIL")
+    import web_crawler.ai.image_captcha as ic_mod
+
+    monkeypatch.setattr(ic_mod, "_MAX_IMAGE_PIXELS", 100)
+    raw = _make_big_image_bytes(50, 50)  # 2500 像素 > 100
+    assert _prepare_vision_image(raw) is None
+
+
+def test_llm_ocr_prepared_none_returns_empty() -> None:
+    """_llm_ocr 在图片预处理失败时返回空串。"""
+    solver = ImageCaptchaSolver(provider=_FakeVisionProvider())  # type: ignore[arg-type]
+    assert solver._llm_ocr("abcde=", "image/png") == ""
+
+
+def test_llm_ocr_async_prepared_none_returns_empty() -> None:
+    """_llm_ocr_async 在图片预处理失败时返回空串。"""
+    solver = ImageCaptchaSolver(provider=_FakeVisionProvider())  # type: ignore[arg-type]
+    assert asyncio.run(solver._llm_ocr_async("abcde=", "image/png")) == ""
+
+
+def test_llm_slider_prepared_none_returns_none() -> None:
+    """_llm_slider 在任一图片预处理失败时返回 None。"""
+    solver = ImageCaptchaSolver(provider=_FakeVisionProvider())  # type: ignore[arg-type]
+    assert solver._llm_slider("abcde=", b"slider") is None
+    assert solver._llm_slider(b"bg", "abcde=") is None
+
+
+def test_llm_slider_async_prepared_none_returns_none() -> None:
+    """_llm_slider_async 在任一图片预处理失败时返回 None。"""
+    solver = ImageCaptchaSolver(provider=_FakeVisionProvider())  # type: ignore[arg-type]
+    assert asyncio.run(solver._llm_slider_async("abcde=", b"slider")) is None
+
+
+def test_llm_slider_async_rescales_coordinates_after_downscale() -> None:
+    """异步路径背景图降采样后，LLM 返回的 x 同样还原回原始坐标系。"""
+    pytest.importorskip("PIL")
+    provider = _FakeVisionProvider(achat_response='{"x": 100, "confidence": 0.9}')
+    cfg = ImageSolverConfig(use_pillow_slider=False)
+    solver = ImageCaptchaSolver(provider=provider, config=cfg)  # type: ignore[arg-type]
+    bg = _make_big_image_bytes(2000, 100)
+    slider = _make_test_image_bytes((12, 12), "slider")
+    sol = asyncio.run(solver._llm_slider_async(bg, slider))
+    assert sol is not None
+    assert sol.x == round(100 * (2000 / 1280))
+
+
+def test_solve_click_prepared_none_returns_none() -> None:
+    """solve_click 在图片预处理失败时返回 None。"""
+    solver = ImageCaptchaSolver(provider=_FakeVisionProvider())  # type: ignore[arg-type]
+    assert solver.solve_click("abcde=", "请点击") is None
+
+
+def test_solve_click_async_prepared_none_returns_none() -> None:
+    """solve_click_async 在图片预处理失败时返回 None。"""
+    solver = ImageCaptchaSolver(provider=_FakeVisionProvider())  # type: ignore[arg-type]
+    assert asyncio.run(solver.solve_click_async("abcde=", "请点击")) is None

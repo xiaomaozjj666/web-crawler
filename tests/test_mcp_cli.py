@@ -429,16 +429,19 @@ def test_cmd_captcha_image_click_no_image(
 def test_cmd_pentest_with_checks(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """cmd_pentest 正确解析 --checks 参数。"""
+    """cmd_pentest 正确解析 --checks 参数并携带授权确认。"""
     server = _mock_server(json.dumps({"target": "x"}))
     monkeypatch.setattr(cli_module, "_make_server", lambda model: server)
-    args = _parse_args(["pentest", "example.com", "--checks", "ports,dirs"])
+    args = _parse_args(
+        ["pentest", "example.com", "--checks", "ports,dirs", "--authorized"]
+    )
     code = cli_module.cmd_pentest(args)
     assert code == 0
     call_args, _ = server.handle_tool.call_args
     payload = call_args[1]
     assert payload["checks"] == ["ports", "dirs"]
     assert payload["timeout"] == 30.0
+    assert payload["authorization_confirmed"] is True
 
 
 def test_cmd_pentest_with_ports(
@@ -447,7 +450,7 @@ def test_cmd_pentest_with_ports(
     """cmd_pentest 正确解析 --ports 参数。"""
     server = _mock_server(json.dumps({"target": "x"}))
     monkeypatch.setattr(cli_module, "_make_server", lambda model: server)
-    args = _parse_args(["pentest", "x", "--ports", "22,80,443"])
+    args = _parse_args(["pentest", "x", "--ports", "22,80,443", "--authorized"])
     code = cli_module.cmd_pentest(args)
     assert code == 0
     call_args, _ = server.handle_tool.call_args
@@ -459,7 +462,7 @@ def test_cmd_pentest_invalid_ports_returns_one(
 ) -> None:
     """cmd_pentest 端口列表格式无效时返回 1。"""
     monkeypatch.setattr(cli_module, "_make_server", lambda model: _mock_server())
-    args = _parse_args(["pentest", "x", "--ports", "abc"])
+    args = _parse_args(["pentest", "x", "--ports", "abc", "--authorized"])
     code = cli_module.cmd_pentest(args)
     assert code == 1
     captured = capsys.readouterr()
@@ -472,11 +475,23 @@ def test_cmd_pentest_default_no_checks(
     """cmd_pentest 无 --checks 时不传 checks 字段。"""
     server = _mock_server(json.dumps({"target": "x"}))
     monkeypatch.setattr(cli_module, "_make_server", lambda model: server)
-    args = _parse_args(["pentest", "x"])
+    args = _parse_args(["pentest", "x", "--authorized"])
     code = cli_module.cmd_pentest(args)
     assert code == 0
     call_args, _ = server.handle_tool.call_args
     assert "checks" not in call_args[1]
+
+
+def test_cmd_pentest_without_authorized_returns_one(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """cmd_pentest 未传 --authorized 时拒绝执行并返回 1。"""
+    monkeypatch.setattr(cli_module, "_make_server", lambda model: _mock_server())
+    args = _parse_args(["pentest", "x"])
+    code = cli_module.cmd_pentest(args)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "--authorized" in captured.err
 
 
 # -- cmd_capture ------------------------------------------------------------
@@ -874,10 +889,10 @@ def test_cmd_interactive_captcha_image_read_error(
 def test_cmd_interactive_pentest_command(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """interactive 模式 pentest 命令调用 pentest_recon。"""
+    """interactive 模式 pentest 命令需 --authorized 确认并调用 pentest_recon。"""
     server = _setup_interactive(
         monkeypatch,
-        ["pentest example.com --checks ports,dirs", "exit"],
+        ["pentest example.com --checks ports,dirs --authorized", "exit"],
         json.dumps({"target": "example.com"}),
     )
     args = _parse_args(["interactive"])
@@ -886,6 +901,23 @@ def test_cmd_interactive_pentest_command(
     payload = call_args[1]
     assert payload["target"] == "example.com"
     assert payload["checks"] == ["ports", "dirs"]
+    assert payload["authorization_confirmed"] is True
+
+
+def test_cmd_interactive_pentest_without_authorized(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """interactive 模式 pentest 未带 --authorized 时提示并跳过（不调用工具）。"""
+    server = _setup_interactive(
+        monkeypatch,
+        ["pentest example.com", "exit"],
+        json.dumps({"target": "example.com"}),
+    )
+    args = _parse_args(["interactive"])
+    cli_module.cmd_interactive(args)
+    server.handle_tool.assert_not_called()
+    captured = capsys.readouterr()
+    assert "--authorized" in captured.err
 
 
 def test_cmd_interactive_capture_command(

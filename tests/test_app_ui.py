@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 import threading
 import time
@@ -571,6 +572,56 @@ class TestNormalizeImportedConfig:
         result = _normalize_imported_config(data)
         assert result["max_steps"] == 20
         assert result["min_confidence"] == 0.4
+
+    def test_conversion_exception_falls_back(self) -> None:
+        """字段转换抛异常（__str__ 失败）时回退默认值。"""
+
+        class _BadStr:
+            def __str__(self) -> str:
+                raise ValueError("boom")
+
+        result = _normalize_imported_config({"os_name": _BadStr()})
+        assert result["os_name"] == "windows"
+
+
+class TestAsIntFloat:
+    """_as_int / _as_float 安全转换的兜底分支。"""
+
+    def test_as_int_bool(self) -> None:
+        """bool 直接转 int（True→1 / False→0）。"""
+        assert ui._as_int(True, 5) == 1
+        assert ui._as_int(False, 5) == 0
+
+    def test_as_int_non_numeric_type(self) -> None:
+        """非数字类型（list/None/对象）回退默认值。"""
+        assert ui._as_int([1, 2], 5) == 5
+        assert ui._as_int(None, 5) == 5
+        assert ui._as_int(object(), 5) == 5
+
+    def test_as_float_non_numeric_type(self) -> None:
+        """非数字类型（list/None/对象）回退默认值。"""
+        assert ui._as_float([], 0.5) == 0.5
+        assert ui._as_float(None, 0.5) == 0.5
+        assert ui._as_float(object(), 0.5) == 0.5
+
+
+class TestValidateFields:
+    """服务端表单数字字段校验器的空值/非法值分支。"""
+
+    def test_int_field_empty_uses_default(self) -> None:
+        """空字符串整数字段回退默认值。"""
+        assert ui._validate_int_field("workers", "", 8, 1, 64) == 8
+        assert ui._validate_int_field("workers", "   ", 8, 1, 64) == 8
+
+    def test_float_field_empty_uses_default(self) -> None:
+        """空字符串浮点字段回退默认值。"""
+        assert ui._validate_float_field("delay", "", 0.5, 0.0) == 0.5
+        assert ui._validate_float_field("delay", "  ", 0.5, 0.0) == 0.5
+
+    def test_float_field_non_numeric_raises(self) -> None:
+        """非数字浮点字段抛 ValueError（handler 转 JSON 错误）。"""
+        with pytest.raises(ValueError, match="delay 必须是数字"):
+            ui._validate_float_field("delay", "abc", 0.5, 0.0)
 
 
 class TestSerializeAnalysis:
@@ -1166,6 +1217,22 @@ class TestHandlerSSE:
         joined = "\n".join(lines)
         assert "event: snapshot" in joined
 
+    def test_sse_keepalive_without_events(self, http_server: str) -> None:
+        """运行中且无新事件的任务发送 SSE 保活注释。"""
+        rjob = _make_reverse_job(id="sse3")
+        rjob.status = "running"
+        ui.REVERSE_JOBS["sse3"] = rjob
+
+        with httpx.stream("GET", f"{http_server}/reverse/stream?id=sse3", timeout=5) as resp:
+            assert resp.status_code == 200
+            lines = []
+            for line in resp.iter_lines():
+                lines.append(line)
+                if ": keep-alive" in line:
+                    break
+
+        assert any(": keep-alive" in line for line in lines)
+
 
 class TestHandlerPostRoutes:
     def test_post_run(self, http_server: str) -> None:
@@ -1210,7 +1277,9 @@ class TestHandlerPostRoutes:
         assert resp.json()["ok"] is False
 
     def test_post_open_output(self, http_server: str, tmp_path: Path) -> None:
-        """POST /open-output 打开输出目录。"""
+        """POST /open-output 打开已登记任务的输出目录（白名单内）。"""
+        job = _make_job_state(id="open1", output_dir=str(tmp_path))
+        ui.JOBS["open1"] = job
         with patch.object(ui, "_open_folder") as mock_open:
             resp = httpx.post(
                 f"{http_server}/open-output",
@@ -1219,14 +1288,52 @@ class TestHandlerPostRoutes:
         assert resp.json()["ok"] is True
         mock_open.assert_called_once()
 
+    def test_post_open_output_rejects_non_whitelisted(self, http_server: str, tmp_path: Path) -> None:
+        """POST /open-output 拒绝白名单之外的任意路径（防任意路径启动）。"""
+        with patch.object(ui, "_open_folder") as mock_open:
+            resp = httpx.post(
+                f"{http_server}/open-output",
+                data={"out": str(tmp_path)},
+            )
+        assert resp.json()["ok"] is False
+        mock_open.assert_not_called()
+
     def test_post_open_output_error(self, http_server: str, tmp_path: Path) -> None:
         """POST /open-output 打开失败时返回错误 JSON。"""
+        job = _make_job_state(id="open2", output_dir=str(tmp_path))
+        ui.JOBS["open2"] = job
         with patch.object(ui, "_open_folder", side_effect=OSError("denied")):
             resp = httpx.post(
                 f"{http_server}/open-output",
                 data={"out": str(tmp_path)},
             )
         assert resp.json()["ok"] is False
+
+    def test_post_open_output_mkdir_error(self, http_server: str, tmp_path: Path) -> None:
+        """mkdir 失败时返回错误 JSON。"""
+        job = _make_job_state(id="open3", output_dir=str(tmp_path))
+        ui.JOBS["open3"] = job
+        non_existent = tmp_path / "sub" / "dir"  # 白名单内但不存在的路径 → 触发 mkdir
+        with patch.object(ui.Path, "mkdir", side_effect=OSError("denied")):
+            resp = httpx.post(
+                f"{http_server}/open-output",
+                data={"out": str(non_existent)},
+            )
+        assert resp.json()["ok"] is False
+        assert "无法创建目录" in resp.json()["message"]
+
+    def test_post_open_output_not_a_directory(self, http_server: str, tmp_path: Path) -> None:
+        """白名单内但路径是文件而非目录时拒绝。"""
+        target = tmp_path / "file.txt"
+        target.write_text("x")
+        job = _make_job_state(id="open4", output_dir=str(tmp_path))
+        ui.JOBS["open4"] = job
+        resp = httpx.post(
+            f"{http_server}/open-output",
+            data={"out": str(target)},
+        )
+        assert resp.json()["ok"] is False
+        assert "不是目录" in resp.json()["message"]
 
     def test_post_reverse_run(self, http_server: str) -> None:
         """POST /reverse/run 启动逆向任务。"""
@@ -1318,6 +1425,28 @@ class TestHandlerPostRoutes:
 
 
 # ========== main ==========
+
+
+class TestPageTemplate:
+    def test_template_file_exists_and_readable(self) -> None:
+        """前端模板独立文件存在且可读取（打包依赖 package-data 携带）。"""
+        assert ui._PAGE_TEMPLATE_PATH.exists()
+        content = ui._PAGE_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert content.startswith("<!doctype html>")
+        assert len(content) > 1000
+
+    def test_page_loaded_from_template_with_placeholder(self) -> None:
+        """PAGE 来自模板文件，且保留 {block_keywords} 占位符供响应时替换。"""
+        assert ui.PAGE == ui._PAGE_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "{block_keywords}" in ui.PAGE
+
+    def test_load_page_template_missing_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """模板文件缺失时返回占位页（不崩溃）。"""
+        monkeypatch.setattr(
+            ui, "_PAGE_TEMPLATE_PATH", Path(__file__).parent / "no_such_template.html"
+        )
+        page = ui._load_page_template()
+        assert "模板缺失" in page
 
 
 class TestMain:
@@ -1661,3 +1790,219 @@ class TestJobsHistoryApi:
             task = ui.database.get_task(job_id)
         assert task is not None
         assert task["url"] == "https://run.example.com"
+
+
+class TestCsrfOriginCheck:
+    """跨站请求（Origin/Referer 非本机）应被拒绝。"""
+
+    def test_post_run_cross_origin_rejected(self, http_server: str) -> None:
+        with patch.object(ui, "run_job") as mock_run:
+            resp = httpx.post(
+                f"{http_server}/run",
+                data={"url": "https://example.com", "out": "", "max_pages": "1"},
+                headers={"Origin": "https://evil.example.com"},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is False
+        mock_run.assert_not_called()
+
+    def test_post_run_cross_origin_referer_rejected(self, http_server: str) -> None:
+        with patch.object(ui, "run_job") as mock_run:
+            resp = httpx.post(
+                f"{http_server}/run",
+                data={"url": "https://example.com", "out": "", "max_pages": "1"},
+                headers={"Referer": "https://evil.example.com/attack.html"},
+            )
+        assert resp.json()["ok"] is False
+        mock_run.assert_not_called()
+
+    def test_post_run_same_origin_allowed(self, http_server: str) -> None:
+        with patch.object(ui, "run_job"):
+            resp = httpx.post(
+                f"{http_server}/run",
+                data={"url": "https://example.com", "out": "", "max_pages": "1"},
+                headers={"Origin": http_server},
+            )
+        assert resp.json().get("ok") is not False
+
+    def test_delete_cross_origin_rejected(self, http_server: str) -> None:
+        resp = httpx.delete(
+            f"{http_server}/jobs/some-id",
+            headers={"Origin": "https://evil.example.com"},
+        )
+        assert resp.json()["ok"] is False
+
+    def test_origin_null_rejected(self, http_server: str) -> None:
+        """sandboxed iframe 的 Origin: null 不可信,应被拒绝。"""
+        with patch.object(ui, "run_job") as mock_run:
+            resp = httpx.post(
+                f"{http_server}/run",
+                data={"url": "https://example.com", "out": "", "max_pages": "1"},
+                headers={"Origin": "null"},
+            )
+        assert resp.json()["ok"] is False
+        mock_run.assert_not_called()
+
+    def test_origin_non_http_scheme_rejected(self, http_server: str) -> None:
+        """Origin 不是 http(s) 方案（如 file://）时拒绝。"""
+        with patch.object(ui, "run_job") as mock_run:
+            resp = httpx.post(
+                f"{http_server}/run",
+                data={"url": "https://example.com", "out": "", "max_pages": "1"},
+                headers={"Origin": "file:///etc/passwd"},
+            )
+        assert resp.json()["ok"] is False
+        mock_run.assert_not_called()
+
+
+class TestLoopbackHost:
+    def test_loopback_hosts_allowed(self) -> None:
+        assert ui._is_loopback_host("127.0.0.1") is True
+        assert ui._is_loopback_host("localhost") is True
+        assert ui._is_loopback_host("::1") is True
+        assert ui._is_loopback_host("127.0.0.2") is True
+
+    def test_non_loopback_hosts_rejected(self) -> None:
+        assert ui._is_loopback_host("0.0.0.0") is False
+        assert ui._is_loopback_host("192.168.1.10") is False
+        assert ui._is_loopback_host("example.com") is False
+
+    def test_main_rejects_non_loopback_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("sys.argv", ["ui", "--host", "0.0.0.0"])
+        with pytest.raises(SystemExit):
+            ui.main()
+
+
+class TestRunValidation:
+    """表单数字字段服务端校验（防止线程爆炸/SystemExit 杀 handler）。"""
+
+    def test_workers_out_of_range(self, http_server: str) -> None:
+        resp = httpx.post(
+            f"{http_server}/run",
+            data={"url": "https://example.com", "workers": "100000", "out": ""},
+        )
+        assert resp.json()["ok"] is False
+        assert "workers" in resp.json()["error"]
+
+    def test_workers_non_numeric(self, http_server: str) -> None:
+        resp = httpx.post(
+            f"{http_server}/run",
+            data={"url": "https://example.com", "workers": "abc", "out": ""},
+        )
+        assert resp.json()["ok"] is False
+        assert "workers" in resp.json()["error"]
+
+    def test_retries_negative(self, http_server: str) -> None:
+        resp = httpx.post(
+            f"{http_server}/run",
+            data={"url": "https://example.com", "retries": "-1", "out": ""},
+        )
+        assert resp.json()["ok"] is False
+        assert "retries" in resp.json()["error"]
+
+    def test_valid_bounds_accepted(self, http_server: str) -> None:
+        with patch.object(ui, "run_job"):
+            resp = httpx.post(
+                f"{http_server}/run",
+                data={"url": "https://example.com", "workers": "64", "out": ""},
+            )
+        assert "id" in resp.json()
+
+    def test_empty_numeric_fields_use_defaults(self, http_server: str) -> None:
+        """空字符串数字字段回退默认值（覆盖校验器默认分支）。"""
+        with patch.object(ui, "run_job"):
+            resp = httpx.post(
+                f"{http_server}/run",
+                data={"url": "https://example.com", "workers": "", "retries": "", "delay": "",
+                      "timeout": "", "max_bytes": "", "max_pages": "", "out": ""},
+            )
+        assert "id" in resp.json()
+
+    def test_delay_negative_rejected(self, http_server: str) -> None:
+        resp = httpx.post(
+            f"{http_server}/run",
+            data={"url": "https://example.com", "delay": "-1", "out": ""},
+        )
+        assert resp.json()["ok"] is False
+        assert "delay" in resp.json()["error"]
+
+    def test_timeout_too_small_rejected(self, http_server: str) -> None:
+        resp = httpx.post(
+            f"{http_server}/run",
+            data={"url": "https://example.com", "timeout": "0", "out": ""},
+        )
+        assert resp.json()["ok"] is False
+        assert "timeout" in resp.json()["error"]
+
+
+class TestSingleCrawlGuard:
+    """同一时间只允许一个采集任务,防止日志/共享 opener 串线。"""
+
+    def test_run_rejected_while_running(self, http_server: str) -> None:
+        job = _make_job_state(id="busy1")
+        ui.JOBS["busy1"] = job  # status 默认为 running
+        with patch.object(ui, "run_job") as mock_run:
+            resp = httpx.post(
+                f"{http_server}/run",
+                data={"url": "https://example.com", "out": "", "max_pages": "1"},
+            )
+        assert resp.json()["ok"] is False
+        assert "已有采集任务" in resp.json()["error"]
+        mock_run.assert_not_called()
+
+    def test_run_allowed_after_terminal(self, http_server: str) -> None:
+        job = _make_job_state(id="done1")
+        job.status = "done"
+        ui.JOBS["done1"] = job
+        with patch.object(ui, "run_job"):
+            resp = httpx.post(
+                f"{http_server}/run",
+                data={"url": "https://example.com", "out": "", "max_pages": "1"},
+            )
+        assert "id" in resp.json()
+
+
+class TestJobLogHandler:
+    """crawler 日志经 JobLogHandler 转发到 job.log（替代失效的 redirect_stdout）。"""
+
+    def test_crawler_logs_captured(self, tmp_path: Path) -> None:
+        job = _make_job_state(output_dir=str(tmp_path))
+        job.args = Mock()
+        logger = ui.web_resource_crawler._log
+        old_level = logger.level
+        logger.setLevel(logging.INFO)  # pytest 下 root 默认 WARNING,显式放开 INFO
+
+        def fake_crawl(args: Any) -> int:
+            ui.web_resource_crawler._log.info("hello from crawler logger")
+            return 0
+
+        try:
+            with patch.object(ui.web_resource_crawler, "crawl", side_effect=fake_crawl):
+                run_job(job)
+        finally:
+            logger.setLevel(old_level)
+        assert "hello from crawler logger" in job.log
+
+    def test_handler_detached_after_run(self, tmp_path: Path) -> None:
+        job = _make_job_state(output_dir=str(tmp_path))
+        job.args = Mock()
+        with patch.object(ui.web_resource_crawler, "crawl", return_value=0):
+            run_job(job)
+        # 任务结束后 logger 不再向该 job 写日志
+        ui.web_resource_crawler._log.info("after run")
+        assert "after run" not in job.log
+
+
+class TestTaskConfigForDb:
+    def test_header_excluded(self) -> None:
+        """入库配置剔除 header（含 Cookie）,避免明文落库。"""
+        form = {
+            "url": ["https://example.com"],
+            "cookie": ["session=secret"],
+            "headers": ["Authorization: Bearer tok"],
+        }
+        args = build_args(form)
+        config = ui._task_config_for_db(args)
+        assert "header" not in config
+        assert "session=secret" not in json.dumps(config)
+        assert "Bearer tok" not in json.dumps(config)

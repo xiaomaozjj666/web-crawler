@@ -791,3 +791,43 @@ def test_webpack_module_defaults() -> None:
     assert mod.source == "x"
     assert mod.dependencies == []
     assert mod.exports == []
+
+
+# ===========================================================================
+# 回归：inputs 为逗号分隔字符串时按逗号拆分
+# ===========================================================================
+
+
+def test_analyze_fragment_inputs_string_split() -> None:
+    """模型把 inputs 返回成字符串时应按逗号拆分而非逐字符迭代。"""
+    reply = '{"algorithm": "x", "inputs": "timestamp, nonce, body"}'
+    provider = _ScriptedProvider([reply])
+    analyzer = JSAnalyzer(provider=provider)  # type: ignore[arg-type]
+    result = analyzer.analyze_fragment(JSFragment(source="x"))
+    assert result.inputs == ["timestamp", "nonce", "body"]
+
+
+def test_analyze_fragment_inputs_list_still_works() -> None:
+    """inputs 为数组时行为不变。"""
+    reply = '{"algorithm": "x", "inputs": ["a", "b"]}'
+    provider = _ScriptedProvider([reply])
+    analyzer = JSAnalyzer(provider=provider)  # type: ignore[arg-type]
+    result = analyzer.analyze_fragment(JSFragment(source="x"))
+    assert result.inputs == ["a", "b"]
+
+
+# ===========================================================================
+# 回归：来源 URL（不可信输入）JSON 转义 + 不可信提示
+# ===========================================================================
+
+
+def test_analyze_fragment_escapes_untrusted_url() -> None:
+    """URL 中的引号/换行应被转义，且 prompt 含不可信数据提示。"""
+    reply = '{"algorithm": "x"}'
+    provider = _ScriptedProvider([reply])
+    analyzer = JSAnalyzer(provider=provider)  # type: ignore[arg-type]
+    frag = JSFragment(source="x", url='https://x.example/"inj"\nend')
+    analyzer.analyze_fragment(frag)
+    user_prompt = str(provider.calls[0][1].content)
+    assert '"inj"' not in user_prompt
+    assert "不可信" in user_prompt
