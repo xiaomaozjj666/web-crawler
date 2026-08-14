@@ -44,5 +44,6 @@ USER appuser
 # 暴露 Web UI 端口
 EXPOSE 8765
 
-# 默认命令：启动 Web UI，监听所有网卡
-CMD ["python", "app/ui.py", "--host", "0.0.0.0", "--port", "8765"]
+# 默认命令：启动 Web UI，监听所有网卡（--allow-remote 为远程绑定放行，
+# 控制面无鉴权，仅在可信网络/容器内使用）
+CMD ["python", "app/ui.py", "--host", "0.0.0.0", "--port", "8765", "--allow-remote"]

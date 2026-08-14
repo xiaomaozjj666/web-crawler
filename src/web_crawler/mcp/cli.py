@@ -4,17 +4,20 @@
 
 用法::
 
-    # 单次逆向分析
-    web-crawler-reverse https://example.com --target-params anti_content sign
+    # 单次逆向分析（子命令 reverse）
+    web-crawler-reverse reverse https://example.com --target-params anti_content sign
 
     # 交互式 REPL
-    web-crawler-reverse --interactive
+    web-crawler-reverse interactive
 
-    # 直接分析 JS 代码片段
-    web-crawler-reverse --analyze-js script.js
+    # 直接分析 JS 代码片段（子命令 analyze）
+    web-crawler-reverse analyze script.js
 
-    # 提取 webpack 模块
-    web-crawler-reverse --webpack script.js
+    # 提取 webpack 模块（子命令 webpack）
+    web-crawler-reverse webpack bundle.js
+
+    # 一键运行完整 JS 逆向 Agent（子命令 run，不走 MCP）
+    web-crawler-reverse run --url https://example.com --task "提取签名参数" --headless
 """
 
 from __future__ import annotations
@@ -336,6 +339,8 @@ def cmd_interactive(args: argparse.Namespace) -> int:
     print("  captcha <url>                           处理验证码")
     print("  captcha-image --mode text|slider|click  识别图片验证码")
     print("  pentest <target> [--checks ports,dirs]  渗透侦察")
+    print("        （REPL 内仅支持 --checks 与 --authorized；")
+    print("         --ports / --timeout / --allow-private 不受支持，请改用命令行 pentest 子命令）")
     print("  capture <url> [--wait 5]               捕获网络请求")
     print("  scripts <url>                          获取 JS 脚本列表")
     print("  tools                                   列出所有工具")
@@ -650,7 +655,7 @@ def main() -> None:
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
-        sys.exit(0)
+        sys.exit(2)
     sys.exit(args.func(args))
 
 

@@ -607,6 +607,11 @@ def save_config_to_file(args: argparse.Namespace, filepath: str) -> None:
         "smart_extract": args.smart_extract,
         "resume_crawl": args.resume_crawl,
         "extract_text": args.extract_text,
+        "include_pattern": args.include_pattern,
+        "exclude_pattern": args.exclude_pattern,
+        "proxy": args.proxy,
+        "stealth": args.stealth,
+        "impersonate": args.impersonate,
     }
     path = Path(filepath)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -619,7 +624,7 @@ def load_config_from_file(filepath: str) -> dict:
     path = Path(filepath)
     if not path.exists():
         _log.error("config file not found: %s", path)
-        sys.exit(1)
+        sys.exit(2)  # 配置错误退出码 2（区别于 1=取消、0=成功）
     config = json.loads(path.read_text(encoding="utf-8"))
     _log.info("config loaded from %s", path)
     return config
@@ -879,6 +884,24 @@ def crawl(args: argparse.Namespace) -> int:
     queue = list(resources)
     queued_urls = {r.url for r in queue}
 
+    # JSONL 实时清单：每下载完成一个资源立即追加一行（供监控/断点查看），
+    # 打开失败（磁盘满等）降级为仅内存收集，不影响抓取
+    jsonl_path = output_dir / "resources_manifest.jsonl"
+    try:
+        jsonl_file = jsonl_path.open("w", encoding="utf-8")
+    except OSError as exc:
+        _log.warning("failed to open JSONL manifest: %s", exc)
+        jsonl_file = None
+
+    def _append_jsonl(row: ManifestRow) -> None:
+        """best-effort 逐条写 JSONL；失败仅记一次 warning，不影响主流程。"""
+        if jsonl_file is None:
+            return
+        try:
+            jsonl_file.write(json.dumps(asdict(row), ensure_ascii=False) + "\n")
+        except OSError as exc:
+            _log.warning("failed to write JSONL manifest: %s", exc)
+
     _log.info("downloading %d resources with %d workers...", len(queue), args.workers)
     report_progress(
         args,
@@ -1073,14 +1096,15 @@ def crawl(args: argparse.Namespace) -> int:
                         break
                     with manifest_lock:
                         manifest_rows.append(result)
+                        _append_jsonl(result)
                 except Exception as exc:  # pragma: no cover - 防御性：process_one 已捕获所有异常
                     _log.error("unexpected worker error: %s", exc)
                     with manifest_lock:
-                        manifest_rows.append(
-                            row_for(
-                                "error: worker crashed", resource_for_future, "", "", 0, page_titles
-                            )
+                        failed_row = row_for(
+                            "error: worker crashed", resource_for_future, "", "", 0, page_titles
                         )
+                        manifest_rows.append(failed_row)
+                        _append_jsonl(failed_row)
 
                 report_progress(
                     args,
@@ -1194,15 +1218,13 @@ def crawl(args: argparse.Namespace) -> int:
             except Exception as exc:
                 _log.warning("failed to write run report: %s", exc)
 
-        # Write JSONL for real-time monitoring
-        if not _post_pause_check():
+        # JSONL 清单已在下载阶段逐条追加；此处仅收尾 flush/关闭
+        if jsonl_file is not None:
             try:
-                jsonl_path = output_dir / "resources_manifest.jsonl"
-                with jsonl_path.open("w", encoding="utf-8") as jsonl_file:
-                    for row in manifest_rows:
-                        jsonl_file.write(json.dumps(asdict(row), ensure_ascii=False) + "\n")
-            except Exception as _jsonl_err:
-                _log.warning("failed to write JSONL manifest: %s", _jsonl_err)
+                jsonl_file.flush()
+                jsonl_file.close()
+            except OSError as _jsonl_err:
+                _log.warning("failed to finalize JSONL manifest: %s", _jsonl_err)
 
         # Clear resume state on successful completion
         if getattr(args, "resume_crawl", False) and not _post_pause_check():
@@ -1401,7 +1423,12 @@ def main() -> None:
                 continue
             if value is not None and value != parser.get_default(key):
                 config[key] = value
-        args = argparse.Namespace(**config)
+        # 以 parser 默认值为底，配置文件/CLI 覆盖其上：保证保存文件缺省
+        # 的字段（如 include_pattern/stealth）在 load 后仍然存在，
+        # 避免 crawl() 访问缺失属性崩溃（save→load 往返兼容）
+        defaults = {key: parser.get_default(key) for key in vars(args)}
+        defaults.update(config)
+        args = argparse.Namespace(**defaults)
 
     if args.save_config:
         if not args.url:
