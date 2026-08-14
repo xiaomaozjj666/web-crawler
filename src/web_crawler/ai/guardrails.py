@@ -30,13 +30,18 @@
 
 from __future__ import annotations
 
+import inspect
 import ipaddress
 import re
+import socket
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 from urllib.parse import urlparse
+
+# 会触发导航的 action_type：navigate 与 new_tab 都执行 page.goto，URL 校验统一覆盖
+_NAV_ACTION_TYPES: frozenset[str] = frozenset({"navigate", "new_tab"})
 
 
 class GuardrailAction(str, Enum):
@@ -143,6 +148,60 @@ class ActionGuard:
     # 公共入口
     # ------------------------------------------------------------------
 
+    def _run_rules(self, action_dict: dict[str, Any], ctx: dict[str, Any]) -> GuardrailResult:
+        """执行全部规则，返回含最终处置策略（可能为 CONFIRM）的结果。"""
+        result = GuardrailResult()
+        for rule in self._rules:
+            try:
+                hit, detail = rule.check(action_dict, ctx)
+            except Exception as exc:
+                # 规则自身出错：记录但不阻塞动作
+                result.matched_rules.append(f"{rule.name} (error)")
+                result.details.append(f"rule error: {exc}")
+                continue
+            if not hit:
+                continue
+            result.matched_rules.append(rule.name)
+            result.details.append(detail)
+            # 取最严格策略
+            result.action = self._stricter(result.action, rule.action)
+        return result
+
+    def _resolve_confirm_sync(self, result: GuardrailResult) -> GuardrailResult:
+        """同步解析 CONFIRM：无 on_confirm 时降级为 DENY，否则按回调结果放行/拒绝。"""
+        if result.action != GuardrailAction.CONFIRM:
+            return result
+        if self.on_confirm is None:
+            # 文档语义：默认拒绝（没有确认回调时不得放行）
+            result.action = GuardrailAction.DENY
+            return result
+        confirmed = True
+        for name, detail in zip(result.matched_rules, result.details, strict=False):
+            if not self.on_confirm(name, detail):
+                confirmed = False
+                break
+        result.action = GuardrailAction.ALLOW if confirmed else GuardrailAction.DENY
+        return result
+
+    async def _resolve_confirm_async(self, result: GuardrailResult) -> GuardrailResult:
+        """异步解析 CONFIRM：on_confirm 为协程时 await，否则同步调用。"""
+        if result.action != GuardrailAction.CONFIRM:
+            return result
+        if self.on_confirm is None:
+            result.action = GuardrailAction.DENY
+            return result
+        confirmed = True
+        for name, detail in zip(result.matched_rules, result.details, strict=False):
+            if inspect.iscoroutinefunction(self.on_confirm):
+                ok = await self.on_confirm(name, detail)
+            else:
+                ok = self.on_confirm(name, detail)
+            if not ok:
+                confirmed = False
+                break
+        result.action = GuardrailAction.ALLOW if confirmed else GuardrailAction.DENY
+        return result
+
     def check(
         self,
         action: Any,
@@ -159,34 +218,8 @@ class ActionGuard:
             上下文信息（当前 URL、target_params、history 等），供规则检查使用。
         """
         action_dict = self._action_to_dict(action)
-        ctx = context or {}
-        result = GuardrailResult()
-
-        for rule in self._rules:
-            try:
-                hit, detail = rule.check(action_dict, ctx)
-            except Exception as exc:
-                # 规则自身出错：记录但不阻塞动作
-                result.matched_rules.append(f"{rule.name} (error)")
-                result.details.append(f"rule error: {exc}")
-                continue
-            if not hit:
-                continue
-            result.matched_rules.append(rule.name)
-            result.details.append(detail)
-            # 取最严格策略
-            result.action = self._stricter(result.action, rule.action)
-
-        # CONFIRM 走回调
-        if result.action == GuardrailAction.CONFIRM and self.on_confirm is not None:
-            confirmed = True
-            for name, detail in zip(result.matched_rules, result.details, strict=False):
-                if not self.on_confirm(name, detail):
-                    confirmed = False
-                    break
-            result.action = GuardrailAction.ALLOW if confirmed else GuardrailAction.DENY
-
-        return result
+        result = self._run_rules(action_dict, context or {})
+        return self._resolve_confirm_sync(result)
 
     async def check_async(
         self,
@@ -198,8 +231,18 @@ class ActionGuard:
 
         ``on_confirm`` 若为协程函数则 await，否则同步调用。
         """
-        # 当前实现里 check 已是纯同步逻辑，async 入口仅为接口对齐
-        return self.check(action, context=context)
+        action_dict = self._action_to_dict(action)
+        result = self._run_rules(action_dict, context or {})
+        return await self._resolve_confirm_async(result)
+
+    def check_navigation_url(self, url: str) -> GuardrailResult:
+        """检查裸导航 URL 是否合规（localhost/内网、https、域名白名单）。
+
+        供 ``new_tab`` 等动作在 ``page.goto`` 前做深度防御校验；
+        与 ``navigate`` 动作在规则层共享同一套 URL 检查逻辑。
+        """
+        action = {"action_type": "navigate", "params": {"url": url}}
+        return self._run_rules(action, {})
 
     def add_rule(self, rule: GuardrailRule) -> None:
         """注册自定义规则。"""
@@ -270,6 +313,79 @@ class ActionGuard:
     # 默认规则的 check 实现
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _decode_encoded_ip(host: str) -> str | None:
+        """把十进制/十六进制/八进制编码的 IP 字面量还原为点分形式。
+
+        例如 ``2130706433`` → ``127.0.0.1``、``0x7f000001`` → ``127.0.0.1``、
+        ``0177.0.0.1`` → ``127.0.0.1``；无法识别返回 None。
+        """
+        h = host.strip().lower()
+        if not h:
+            return None
+        if h.startswith("0x"):
+            # 十六进制编码（0x7f000001），其 a-f 也是字母，需先于字母判断处理
+            try:
+                return str(ipaddress.ip_address(int(h, 16)))
+            except ValueError:
+                return None
+        if any(c.isalpha() for c in h):
+            return None  # 含字母，视为域名
+        if h.isdigit():
+            try:
+                return str(ipaddress.ip_address(int(h)))
+            except ValueError:
+                return None
+        parts = h.split(".")
+        if len(parts) == 4:
+            try:
+                octets = [int(p, 8) for p in parts]
+            except ValueError:
+                return None
+            if all(0 <= o <= 255 for o in octets):
+                return ".".join(str(o) for o in octets)
+        return None
+
+    @classmethod
+    def _host_is_private(cls, host: str) -> bool:
+        """判断 host 是否指向 localhost / 内网 IP。
+
+        先按字面 IP 判断；对十进制/十六进制/八进制编码的 IP（如
+        ``2130706433``、``0x7f000001``）做直译兜底，最后用 ``getaddrinfo``
+        解析兜底，防止 SSRF 编码绕过。
+        """
+        if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
+            return True
+        try:
+            ip = ipaddress.ip_address(host)
+            return bool(ip.is_private or ip.is_loopback or ip.is_link_local)
+        except ValueError:
+            pass  # 不是标准点分 IP，可能是域名或编码形式
+        decoded = cls._decode_encoded_ip(host)
+        if decoded is not None:
+            try:
+                ip2 = ipaddress.ip_address(decoded)
+            except ValueError:
+                ip2 = None
+            if ip2 is not None and (ip2.is_private or ip2.is_loopback or ip2.is_link_local):
+                return True
+        # 仅对"看起来是编码 IP"的 host 做 DNS 兜底，避免普通域名触发解析
+        normalized = host.replace("x", "").replace("X", "")
+        if any(c.isalpha() for c in normalized):
+            return False
+        try:
+            addrs = socket.getaddrinfo(host, None)
+        except OSError:
+            return False
+        for addr in addrs:
+            try:
+                ip = ipaddress.ip_address(addr[4][0])
+            except ValueError:
+                continue
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                return True
+        return False
+
     def _check_localhost_nav(
         self,
         action: dict[str, Any],
@@ -277,7 +393,7 @@ class ActionGuard:
     ) -> tuple[bool, str]:
         if self.allow_localhost:
             return False, ""
-        if str(action.get("action_type", "")).lower() != "navigate":
+        if str(action.get("action_type", "")).lower() not in _NAV_ACTION_TYPES:
             return False, ""
         url = str((action.get("params") or {}).get("url", ""))
         if not url:
@@ -285,16 +401,9 @@ class ActionGuard:
         host = urlparse(url).hostname or ""
         if not host:
             return False, ""
-        # localhost / 127.0.0.1 / 内网 IP
-        if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
-            return True, f"navigate to localhost: {url}"
-        # 检查是否内网 IP
-        try:
-            ip = ipaddress.ip_address(host)
-            if ip.is_private or ip.is_loopback or ip.is_link_local:
-                return True, f"navigate to private IP: {url}"
-        except ValueError:
-            pass  # 不是 IP，是域名
+        # localhost / 127.0.0.1 / 内网 IP（含十进制/十六进制编码形式）
+        if self._host_is_private(host):
+            return True, f"navigate to localhost/private host: {url}"
         return False, ""
 
     def _check_https_only(
@@ -302,7 +411,7 @@ class ActionGuard:
         action: dict[str, Any],
         ctx: dict[str, Any],
     ) -> tuple[bool, str]:
-        if str(action.get("action_type", "")).lower() != "navigate":
+        if str(action.get("action_type", "")).lower() not in _NAV_ACTION_TYPES:
             return False, ""
         url = str((action.get("params") or {}).get("url", ""))
         if not url:
@@ -323,7 +432,7 @@ class ActionGuard:
         action: dict[str, Any],
         ctx: dict[str, Any],
     ) -> tuple[bool, str]:
-        if str(action.get("action_type", "")).lower() != "navigate":
+        if str(action.get("action_type", "")).lower() not in _NAV_ACTION_TYPES:
             return False, ""
         if not self.allowed_domains:
             return False, ""

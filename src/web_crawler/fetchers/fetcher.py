@@ -21,11 +21,12 @@ import random
 import time
 import warnings
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urljoin, urlparse
 
 from typing_extensions import Self
 
 from ..compat import HAS_CURL_CFFI, HAS_HTTPX
-from ._base import BaseFetcher
+from ._base import BaseFetcher, validate_url_scheme
 from .proxy import ProxyPool
 
 if TYPE_CHECKING:
@@ -104,7 +105,9 @@ class _FetcherCore(BaseFetcher):
         follow_redirects: bool = True,
         verify: bool = True,
         http2: bool = True,
-        ja4_fingerprint: str | None = None,
+        max_redirects: int = 5,
+        ja3_fingerprint: str | None = None,
+        ja4_fingerprint: str | None = None,  # 兼容旧参数名（已弃用）
     ) -> None:
         super().__init__(
             timeout=timeout,
@@ -116,12 +119,27 @@ class _FetcherCore(BaseFetcher):
             follow_redirects=follow_redirects,
             verify=verify,
         )
+        if max_redirects < 0:
+            raise ValueError("max_redirects must be >= 0")
+        self.max_redirects = max_redirects
         self.impersonate = impersonate
         self.http2 = http2
-        # JA4/JA3 指纹定制：传入时通过 curl_cffi 的 ja3 参数覆盖默认 TLS 扩展顺序。
+        # JA3 指纹定制：传入时通过 curl_cffi 的 ja3 参数覆盖默认 TLS 扩展顺序。
         # curl_cffi 0.7+ 支持在 Session 构造时传 ja3 字符串做细粒度 TLS 指纹定制；
         # 若 curl_cffi 不可用则此字段被忽略（httpx 后端无 TLS 指纹能力）。
-        self.ja4_fingerprint = ja4_fingerprint
+        if ja4_fingerprint is not None:
+            warnings.warn(
+                "ja4_fingerprint is deprecated; use ja3_fingerprint instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if ja3_fingerprint is None:
+                ja3_fingerprint = ja4_fingerprint
+        self.ja3_fingerprint = ja3_fingerprint
+        # 兼容旧属性名（读取旧代码仍可用）
+        self.ja4_fingerprint = ja3_fingerprint
+        # httpx http2=True 缺少可选依赖 h2 时降级为 HTTP/1.1，仅告警一次
+        self._http2_fallback_warned = False
 
         # Backend is selected once at construction; sessions are built lazily.
         self._use_curl: bool = HAS_CURL_CFFI
@@ -154,10 +172,10 @@ class _FetcherCore(BaseFetcher):
         }
         if not self.http2:
             kwargs["http_version"] = CurlHttpVersion.V1_1
-        if self.ja4_fingerprint:
-            # curl_cffi 的 ja3 参数接受 JA3/JA4 格式的 TLS 扩展字符串，
+        if self.ja3_fingerprint:
+            # curl_cffi 的 ja3 参数接受 JA3 格式的 TLS 扩展字符串，
             # 覆盖 impersonate 预设的默认 TLS 指纹。
-            kwargs["ja3"] = self.ja4_fingerprint
+            kwargs["ja3"] = self.ja3_fingerprint
         return CurlSession(**kwargs)
 
     def _build_curl_async_session(self) -> Any:
@@ -170,8 +188,8 @@ class _FetcherCore(BaseFetcher):
         }
         if not self.http2:
             kwargs["http_version"] = CurlHttpVersion.V1_1
-        if self.ja4_fingerprint:
-            kwargs["ja3"] = self.ja4_fingerprint
+        if self.ja3_fingerprint:
+            kwargs["ja3"] = self.ja3_fingerprint
         return CurlAsyncSession(**kwargs)
 
     def _build_httpx_sync_client(self, proxy: str | None = None) -> Any:
@@ -189,7 +207,20 @@ class _FetcherCore(BaseFetcher):
                 kwargs["mounts"] = {"all://": httpx.HTTPTransport(proxy=proxy)}
             else:
                 kwargs["proxy"] = proxy
-        return httpx.Client(**kwargs)
+        try:
+            return httpx.Client(**kwargs)
+        except ImportError:
+            # httpx 的 http2=True 需要可选依赖 h2；缺失时降级为 HTTP/1.1
+            if not self._http2_fallback_warned:
+                warnings.warn(
+                    "httpx HTTP/2 support requires the optional 'h2' package; "
+                    "falling back to HTTP/1.1.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                self._http2_fallback_warned = True
+            kwargs["http2"] = False
+            return httpx.Client(**kwargs)
 
     def _build_httpx_async_client(self, proxy: str | None = None) -> Any:
         httpx = _load_httpx_backend()
@@ -206,7 +237,19 @@ class _FetcherCore(BaseFetcher):
                 kwargs["mounts"] = {"all://": httpx.HTTPTransport(proxy=proxy)}
             else:
                 kwargs["proxy"] = proxy
-        return httpx.AsyncClient(**kwargs)
+        try:
+            return httpx.AsyncClient(**kwargs)
+        except ImportError:
+            if not self._http2_fallback_warned:
+                warnings.warn(
+                    "httpx HTTP/2 support requires the optional 'h2' package; "
+                    "falling back to HTTP/1.1.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                self._http2_fallback_warned = True
+            kwargs["http2"] = False
+            return httpx.AsyncClient(**kwargs)
 
     def _ensure_sync_session(self) -> Any:
         if self._session is None:
@@ -318,6 +361,81 @@ class _FetcherCore(BaseFetcher):
             if close_after:
                 await client.aclose()
 
+    # -- redirect following (per-hop SSRF scheme validation) ----------------
+    def _next_redirect(
+        self, raw: Any, current_url: str, method: str, headers: dict[str, str]
+    ) -> tuple[str, str | None, dict[str, str]] | None:
+        """解析重定向跳转目标；返回 (next_url, new_method, new_headers)。
+
+        逐跳校验目标 scheme（重定向到非 http(s) 即拒绝），并在跨源跳转时
+        剥离 Authorization 头，避免凭据泄漏给第三方站点。非重定向状态或
+        缺少 Location 时返回 ``None``。
+        """
+        status = int(raw.status_code)
+        if status not in (301, 302, 303, 307, 308):
+            return None
+        location = raw.headers.get("Location") if raw.headers else None
+        if not location:
+            return None
+        next_url = urljoin(current_url, location.strip())
+        validate_url_scheme(next_url)
+        next_headers = headers
+        if urlparse(next_url).netloc != urlparse(current_url).netloc:
+            next_headers = {k: v for k, v in headers.items() if k.lower() != "authorization"}
+        # 303 恒转 GET；301/302 的 POST 也转 GET（与浏览器/curl 默认一致）
+        new_method: str | None = None
+        if status == 303 or (status in (301, 302) and method == "POST"):
+            new_method = "GET"
+        return next_url, new_method, next_headers
+
+    async def _send_with_redirects_async(
+        self,
+        method: str,
+        url: str,
+        params: Any,
+        data: Any,
+        json: Any,
+        headers: dict[str, str],
+        proxy: str | None,
+        timeout: float,
+        allow_redirects: bool,
+        verify: bool,
+    ) -> Any:
+        """发送一次请求并手动跟随重定向（最多 max_redirects 跳，逐跳校验 scheme）。"""
+        if not allow_redirects:
+            return await self._send_once_async(
+                method, url, params, data, json, headers, proxy, timeout, False, verify
+            )
+        current_url = url
+        current_method = method
+        current_params = params
+        current_data = data
+        current_json = json
+        for _ in range(self.max_redirects + 1):
+            raw = await self._send_once_async(
+                current_method,
+                current_url,
+                current_params,
+                current_data,
+                current_json,
+                headers,
+                proxy,
+                timeout,
+                False,
+                verify,
+            )
+            next_hop = self._next_redirect(raw, current_url, current_method, headers)
+            if next_hop is None:
+                return raw
+            next_url, new_method, headers = next_hop
+            current_url = next_url
+            current_params = None
+            if new_method is not None:
+                current_method = new_method
+                current_data = None
+                current_json = None
+        raise RuntimeError(f"too many redirects (max {self.max_redirects}) for {url}")
+
     async def _send_async(
         self,
         method: str,
@@ -329,17 +447,22 @@ class _FetcherCore(BaseFetcher):
         json: Any = None,
         **kwargs: Any,
     ) -> Response:
+        validate_url_scheme(url)
         merged_headers = self._merge_headers(headers)
         timeout = kwargs.pop("timeout", self.timeout)
         verify = kwargs.pop("verify", self.verify)
         allow_redirects = kwargs.pop("allow_redirects", self.follow_redirects)
+        if kwargs:
+            raise TypeError(
+                f"unexpected keyword argument(s): {', '.join(sorted(kwargs))}"
+            )
         proxy = self._resolve_proxy()
         retry_errors = self._retry_errors()
         last_exc: BaseException | None = None
         for attempt in range(self.retries + 1):
             backoff = min(2.0**attempt, 10.0) + random.random() * 0.25
             try:
-                raw = await self._send_once_async(
+                raw = await self._send_with_redirects_async(
                     method,
                     url,
                     params,
@@ -355,14 +478,23 @@ class _FetcherCore(BaseFetcher):
                 last_exc = exc
                 if attempt == self.retries:
                     raise
+                # 连接错误/超时：若有代理池则标记当前代理失败并轮换，避免死代理原地重试
+                if isinstance(self.proxy, ProxyPool) and proxy:
+                    self.proxy.mark_failed(proxy)
+                    proxy = self._resolve_proxy()
                 await asyncio.sleep(backoff)
                 continue
             # 5xx 与 429（被限流）均重试；其余直接返回
             should_retry = raw.status_code >= 500 or raw.status_code == 429
-            if not should_retry or attempt == self.retries:
+            if not should_retry:
+                # 成功响应：清零该代理的失败计数
+                if isinstance(self.proxy, ProxyPool) and proxy:
+                    self.proxy.mark_success(proxy)
                 return self._to_response(raw, merged_headers)
-            # 429 视为封锁信号：若有代理池则标记当前代理失败并换下一个
-            if raw.status_code == 429 and isinstance(self.proxy, ProxyPool) and proxy:
+            if attempt == self.retries:
+                return self._to_response(raw, merged_headers)
+            # 429/5xx 视为代理问题信号：标记失败并换下一个
+            if isinstance(self.proxy, ProxyPool) and proxy:
                 self.proxy.mark_failed(proxy)
                 proxy = self._resolve_proxy()
             # 429 时尊重 Retry-After；否则指数退避
@@ -443,6 +575,54 @@ class Fetcher(_FetcherCore):
             if close_after:
                 client.close()
 
+    def _send_with_redirects_sync(
+        self,
+        method: str,
+        url: str,
+        params: Any,
+        data: Any,
+        json: Any,
+        headers: dict[str, str],
+        proxy: str | None,
+        timeout: float,
+        allow_redirects: bool,
+        verify: bool,
+    ) -> Any:
+        """发送一次请求并手动跟随重定向（最多 max_redirects 跳，逐跳校验 scheme）。"""
+        if not allow_redirects:
+            return self._send_once_sync(
+                method, url, params, data, json, headers, proxy, timeout, False, verify
+            )
+        current_url = url
+        current_method = method
+        current_params = params
+        current_data = data
+        current_json = json
+        for _ in range(self.max_redirects + 1):
+            raw = self._send_once_sync(
+                current_method,
+                current_url,
+                current_params,
+                current_data,
+                current_json,
+                headers,
+                proxy,
+                timeout,
+                False,
+                verify,
+            )
+            next_hop = self._next_redirect(raw, current_url, current_method, headers)
+            if next_hop is None:
+                return raw
+            next_url, new_method, headers = next_hop
+            current_url = next_url
+            current_params = None
+            if new_method is not None:
+                current_method = new_method
+                current_data = None
+                current_json = None
+        raise RuntimeError(f"too many redirects (max {self.max_redirects}) for {url}")
+
     def _send_sync(
         self,
         method: str,
@@ -454,17 +634,22 @@ class Fetcher(_FetcherCore):
         json: Any = None,
         **kwargs: Any,
     ) -> Response:
+        validate_url_scheme(url)
         merged_headers = self._merge_headers(headers)
         timeout = kwargs.pop("timeout", self.timeout)
         verify = kwargs.pop("verify", self.verify)
         allow_redirects = kwargs.pop("allow_redirects", self.follow_redirects)
+        if kwargs:
+            raise TypeError(
+                f"unexpected keyword argument(s): {', '.join(sorted(kwargs))}"
+            )
         proxy = self._resolve_proxy()
         retry_errors = self._retry_errors()
         last_exc: BaseException | None = None
         for attempt in range(self.retries + 1):
             backoff = min(2.0**attempt, 10.0) + random.random() * 0.25
             try:
-                raw = self._send_once_sync(
+                raw = self._send_with_redirects_sync(
                     method,
                     url,
                     params,
@@ -480,14 +665,23 @@ class Fetcher(_FetcherCore):
                 last_exc = exc
                 if attempt == self.retries:
                     raise
+                # 连接错误/超时：若有代理池则标记当前代理失败并轮换，避免死代理原地重试
+                if isinstance(self.proxy, ProxyPool) and proxy:
+                    self.proxy.mark_failed(proxy)
+                    proxy = self._resolve_proxy()
                 time.sleep(backoff)
                 continue
             # 5xx 与 429（被限流）均重试；其余直接返回
             should_retry = raw.status_code >= 500 or raw.status_code == 429
-            if not should_retry or attempt == self.retries:
+            if not should_retry:
+                # 成功响应：清零该代理的失败计数
+                if isinstance(self.proxy, ProxyPool) and proxy:
+                    self.proxy.mark_success(proxy)
                 return self._to_response(raw, merged_headers)
-            # 429 视为封锁信号：若有代理池则标记当前代理失败并换下一个
-            if raw.status_code == 429 and isinstance(self.proxy, ProxyPool) and proxy:
+            if attempt == self.retries:
+                return self._to_response(raw, merged_headers)
+            # 429/5xx 视为代理问题信号：标记失败并换下一个
+            if isinstance(self.proxy, ProxyPool) and proxy:
                 self.proxy.mark_failed(proxy)
                 proxy = self._resolve_proxy()
             # 429 时尊重 Retry-After；否则指数退避
@@ -561,7 +755,8 @@ class Fetcher(_FetcherCore):
             except Exception:
                 pass
             self._session = None
-        # 异步 session 不在这里强行关闭，避免在无事件循环时抛 RuntimeError
+        # 异步 session 不在这里强行关闭，避免在无事件循环时抛 RuntimeError；
+        # 保留引用（不置 None），之后仍可 aclose()，由 GC 兜底释放连接池
         if self._async_session is not None:
             warnings.warn(
                 "Fetcher.close() 跳过了异步会话的关闭；请使用 await fetcher.aclose() "
@@ -569,7 +764,6 @@ class Fetcher(_FetcherCore):
                 ResourceWarning,
                 stacklevel=2,
             )
-            self._async_session = None
 
     async def aclose(self) -> None:
         """Asynchronously close both sync and async sessions."""

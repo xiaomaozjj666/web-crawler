@@ -32,7 +32,7 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - run: pip install -e ".[dev]"
-      - run: mypy src/web_crawler
+      - run: mypy src/web_crawler app
 
   test:
     runs-on: ubuntu-latest

@@ -31,28 +31,31 @@ from __future__ import annotations
 
 import base64
 import io
-import json
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from ._jsonutil import extract_json as _extract_json
 from .llm import LLMMessage, LLMProvider
 
-# JSON / 代码块解析正则
-_JSON_OBJ_RE = re.compile(r"\{.*\}", re.DOTALL)
-_CODE_FENCE_RE = re.compile(r"^```(?:\w+)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
+# 送 LLM 前的图片体积/尺寸/像素上限（防超大截图撑爆请求体或 OOM）
+_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+_MAX_IMAGE_PIXELS = 40_000_000
+_VISION_MAX_SIDE = 1280
 
 
 @dataclass(slots=True)
 class ImageSolverConfig:
-    """图片验证码识别配置。"""
+    """图片验证码识别配置。
+
+    LLM 调用的重试/退避由 provider 层（``llm.OpenAICompatibleProvider``）
+    统一负责，这里不再声明 ``max_retries``。
+    """
 
     use_llm: bool = True
     use_local_ocr: bool = True
     use_pillow_slider: bool = True
     detail: str = "high"
     temperature: float = 0.0
-    max_retries: int = 2
     ocr_charset: str = (
         "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
     )
@@ -88,7 +91,11 @@ def _to_b64(image: bytes | str) -> str:
 
 
 def _b64_to_bytes(image: bytes | str) -> bytes:
-    """bytes 或 base64 字符串 → 原始 bytes。"""
+    """bytes 或 base64 字符串 → 原始 bytes。
+
+    非法 base64（坏 padding 等）可能抛 ``binascii.Error``，调用方需自行
+    捕获并按识别失败处理。
+    """
     if isinstance(image, str):
         if image.startswith("data:"):
             image = image.split(",", 1)[-1]
@@ -96,23 +103,48 @@ def _b64_to_bytes(image: bytes | str) -> bytes:
     return image
 
 
-def _extract_json(text: str) -> dict[str, Any]:
-    """容错解析 LLM 回复中的 JSON 对象。"""
-    text = text.strip()
-    fence = _CODE_FENCE_RE.match(text)
-    if fence:
-        text = fence.group(1).strip()
+def _prepare_vision_image(
+    image: bytes | str,
+    mime: str = "image/png",
+    max_side: int = _VISION_MAX_SIDE,
+) -> tuple[str, str, float] | None:
+    """归一化送 LLM 的图片：体积/像素上限检查 + 超长边降采样。
+
+    返回 ``(base64_str, mime, scale)``：
+    - ``mime``：降采样后统一重编码为 PNG，故降采样时返回 ``image/png``；
+    - ``scale``：原图最长边 / 处理后最长边，用于把 LLM 返回的坐标还原回
+      原始像素坐标系（滑块缺口等场景）。
+    坏 base64、超体积、超像素返回 ``None``（识别失败）；无法解码的图片
+    原样透传（识别失败由上层解析兜底，不做降采样）。
+    """
     try:
-        return json.loads(text)
+        raw = _b64_to_bytes(image)
     except Exception:
-        pass
-    m = _JSON_OBJ_RE.search(text)
-    if m:
-        try:
-            return json.loads(m.group(0))
-        except Exception:
-            return {}
-    return {}
+        return None
+    if len(raw) > _MAX_IMAGE_BYTES:
+        return None
+    try:
+        from PIL import Image
+    except ImportError:
+        # 无 Pillow：不做尺寸检查/降采样，原样送（体积上限已检查）
+        return _to_b64(raw), mime, 1.0
+    try:
+        img: Image.Image = Image.open(io.BytesIO(raw))
+        w, h = img.size
+    except Exception:
+        # 无法解码的图片：原样透传
+        return _to_b64(raw), mime, 1.0
+    if w * h > _MAX_IMAGE_PIXELS:
+        return None
+    if max(w, h) <= max_side:
+        return _to_b64(raw), mime, 1.0
+    ratio = max_side / max(w, h)
+    new_size = (max(1, round(w * ratio)), max(1, round(h * ratio)))
+    img = img.resize(new_size, Image.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    scale = w / max(1, new_size[0])
+    return base64.b64encode(buf.getvalue()).decode("ascii"), "image/png", scale
 
 
 # ---------------------------------------------------------------------------
@@ -232,12 +264,15 @@ class ImageCaptchaSolver:
 
     def _llm_ocr(self, image: bytes | str, mime: str) -> str:
         assert self.provider is not None
-        b64 = _to_b64(image)
+        prepared = _prepare_vision_image(image, mime)
+        if prepared is None:
+            return ""
+        b64, mime_out, _ = prepared
         msg = LLMMessage.vision(
             "user",
             "请识别这张验证码图片中的字符。",
             b64,
-            mime=mime,
+            mime=mime_out,
             detail=self.config.detail,
         )
         resp = self.provider.chat(
@@ -251,12 +286,15 @@ class ImageCaptchaSolver:
         assert self.provider is not None
         if not hasattr(self.provider, "achat"):
             return self._llm_ocr(image, mime)
-        b64 = _to_b64(image)
+        prepared = _prepare_vision_image(image, mime)
+        if prepared is None:
+            return ""
+        b64, mime_out, _ = prepared
         msg = LLMMessage.vision(
             "user",
             "请识别这张验证码图片中的字符。",
             b64,
-            mime=mime,
+            mime=mime_out,
             detail=self.config.detail,
         )
         resp = await self.provider.achat(
@@ -302,9 +340,15 @@ class ImageCaptchaSolver:
         bg: bytes | str,
         slider: bytes | str,
     ) -> int | None:
-        """Pillow + numpy 模板匹配定位缺口 x 坐标。"""
-        bg_data = _b64_to_bytes(bg)
-        slider_data = _b64_to_bytes(slider)
+        """Pillow + numpy 模板匹配定位缺口 x 坐标。
+
+        base64 解码/图片解码失败（损坏图、坏 padding）一律返回 None。
+        """
+        try:
+            bg_data = _b64_to_bytes(bg)
+            slider_data = _b64_to_bytes(slider)
+        except Exception:
+            return None
         # 优先 numpy 加速路径
         try:
             import numpy as np  # type: ignore[import-untyped]
@@ -395,8 +439,12 @@ class ImageCaptchaSolver:
         slider: bytes | str,
     ) -> SliderSolution | None:
         assert self.provider is not None
-        bg_b64 = _to_b64(bg)
-        slider_b64 = _to_b64(slider)
+        bg_prepared = _prepare_vision_image(bg)
+        slider_prepared = _prepare_vision_image(slider)
+        if bg_prepared is None or slider_prepared is None:
+            return None
+        bg_b64, _, bg_scale = bg_prepared
+        slider_b64, _, _ = slider_prepared
         msg = LLMMessage(
             role="user",
             content=[
@@ -422,7 +470,11 @@ class ImageCaptchaSolver:
             [LLMMessage("system", _SLIDER_SYSTEM_PROMPT), msg],
             temperature=self.config.temperature,
         )
-        return self._parse_slider_response(resp.content or "")
+        sol = self._parse_slider_response(resp.content or "")
+        if sol is not None and bg_scale != 1.0:
+            # 背景图被降采样后，把 LLM 返回的 x 还原回原始像素坐标系
+            sol.x = round(sol.x * bg_scale)
+        return sol
 
     async def _llm_slider_async(
         self,
@@ -432,8 +484,12 @@ class ImageCaptchaSolver:
         assert self.provider is not None
         if not hasattr(self.provider, "achat"):
             return self._llm_slider(bg, slider)
-        bg_b64 = _to_b64(bg)
-        slider_b64 = _to_b64(slider)
+        bg_prepared = _prepare_vision_image(bg)
+        slider_prepared = _prepare_vision_image(slider)
+        if bg_prepared is None or slider_prepared is None:
+            return None
+        bg_b64, _, bg_scale = bg_prepared
+        slider_b64, _, _ = slider_prepared
         msg = LLMMessage(
             role="user",
             content=[
@@ -459,7 +515,11 @@ class ImageCaptchaSolver:
             [LLMMessage("system", _SLIDER_SYSTEM_PROMPT), msg],
             temperature=self.config.temperature,
         )
-        return self._parse_slider_response(resp.content or "")
+        sol = self._parse_slider_response(resp.content or "")
+        if sol is not None and bg_scale != 1.0:
+            # 背景图被降采样后，把 LLM 返回的 x 还原回原始像素坐标系
+            sol.x = round(sol.x * bg_scale)
+        return sol
 
     @staticmethod
     def _parse_slider_response(text: str) -> SliderSolution | None:
@@ -491,12 +551,15 @@ class ImageCaptchaSolver:
         if not self.llm_vision_available:
             return None
         assert self.provider is not None
-        b64 = _to_b64(image)
+        prepared = _prepare_vision_image(image, mime)
+        if prepared is None:
+            return None
+        b64, mime_out, _ = prepared
         msg = LLMMessage.vision(
             "user",
             f"提示：{prompt}\n请识别这张点选验证码图片中需要按顺序点击的元素坐标。",
             b64,
-            mime=mime,
+            mime=mime_out,
             detail=self.config.detail,
         )
         resp = self.provider.chat(
@@ -515,12 +578,15 @@ class ImageCaptchaSolver:
         if not self.llm_vision_available:
             return None
         assert self.provider is not None
-        b64 = _to_b64(image)
+        prepared = _prepare_vision_image(image, mime)
+        if prepared is None:
+            return None
+        b64, mime_out, _ = prepared
         msg = LLMMessage.vision(
             "user",
             f"提示：{prompt}\n请识别这张点选验证码图片中需要按顺序点击的元素坐标。",
             b64,
-            mime=mime,
+            mime=mime_out,
             detail=self.config.detail,
         )
         if not hasattr(self.provider, "achat"):

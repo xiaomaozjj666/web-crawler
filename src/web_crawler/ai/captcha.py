@@ -134,7 +134,10 @@ class CaptchaDetector:
 
     # -- 各类型分支 --------------------------------------------------------
     def _detect_hcaptcha(self, page: Any) -> CaptchaInfo | None:
-        iframe = page.query_selector(_HCAPTCHA_IFRAME)
+        try:
+            iframe = page.query_selector(_HCAPTCHA_IFRAME)
+        except Exception:
+            iframe = None
         if iframe is None:
             return None
         src = iframe.get_attribute("src") or ""
@@ -169,7 +172,10 @@ class CaptchaDetector:
         )
 
     def _detect_recaptcha(self, page: Any) -> CaptchaInfo | None:
-        iframe = page.query_selector(_RECAPTCHA_IFRAME)
+        try:
+            iframe = page.query_selector(_RECAPTCHA_IFRAME)
+        except Exception:
+            iframe = None
         if iframe is None:
             return None
         src = iframe.get_attribute("src") or ""
@@ -302,7 +308,9 @@ class CaptchaSolver:
         return self._wait_for_token(page, info, timeout=self.max_wait)
 
     def _solve_geetest(self, page: Any, info: CaptchaInfo) -> bool:
-        # 极验：检测滑块按钮，模拟人类拖拽；优先用 image_solver 识别缺口
+        # 极验：无 image_solver 或缺口识别失败时不随机盲拖，直接交人工
+        if self.image_solver is None:
+            return False
         slider = _first_query(
             page,
             (
@@ -320,11 +328,13 @@ class CaptchaSolver:
         if box is None:
             return False
         start = (box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-        # 优先用 image_solver 识别缺口 x 偏移；失败兜底用随机值
+        # 用 image_solver 识别缺口 x 偏移；识别失败交人工，不做盲拖
         offset = self._geetest_detect_offset(page)
         if offset is None:
-            offset = random.uniform(220.0, 320.0)
-        end = (start[0] + offset, start[1])
+            return False
+        # 缺口坐标以背景图左边缘为原点，滑块按钮中心自带半宽偏移，需扣减
+        distance = max(0.0, offset - box["width"] / 2.0)
+        end = (start[0] + distance, start[1])
         self._humanize_drag(page, start, end)
         return self._wait_for_token(page, info, timeout=self.max_wait * 0.5)
 
@@ -388,7 +398,12 @@ class CaptchaSolver:
             return False
         if sol is None or not sol.points:
             return False
+        # LLM 可能幻觉出越界坐标，钳制到 iframe 可视范围内再点击
+        box_w = float(box.get("width", 0.0) or 0.0)
+        box_h = float(box.get("height", 0.0) or 0.0)
         for px, py in sol.points:
+            px = int(min(max(float(px), 0.0), box_w - 1)) if box_w > 0 else int(px)
+            py = int(min(max(float(py), 0.0), box_h - 1)) if box_h > 0 else int(py)
             try:
                 page.mouse.click(offset_x + px, offset_y + py)
             except Exception:

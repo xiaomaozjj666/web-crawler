@@ -21,13 +21,18 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import ipaddress
 import json
 import os
+import socket
 import sys
+import threading
 import traceback
 from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
 from typing import Any
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 from ..ai.analyzer import JSAnalyzer, JSFragment
 from ..ai.captcha import CaptchaManager, CaptchaType
@@ -101,6 +106,146 @@ def _error(error: str, **extra: Any) -> str:
     return _to_json(payload)
 
 
+# -- 目标/URL 安全门禁 ---------------------------------------------------------
+#
+# 本模块所有会向外部发起请求的工具（浏览器导航、pentest 扫描）都经过这里的
+# 校验：仅允许 http/https、拒绝私网/环回/链路本地/云元数据等地址，pentest
+# 额外要求显式授权确认。解析失败的未知主机一律按"非公网"拒绝（deny by default）。
+
+
+def _ip_is_global(ip: Any) -> bool:
+    """判断 IP 是否可视为公网可达（排除私网/环回/链路本地/保留/组播/未指定）。"""
+    return not (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def _resolve_host_ips(host: str) -> list[str] | None:
+    """解析主机名到 IP 列表（去重）；解析失败返回 None。"""
+    try:
+        infos = socket.getaddrinfo(
+            host, None, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP
+        )
+    except (socket.gaierror, socket.herror, OSError):
+        return None
+    ips: list[str] = []
+    seen: set[str] = set()
+    for info in infos:
+        sockaddr = info[4]
+        host_addr = str(sockaddr[0]) if sockaddr else ""
+        if host_addr and host_addr not in seen:
+            seen.add(host_addr)
+            ips.append(host_addr)
+    return ips or None
+
+
+def _host_is_public(host: str) -> bool:
+    """判断主机是否为公网可达地址。
+
+    字面 IP 直接判定；主机名解析后逐一判定，任一地址非公网即视为否；
+    解析失败视为非公网（保守拒绝）。
+    """
+    try:
+        ip = ipaddress.ip_address(host)
+        return _ip_is_global(ip)
+    except ValueError:
+        pass
+    ips = _resolve_host_ips(host)
+    if not ips:
+        return False
+    return all(_ip_is_global(ipaddress.ip_address(ip)) for ip in ips)
+
+
+def _check_target_public(host: str) -> str | None:
+    """校验 pentest 目标为公网地址；非公网返回错误信息，否则 None。"""
+    if _host_is_public(host):
+        return None
+    return (
+        f"target not allowed: {host!r} 解析为私网/环回/链路本地等非公网地址；"
+        "pentest 仅允许已获书面授权的公网目标（可传 allow_private=true 显式放行）"
+    )
+
+
+def _check_url(url: str) -> str | None:
+    """校验浏览器工具 URL：仅 http/https、无 userinfo、主机为公网地址。返回错误信息或 None。"""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return f"invalid url: {url!r}"
+    if parsed.scheme not in ("http", "https"):
+        return f"scheme not allowed: {parsed.scheme!r}（仅支持 http/https）"
+    host = parsed.hostname
+    if not host:
+        return f"invalid url: missing host in {url!r}"
+    if parsed.username or parsed.password:
+        return "url must not contain userinfo (user:pass@)"
+    if not _host_is_public(host):
+        return f"target host not allowed: {host!r} 解析为私网/环回等非公网地址"
+    return None
+
+
+def _parse_pentest_target(target: str) -> tuple[str, str, str]:
+    """解析 pentest 目标 → ``(host, base_url, 展示用 target)``。
+
+    剥离 userinfo/查询/fragment，避免凭据随请求发出或进入报告；裸主机按
+    https 补全 scheme，兼容 ``example.com:8080`` 这类带端口写法。
+    """
+    if "://" in target:
+        parsed = urlparse(target)
+        scheme = parsed.scheme
+    else:
+        parsed = urlparse("//" + target)
+        scheme = "https"
+    host = parsed.hostname or target
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    netloc = host + (f":{port}" if port else "")
+    path = parsed.path
+    base_url = urlunsplit(
+        (scheme, netloc, (path.rstrip("/") + "/") if path else "/", "", "")
+    )
+    if parsed.username or parsed.password:
+        display = urlunsplit((scheme, netloc, path, "", ""))
+    else:
+        display = target
+    return host, base_url, display
+
+
+# -- 工具参数校验 -------------------------------------------------------------
+#
+# handle_tool 分发前按 inputSchema 做必需字段/类型/枚举校验，并施加统一输入
+# 上限（LLM 输入、图片 base64 等），避免恶意/异常客户端造成资源滥用。
+
+# 字符串字段大小上限（字符数）：LLM 输入与图片 base64。
+_FIELD_LIMITS: dict[str, int] = {
+    "code": 2_000_000,  # analyze_js_code / deobfuscate_js / reimplement_algorithm
+    "source": 5_000_000,  # extract_webpack_modules
+    "image": 5_000_000,  # solve_captcha_image base64
+    "bg": 5_000_000,
+    "slider": 5_000_000,
+}
+
+
+def _type_ok(ptype: str, value: Any) -> bool:
+    """按 JSON Schema 类型检查单个值（bool 不算 int）。"""
+    if ptype == "string":
+        return isinstance(value, str)
+    if ptype == "boolean":
+        return isinstance(value, bool)
+    if ptype in ("integer", "number"):
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if ptype == "array":
+        return isinstance(value, list)
+    return True
+
+
 # -- MCP 服务器 --------------------------------------------------------------
 
 
@@ -125,6 +270,11 @@ class ReverseMCPServer:
 
         # CamoufoxFetcher 实例（lazy 创建，跨工具调用复用同一浏览器）
         self._fetcher: CamoufoxFetcher | None = None
+        # Playwright sync API 非线程安全：并发工具调用（to_thread 线程池）串行化浏览器访问
+        self._browser_lock = threading.Lock()
+        # SDK 路径的进度推送 sender（由 _call_tool 按请求注册/注销）
+        self._progress_sender: Callable[[int, int, str], None] | None = None
+        self._progress_lock = threading.Lock()
         self._closed = False
 
     # -- 资源管理 ----------------------------------------------------------
@@ -156,25 +306,33 @@ class ReverseMCPServer:
 
         浏览器实例跨调用复用，仅 context 每次新建并关闭，避免 cookie/state 泄漏。
         ``task_fn`` 接收 Playwright Page 对象，返回值原样透传。
+
+        安全门禁：URL 必须通过 :func:`_check_url`（仅 http/https、公网主机、
+        无 userinfo），且整个任务在 ``_browser_lock`` 内串行执行 —— Playwright
+        sync API 非线程安全，跨线程共享同一浏览器实例会崩溃。
         """
+        gate_error = _check_url(url)
+        if gate_error:
+            raise ValueError(gate_error)
         fetcher = self._get_fetcher()
-        # _ensure_browser 是 CamoufoxFetcher 的 protected 方法，这里需要拿到
-        # browser 句柄以自定义 context（注入 Hook、读取 hook 数据等）。
-        browser = fetcher._ensure_browser()
-        context = browser.new_context(
-            extra_http_headers=fetcher.extra_headers or None,
-            ignore_https_errors=not fetcher.verify,
-        )
-        try:
-            page = context.new_page()
-            if hooks:
-                page.add_init_script(generate_combined_script(hooks))
-            page.goto(url, wait_until="domcontentloaded", timeout=fetcher.timeout * 1000)
-            if wait_time > 0:
-                page.wait_for_timeout(int(wait_time * 1000))
-            return task_fn(page)
-        finally:
-            context.close()
+        with self._browser_lock:
+            # _ensure_browser 是 CamoufoxFetcher 的 protected 方法，这里需要拿到
+            # browser 句柄以自定义 context（注入 Hook、读取 hook 数据等）。
+            browser = fetcher._ensure_browser()
+            context = browser.new_context(
+                extra_http_headers=fetcher.extra_headers or None,
+                ignore_https_errors=not fetcher.verify,
+            )
+            try:
+                page = context.new_page()
+                if hooks:
+                    page.add_init_script(generate_combined_script(hooks))
+                page.goto(url, wait_until="domcontentloaded", timeout=fetcher.timeout * 1000)
+                if wait_time > 0:
+                    page.wait_for_timeout(int(wait_time * 1000))
+                return task_fn(page)
+            finally:
+                context.close()
 
     def close(self) -> None:
         """清理所有资源：关闭浏览器、标记服务已关闭。"""
@@ -375,15 +533,25 @@ class ReverseMCPServer:
                         "ports": {
                             "type": "array",
                             "items": {"type": "integer"},
-                            "description": "自定义端口列表（仅 ports 检查，留空用 TOP 100）",
+                            "description": "自定义端口列表（仅 ports 检查，最多 100 个，取值 1-65535）",
                         },
                         "timeout": {
                             "type": "number",
                             "default": 30.0,
-                            "description": "整体超时（秒）",
+                            "description": "整体超时（秒，1-300）",
+                        },
+                        "authorization_confirmed": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "确认已获目标书面授权（必填，默认 false 拒绝执行）",
+                        },
+                        "allow_private": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "显式放行私网/环回/链路本地等非公网目标（默认拒绝）",
                         },
                     },
-                    "required": ["target"],
+                    "required": ["target", "authorization_confirmed"],
                 },
             },
             {
@@ -396,7 +564,7 @@ class ReverseMCPServer:
                         "wait_time": {
                             "type": "number",
                             "default": _DEFAULT_WAIT_TIME,
-                            "description": "采集等待时间（秒）",
+                            "description": "采集等待时间（秒，上限 60）",
                         },
                     },
                     "required": ["url"],
@@ -589,17 +757,54 @@ class ReverseMCPServer:
         }
 
     def report_progress(self, token: str, current: int, total: int, *, message: str = "") -> None:
-        """发送进度通知（仅在 mcp SDK 可用时生效；否则写入 stderr 日志）。"""
-        if not _HAS_MCP:
-            sys.stderr.write(f"[progress] {token}: {current}/{total} {message}\n")
-            sys.stderr.flush()
-            return
-        # mcp SDK 的进度通知需要 server.run() 的上下文，这里仅做记录；
-        # 真正发送由 _run_mcp 内的 progress 闭包负责（见 _run_mcp）。
+        """发送进度通知（SDK 路径经 :meth:`_run_mcp` 注册的 sender 推送；否则写 stderr 日志）。"""
+        with self._progress_lock:
+            sender = self._progress_sender
+        if sender is not None:
+            try:
+                sender(current, total, message)
+                return
+            except Exception:
+                pass  # 推送失败降级到 stderr 日志
         sys.stderr.write(f"[progress] {token}: {current}/{total} {message}\n")
         sys.stderr.flush()
 
     # -- 工具调用分发 --------------------------------------------------------
+
+    def _validate_tool_args(self, name: str, args: dict) -> str | None:
+        """按 inputSchema 校验工具参数：必需字段、类型、枚举与输入上限。
+
+        返回错误信息或 None。未知工具/无 schema 时不校验（由分发表兜底）。
+        """
+        schema = next(
+            (t["inputSchema"] for t in self.get_tools() if t["name"] == name),
+            None,
+        )
+        if schema is None:
+            return None
+        props = schema.get("properties", {})
+        for key in schema.get("required", []):
+            if key not in args:
+                return f"invalid params: missing required argument {key!r}"
+        for key, value in args.items():
+            if key not in props:
+                continue
+            spec = props[key]
+            ptype = spec.get("type")
+            if value is None:
+                continue
+            if not _type_ok(ptype, value):
+                return f"invalid params: argument {key!r} must be {ptype}"
+            if ptype == "string" and "enum" in spec and value not in spec["enum"]:
+                return f"invalid params: argument {key!r} must be one of {spec['enum']}"
+            if key in _FIELD_LIMITS and isinstance(value, str) and len(value) > _FIELD_LIMITS[key]:
+                return f"invalid params: argument {key!r} exceeds size limit {_FIELD_LIMITS[key]}"
+            if ptype == "array" and "items" in spec:
+                item_type = spec["items"].get("type")
+                bad = [v for v in value if not _type_ok(item_type, v)]
+                if bad:
+                    return f"invalid params: argument {key!r} items must be {item_type}"
+        return None
 
     def handle_tool(self, name: str, arguments: dict) -> str:
         """根据工具名分发调用，返回 JSON 字符串。"""
@@ -619,8 +824,12 @@ class ReverseMCPServer:
         handler = handlers.get(name)
         if handler is None:
             return _error(f"unknown tool: {name}")
+        args = arguments if isinstance(arguments, dict) else {}
+        validation_error = self._validate_tool_args(name, args)
+        if validation_error:
+            return _error(validation_error, code=-32602)
         try:
-            return handler(arguments or {})
+            return handler(args)
         except TimeoutError as exc:
             return _error("timeout", details=str(exc))
         except ImportError as exc:
@@ -629,7 +838,10 @@ class ReverseMCPServer:
             # LLM 调用失败 / 浏览器运行时错误
             return _error("runtime error", details=str(exc))
         except Exception as exc:
-            return _error(str(exc), traceback=traceback.format_exc())
+            # 完整 traceback 只写 stderr 日志，客户端仅收到错误类别（防内部信息泄露）
+            sys.stderr.write(f"[mcp] tool {name} failed:\n{traceback.format_exc()}\n")
+            sys.stderr.flush()
+            return _error("internal error", error_type=type(exc).__name__)
 
     # -- 各工具实现 ----------------------------------------------------------
 
@@ -637,7 +849,12 @@ class ReverseMCPServer:
         url = args["url"]
         target_params = args.get("target_params") or []
         task = args.get("task") or f"分析 {url} 的加密参数"
-        max_steps = args.get("max_steps", 20)
+        max_steps = max(1, min(int(args.get("max_steps", 20)), 100))
+
+        # URL 门禁：仅 http/https、公网主机、无 userinfo（agent 路径不经 _run_browser_task）
+        gate_error = _check_url(url)
+        if gate_error:
+            return _error(gate_error)
 
         # 构造 progress token，让 MCP 客户端可订阅长任务进度
         progress = self.make_progress_token("reverse_engineer_url", total=max_steps)
@@ -646,19 +863,17 @@ class ReverseMCPServer:
         if self.agent is not None:
             try:
                 # ReverseAgent.run 签名为 run(url, task="")，max_steps 与
-                # target_params 通过 config 注入；这里 clone config 再覆盖。
-                from ..ai.reverse_agent import ReverseAgentConfig
+                # target_params 通过 config 注入；用 dataclasses.replace 继承
+                # base 全部配置，避免静默丢弃 planner/checkpoint/guard 等设置。
                 from ..ai.watchdog import EventBus
 
                 base_config = self.agent.config
-                run_config = ReverseAgentConfig(
+                run_config = dataclasses.replace(
+                    base_config,
                     max_steps=max_steps,
                     hooks=list(base_config.hooks) if base_config.hooks else None,
-                    headless=base_config.headless,
-                    wait_after_navigate=base_config.wait_after_navigate,
+                    headless=True,
                     target_params=list(target_params) if target_params else None,
-                    proxy=base_config.proxy,
-                    os_name=base_config.os_name,
                 )
                 # 用同一 provider/analyzer 复用，避免重复加载模型配置
                 # 注入独立 EventBus，订阅 step.end 事件推送 MCP progress
@@ -730,6 +945,9 @@ class ReverseMCPServer:
 
     def _tool_inject_hooks(self, args: dict) -> str:
         url = args["url"]
+        gate_error = _check_url(url)
+        if gate_error:
+            return _error(gate_error)
         hooks = args.get("hooks") or HookLibrary.names()
         # 校验 hook 名称，剔除未知项
         valid_names = set(HookLibrary.names())
@@ -819,6 +1037,9 @@ class ReverseMCPServer:
 
     def _tool_solve_captcha(self, args: dict) -> str:
         url = args["url"]
+        gate_error = _check_url(url)
+        if gate_error:
+            return _error(gate_error)
 
         def _detect_and_solve(page: Any) -> dict:
             info = self.captcha_manager.detector.detect(page)
@@ -908,10 +1129,11 @@ class ReverseMCPServer:
     def _tool_pentest_recon(self, args: dict) -> str:
         """对指定目标执行渗透侦察（端口/目录/子域名/漏洞/安全头）。
 
-        合规声明：仅用于已获书面授权的目标。
+        合规声明：仅用于已获书面授权的目标 —— 本工具强制要求显式
+        ``authorization_confirmed=true``，并默认拒绝私网/环回/链路本地等
+        非公网目标（``allow_private=true`` 可显式放行）。
         """
         import signal
-        from urllib.parse import urlparse
 
         from ..pentest import (
             DirBruter,
@@ -925,14 +1147,19 @@ class ReverseMCPServer:
         target = args.get("target", "").strip()
         if not target:
             return _error("target is required")
-        # 从 URL 提取 host，便于端口扫描与子域名枚举
-        if "://" in target:
-            parsed = urlparse(target)
-            host = parsed.hostname or target
-            base_url = target if target.endswith("/") else target + "/"
-        else:
-            host = target
-            base_url = f"https://{host}/"
+        # 授权确认门禁：默认拒绝，必须显式传 authorization_confirmed=true
+        if not bool(args.get("authorization_confirmed")):
+            return _error(
+                "authorization required: pentest 仅可用于已获书面授权的目标，"
+                "请显式传 authorization_confirmed=true",
+                code=-32602,
+            )
+        host, base_url, display_target = _parse_pentest_target(target)
+        # 私网/环回/链路本地地址门禁（默认拒绝；allow_private=true 显式放行）
+        if not args.get("allow_private"):
+            gate_error = _check_target_public(host)
+            if gate_error:
+                return _error(gate_error)
 
         all_checks = ["ports", "dirs", "subdomains", "vulns", "headers"]
         checks = args.get("checks") or all_checks
@@ -944,10 +1171,23 @@ class ReverseMCPServer:
             )
 
         custom_ports = args.get("ports")
+        if custom_ports:
+            if len(custom_ports) > 100:
+                return _error("invalid params: too many ports (max 100)", code=-32602)
+            bad_ports = [
+                p
+                for p in custom_ports
+                if not (isinstance(p, int) and not isinstance(p, bool) and 1 <= p <= 65535)
+            ]
+            if bad_ports:
+                return _error(
+                    f"invalid params: ports must be integers in 1-65535: {bad_ports}",
+                    code=-32602,
+                )
         timeout = float(args.get("timeout", 30.0))
         timeout = max(1.0, min(timeout, 300.0))
 
-        report = PentestReport(target=target)
+        report = PentestReport(target=display_target)
         try:
             # 用 SIGALRM 实现整体超时（仅 Unix）；Windows 下用线程池超时降级
             use_alarm = hasattr(signal, "SIGALRM")
@@ -990,24 +1230,33 @@ class ReverseMCPServer:
                         old_handler,
                     )
             else:
-                # Windows 无 SIGALRM，用线程池做跨平台超时
+                # Windows 无 SIGALRM，用线程池做跨平台超时。
+                # 超时后 shutdown(wait=False) 立即放弃等待后台线程（它可能卡在
+                # 慢 DNS/慢请求上），避免"超时"形同虚设、整个 MCP 服务器被挂起。
                 import concurrent.futures
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                    fut = ex.submit(_run_all)
-                    try:
-                        fut.result(timeout=timeout)
-                    except concurrent.futures.TimeoutError:
-                        raise TimeoutError(
-                            f"pentest recon timed out after {timeout}s"
-                        ) from None
+                ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                fut = ex.submit(_run_all)
+                try:
+                    fut.result(timeout=timeout)
+                except concurrent.futures.TimeoutError:
+                    ex.shutdown(wait=False, cancel_futures=True)
+                    raise TimeoutError(
+                        f"pentest recon timed out after {timeout}s"
+                    ) from None
+                else:
+                    ex.shutdown(wait=True)
         except Exception as exc:
             return _error("pentest recon failed", details=str(exc))
         return _to_json(report.to_dict())
 
     def _tool_capture_network_requests(self, args: dict) -> str:
         url = args["url"]
-        wait_time = args.get("wait_time", _DEFAULT_WAIT_TIME)
+        gate_error = _check_url(url)
+        if gate_error:
+            return _error(gate_error)
+        wait_time = float(args.get("wait_time", _DEFAULT_WAIT_TIME))
+        wait_time = max(0.0, min(wait_time, 60.0))
         hooks = ["fetch_hook", "xhr_hook"]
 
         def _capture(page: Any) -> list[dict]:
@@ -1021,6 +1270,9 @@ class ReverseMCPServer:
 
     def _tool_get_page_scripts(self, args: dict) -> str:
         url = args["url"]
+        gate_error = _check_url(url)
+        if gate_error:
+            return _error(gate_error)
 
         def _get_scripts(page: Any) -> list[dict]:
             return page.evaluate(
@@ -1063,7 +1315,38 @@ class ReverseMCPServer:
 
         @server.call_tool()
         async def _call_tool(name: str, arguments: dict | None) -> Any:
-            result = self.handle_tool(name, arguments or {})
+            # handle_tool 是同步阻塞实现（浏览器/LLM/扫描），放到线程池执行，
+            # 避免阻塞 asyncio 事件循环导致并发工具调用被串行化、进度冻结。
+            # 同时从请求上下文读取客户端订阅的 progressToken，注册进度推送。
+            ctx = server.request_context()
+            meta = getattr(ctx, "meta", None)
+            progress_token = getattr(meta, "progressToken", None)
+            sender: Any = None
+            if progress_token:
+                session = ctx.session
+                loop = asyncio.get_running_loop()
+
+                def _push(current: int, total: int, message: str = "") -> None:
+                    try:
+                        fut = asyncio.run_coroutine_threadsafe(
+                            session.send_progress_notification(progress_token, current, total),
+                            loop,
+                        )
+                        fut.add_done_callback(
+                            lambda f: f.exception() if not f.cancelled() else None
+                        )
+                    except Exception:
+                        pass
+
+                sender = _push
+                with self._progress_lock:
+                    self._progress_sender = sender
+            try:
+                result = await asyncio.to_thread(self.handle_tool, name, arguments or {})
+            finally:
+                if sender is not None:
+                    with self._progress_lock:
+                        self._progress_sender = None
             # 解析结果判断是否为错误，设置 isError 标志（MCP 规范要求）
             is_error = False
             try:
