@@ -40,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `close_thread_connection()` / `close_all_connections()`，消除线程级
   SQLite 连接永不关闭产生的 16 个 `ResourceWarning`；删除死代码
   `finish_task`。
+- **dev 依赖上界放宽**：`pytest` 上界 `<9` → `<10`（允许 9.0.3+，
+  修复 PYSEC-2026-1845），`pytest-asyncio` 上界 `<1` → `<2`（与
+  pytest 9 配套）；Changelog / LICENSE 链接指向默认分支 `master`。
 
 ### Fixed
 - **reverse_agent 崩溃恢复 / 多标签页 / checkpoint 续跑**：主循环统一经
