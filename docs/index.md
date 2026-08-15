@@ -18,4 +18,4 @@ Agent 仅模拟正常用户交互，不伪造登录凭证、不绕过付费墙�
 
 ## License
 
-MIT. 见 [LICENSE](https://github.com/xiaomaozjj666/web-crawler/blob/main/LICENSE)。
+MIT. 见 [LICENSE](https://github.com/xiaomaozjj666/web-crawler/blob/master/LICENSE)。

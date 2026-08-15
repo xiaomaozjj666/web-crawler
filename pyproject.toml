@@ -51,7 +51,7 @@ dependencies = [
 Homepage = "https://github.com/xiaomaozjj666/web-crawler"
 Repository = "https://github.com/xiaomaozjj666/web-crawler"
 Documentation = "https://github.com/xiaomaozjj666/web-crawler#readme"
-Changelog = "https://github.com/xiaomaozjj666/web-crawler/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/xiaomaozjj666/web-crawler/blob/master/CHANGELOG.md"
 Issues = "https://github.com/xiaomaozjj666/web-crawler/issues"
 
 [project.scripts]
@@ -85,7 +85,7 @@ mcp = [
     "pydantic>=2.5,<3",
 ]
 dev = [
-    "pytest>=8.0,<9",
+    "pytest>=8.4.2,<10",
     "pytest-cov>=5.0,<8",
     "pytest-asyncio>=0.24,<1",
     "ruff>=0.16,<0.17",
