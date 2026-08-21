@@ -640,3 +640,27 @@ def test_adaptive_lookup_tag_prefilter_no_candidates_returns_none(
     relocated = page2.css_first("#p1", adaptive=True, threshold=0.3)
     assert relocated is None
 
+
+def test_str_source_utf8_text_not_mojibake() -> None:
+    """回归：str 源码直接交给 lxml，禁止预编码为 bytes。
+
+    lxml.html.fromstring 对无 meta charset 的 bytes 按 latin-1 解码（HTML 规范
+    默认），预先 ``source.encode("utf-8")`` 会把 UTF-8 中文误解码成乱码。
+    """
+    page = Selector(
+        '<html><body><div id="title">旧版标题</div></body></html>',
+        url="https://shop.example.com",
+    )
+    assert page.css_first("#title").text == "旧版标题"
+
+
+def test_str_source_utf8_adaptive_relocation() -> None:
+    """回归：自适应指纹 + 改版重定位在中文 str 源下保持正确文本。"""
+    v1 = '<html><body><div id="product-title">旧版标题</div></body></html>'
+    v2 = '<html><body><div class="renamed-title">改版后标题</div></body></html>'
+    page1 = Selector(v1, url="https://shop.example.com/p", adaptive=True)
+    assert page1.css_first("#product-title", auto_save=True).text == "旧版标题"
+    page2 = Selector(v2, url="https://shop.example.com/p", adaptive=True)
+    assert page2.css_first("#product-title", adaptive=True).text == "改版后标题"
+
+
