@@ -22,6 +22,8 @@ from unittest.mock import patch
 import pytest
 
 from web_crawler._ssrf import (
+    _DNS_CACHE_MAX_ENTRIES,
+    _dns_verdict_cache,
     host_is_unsafe,
     is_private_ip,
     is_unsafe_hostname,
@@ -194,3 +196,84 @@ def test_dns_check_is_opt_in() -> None:
     ):
         validate_url_host("http://example.com/")  # 不触发解析，放行
         assert not host_is_unsafe("example.com")
+
+
+# ── DNS 判定缓存（防重复解析） ─────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _clean_dns_cache() -> None:
+    """每个用例前清空 DNS 判定缓存，避免用例间相互污染。"""
+    _dns_verdict_cache._data.clear()
+
+
+def test_dns_resolution_is_deduplicated() -> None:
+    """同一主机在 TTL 内只解析一次：重复调用命中缓存。"""
+    calls = 0
+
+    def counting_getaddrinfo(host: str, *args: object, **kwargs: object):
+        nonlocal calls
+        calls += 1
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    with patch("web_crawler._ssrf.socket.getaddrinfo", side_effect=counting_getaddrinfo):
+        assert not host_is_unsafe("dedup.example.com", resolve=True)
+        assert not host_is_unsafe("dedup.example.com", resolve=True)
+        assert not host_is_unsafe("dedup.example.com", resolve=True)
+        assert calls == 1  # 3 次调用只发生 1 次真实解析
+
+
+def test_dns_negative_result_is_cached() -> None:
+    """解析失败（负缓存）在短 TTL 内不重复查询坏域名。"""
+    calls = 0
+
+    def failing_getaddrinfo(host: str, *args: object, **kwargs: object):
+        nonlocal calls
+        calls += 1
+        raise socket.gaierror("Name or service not known")
+
+    with patch("web_crawler._ssrf.socket.getaddrinfo", side_effect=failing_getaddrinfo):
+        assert host_is_unsafe("no-such.invalid", resolve=True)
+        assert host_is_unsafe("no-such.invalid", resolve=True)
+        assert calls == 1
+
+
+def test_dns_cache_expires_after_ttl() -> None:
+    """TTL 到期后重新解析（验证缓存不是永久记忆）。"""
+    calls = 0
+
+    def counting_getaddrinfo(host: str, *args: object, **kwargs: object):
+        nonlocal calls
+        calls += 1
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    import time as _time
+
+    with patch("web_crawler._ssrf.socket.getaddrinfo", side_effect=counting_getaddrinfo):
+        assert not host_is_unsafe("ttl.example.com", resolve=True)
+        assert calls == 1
+        # 手动把缓存项的过期时间拨到过去，模拟 TTL 到期
+        _dns_verdict_cache._data["ttl.example.com"] = (
+            False,
+            _time.monotonic() - 1,
+        )
+        assert not host_is_unsafe("ttl.example.com", resolve=True)
+        assert calls == 2  # 过期后重新解析
+
+
+def test_dns_cache_is_bounded() -> None:
+    """缓存有界：超过上限后淘汰最旧条目，被淘汰主机重新解析。"""
+    calls: dict[str, int] = {}
+
+    def counting_getaddrinfo(host: str, *args: object, **kwargs: object):
+        calls[host] = calls.get(host, 0) + 1
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    with patch("web_crawler._ssrf.socket.getaddrinfo", side_effect=counting_getaddrinfo):
+        # 填满缓存（每个主机一次解析）
+        for i in range(_DNS_CACHE_MAX_ENTRIES + 8):
+            assert not host_is_unsafe(f"host-{i}.example.com", resolve=True)
+        assert len(_dns_verdict_cache._data) <= _DNS_CACHE_MAX_ENTRIES
+        # 最早的主机已被淘汰 → 再次调用会重新解析
+        assert not host_is_unsafe("host-0.example.com", resolve=True)
+        assert calls["host-0.example.com"] == 2

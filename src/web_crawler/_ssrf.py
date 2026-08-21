@@ -42,6 +42,8 @@ import ipaddress
 import logging
 import os
 import socket
+import threading
+import time
 from urllib.parse import urlparse
 
 _log = logging.getLogger(__name__)
@@ -59,6 +61,49 @@ def is_power_mode() -> bool:
         "true",
         "yes",
     }
+
+
+# ── DNS 判定缓存（防重复解析）─────────────────────────────────────────────
+# host_is_unsafe(resolve=True) 对同一主机名重复 getaddrinfo 是无谓开销，且
+# 解析结果在 TTL 内稳定；缓存按 host 存最终判定（不安全 True / 安全 False），
+# 线程安全、有界（LRU 淘汰）。解析失败按短 TTL 负缓存，避免对坏域名反复查询。
+_DNS_CACHE_TTL_SECONDS = 60.0  # 正常判定缓存时长
+_DNS_CACHE_NEGATIVE_TTL_SECONDS = 10.0  # 解析失败（负缓存）时长
+_DNS_CACHE_MAX_ENTRIES = 512
+
+
+class _DnsVerdictCache:
+    """线程安全、有界、带 TTL 的 DNS 判定缓存（host -> (判定, 过期时间戳)）。"""
+
+    def __init__(self) -> None:
+        self._data: dict[str, tuple[bool, float]] = {}
+        self._lock = threading.Lock()
+
+    def get(self, host: str) -> bool | None:
+        now = time.monotonic()
+        with self._lock:
+            entry = self._data.get(host)
+            if entry is None:
+                return None
+            verdict, expiry = entry
+            if expiry <= now:
+                del self._data[host]
+                return None
+            # LRU 触碰：最近使用移到末尾
+            del self._data[host]
+            self._data[host] = (verdict, expiry)
+            return verdict
+
+    def put(self, host: str, verdict: bool, ttl: float) -> None:
+        expiry = time.monotonic() + ttl
+        with self._lock:
+            self._data.pop(host, None)
+            self._data[host] = (verdict, expiry)
+            while len(self._data) > _DNS_CACHE_MAX_ENTRIES:
+                self._data.pop(next(iter(self._data)))
+
+
+_dns_verdict_cache = _DnsVerdictCache()
 
 # 被拒绝的 IP 段：私网 / 环回 / 链路本地 / CGNAT / 本网络。
 _PRIVATE_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
@@ -141,18 +186,24 @@ def host_is_unsafe(host: str | None, *, resolve: bool = False) -> bool:
     if is_unsafe_hostname(host):
         return True
     if resolve:
+        cached = _dns_verdict_cache.get(host)
+        if cached is not None:
+            return cached
         try:
             infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
         except OSError:
             _log.warning(
                 "SSRF guard: DNS resolution failed for host %r — rejecting", host
             )
+            _dns_verdict_cache.put(host, True, _DNS_CACHE_NEGATIVE_TTL_SECONDS)
             return True
         for info in infos:
             ip = info[4][0]
             if is_private_ip(ip):
+                _dns_verdict_cache.put(host, True, _DNS_CACHE_TTL_SECONDS)
                 return True
-    return False
+        _dns_verdict_cache.put(host, False, _DNS_CACHE_TTL_SECONDS)
+        return False
 
 
 def validate_url_host(url: str, *, resolve: bool = False) -> None:
