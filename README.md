@@ -1,6 +1,40 @@
 # web-crawler
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB" alt="Python 3.10+" />
+  <img src="https://img.shields.io/badge/lxml-adaptive%20selector-8CA1B6" alt="lxml 自适应选择器" />
+  <img src="https://img.shields.io/badge/TLS-impersonation-0F6B9E" alt="TLS 指纹隐身" />
+  <img src="https://img.shields.io/badge/CI-GitHub%20Actions-brightgreen" alt="CI" />
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" />
+</p>
+
 Scrapling 风格的隐身网页爬虫库：**自适应选择器**、**TLS 指纹隐身 HTTP**、**JS 渲染**与**回调式 Spider 框架**，另附一套应用层资源下载器与本地 Web UI。适用于需要稳定、低反爬风险的网页数据采集、动态页面渲染与加密参数逆向分析的开发者。
+
+## 分层架构
+
+```mermaid
+flowchart TB
+    subgraph APP["应用层 app/"]
+        C1[资源下载器 CLI]
+        C2[本地 Web UI<br/>SSE 实时推送]
+        C3[MCP 服务 / CLI]
+        C4[JS 逆向 Agent CLI]
+    end
+    subgraph CORE["核心库 src/web_crawler/"]
+        F[Fetchers 层<br/>Fetcher · AsyncFetcher · DynamicFetcher<br/>StealthyFetcher · CamoufoxFetcher · ProxyPool]
+        P[Parser 层<br/>Selector 自适应解析 · 元素指纹 · 重定位]
+        S[Spider 层<br/>回调分发 · 优先级 · 暂停续跑]
+        A[AI 层<br/>AIExtractor · AIScrapeAgent · ReverseAgent<br/>ImageCaptchaSolver]
+        PT[pentest 子包<br/>端口扫描 · 目录爆破 · 漏洞规则]
+    end
+    APP --> F
+    F --> P
+    F --> S
+    A --> F
+    A --> P
+    PT -.->|授权测试| F
+    F --> R[统一 Response<br/>.css / .xpath / .json]
+```
 
 ## 功能特性
 
