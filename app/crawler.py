@@ -297,7 +297,9 @@ def fetch(
 ) -> tuple[bytes, str]:
     # SSRF 防护：请求前校验 host，拒绝私网/环回/链路本地目标（含云元数据地址）；
     # 重定向目标由 SafeRedirectHandler / _stealth_fetch 逐跳校验。
-    validate_url_host(url)
+    # Power Mode（WEB_CRAWLER_POWER_MODE=1）放行 host 校验（仅保留 scheme 白名单）。
+    if not is_power_mode():
+        validate_url_host(url)
     last_error: Exception | None = None
     method_headers = dict(headers)
 

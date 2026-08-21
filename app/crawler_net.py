@@ -30,7 +30,7 @@ from urllib.parse import unquote, urldefrag, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request
 
 from app.crawler_models import ManifestRow, Resource
-from web_crawler._ssrf import host_is_unsafe, validate_url_host
+from web_crawler._ssrf import host_is_unsafe, is_power_mode, validate_url_host
 
 # 与 app.crawler 共用同一个 logger：UI 通过 attach_log_handler 挂到
 # "crawler" logger 的 handler 对所有模块日志生效，行为与拆分前一致。
@@ -58,6 +58,7 @@ __all__ = [
     "extract_title",
     "is_blocked_url",
     "is_html",
+    "is_power_mode",
     "is_video_candidate",
     "is_video_resource",
     "looks_like_downloadable",
@@ -354,7 +355,11 @@ def _is_safe_hostname(hostname: str | None) -> bool:
     静态检查（不做 DNS 解析）：IP 字面量命中私网/环回/链路本地/CGNAT/组播
     等范围，或主机名为 localhost/*.localhost/*.local/已知云元数据名称时返回
     ``False``。与 :mod:`web_crawler._ssrf` 共享同一策略，保证库与 app 行为一致。
+    Power Mode（``WEB_CRAWLER_POWER_MODE=1``）下放行 host 校验（仅保留 scheme
+    白名单），供可信的个人环境访问内网/云元数据目标。
     """
+    if is_power_mode():
+        return True
     return not host_is_unsafe(hostname)
 
 

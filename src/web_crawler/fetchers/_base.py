@@ -12,7 +12,13 @@ import os
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-from .._ssrf import host_is_unsafe, is_private_ip, is_unsafe_hostname, validate_url_host
+from .._ssrf import (
+    host_is_unsafe,
+    is_power_mode,
+    is_private_ip,
+    is_unsafe_hostname,
+    validate_url_host,
+)
 from ..response import Response
 from .proxy import ProxyPool
 
@@ -24,10 +30,14 @@ _ALLOWED_URL_SCHEMES = ("http", "https")
 
 # 测试套件用本地 HTTP 服务器（127.0.0.1）验证真实抓取行为；设置该环境变量
 # 后 fetcher 入口跳过 host 层校验（scheme 校验仍保留）。生产环境不设置。
+# Power Mode（WEB_CRAWLER_POWER_MODE=1）为个人全解锁的总开关，与之等效。
 _ALLOW_PRIVATE_HOSTS_ENV = "WEB_CRAWLER_ALLOW_PRIVATE_HOSTS"
 
 
 def _default_allow_private_hosts() -> bool:
+    # Power Mode 优先；旧变量 WEB_CRAWLER_ALLOW_PRIVATE_HOSTS 保留给测试套件。
+    if is_power_mode():
+        return True
     return os.environ.get(_ALLOW_PRIVATE_HOSTS_ENV, "").strip().lower() in {
         "1",
         "true",
@@ -101,10 +111,15 @@ class BaseFetcher:
 
     def _validate_target(self, url: str) -> None:
         """抓取前的 scheme + host 双重校验（SSRF 防护统一入口）。"""
-        if self.allow_private_hosts:
+        # 兼容 `Fetcher.__new__(Fetcher)` 构造的测试对象（未走 __init__，
+        # 属性缺失）：缺失时按安全默认（拒绝私网/环回/链路本地 host）处理。
+        allow = getattr(self, "allow_private_hosts", None)
+        if allow is None:
+            allow = False
+        if allow:
             validate_url_scheme(url)
         else:
-            validate_url(url, resolve=self.resolve_hosts)
+            validate_url(url, resolve=getattr(self, "resolve_hosts", False))
 
     def _resolve_proxy(self) -> str | None:
         """Resolve the proxy to use for the next request.
