@@ -82,6 +82,8 @@ class StealthyFetcher(DynamicFetcher):
         humanize: bool = True,
         solve_cloudflare: bool = True,
         verify: bool = True,
+        allow_private_hosts: bool | None = None,
+        resolve_hosts: bool = False,
     ) -> None:
         super().__init__(
             headless=headless,
@@ -97,6 +99,8 @@ class StealthyFetcher(DynamicFetcher):
             page_action=page_action,
             google_search=google_search,
             verify=verify,
+            allow_private_hosts=allow_private_hosts,
+            resolve_hosts=resolve_hosts,
         )
         self.humanize = humanize
         self.solve_cloudflare = solve_cloudflare

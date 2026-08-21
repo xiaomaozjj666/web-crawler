@@ -26,7 +26,7 @@ from urllib.parse import urljoin, urlparse
 from typing_extensions import Self
 
 from ..compat import HAS_CURL_CFFI, HAS_HTTPX
-from ._base import BaseFetcher, validate_url_scheme
+from ._base import BaseFetcher
 from .proxy import ProxyPool
 
 if TYPE_CHECKING:
@@ -108,6 +108,8 @@ class _FetcherCore(BaseFetcher):
         max_redirects: int = 5,
         ja3_fingerprint: str | None = None,
         ja4_fingerprint: str | None = None,  # 兼容旧参数名（已弃用）
+        allow_private_hosts: bool | None = None,
+        resolve_hosts: bool = False,
     ) -> None:
         super().__init__(
             timeout=timeout,
@@ -118,6 +120,8 @@ class _FetcherCore(BaseFetcher):
             extra_headers=extra_headers,
             follow_redirects=follow_redirects,
             verify=verify,
+            allow_private_hosts=allow_private_hosts,
+            resolve_hosts=resolve_hosts,
         )
         if max_redirects < 0:
             raise ValueError("max_redirects must be >= 0")
@@ -378,7 +382,7 @@ class _FetcherCore(BaseFetcher):
         if not location:
             return None
         next_url = urljoin(current_url, location.strip())
-        validate_url_scheme(next_url)
+        self._validate_target(next_url)
         next_headers = headers
         if urlparse(next_url).netloc != urlparse(current_url).netloc:
             next_headers = {k: v for k, v in headers.items() if k.lower() != "authorization"}
@@ -447,7 +451,7 @@ class _FetcherCore(BaseFetcher):
         json: Any = None,
         **kwargs: Any,
     ) -> Response:
-        validate_url_scheme(url)
+        self._validate_target(url)
         merged_headers = self._merge_headers(headers)
         timeout = kwargs.pop("timeout", self.timeout)
         verify = kwargs.pop("verify", self.verify)
@@ -642,7 +646,7 @@ class Fetcher(_FetcherCore):
         json: Any = None,
         **kwargs: Any,
     ) -> Response:
-        validate_url_scheme(url)
+        self._validate_target(url)
         merged_headers = self._merge_headers(headers)
         timeout = kwargs.pop("timeout", self.timeout)
         verify = kwargs.pop("verify", self.verify)
