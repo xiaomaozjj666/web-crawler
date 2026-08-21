@@ -198,12 +198,12 @@ def host_is_unsafe(host: str | None, *, resolve: bool = False) -> bool:
             _dns_verdict_cache.put(host, True, _DNS_CACHE_NEGATIVE_TTL_SECONDS)
             return True
         for info in infos:
-            ip = info[4][0]
+            ip = str(info[4][0])
             if is_private_ip(ip):
                 _dns_verdict_cache.put(host, True, _DNS_CACHE_TTL_SECONDS)
                 return True
         _dns_verdict_cache.put(host, False, _DNS_CACHE_TTL_SECONDS)
-        return False
+    return False
 
 
 def validate_url_host(url: str, *, resolve: bool = False) -> None:
