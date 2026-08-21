@@ -91,7 +91,9 @@ class BaseFetcher:
         follow_redirects: bool = True,
         verify: bool = True,
         allow_private_hosts: bool | None = None,
-        resolve_hosts: bool = False,
+        # 公开默认开启 DNS 解析复查（防 DNS 重绑定型 SSRF）：主机名先解析再
+        # 逐地址核对拒绝段。结果带 60s 缓存（防重复解析），开销可忽略。
+        resolve_hosts: bool = True,
     ) -> None:
         self.timeout = timeout
         self.proxy = proxy

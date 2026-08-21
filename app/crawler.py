@@ -298,8 +298,9 @@ def fetch(
     # SSRF 防护：请求前校验 host，拒绝私网/环回/链路本地目标（含云元数据地址）；
     # 重定向目标由 SafeRedirectHandler / _stealth_fetch 逐跳校验。
     # Power Mode（WEB_CRAWLER_POWER_MODE=1）放行 host 校验（仅保留 scheme 白名单）。
+    # resolve=True：主机名先做 DNS 解析复查（防重绑定），结果带缓存防重复解析。
     if not is_power_mode():
-        validate_url_host(url)
+        validate_url_host(url, resolve=True)
     last_error: Exception | None = None
     method_headers = dict(headers)
 
