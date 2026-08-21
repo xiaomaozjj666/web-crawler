@@ -23,6 +23,14 @@ Policy
   treated as unsafe and logged (public domains such as ``quotes.toscrape.com``
   pass as long as DNS resolves them to public addresses).
 
+Power Mode
+----------
+Setting ``WEB_CRAWLER_POWER_MODE=1`` bypasses the host-level checks above
+(the http/https scheme whitelist always stays). It exists for trusted
+personal environments that legitimately need to reach private / link-local
+targets (LAN services, cloud metadata) — never enable it for public or
+shared deployments.
+
 This module is stdlib-only on purpose so it can be imported by
 ``web_crawler.fetchers``, ``app.crawler_net`` and the test suite without
 pulling in lxml / playwright / curl_cffi.
@@ -32,10 +40,25 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import os
 import socket
 from urllib.parse import urlparse
 
 _log = logging.getLogger(__name__)
+
+# 个人 Power Mode 开关（默认关闭）：设置 WEB_CRAWLER_POWER_MODE=1 后，
+# host 层 SSRF 校验整体放行（http/https scheme 白名单仍保留）。仅供可信的
+# 个人环境解锁内网 / 云元数据等目标；公开部署与共享环境不要开启。
+_POWER_MODE_ENV = "WEB_CRAWLER_POWER_MODE"
+
+
+def is_power_mode() -> bool:
+    """Power Mode 是否开启（个人全解锁开关，默认关闭）。"""
+    return os.environ.get(_POWER_MODE_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
 
 # 被拒绝的 IP 段：私网 / 环回 / 链路本地 / CGNAT / 本网络。
 _PRIVATE_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
@@ -133,7 +156,13 @@ def host_is_unsafe(host: str | None, *, resolve: bool = False) -> bool:
 
 
 def validate_url_host(url: str, *, resolve: bool = False) -> None:
-    """URL 的 host 不安全（私网/环回/链路本地等）时抛出 :class:`ValueError`。"""
+    """URL 的 host 不安全（私网/环回/链路本地等）时抛出 :class:`ValueError`。
+
+    Power Mode（``WEB_CRAWLER_POWER_MODE=1``）下放行 host 校验（scheme 白名单
+    由 :func:`validate_url_scheme` 独立保证，始终生效）。
+    """
+    if is_power_mode():
+        return
     host = urlparse(url).hostname
     if host_is_unsafe(host, resolve=resolve):
         raise ValueError(f"blocked URL with unsafe host: {url}")
@@ -141,6 +170,7 @@ def validate_url_host(url: str, *, resolve: bool = False) -> None:
 
 __all__ = [
     "host_is_unsafe",
+    "is_power_mode",
     "is_private_ip",
     "is_unsafe_hostname",
     "validate_url_host",
