@@ -89,6 +89,8 @@ class CamoufoxFetcher(DynamicFetcher):
         block_webrtc: bool = False,
         window: tuple[int, int] | None = None,
         camoufox_options: dict[str, Any] | None = None,
+        allow_private_hosts: bool | None = None,
+        resolve_hosts: bool = False,
     ) -> None:
         super().__init__(
             headless=headless,
@@ -105,6 +107,8 @@ class CamoufoxFetcher(DynamicFetcher):
             page_action=page_action,
             google_search=google_search,
             verify=verify,
+            allow_private_hosts=allow_private_hosts,
+            resolve_hosts=resolve_hosts,
         )
         require_camoufox()
         self.os = os

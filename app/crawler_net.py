@@ -17,7 +17,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import html as html_lib
-import ipaddress
 import logging
 import mimetypes
 import re
@@ -31,6 +30,7 @@ from urllib.parse import unquote, urldefrag, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request
 
 from app.crawler_models import ManifestRow, Resource
+from web_crawler._ssrf import host_is_unsafe, validate_url_host
 
 # 与 app.crawler 共用同一个 logger：UI 通过 attach_log_handler 挂到
 # "crawler" logger 的 handler 对所有模块日志生效，行为与拆分前一致。
@@ -72,6 +72,7 @@ __all__ = [
     "safe_segment",
     "same_domain",
     "unique_resources",
+    "validate_url_host",
 ]
 
 # ── Constants ────────────────────────────────────────────────────────────
@@ -348,28 +349,13 @@ def normalize_url(url: str) -> str:
 
 
 def _is_safe_hostname(hostname: str | None) -> bool:
-    """检查 hostname 是否为安全的外部地址（防止 SSRF）"""
-    if not hostname:
-        return False
-    # 尝试解析为 IP 地址
-    try:
-        addr = ipaddress.ip_address(hostname)
-        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast:
-            return False
-    except ValueError:
-        # 域名：允许（DNS 解析在请求时进行）
-        # 阻止常见的内网域名
-        unsafe_domains = {
-            "localhost",
-            "127.0.0.1",
-            "::1",
-            "metadata.google.internal",
-            "169.254.169.254",
-            "100.100.100.200",  # 阿里云元数据
-        }
-        if hostname.lower() in unsafe_domains:
-            return False
-    return True
+    """检查 hostname 是否为安全的外部地址（防止 SSRF）。
+
+    静态检查（不做 DNS 解析）：IP 字面量命中私网/环回/链路本地/CGNAT/组播
+    等范围，或主机名为 localhost/*.localhost/*.local/已知云元数据名称时返回
+    ``False``。与 :mod:`web_crawler._ssrf` 共享同一策略，保证库与 app 行为一致。
+    """
+    return not host_is_unsafe(hostname)
 
 
 def looks_like_url(value: str) -> bool:

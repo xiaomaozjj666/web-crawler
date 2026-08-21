@@ -26,7 +26,7 @@ from urllib.parse import unquote, urlparse
 from typing_extensions import Self
 
 from ..compat import require_playwright
-from ._base import BaseFetcher, validate_url_scheme
+from ._base import BaseFetcher
 from .proxy import ProxyPool
 
 if TYPE_CHECKING:
@@ -85,6 +85,8 @@ class DynamicFetcher(BaseFetcher):
         page_action: Callable[[Page], None] | None = None,
         google_search: bool = False,
         verify: bool = True,
+        allow_private_hosts: bool | None = None,
+        resolve_hosts: bool = False,
     ) -> None:
         super().__init__(
             timeout=timeout,
@@ -95,6 +97,8 @@ class DynamicFetcher(BaseFetcher):
             extra_headers=extra_headers,
             follow_redirects=True,
             verify=verify,
+            allow_private_hosts=allow_private_hosts,
+            resolve_hosts=resolve_hosts,
         )
         require_playwright()
         self.headless = headless
@@ -237,7 +241,7 @@ class DynamicFetcher(BaseFetcher):
 
     def fetch(self, url: str, **kwargs: Any) -> Any:
         """Render ``url`` with a headless browser and return a :class:`Response`."""
-        validate_url_scheme(url)
+        self._validate_target(url)
         browser = self._ensure_browser()
         proxy = self._resolve_proxy()
         proxy_settings = self._parse_proxy(proxy)
@@ -307,7 +311,7 @@ class DynamicFetcher(BaseFetcher):
 
     async def async_fetch(self, url: str, **kwargs: Any) -> Any:
         """Asynchronously render ``url`` and return a :class:`Response`."""
-        validate_url_scheme(url)
+        self._validate_target(url)
         browser = await self._ensure_async_browser()
         proxy = self._resolve_proxy()
         proxy_settings = self._parse_proxy(proxy)
@@ -356,7 +360,7 @@ class DynamicFetcher(BaseFetcher):
             Each tile as ``{index, total, b64: str, width, height}`` where
             ``b64`` is a base64-encoded image string suitable for VLM input.
         """
-        validate_url_scheme(url)
+        self._validate_target(url)
         browser = self._ensure_browser()
         proxy = self._resolve_proxy()
         proxy_settings = self._parse_proxy(proxy)
@@ -454,7 +458,7 @@ class DynamicFetcher(BaseFetcher):
         max_tiles: int = 50,
     ) -> list[dict[str, Any]]:
         """Async version of :meth:`screenshot_tiles`."""
-        validate_url_scheme(url)
+        self._validate_target(url)
         browser = await self._ensure_async_browser()
         proxy = self._resolve_proxy()
         proxy_settings = self._parse_proxy(proxy)
