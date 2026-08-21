@@ -158,14 +158,13 @@ class Selector:
     def _parse(source: str | bytes | etree._Element, parser: str) -> etree._Element:
         if isinstance(source, etree._Element):
             return source
-        if isinstance(source, str):
-            data = source.encode("utf-8", errors="replace")
-        else:
-            data = source
         if parser == "xml":
-            return etree.fromstring(data)
-        # lxml.html.fromstring handles fragments and full documents robustly.
-        return lxml_html.fromstring(data)
+            return etree.fromstring(source)
+        # lxml.html.fromstring 对 str 直接按 Unicode 处理（内部编码为 UTF-8）；
+        # 对 bytes 按 HTML 规范的 meta charset 判定编码（无声明时默认 latin-1，
+        # 与浏览器一致）。注意：不要先把 str 预编码为 UTF-8 bytes 再传入——
+        # 无 meta charset 时 libxml2 会把 UTF-8 中文按 latin-1 误解码成乱码。
+        return lxml_html.fromstring(source)
 
     # -- basic properties --------------------------------------------------
     @property
