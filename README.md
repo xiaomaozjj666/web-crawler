@@ -15,25 +15,25 @@ Scrapling 风格的隐身网页爬虫库：**自适应选择器**、**TLS 指纹
 ```mermaid
 flowchart TB
     subgraph APP["应用层 app/"]
-        C1[资源下载器 CLI]
-        C2[本地 Web UI<br/>SSE 实时推送]
-        C3[MCP 服务 / CLI]
-        C4[JS 逆向 Agent CLI]
+        C1["资源下载器 CLI"]
+        C2["本地 Web UI<br/>SSE 实时推送"]
+        C3["MCP 服务 / CLI"]
+        C4["JS 逆向 Agent CLI"]
     end
     subgraph CORE["核心库 src/web_crawler/"]
-        F[Fetchers 层<br/>Fetcher · AsyncFetcher · DynamicFetcher<br/>StealthyFetcher · CamoufoxFetcher · ProxyPool]
-        P[Parser 层<br/>Selector 自适应解析 · 元素指纹 · 重定位]
-        S[Spider 层<br/>回调分发 · 优先级 · 暂停续跑]
-        A[AI 层<br/>AIExtractor · AIScrapeAgent · ReverseAgent<br/>ImageCaptchaSolver]
-        PT[pentest 子包<br/>端口扫描 · 目录爆破 · 漏洞规则]
+        F["Fetchers 层<br/>Fetcher · AsyncFetcher · DynamicFetcher<br/>StealthyFetcher · CamoufoxFetcher · ProxyPool"]
+        P["Parser 层<br/>Selector 自适应解析 · 元素指纹 · 重定位"]
+        S["Spider 层<br/>回调分发 · 优先级 · 暂停续跑"]
+        A["AI 层<br/>AIExtractor · AIScrapeAgent · ReverseAgent<br/>ImageCaptchaSolver"]
+        PT["pentest 子包<br/>端口扫描 · 目录爆破 · 漏洞规则"]
     end
     APP --> F
     F --> P
     F --> S
     A --> F
     A --> P
-    PT -.->|授权测试| F
-    F --> R[统一 Response<br/>.css / .xpath / .json]
+    PT -.->|"授权测试"| F
+    F --> R["统一 Response<br/>.css / .xpath / .json"]
 ```
 
 ## 功能特性
