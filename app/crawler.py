@@ -295,6 +295,9 @@ def fetch(
     rate_limiter: DomainRateLimiter | None = None,
     control_args: argparse.Namespace | None = None,
 ) -> tuple[bytes, str]:
+    # SSRF 防护：请求前校验 host，拒绝私网/环回/链路本地目标（含云元数据地址）；
+    # 重定向目标由 SafeRedirectHandler / _stealth_fetch 逐跳校验。
+    validate_url_host(url)
     last_error: Exception | None = None
     method_headers = dict(headers)
 

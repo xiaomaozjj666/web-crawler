@@ -8,9 +8,11 @@ response into the library-wide :class:`~web_crawler.response.Response`.
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
+from .._ssrf import host_is_unsafe, is_private_ip, is_unsafe_hostname, validate_url_host
 from ..response import Response
 from .proxy import ProxyPool
 
@@ -19,6 +21,18 @@ if TYPE_CHECKING:
 
 # SSRF 防护：仅允许 http/https 协议
 _ALLOWED_URL_SCHEMES = ("http", "https")
+
+# 测试套件用本地 HTTP 服务器（127.0.0.1）验证真实抓取行为；设置该环境变量
+# 后 fetcher 入口跳过 host 层校验（scheme 校验仍保留）。生产环境不设置。
+_ALLOW_PRIVATE_HOSTS_ENV = "WEB_CRAWLER_ALLOW_PRIVATE_HOSTS"
+
+
+def _default_allow_private_hosts() -> bool:
+    return os.environ.get(_ALLOW_PRIVATE_HOSTS_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
 
 
 def validate_url_scheme(url: str) -> None:
@@ -33,6 +47,18 @@ def validate_url_scheme(url: str) -> None:
         raise ValueError(
             f"URL scheme {scheme or '<none>'!r} is not allowed; only http/https are supported"
         )
+
+
+def validate_url(url: str, *, resolve: bool = False) -> None:
+    """拒绝 scheme 或 host 不安全的 URL（SSRF 防护，抓取入口统一调用）。
+
+    在 :func:`validate_url_scheme` 之外补上 host 层校验：私网/环回/链路本地
+    （含云元数据 169.254.169.254）与 localhost/*.localhost/*.local 等目标
+    在到达传输层之前被拒绝。``resolve=True`` 时额外对主机名做一次 DNS 解析
+    检查（解析失败按保守策略拒绝）。
+    """
+    validate_url_scheme(url)
+    validate_url_host(url, resolve=resolve)
 
 
 class BaseFetcher:
@@ -54,6 +80,8 @@ class BaseFetcher:
         extra_headers: dict[str, str] | None = None,
         follow_redirects: bool = True,
         verify: bool = True,
+        allow_private_hosts: bool | None = None,
+        resolve_hosts: bool = False,
     ) -> None:
         self.timeout = timeout
         self.proxy = proxy
@@ -63,6 +91,20 @@ class BaseFetcher:
         self.extra_headers: dict[str, str] = dict(extra_headers) if extra_headers else {}
         self.follow_redirects = follow_redirects
         self.verify = verify
+        # SSRF host 层校验开关：默认拒绝私网/环回/链路本地 host。
+        # allow_private_hosts=True 时仅校验 scheme（本地测试服务器/内网目标
+        # 显式放行）；resolve_hosts=True 时对主机名额外做 DNS 解析检查。
+        self.allow_private_hosts = (
+            _default_allow_private_hosts() if allow_private_hosts is None else allow_private_hosts
+        )
+        self.resolve_hosts = resolve_hosts
+
+    def _validate_target(self, url: str) -> None:
+        """抓取前的 scheme + host 双重校验（SSRF 防护统一入口）。"""
+        if self.allow_private_hosts:
+            validate_url_scheme(url)
+        else:
+            validate_url(url, resolve=self.resolve_hosts)
 
     def _resolve_proxy(self) -> str | None:
         """Resolve the proxy to use for the next request.
@@ -118,4 +160,12 @@ class BaseFetcher:
         )
 
 
-__all__ = ["BaseFetcher"]
+__all__ = [
+    "BaseFetcher",
+    "host_is_unsafe",
+    "is_private_ip",
+    "is_unsafe_hostname",
+    "validate_url",
+    "validate_url_host",
+    "validate_url_scheme",
+]

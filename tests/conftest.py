@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import threading
 import warnings
@@ -10,6 +11,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+
+# 大量 fetcher 测试用本地 HTTP 服务器（127.0.0.1）验证真实抓取行为，属于
+# 显式的测试夹具而非 SSRF 攻击面；放行私网/环回 host（scheme 校验仍生效）。
+# 生产环境不设置该变量，抓取入口默认拒绝私网/环回/链路本地 host。
+os.environ.setdefault("WEB_CRAWLER_ALLOW_PRIVATE_HOSTS", "1")
 
 # curl_cffi's async backend needs the selector loop on Windows (Proactor lacks
 # add_reader). Switch policy once for the whole session before tests import it.
