@@ -58,6 +58,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     # visual extraction (PixelRAG-style)
     "VisualExtractor": ("web_crawler.parser.visual", "VisualExtractor"),
     # spider
+    "DupeFilter": ("web_crawler.spider.spider", "DupeFilter"),
     "Request": ("web_crawler.spider.spider", "Request"),
     "Spider": ("web_crawler.spider.spider", "Spider"),
     "SpiderError": ("web_crawler.spider.spider", "SpiderError"),
@@ -103,6 +104,7 @@ __all__ = [
     "CaptchaManager",
     "CaptchaType",
     "DeepSeekProvider",
+    "DupeFilter",
     "DynamicFetcher",
     "ExtractionResult",
     "Fetcher",
@@ -191,6 +193,6 @@ if TYPE_CHECKING:
     from .parser.selector import Adaptors, Selector
     from .parser.visual import VisualExtractor
     from .response import Response
-    from .spider.spider import Request, Spider, SpiderError, SpiderStats
+    from .spider.spider import DupeFilter, Request, Spider, SpiderError, SpiderStats
 
     Adaptor = Selector

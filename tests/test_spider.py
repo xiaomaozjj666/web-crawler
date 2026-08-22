@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import urllib.robotparser
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -169,7 +170,7 @@ def test_spider_missing_callback_raises() -> None:
 
     spider = S(fetcher=FakeFetcher(PAGES))
     req = Request("https://shop.example.com/", callback="nope")
-    spider._seen.add(req.url)  # bypass filter
+    spider.dupefilter.seen.add(req.url)  # bypass filter
     with pytest.raises(SpiderError, match="not found"):
         spider._dispatch(Response(req.url, 200, b""), req)
 
@@ -196,7 +197,10 @@ def test_spider_pause_and_resume(tmp_path: Path) -> None:
     assert state_file.exists()
     state = json.loads(state_file.read_text())
     assert len(state["queue"]) == 1  # /page2 queued but not yet fetched
-    assert "https://shop.example.com/page2" in state["seen"]
+    # seen 现在存指纹（method+url+body 的 SHA1），恢复时按原样装回
+    from web_crawler.spider import DupeFilter
+
+    assert DupeFilter.fingerprint(Request("https://shop.example.com/page2")) in state["seen"]
 
     # Resume with a different (non-pausing) spider that just collects items.
     class ResumingSpider(Spider):
@@ -398,17 +402,17 @@ def test_spider_allowed_with_subdomain_match() -> None:
 
 
 def test_spider_filter_dont_filter_bypasses_seen() -> None:
-    """dont_filter=True 时即使 URL 已 seen 也返回 True。"""
+    """dont_filter=True 时即使请求已见过也返回 True。"""
     spider = ItemSpider(fetcher=FakeFetcher(PAGES))
-    spider._seen.add("https://x.example/")
+    spider.dupefilter.request_seen(Request("https://x.example/"))
     req = Request("https://x.example/", dont_filter=True)
     assert spider._filter(req) is True
 
 
 def test_spider_filter_skips_seen_url() -> None:
-    """重复 URL 被 _filter 过滤。"""
+    """重复请求（同指纹）被 _filter 过滤。"""
     spider = ItemSpider(fetcher=FakeFetcher(PAGES))
-    spider._seen.add("https://x.example/")
+    spider.dupefilter.request_seen(Request("https://x.example/"))
     req = Request("https://x.example/")
     assert spider._filter(req) is False
 
@@ -579,7 +583,7 @@ def test_spider_load_state_restores_seen_and_queue(tmp_path: Path) -> None:
     assert len(queue) == 1
     assert queue[0].url == "https://c/"
     assert queue[0].priority == 5
-    assert "https://a/" in spider._seen
+    assert "https://a/" in spider.dupefilter.seen
     assert spider.stats.pages_crawled == 7
     assert spider.stats.requests_failed == 1
 
@@ -596,9 +600,7 @@ def test_spider_run_with_download_delay(monkeypatch: pytest.MonkeyPatch) -> None
 
     spider = S(fetcher=FakeFetcher(PAGES))
     sleep_calls: list[float] = []
-    monkeypatch.setattr(
-        "web_crawler.spider.spider.time.sleep", lambda s: sleep_calls.append(s)
-    )
+    monkeypatch.setattr("web_crawler.spider.spider.time.sleep", lambda s: sleep_calls.append(s))
     spider.run()
     assert sleep_calls == [0.5]
 
@@ -920,7 +922,7 @@ def test_spider_async_run_max_requests_zero() -> None:
 def test_spider_dump_state_writes_json(tmp_path: Path) -> None:
     """_dump_state 写入包含 seen/queue/stats 的 JSON。"""
     spider = ItemSpider()
-    spider._seen.add("https://a/")
+    spider.dupefilter.seen.add("https://a/")
     queue = [Request("https://b/", priority=3, callback="parse2")]
     state_file = tmp_path / "dump.json"
     spider._dump_state(queue, state_file)
@@ -1064,9 +1066,7 @@ def test_spider_fresh_run_does_not_delete_existing_state(
     """全新运行（未传 state_file/resume）完成时不得删除既有的暂停状态文件。"""
     monkeypatch.chdir(tmp_path)
     state_path = tmp_path / ".item_state.json"
-    state_path.write_text(
-        json.dumps({"seen": [], "queue": [], "stats": {}}), encoding="utf-8"
-    )
+    state_path.write_text(json.dumps({"seen": [], "queue": [], "stats": {}}), encoding="utf-8")
 
     spider = ItemSpider(fetcher=FakeFetcher(PAGES))
     spider.run()
@@ -1127,3 +1127,309 @@ def test_spider_allowed_missing_host_returns_false() -> None:
 
     spider = S()
     assert spider.allowed("about:blank") is False
+
+
+# ===========================================================================
+# DupeFilter 指纹去重 / 重试 / robots / 状态保存健壮性
+# ===========================================================================
+
+
+def test_dupefilter_fingerprint_distinguishes_method_and_body() -> None:
+    """同 URL 不同 method / body 的指纹互不相同。"""
+    from web_crawler.spider import DupeFilter
+
+    base = Request("https://x.example/api")
+    assert DupeFilter.fingerprint(base) != DupeFilter.fingerprint(
+        Request("https://x.example/api", method="POST")
+    )
+    assert DupeFilter.fingerprint(base) != DupeFilter.fingerprint(
+        Request("https://x.example/api", method="POST", body=b"a=1")
+    )
+    assert DupeFilter.fingerprint(
+        Request("https://x.example/api", method="POST", body=b"a=1")
+    ) != DupeFilter.fingerprint(Request("https://x.example/api", method="POST", body=b"a=2"))
+    # method 大小写不敏感
+    assert DupeFilter.fingerprint(base) == DupeFilter.fingerprint(
+        Request("https://x.example/api", method="get")
+    )
+
+
+def test_dupefilter_request_seen_registers_once() -> None:
+    """request_seen 首次返回 False 并登记，再次返回 True。"""
+    from web_crawler.spider import DupeFilter
+
+    df = DupeFilter()
+    assert df.request_seen(Request("https://x.example/")) is False
+    assert df.request_seen(Request("https://x.example/")) is True
+    # 不同 body 视为不同请求
+    assert df.request_seen(Request("https://x.example/", method="POST", body=b"p=1")) is False
+
+
+def test_spider_same_url_different_body_not_deduped() -> None:
+    """同 URL 不同 body（分页参数在 body 中）不再被裸 URL 去重误杀。"""
+    calls: list[tuple[str, bytes | None]] = []
+
+    class PostFetcher:
+        def get(self, url: str, **kwargs: Any) -> Response:
+            calls.append((url, None))
+            return Response(url, 200, b"")
+
+        def post(self, url: str, **kwargs: Any) -> Response:
+            calls.append((url, kwargs.get("data")))
+            return Response(url, 200, b"")
+
+    class S(Spider):
+        start_urls = ["https://shop.example.com/"]
+
+        def parse(self, response: Response) -> Any:
+            yield Request("https://shop.example.com/api", method="POST", body=b"page=1")
+            yield Request("https://shop.example.com/api", method="POST", body=b"page=2")
+
+    spider = S(fetcher=PostFetcher())
+    spider.run()
+    assert calls.count(("https://shop.example.com/api", b"page=1")) == 1
+    assert calls.count(("https://shop.example.com/api", b"page=2")) == 1
+
+
+def test_spider_custom_dupefilter_injected() -> None:
+    """构造参数 dupefilter 可替换为自定义实现。"""
+    from web_crawler.spider import DupeFilter
+
+    class RecordingDupeFilter(DupeFilter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        def request_seen(self, request: Request) -> bool:
+            self.calls += 1
+            return super().request_seen(request)
+
+    df = RecordingDupeFilter()
+    spider = ItemSpider(fetcher=FakeFetcher(PAGES), dupefilter=df)
+    spider.run()
+    # 种子直接登记指纹（不经 request_seen），回调产出的 /page2 经 _filter 调用一次
+    assert df.calls == 1
+
+
+def test_spider_run_retries_failed_request_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run() 失败请求按 max_retries 重试，第二次成功后正常产出。"""
+    sleeps: list[float] = []
+    monkeypatch.setattr("web_crawler.spider.spider.time.sleep", lambda s: sleeps.append(s))
+
+    class FlakyFetcher:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        def get(self, url: str, **kwargs: Any) -> Response:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise ConnectionError("transient")
+            return Response(url, 200, b"<p>ok</p>")
+
+    class S(Spider):
+        start_urls = ["https://shop.example.com/"]
+        max_retries = 2
+
+        def parse(self, response: Response) -> Any:
+            yield {"ok": True}
+
+    fetcher = FlakyFetcher()
+    spider = S(fetcher=fetcher)
+    items = spider.run()
+    assert items == [{"ok": True}]
+    assert fetcher.attempts == 2
+    assert spider.stats.requests_failed == 0
+    assert spider.stats.pages_crawled == 1
+    # 第一次重试的退避为 0.5s（0.5 * 2^0）
+    assert sleeps == [0.5]
+
+
+def test_spider_run_retry_exhaustion_counts_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """重试耗尽后计入 requests_failed 且不中断整体运行。"""
+    sleeps: list[float] = []
+    monkeypatch.setattr("web_crawler.spider.spider.time.sleep", lambda s: sleeps.append(s))
+
+    class AlwaysFail:
+        def get(self, url: str, **kwargs: Any) -> Response:
+            raise ConnectionError("down")
+
+    class S(Spider):
+        start_urls = ["https://shop.example.com/"]
+        max_retries = 2
+
+        def parse(self, response: Response) -> Any:
+            yield {"never": True}
+
+    spider = S(fetcher=AlwaysFail())
+    items = spider.run()
+    assert items == []
+    assert spider.stats.requests_failed == 1
+    assert spider.stats.pages_crawled == 0
+    # 指数退避：0.5, 1.0
+    assert sleeps == [0.5, 1.0]
+
+
+def test_spider_stream_retries_failed_request_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stream() 失败请求重试后成功。"""
+    sleep_calls: list[float] = []
+
+    async def mock_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr("asyncio.sleep", mock_sleep)
+
+    class FlakyAsyncFetcher:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        async def async_get(self, url: str, **kwargs: Any) -> Response:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise ConnectionError("transient")
+            return Response(url, 200, b"<p>ok</p>")
+
+    class S(Spider):
+        start_urls = ["https://shop.example.com/"]
+        max_retries = 1
+
+        def parse(self, response: Response) -> Any:
+            yield {"ok": True}
+
+    fetcher = FlakyAsyncFetcher()
+    spider = S(fetcher=fetcher)
+
+    async def collect() -> list[Any]:
+        items = []
+        async for item in spider.stream():
+            items.append(item)
+        return items
+
+    items = asyncio.run(collect())
+    assert items == [{"ok": True}]
+    assert fetcher.attempts == 2
+    assert spider.stats.requests_failed == 0
+
+
+def test_spider_robots_denied_request_is_filtered() -> None:
+    """robots.txt 禁止的路径在 _filter 阶段被拒绝（不发请求）。"""
+    spider = ItemSpider(fetcher=FakeFetcher(PAGES))
+    spider.respect_robots = True
+    parser = urllib.robotparser.RobotFileParser()
+    parser.parse(["User-agent: *", "Disallow: /private"])
+    spider._robots_cache["https://shop.example.com"] = parser
+    assert spider._filter(Request("https://shop.example.com/private")) is False
+    assert spider._filter(Request("https://shop.example.com/public")) is True
+
+
+def test_spider_robots_fetch_failure_treated_as_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """robots.txt 拉取失败时保守视为允许，且同 host 不再重复外呼。"""
+    read_calls: list[str] = []
+
+    def fake_read(self: urllib.robotparser.RobotFileParser) -> None:
+        read_calls.append(self.url)  # type: ignore[attr-defined]
+        raise OSError("network unreachable")
+
+    monkeypatch.setattr(urllib.robotparser.RobotFileParser, "read", fake_read)
+
+    class S(Spider):
+        start_urls = ["https://shop.example.com/"]
+
+        def parse(self, response: Response) -> Any:
+            yield {"x": 1}
+
+    spider = S(fetcher=FakeFetcher(PAGES))
+    spider.respect_robots = True
+    assert spider._robots_allowed("https://shop.example.com/a") is True
+    assert spider._robots_allowed("https://shop.example.com/b") is True
+    # 失败判定被缓存：只外呼一次
+    assert len(read_calls) == 1
+
+
+def test_spider_robots_fetch_success_caches_parser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """robots.txt 拉取成功后解析器被缓存，同 host 只外呼一次。"""
+    read_calls: list[str] = []
+
+    def fake_read(self: urllib.robotparser.RobotFileParser) -> None:
+        read_calls.append(self.url)  # type: ignore[attr-defined]
+        self.parse(["User-agent: *", "Disallow: /private", "Crawl-delay: 1"])
+
+    monkeypatch.setattr(urllib.robotparser.RobotFileParser, "read", fake_read)
+
+    class S(Spider):
+        start_urls = ["https://shop.example.com/"]
+
+    spider = S(fetcher=FakeFetcher(PAGES))
+    spider.respect_robots = True
+    assert spider._robots_allowed("https://shop.example.com/private") is False
+    assert spider._robots_allowed("https://shop.example.com/public") is True
+    # 命中缓存：两个 URL 只触发一次 robots.txt 拉取
+    assert len(read_calls) == 1
+
+
+def test_spider_robots_disabled_by_default() -> None:
+    """默认 respect_robots=False 时不做任何 robots 检查。"""
+    spider = ItemSpider()
+    assert spider._robots_allowed("https://shop.example.com/private") is True
+    assert spider._robots_cache == {}
+
+
+def test_spider_callback_error_still_saves_state(tmp_path: Path) -> None:
+    """run() 回调抛 SpiderError 时，状态文件仍被保存（不丢已排队请求）。
+
+    注：generator 回调中途 raise 会丢弃本次已 yield 的产出，因此待保存的
+    请求须在前一个成功页的回调里产出。
+    """
+    state_file = tmp_path / "err_state.json"
+
+    class Bad(Spider):
+        name = "bad"
+        start_urls = ["https://shop.example.com/", "https://shop.example.com/page2"]
+
+        def parse(self, response: Response) -> Any:
+            if response.url.endswith("page2"):
+                raise RuntimeError("boom")
+            yield Request("https://shop.example.com/pending1")
+            yield {"x": 1}
+
+    spider = Bad(fetcher=FakeFetcher(PAGES))
+    with pytest.raises(SpiderError, match="boom"):
+        spider.run(state_file=state_file)
+    assert state_file.exists()
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert [q["url"] for q in state["queue"]] == ["https://shop.example.com/pending1"]
+
+
+def test_spider_stream_callback_error_still_saves_state(tmp_path: Path) -> None:
+    """stream() 回调抛 SpiderError 时，状态文件仍被保存。"""
+    state_file = tmp_path / "err_stream_state.json"
+
+    class Bad(Spider):
+        name = "bad_stream"
+        start_urls = ["https://shop.example.com/", "https://shop.example.com/page2"]
+
+        def parse(self, response: Response) -> Any:
+            if response.url.endswith("page2"):
+                raise RuntimeError("stream boom")
+            yield Request("https://shop.example.com/pending2")
+
+    spider = Bad(fetcher=FakeFetcher(PAGES))
+
+    async def go() -> None:
+        async for _ in spider.stream(state_file=state_file):
+            pass
+
+    with pytest.raises(SpiderError, match="stream boom"):
+        asyncio.run(go())
+    assert state_file.exists()
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert [q["url"] for q in state["queue"]] == ["https://shop.example.com/pending2"]
