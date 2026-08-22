@@ -201,9 +201,7 @@ class DynamicFetcher(BaseFetcher):
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
         context = browser.new_context(
-            **self._context_kwargs(
-                viewport={"width": 1366, "height": 768}, proxy=proxy_settings
-            )
+            **self._context_kwargs(viewport={"width": 1366, "height": 768}, proxy=proxy_settings)
         )
         try:
             page = context.new_page()
@@ -250,6 +248,14 @@ class DynamicFetcher(BaseFetcher):
         except Exception as exc:
             raise RuntimeError(f"dynamic fetch of {url} failed: {exc}") from exc
 
+    def get(self, url: str, **kwargs: Any) -> Any:
+        """``fetch`` 的动词统一别名：与 :class:`~web_crawler.fetchers.Fetcher.get`
+        对齐，使 Spider 等上层组件无需感知 fetcher 具体类型。
+
+        仅支持 GET 语义；带 ``data`` 等参数时退回 :meth:`fetch` 的默认行为。
+        """
+        return self.fetch(url, **kwargs)
+
     # -- asynchronous browser lifecycle -------------------------------------
     async def _ensure_async_browser(self) -> Any:
         from playwright.async_api import async_playwright
@@ -272,9 +278,7 @@ class DynamicFetcher(BaseFetcher):
         from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
         context = await browser.new_context(
-            **self._context_kwargs(
-                viewport={"width": 1366, "height": 768}, proxy=proxy_settings
-            )
+            **self._context_kwargs(viewport={"width": 1366, "height": 768}, proxy=proxy_settings)
         )
         try:
             page = await context.new_page()
@@ -319,6 +323,10 @@ class DynamicFetcher(BaseFetcher):
             return await self._render_page_async(browser, url, proxy_settings)
         except Exception as exc:
             raise RuntimeError(f"dynamic async fetch of {url} failed: {exc}") from exc
+
+    async def async_get(self, url: str, **kwargs: Any) -> Any:
+        """``async_fetch`` 的动词统一别名（见 :meth:`get`）。"""
+        return await self.async_fetch(url, **kwargs)
 
     # -- screenshot tiling (PixelRAG-style) ----------------------------------
 

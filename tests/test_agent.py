@@ -168,7 +168,9 @@ def test_ensure_fetcher_creates_dynamic_fetcher_when_render() -> None:
     """render=True 时懒创建 DynamicFetcher。"""
     agent = AIScrapeAgent(extractor=_DummyExtractor(), render=True)
     fake_fetcher = MagicMock()
-    with patch("web_crawler.fetchers.dynamic.DynamicFetcher", return_value=fake_fetcher) as mock_cls:
+    with patch(
+        "web_crawler.fetchers.dynamic.DynamicFetcher", return_value=fake_fetcher
+    ) as mock_cls:
         result = agent._ensure_fetcher()
         assert result is fake_fetcher
         mock_cls.assert_called_once()
@@ -187,12 +189,12 @@ def test_do_fetch_prefers_get_method() -> None:
     fetcher.get.assert_called_once_with("https://x")
 
 
-def test_do_fetch_falls_back_to_fetch_method() -> None:
-    """fetcher 无 get 方法时回退到 fetch。"""
-    fetcher = MagicMock(spec=["fetch"])
-    fetcher.fetch.return_value = "fetched"
-    assert AIScrapeAgent._do_fetch(fetcher, "https://x") == "fetched"
-    fetcher.fetch.assert_called_once_with("https://x")
+def test_do_fetch_calls_get_directly() -> None:
+    """动词统一后 _do_fetch 直接调用 fetcher.get（DynamicFetcher 亦提供 get 别名）。"""
+    fetcher = MagicMock(spec=["get"])
+    fetcher.get.return_value = "got"
+    assert AIScrapeAgent._do_fetch(fetcher, "https://x") == "got"
+    fetcher.get.assert_called_once_with("https://x")
 
 
 def test_fetch_text_returns_response_text() -> None:
@@ -208,19 +210,18 @@ def test_fetch_text_returns_response_text() -> None:
     assert "https://x" in fetcher.fetched
 
 
-def test_fetch_text_uses_fetch_method_when_no_get() -> None:
-    """fetcher 只有 fetch 方法时 _fetch_text 也能工作。"""
+def test_fetch_text_uses_get_method() -> None:
+    """_fetch_text 通过统一的 get 入口取 resp.text。"""
     resp = _make_response(body=b"world")
-    # 用 MagicMock 简化：直接构造只有 fetch 的对象
-    fetcher_mock = MagicMock(spec=["fetch"])
-    fetcher_mock.fetch.return_value = resp
+    fetcher_mock = MagicMock(spec=["get"])
+    fetcher_mock.get.return_value = resp
     agent = AIScrapeAgent(
         fetcher=fetcher_mock,
         extractor=_DummyExtractor(),
         respect_robots=False,
     )
     assert agent._fetch_text("https://x") == "world"
-    fetcher_mock.fetch.assert_called_once_with("https://x")
+    fetcher_mock.get.assert_called_once_with("https://x")
 
 
 # ---------------------------------------------------------------------------
@@ -465,9 +466,12 @@ def test_context_manager_closes_on_normal_exit() -> None:
 def test_context_manager_closes_on_exception() -> None:
     """with 块抛异常时 close 仍被调用。"""
     fetcher = _FakeFetcher()
-    with pytest.raises(RuntimeError, match="boom"), AIScrapeAgent(
-        fetcher=fetcher,
-        extractor=_DummyExtractor(),
+    with (
+        pytest.raises(RuntimeError, match="boom"),
+        AIScrapeAgent(
+            fetcher=fetcher,
+            extractor=_DummyExtractor(),
+        ),
     ):
         raise RuntimeError("boom")
     assert fetcher.closed is True

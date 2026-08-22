@@ -415,9 +415,7 @@ def test_render_page_full_sync_flow() -> None:
     # wait_selector 触发 wait_for_selector
     page.wait_for_selector.assert_called_once_with("#main", timeout=f.wait_timeout * 1000)
     # network_idle 触发 wait_for_load_state
-    page.wait_for_load_state.assert_called_once_with(
-        "networkidle", timeout=f.wait_timeout * 1000
-    )
+    page.wait_for_load_state.assert_called_once_with("networkidle", timeout=f.wait_timeout * 1000)
     # context.close 在 finally 中调用
     ctx.close.assert_called_once()
     # 返回 Response 对象，content 是 bytes
@@ -551,9 +549,7 @@ def test_fetch_passes_proxy_settings_to_render() -> None:
 
     f.fetch("https://example.com/x")
     # new_context 的 proxy 参数应是解析后的 settings dict
-    assert browser.new_context.call_args.kwargs["proxy"] == {
-        "server": "http://1.2.3.4:8080"
-    }
+    assert browser.new_context.call_args.kwargs["proxy"] == {"server": "http://1.2.3.4:8080"}
     f.close()
 
 
@@ -612,9 +608,7 @@ def test_render_page_async_full_flow() -> None:
         assert call_kwargs["proxy"] is None
         page.goto.assert_awaited_once()
         assert page.goto.call_args.kwargs["referer"] == "https://www.google.com/"
-        page.wait_for_selector.assert_awaited_once_with(
-            "#main", timeout=f.wait_timeout * 1000
-        )
+        page.wait_for_selector.assert_awaited_once_with("#main", timeout=f.wait_timeout * 1000)
         page.wait_for_load_state.assert_awaited_once_with(
             "networkidle", timeout=f.wait_timeout * 1000
         )
@@ -860,9 +854,7 @@ def test_screenshot_tiles_uses_proxy_when_configured() -> None:
     f._browser = browser
 
     f.screenshot_tiles("https://example.com/")
-    assert browser.new_context.call_args.kwargs["proxy"] == {
-        "server": "http://1.2.3.4:8080"
-    }
+    assert browser.new_context.call_args.kwargs["proxy"] == {"server": "http://1.2.3.4:8080"}
     f.close()
 
 
@@ -905,9 +897,7 @@ def test_async_screenshot_tiles_jpeg() -> None:
         browser = _make_async_browser(ctx)
         f._async_browser = browser
 
-        tiles = await f.async_screenshot_tiles(
-            "https://example.com/", format="jpeg", quality=50
-        )
+        tiles = await f.async_screenshot_tiles("https://example.com/", format="jpeg", quality=50)
         assert len(tiles) == 1
         kwargs = page.screenshot.call_args.kwargs
         assert kwargs["type"] == "jpeg"
@@ -942,9 +932,7 @@ def test_screenshot_tiles_with_wait_selector_and_page_action() -> None:
 
     f.screenshot_tiles("https://example.com/")
     page.wait_for_selector.assert_called_once_with("#main", timeout=f.wait_timeout * 1000)
-    page.wait_for_load_state.assert_called_once_with(
-        "networkidle", timeout=f.wait_timeout * 1000
-    )
+    page.wait_for_load_state.assert_called_once_with("networkidle", timeout=f.wait_timeout * 1000)
     assert called_with == [page]
     f.close()
 
@@ -1011,9 +999,7 @@ def test_async_screenshot_tiles_with_wait_selector_and_page_action() -> None:
 
         tiles = await f.async_screenshot_tiles("https://example.com/")
         assert len(tiles) == 1
-        page.wait_for_selector.assert_awaited_once_with(
-            "#main", timeout=f.wait_timeout * 1000
-        )
+        page.wait_for_selector.assert_awaited_once_with("#main", timeout=f.wait_timeout * 1000)
         page.wait_for_load_state.assert_awaited_once_with(
             "networkidle", timeout=f.wait_timeout * 1000
         )
@@ -1314,10 +1300,13 @@ def test_init_calls_require_playwright() -> None:
 
 def test_init_raises_when_playwright_missing() -> None:
     """require_playwright 抛 ImportError 时构造失败。"""
-    with patch(
-        "web_crawler.fetchers.dynamic.require_playwright",
-        side_effect=ImportError("playwright is required"),
-    ), pytest.raises(ImportError, match="playwright is required"):
+    with (
+        patch(
+            "web_crawler.fetchers.dynamic.require_playwright",
+            side_effect=ImportError("playwright is required"),
+        ),
+        pytest.raises(ImportError, match="playwright is required"),
+    ):
         DynamicFetcher()
 
 
@@ -1458,9 +1447,7 @@ def test_screenshot_tiles_max_tiles_cap() -> None:
     f._browser = browser
 
     with pytest.warns(RuntimeWarning, match="max_tiles"):
-        tiles = f.screenshot_tiles(
-            "https://example.com/", tile_height=500, max_tiles=3
-        )
+        tiles = f.screenshot_tiles("https://example.com/", tile_height=500, max_tiles=3)
     assert len(tiles) == 3
     assert tiles[0]["total"] == 3
     assert tiles[2]["height"] == 500
@@ -1550,3 +1537,28 @@ def test_close_temp_loop_creation_failure_swallowed() -> None:
     ):
         f.close()
     assert f._async_browser is async_browser_mock
+
+
+def test_dynamic_fetcher_get_alias_delegates_to_fetch() -> None:
+    """get 是 fetch 的动词统一别名（与 Fetcher.get 对齐，供 Spider 等复用）。
+
+    以未绑定方法直接调用，不构造实例，无 playwright 环境下也可验证。
+    """
+    fake_self = MagicMock()
+    sentinel = MagicMock(name="response")
+    mock_fetch = MagicMock(return_value=sentinel)
+    fake_self.fetch = mock_fetch
+    result = DynamicFetcher.get(fake_self, "https://example.com/")
+    assert result is sentinel
+    mock_fetch.assert_called_once_with("https://example.com/")
+
+
+async def test_dynamic_fetcher_async_get_alias_delegates_to_async_fetch() -> None:
+    """async_get 是 async_fetch 的动词统一别名。"""
+    fake_self = MagicMock()
+    sentinel = MagicMock(name="response")
+    mock_af = AsyncMock(return_value=sentinel)
+    fake_self.async_fetch = mock_af
+    result = await DynamicFetcher.async_get(fake_self, "https://example.com/")
+    assert result is sentinel
+    mock_af.assert_awaited_once_with("https://example.com/")

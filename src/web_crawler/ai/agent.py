@@ -220,10 +220,8 @@ class AIScrapeAgent:
 
     @staticmethod
     def _do_fetch(fetcher: Any, url: str) -> Response:
-        # 兼容 Fetcher.get 与 DynamicFetcher.fetch 两种入口
-        if hasattr(fetcher, "get"):
-            return fetcher.get(url)
-        return fetcher.fetch(url)
+        # Fetcher 与 DynamicFetcher 均提供 get（后者为动词统一别名）
+        return fetcher.get(url)
 
     def _fetch_text(self, url: str) -> str:
         resp = self._do_fetch(self._ensure_fetcher(), url)
