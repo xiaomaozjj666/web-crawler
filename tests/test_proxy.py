@@ -80,7 +80,8 @@ def test_cooldown_expiry_resets_failure_count() -> None:
     pool.mark_failed("a")
     pool.mark_failed("a")  # 2 次失败 → 进入冷却
     assert pool.get() == "b"
-    time.sleep(0.06)
+    # 3 倍冷却时长的余量：CI Windows 机器的时钟/调度抖动下 10ms 级余量会偶发不足
+    time.sleep(0.15)
     # 冷却到期：计数被清零，a 只需再失败 1 次（< max_failures）也不会再冷却
     pool.mark_failed("a")
     assert pool._failures["a"] == 1
