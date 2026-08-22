@@ -74,7 +74,7 @@ camoufox = [
 ]
 captcha = [
     "ddddocr>=1.6.1,<2",
-    "numpy>=1.26,<3",
+    "numpy>=2.2.6,<3",
 ]
 crypto = [
     "pycryptodome>=3.23.0,<4",
