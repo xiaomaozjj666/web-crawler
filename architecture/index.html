@@ -1,0 +1,1161 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Scrapling 风格隐身爬虫库 + JS 逆向 Agent">
+      
+      
+      
+        <link rel="canonical" href="https://github.com/xiaomaozjj666/web-crawler/architecture/">
+      
+      
+        <link rel="prev" href="..">
+      
+      
+        <link rel="next" href="../reverse-agent/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>架构说明 - web-crawler 文档</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="blue">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#_1" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href=".." title="web-crawler 文档" class="md-header__button md-logo" aria-label="web-crawler 文档" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            web-crawler 文档
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              架构说明
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="blue"  aria-label="切换暗色模式"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="切换暗色模式" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="blue"  aria-label="切换亮色模式"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="切换亮色模式" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/xiaomaozjj666/web-crawler" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    xiaomaozjj666/web-crawler
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="标签" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  首页
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  架构说明
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../reverse-agent/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  JS 逆向 Agent
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../api-reference/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  API 参考
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="web-crawler 文档" class="md-nav__button md-logo" aria-label="web-crawler 文档" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    web-crawler 文档
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/xiaomaozjj666/web-crawler" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    xiaomaozjj666/web-crawler
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    首页
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    架构说明
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    架构说明
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        模块树
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        各层职责
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="各层职责">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#srcweb_crawler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        核心库 src/web_crawler/
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="核心库 src/web_crawler/">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#parser" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        解析层 parser/
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fetchers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        抓取层 fetchers/
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#spider-spider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Spider 层 spider/
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ai-ai" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AI 层 ai/
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="AI 层 ai/">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#llm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LLM 基础
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ai" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AI 抽取
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#js-agent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        JS 逆向 Agent
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#agent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        主流 Agent 能力对齐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        浏览器交互与多标签页
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#app" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        应用层 app/
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        单模型策略
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        数据流
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reverse-agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    JS 逆向 Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API 参考
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        模块树
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        各层职责
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="各层职责">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#srcweb_crawler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        核心库 src/web_crawler/
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="核心库 src/web_crawler/">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#parser" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        解析层 parser/
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fetchers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        抓取层 fetchers/
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#spider-spider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Spider 层 spider/
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ai-ai" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AI 层 ai/
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="AI 层 ai/">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#llm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LLM 基础
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ai" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AI 抽取
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#js-agent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        JS 逆向 Agent
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#agent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        主流 Agent 能力对齐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        浏览器交互与多标签页
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#app" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        应用层 app/
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        单模型策略
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        数据流
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="_1">架构说明<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h1>
+<p><code>web-crawler</code> 采用分层架构：核心库（<code>src/web_crawler/</code>）+ 应用层（<code>app/</code>）。
+核心库对外暴露统一公开 API，所有重依赖（<code>playwright</code> / <code>curl_cffi</code> / <code>camoufox</code>）
+均通过 <code>__getattr__</code> 懒加载，<code>import web_crawler</code> 不会强制加载任何可选依赖。</p>
+<h2 id="_2">模块树<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>src/web_crawler/          # 核心库
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  _types.py               # TextHandler / Attrs / ResultList
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  compat.py               # 可选依赖探测（graceful degradation）
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>  response.py             # 统一 Response（selector helpers, meta, urljoin）
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>  crawler.py              # 同域异步爬虫（robots.txt 感知）
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>  parser/
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    selector.py           # Selector + Adaptors（CSS/XPath/text/similarity/adaptive）
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    adaptive.py           # compute_fingerprint + similarity_score + best_match
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    storage.py            # AdaptiveStorage（线程安全 SQLite 存指纹）
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    visual.py             # VisualExtractor（PixelRAG 风格截图瓦片 VLM）
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>  fetchers/
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    _base.py              # BaseFetcher（共享配置 + response 构建）
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    fetcher.py            # Fetcher + AsyncFetcher（curl_cffi TLS 隐身, httpx 兜底, JA3 定制）
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    dynamic.py            # DynamicFetcher（Playwright JS 渲染）
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>    stealthy.py           # StealthyFetcher（反爬 / Cloudflare）
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    camoufox.py           # CamoufoxFetcher（抗指纹 Firefox）
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>    proxy.py              # ProxyPool（轮换 + 冷却）
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>  spider/
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>    spider.py             # Spider + Request + SpiderStats（暂停/续跑）
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>  ai/                     # AI 辅助抓取 + JS 逆向套件
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>    llm.py                # LLMProvider（OpenAI 兼容，默认 DeepSeek）
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>    extractor.py          # AIExtractor（CSS 选择器生成 + 自愈）
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>    agent.py              # AIScrapeAgent（robots 感知礼貌爬虫）
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>    hooks.py              # JS Hook 库（fetch/XHR/cookie/crypto/webpack/console）
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>    analyzer.py           # JSAnalyzer（webpack 模块抽取 + AI 反混淆）
+<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>    captcha.py            # CaptchaManager（检测 + 仅人类化处理）
+<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>    image_captcha.py     # ImageCaptchaSolver（OCR / slider 缺口 / click 点选，LLM Vision + ddddocr/Pillow 降级）
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>    reverse_agent.py      # ReverseAgent（observe→think→act 循环）
+<a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>    planner.py            # Planner/Actor 双脑分离 + 周期重规划
+<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>    loop.py               # LoopDetector + ContextCompressor（循环检测 + 历史压缩）
+<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>    judge.py              # TaskJudge（done 二次验证，防止 LLM 幻觉）
+<a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>    watchdog.py           # EventBus + Heartbeat + CrashRecovery（崩溃自愈）
+<a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>    recorder.py           # RunRecorder（成功路径编译为确定性脚本）
+<a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>    schema.py             # SchemaValidator（结构化抽取 Pydantic 校验）
+<a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>    dom_pruner.py         # DomPruner（DOM 焦点裁剪，Skyvern/browser-use 风格）
+<a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>    checkpoint.py         # CheckpointManager（断点续跑 + 状态持久化）
+<a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a>    confidence.py         # ConfidenceScorer（动作置信度评分，规则 + LLM 双路径）
+<a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>    guardrails.py         # ActionGuard（危险动作护栏，白名单 + 跨域拦截）
+<a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>  pentest/                # 轻量渗透辅助工具集（纯 Python，无外部命令依赖）
+<a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a>    port_scanner.py       # PortScanner（TCP connect 扫描，TOP-100 端口）
+<a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a>    dir_bruter.py         # DirBruter（目录/文件路径爆破）
+<a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a>    subdomain.py          # SubdomainEnumerator（DNS 子域名枚举）
+<a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a>    vuln_scanner.py       # VulnScanner（SQLi/XSS/路径穿越规则检测）
+<a id="__codelineno-0-44" name="__codelineno-0-44" href="#__codelineno-0-44"></a>    header_check.py       # HeaderChecker（8 项 HTTP 安全头检测 + A-F 评级）
+<a id="__codelineno-0-45" name="__codelineno-0-45" href="#__codelineno-0-45"></a>    report.py             # PentestReport（聚合所有结果 + summary/to_dict/to_json）
+<a id="__codelineno-0-46" name="__codelineno-0-46" href="#__codelineno-0-46"></a>  mcp/                    # MCP server + CLI
+<a id="__codelineno-0-47" name="__codelineno-0-47" href="#__codelineno-0-47"></a>    server.py             # ReverseMCPServer（JSON-RPC over stdio）
+<a id="__codelineno-0-48" name="__codelineno-0-48" href="#__codelineno-0-48"></a>    cli.py                # web-crawler-reverse 命令行
+<a id="__codelineno-0-49" name="__codelineno-0-49" href="#__codelineno-0-49"></a>  py.typed                # PEP 561 类型标记
+<a id="__codelineno-0-50" name="__codelineno-0-50" href="#__codelineno-0-50"></a>app/                      # 应用层
+<a id="__codelineno-0-51" name="__codelineno-0-51" href="#__codelineno-0-51"></a>  crawler.py              # 资源下载器（CLI / 主流程 / 网络编排，续传、去重、UI 驱动）
+<a id="__codelineno-0-52" name="__codelineno-0-52" href="#__codelineno-0-52"></a>  crawler_models.py       # 共享数据类 Resource / ManifestRow
+<a id="__codelineno-0-53" name="__codelineno-0-53" href="#__codelineno-0-53"></a>  crawler_net.py          # 网络/解析/工具层（限速、去重、URL 分类、HTML 解析）
+<a id="__codelineno-0-54" name="__codelineno-0-54" href="#__codelineno-0-54"></a>  crawler_report.py       # 报告/格式层（清单、摘要、MD/HTML 报告、HTML 重写、智能抽取）
+<a id="__codelineno-0-55" name="__codelineno-0-55" href="#__codelineno-0-55"></a>  db.py                   # SQLite 持久化（任务 + 结果，线程安全）
+<a id="__codelineno-0-56" name="__codelineno-0-56" href="#__codelineno-0-56"></a>  ui.py                   # 本地 Web UI（SSE 实时推送）
+<a id="__codelineno-0-57" name="__codelineno-0-57" href="#__codelineno-0-57"></a>  static/
+<a id="__codelineno-0-58" name="__codelineno-0-58" href="#__codelineno-0-58"></a>    index.html            # UI 前端模板（运行时读取）
+<a id="__codelineno-0-59" name="__codelineno-0-59" href="#__codelineno-0-59"></a>tests/                    # pytest 测试套件
+<a id="__codelineno-0-60" name="__codelineno-0-60" href="#__codelineno-0-60"></a>benchmarks.py             # 解析器/fetcher 微基准 + 内置基线 + 回归检测
+<a id="__codelineno-0-61" name="__codelineno-0-61" href="#__codelineno-0-61"></a>mkdocs.yml                # API 文档站点配置
+<a id="__codelineno-0-62" name="__codelineno-0-62" href="#__codelineno-0-62"></a>demo.py / demo.bat        # 交互式使用 demo
+</code></pre></div>
+<h2 id="_3">各层职责<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
+<h3 id="srcweb_crawler">核心库 <code>src/web_crawler/</code><a class="headerlink" href="#srcweb_crawler" title="Permanent link">&para;</a></h3>
+<h4 id="parser">解析层 <code>parser/</code><a class="headerlink" href="#parser" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong><code>Selector</code></strong> 基于 <code>lxml</code> + <code>cssselect</code>，对齐 Scrapling <code>Adaptor</code> API：</li>
+<li><code>css</code> / <code>css_first</code> / <code>xpath</code> / <code>xpath_first</code> / <code>re</code> / <code>re_first</code></li>
+<li><code>find_by_regex</code> / <code>get_all_text</code> / <code>prettify</code></li>
+<li>完整 DOM 遍历：<code>parent</code> / <code>children</code> / <code>siblings</code> / <code>next</code> / <code>previous</code> / <code>path</code></li>
+<li><strong><code>AdaptiveStorage</code></strong> 线程安全 SQLite，持久化元素指纹</li>
+<li><strong><code>compute_fingerprint</code></strong> 把元素结构特征编码为可比较向量</li>
+<li><strong><code>similarity_score</code></strong> 比较两指纹相似度，用于站点改版后重定位</li>
+</ul>
+<h4 id="fetchers">抓取层 <code>fetchers/</code><a class="headerlink" href="#fetchers" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong><code>Fetcher</code></strong> 主力 HTTP fetcher：<code>curl_cffi</code> 重放真实浏览器 TLS/JA3 指纹与 HTTP/2 帧序</li>
+<li>支持 <code>impersonate="chrome131"</code> 等浏览器预设</li>
+<li><strong>JA3 指纹定制</strong>：<code>ja3_fingerprint</code> 参数透传到 <code>curl_cffi</code> 的 <code>ja3</code> 参数，
+    覆盖预设的 TLS 扩展顺序，做细粒度 TLS 指纹定制</li>
+<li><code>curl_cffi</code> 缺失时自动降级到 <code>httpx</code>（带 warning，无指纹能力）</li>
+<li><strong><code>AsyncFetcher</code></strong> 纯异步 fetcher，与 <code>Fetcher</code> 共享配置但只暴露 async 方法</li>
+<li><strong><code>DynamicFetcher</code></strong> Playwright/Chromium 渲染，按选择器等待，按资源类型屏蔽</li>
+<li><strong><code>StealthyFetcher</code></strong> 反爬专用：注入指纹补丁 JS、人类化鼠标/滚动，处理 Cloudflare</li>
+<li><strong><code>CamoufoxFetcher</code></strong> 抗指纹 Firefox（Camoufox + Playwright），用于 JS 逆向 Agent</li>
+<li><strong><code>ProxyPool</code></strong> 轮询/随机代理池，失败冷却</li>
+</ul>
+<h4 id="spider-spider">Spider 层 <code>spider/</code><a class="headerlink" href="#spider-spider" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong><code>Spider</code></strong> 回调驱动爬虫框架：</li>
+<li>优先级调度、域名过滤、URL 去重</li>
+<li>JSON 状态序列化，支持暂停/续跑</li>
+<li><code>Request</code> 封装 URL + callback + meta</li>
+</ul>
+<h4 id="ai-ai">AI 层 <code>ai/</code><a class="headerlink" href="#ai-ai" title="Permanent link">&para;</a></h4>
+<h5 id="llm">LLM 基础<a class="headerlink" href="#llm" title="Permanent link">&para;</a></h5>
+<ul>
+<li><strong><code>LLMProvider</code></strong> Protocol，OpenAI 兼容 chat-completions 接口</li>
+<li><strong><code>DeepSeekProvider</code></strong> 默认 provider，指向 DeepSeek-V4-Pro</li>
+<li><strong><code>OpenAIProvider</code></strong> OpenAI 官方预置</li>
+<li>仅依赖 <code>httpx</code>，无额外 SDK</li>
+</ul>
+<h5 id="ai">AI 抽取<a class="headerlink" href="#ai" title="Permanent link">&para;</a></h5>
+<ul>
+<li><strong><code>AIExtractor</code></strong> 自然语言 schema → CSS 选择器，带自愈</li>
+<li><strong><code>AIScrapeAgent</code></strong> fetch + extract 编排，遵守 robots.txt、429/503 退避</li>
+</ul>
+<h5 id="js-agent">JS 逆向 Agent<a class="headerlink" href="#js-agent" title="Permanent link">&para;</a></h5>
+<ul>
+<li><strong><code>ReverseAgent</code></strong> observe→think→act 主循环</li>
+<li><strong><code>HookLibrary</code></strong> 6 个 JS Hook：fetch / XHR / cookie / <code>crypto.subtle</code> / webpack / console</li>
+<li><strong><code>JSAnalyzer</code></strong> webpack 模块抽取、签名流追踪、AI 反混淆与算法重写</li>
+<li><strong><code>CaptchaManager</code></strong> 检测 Turnstile / hCaptcha / reCAPTCHA v2&amp;v3 / 极验 GeeTest；仅模拟正常用户</li>
+</ul>
+<h5 id="agent">主流 Agent 能力对齐<a class="headerlink" href="#agent" title="Permanent link">&para;</a></h5>
+<p>下列模块对齐 browser-use / Skyvern / PentAGI / LangGraph 等生产级 Agent 框架：
+均通过 <code>ReverseAgentConfig</code> 字段单独开关。</p>
+<table>
+<thead>
+<tr>
+<th>能力</th>
+<th>模块</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DOM 焦点裁剪</td>
+<td><code>DomPruner</code></td>
+<td>规则 + LLM 重排，仅保留加密相关元素（≈80% token 削减）</td>
+</tr>
+<tr>
+<td>断点续跑</td>
+<td><code>CheckpointManager</code></td>
+<td>步末状态持久化；崩溃/中断后从最近 checkpoint 恢复</td>
+</tr>
+<tr>
+<td>动作置信度</td>
+<td><code>ConfidenceScorer</code></td>
+<td>规则 + LLM 双路径评分；低置信触发 fallback</td>
+</tr>
+<tr>
+<td>动作护栏</td>
+<td><code>ActionGuard</code></td>
+<td>域名白名单，拦截 localhost/非 HTTPS/跨域/危险脚本</td>
+</tr>
+<tr>
+<td>Planner/Actor 分离</td>
+<td><code>Planner</code></td>
+<td>高层子目标规划 + 周期重规划</td>
+</tr>
+<tr>
+<td>循环检测</td>
+<td><code>LoopDetector</code></td>
+<td>页面状态指纹；重复状态自动重规划</td>
+</tr>
+<tr>
+<td>上下文压缩</td>
+<td><code>ContextCompressor</code></td>
+<td>历史滚动摘要；超出 <code>max_history</code> 时自动压缩</td>
+</tr>
+<tr>
+<td>任务裁决</td>
+<td><code>TaskJudge</code></td>
+<td>独立 LLM 验证 <code>done</code>，防幻觉成功</td>
+</tr>
+<tr>
+<td>成功路径录制</td>
+<td><code>RunRecorder</code></td>
+<td>把成功 trace 编译为确定性 Python 脚本</td>
+</tr>
+<tr>
+<td>事件总线 + 看门狗</td>
+<td><code>watchdog</code></td>
+<td>发布/订阅事件、心跳卡死检测、浏览器崩溃自愈</td>
+</tr>
+<tr>
+<td>结构化 schema</td>
+<td><code>SchemaValidator</code></td>
+<td>Pydantic 结果校验 + 自动修复提示</td>
+</tr>
+</tbody>
+</table>
+<h5 id="_4">浏览器交互与多标签页<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h5>
+<ul>
+<li>6 个真实 Playwright 动作：<code>click</code> / <code>type</code> / <code>scroll</code> / <code>press</code> / <code>hover</code> / <code>select_option</code></li>
+<li>3 个多标签页动作：<code>new_tab</code> / <code>switch_tab</code> / <code>close_tab</code>，维护 <code>name → page</code> 映射</li>
+<li><strong>人类化输入轨迹</strong>：<code>humanize_input=True</code> 时</li>
+<li><code>click</code> 先 <code>hover</code> 移动鼠标，随机延迟 50–200 ms 后再点击</li>
+<li><code>type</code> 先 <code>focus</code>，思考停顿 100–300 ms，再用 <code>delay=30–150ms</code> 逐键输入</li>
+</ul>
+<h3 id="app">应用层 <code>app/</code><a class="headerlink" href="#app" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong><code>crawler.py</code></strong> 并发资源下载器：续传、去重、sitemap 发现</li>
+<li><strong><code>ui.py</code></strong> 本地 Web UI，支持 [资源采集器] 与 [JS 逆向 Agent] 双 Tab，
+  SSE 实时推送 <code>/reverse/stream</code>，截图画廊，任务模板</li>
+</ul>
+<h2 id="_5">单模型策略<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>
+<p><code>ReverseAgent</code> 与所有子组件共享同一个 <code>DeepSeekProvider(model="deepseek-v4-pro")</code> 实例。
+不存在按组件路由模型、不存在 LLM-as-judge 重排、不存在能力协商切换 provider。</p>
+<h2 id="_6">数据流<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>                ┌─────────────────────────────────────────┐
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>                │              ReverseAgent.run            │
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>                │  ┌─────────────────────────────────┐    │
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>                │  │   1. observe(page) → Observation │   │
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>                │  │      - hook_data (JS 注入捕获)    │   │
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>                │  │      - network_requests           │   │
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>                │  │      - scripts / dom_summary      │   │
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>                │  └────────────┬────────────────────┘    │
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>                │               ▼                          │
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>                │  ┌─────────────────────────────────┐    │
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>                │  │   2. think(observation) → Action │   │
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>                │  │      LLM 决定下一步动作           │   │
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>                │  │      Guard 校验 / Confidence 评分 │   │
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>                │  └────────────┬────────────────────┘    │
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>                │               ▼                          │
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>                │  ┌─────────────────────────────────┐    │
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>                │  │   3. act(page, action)           │   │
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>                │  │      - click/type/scroll/...     │   │
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>                │  │      - new_tab/switch_tab/...    │   │
+<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>                │  │      - inject_hook/analyze_js    │   │
+<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>                │  └────────────┬────────────────────┘    │
+<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a>                │               ▼                          │
+<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a>                │   LoopDetector / Judge                 │
+<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a>                │   循环到 done 或 max_steps               │
+<a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a>                └─────────────────────────────────────────┘
+</code></pre></div>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "content.code.copy", "content.code.annotate"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
