@@ -1,14 +1,12 @@
-"""Stealthy fetcher hardened against bot detection and Cloudflare challenges.
+"""针对 bot 检测与 Cloudflare 质询加固的隐身 fetcher。
 
-Aligns with Scrapling's ``StealthyFetcher``: a :class:`DynamicFetcher` subclass
-that injects stealth scripts to mask automation fingerprints, optionally
-humanizes input (random mouse movement and delays) and best-effort solves
-Cloudflare "Just a moment" interstitials.
+对齐 Scrapling 的 ``StealthyFetcher``：:class:`DynamicFetcher` 的子类，
+注入隐身脚本掩盖自动化指纹，可选地拟人化输入（随机鼠标移动与延时），并
+尽力解决 Cloudflare "Just a moment" 过渡页。
 
-The stealth logic is implemented by overriding the rendering hooks
-(``_setup_page`` / ``_post_load`` and their async counterparts) defined by
-:class:`DynamicFetcher`, so the rendering flow itself is reused rather than
-duplicated.
+隐身逻辑通过覆写 :class:`DynamicFetcher` 定义的渲染钩子
+（``_setup_page`` / ``_post_load`` 及其异步版本）实现，渲染流程本身复用
+而非复制。
 """
 
 from __future__ import annotations
@@ -56,12 +54,11 @@ _STEALTH_JS = r"""
 
 
 class StealthyFetcher(DynamicFetcher):
-    """:class:`DynamicFetcher` hardened with stealth, humanization and Cloudflare handling.
+    """用隐身、拟人化与 Cloudflare 处理加固的 :class:`DynamicFetcher`。
 
-    Defaults are tuned for stealth: images are blocked for speed and the referer
-    is spoofed to Google. Set ``humanize=True`` to add randomized mouse movement
-    and delays, and ``solve_cloudflare=True`` to best-effort wait for and click
-    Cloudflare challenge interstitials.
+    默认值面向隐身调优：为提速屏蔽图片，并把 referer 伪装为 Google。
+    设置 ``humanize=True`` 可加入随机鼠标移动与延时；设置
+    ``solve_cloudflare=True`` 可尽力等待并点击 Cloudflare 质询过渡页。
     """
 
     def __init__(
@@ -105,7 +102,7 @@ class StealthyFetcher(DynamicFetcher):
         self.humanize = humanize
         self.solve_cloudflare = solve_cloudflare
 
-    # -- sync hooks ----------------------------------------------------------
+    # -- 同步钩子 -------------------------------------------------------------
     def _setup_page(self, page: Any) -> None:
         # 注入隐身脚本，必须在任何导航之前执行以覆盖指纹
         page.add_init_script(_STEALTH_JS)
@@ -164,7 +161,7 @@ class StealthyFetcher(DynamicFetcher):
         except Exception:
             pass
 
-    # -- async hooks ---------------------------------------------------------
+    # -- 异步钩子 -------------------------------------------------------------
     async def _setup_page_async(self, page: Any) -> None:
         await page.add_init_script(_STEALTH_JS)
         await super()._setup_page_async(page)
@@ -220,13 +217,13 @@ class StealthyFetcher(DynamicFetcher):
         except Exception:
             pass
 
-    # -- public API (delegates to parent, which invokes the stealth hooks) --
+    # -- 公开 API（委托给父类，父类会调用隐身钩子） ---------------------------
     def fetch(self, url: str, **kwargs: Any) -> Any:
-        """Render ``url`` with full stealth and return a :class:`Response`."""
+        """以完整隐身模式渲染 ``url`` 并返回 :class:`Response`。"""
         return super().fetch(url, **kwargs)
 
     async def async_fetch(self, url: str, **kwargs: Any) -> Any:
-        """Asynchronously render ``url`` with full stealth and return a :class:`Response`."""
+        """异步以完整隐身模式渲染 ``url`` 并返回 :class:`Response`。"""
         return await super().async_fetch(url, **kwargs)
 
 

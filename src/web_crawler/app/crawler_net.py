@@ -1,15 +1,13 @@
-"""Network / parsing / utility layer of the web resource crawler.
+"""网页资源爬虫的网络/解析/工具层。
 
-Extracted from :mod:`app.crawler` during the module split. Contains the
-HTTP/robots-independent leaf helpers: URL classification and normalization,
-HTML page parsing, content deduplication, per-domain rate limiting, output
-path computation and CSS resource discovery.
+模块拆分时从 :mod:`app.crawler` 抽出，包含不依赖 fetch/robots 的叶子工具：
+URL 分类与规范化、HTML 页面解析、内容去重、域级限速、输出路径计算
+与 CSS 资源发现。
 
-This module never imports ``app.crawler`` (that would be circular); it only
-depends on :mod:`app.crawler_models` for the shared data classes. Functions
-that must observe patched module globals of ``app.crawler`` (e.g.
-``fetch``/``_get_opener``/``discover_sitemap_urls``) intentionally remain in
-``app.crawler`` itself.
+本模块绝不导入 ``app.crawler``（否则会循环依赖）；仅依赖
+:mod:`app.crawler_models` 提供的共享数据类。必须观察 ``app.crawler``
+被 patch 的模块全局名的函数（如 ``fetch``/``_get_opener``/
+``discover_sitemap_urls``）有意留在 ``app.crawler`` 本体中。
 """
 
 from __future__ import annotations
@@ -29,14 +27,14 @@ from typing import Any
 from urllib.parse import unquote, urldefrag, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request
 
-from app.crawler_models import ManifestRow, Resource
 from web_crawler._ssrf import host_is_unsafe, is_power_mode, validate_url_host
+from web_crawler.app.crawler_models import ManifestRow, Resource
 
 # 与 app.crawler 共用同一个 logger：UI 通过 attach_log_handler 挂到
 # "crawler" logger 的 handler 对所有模块日志生效，行为与拆分前一致。
 _log = logging.getLogger("crawler")
 
-# app.crawler 用 `from app.crawler_net import *` 同名再导出，保证拆分后
+# web_crawler.app.crawler 用 `from web_crawler.app.crawler_net import *` 同名再导出，保证拆分后
 # `app.crawler` 模块的所有属性仍可访问（兼容 cr.xxx 访问与 patch.object(cr, ...)）。
 __all__ = [
     "CSS_IMPORT_RE",
@@ -76,7 +74,7 @@ __all__ = [
     "validate_url_host",
 ]
 
-# ── Constants ────────────────────────────────────────────────────────────
+# ── 常量 ────────────────────────────────────────────────────────────
 
 HTML_RESOURCE_ATTRS = {
     "img": ("src", "srcset", "data-src", "data-original", "data-lazy-src"),
@@ -146,11 +144,11 @@ CSS_IMPORT_RE = re.compile(
 )
 
 
-# ── Domain rate limiter ──────────────────────────────────────────────────
+# ── 域级限速器 ──────────────────────────────────────────────────
 
 
 class DomainRateLimiter:
-    """Per-domain adaptive rate limiter with 429 Retry-After support."""
+    """域级自适应限速器，支持 429 Retry-After。"""
 
     def __init__(self, default_delay: float = 0.0):
         self._default_delay = default_delay
@@ -188,9 +186,9 @@ class DomainRateLimiter:
             self._last_times[domain] = time.time()
 
     def handle_429(self, url: str, retry_after: str | None) -> float | None:
-        """Handle 429 response. Returns seconds to wait if caller should retry."""
+        """处理 429 响应。调用方应重试时返回需等待的秒数。"""
         domain = urlparse(url).netloc.lower()
-        wait = 10  # default
+        wait = 10  # 默认
         if retry_after:
             try:
                 wait = int(retry_after)
@@ -202,18 +200,18 @@ class DomainRateLimiter:
         return wait
 
 
-# ── Content deduplication ────────────────────────────────────────────────
+# ── 内容去重 ────────────────────────────────────────────────────
 
 
 class ContentDedup:
-    """SHA256-based content deduplication registry."""
+    """基于 SHA256 的内容去重登记表。"""
 
     def __init__(self) -> None:
-        self._seen: dict[str, str] = {}  # sha256 -> url of first occurrence
+        self._seen: dict[str, str] = {}  # sha256 -> 首次出现的 url
         self._lock = threading.Lock()
 
     def is_duplicate(self, data: bytes, url: str) -> tuple[bool, str]:
-        """Returns (is_duplicate, sha256_hex)."""
+        """返回 (is_duplicate, sha256_hex)。"""
         sha = hashlib.sha256(data).hexdigest()
         with self._lock:
             existing = self._seen.get(sha)
@@ -224,13 +222,13 @@ class ContentDedup:
         return False, sha
 
     def mark_hash_seen(self, sha256: str) -> None:
-        """Mark a hash as already seen (used when resuming crawl state)."""
+        """把哈希标记为已见（恢复抓取状态时用）。"""
         with self._lock:
             if sha256 not in self._seen:
                 self._seen[sha256] = ""
 
     def seen_hashes(self) -> list[str]:
-        """Return list of all seen SHA256 hashes."""
+        """返回所有已见 SHA256 哈希的列表。"""
         with self._lock:
             return list(self._seen.keys())
 
@@ -239,7 +237,7 @@ class ContentDedup:
             return len(self._seen)
 
 
-# ── HTTP redirect safety (防 SSRF) ───────────────────────────────────────
+# ── HTTP 重定向安全（防 SSRF）──────────────────────────────────────
 
 
 class SafeRedirectHandler(HTTPRedirectHandler):
@@ -261,7 +259,7 @@ class SafeRedirectHandler(HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-# ── Page HTML parser ─────────────────────────────────────────────────────
+# ── 页面 HTML 解析器 ─────────────────────────────────────────────
 
 
 class PageParser(HTMLParser):
@@ -318,7 +316,7 @@ class PageParser(HTMLParser):
             self.resources.append(Resource(absolute, found_in, kind, self.page_url))
 
 
-# ── Utility functions ────────────────────────────────────────────────────
+# ── 工具函数 ────────────────────────────────────────────────────
 
 
 def parse_headers(values: list[str]) -> dict[str, str]:
@@ -491,7 +489,7 @@ def is_blocked_url(url: str, keywords: list[str]) -> bool:
     return any(keyword in lowered for keyword in keywords)
 
 
-# ── Text/parsing functions ────────────────────────────────────────────────
+# ── 文本/解析函数 ────────────────────────────────────────────────
 
 
 def decode_text(data: bytes, content_type: str, fallback: str | None) -> str:

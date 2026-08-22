@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from app import db
+from web_crawler.app import db
 
 
 @pytest.fixture(autouse=True)

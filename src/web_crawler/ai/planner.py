@@ -57,7 +57,7 @@ class Plan:
     """Planner 产出的整体规划。"""
 
     subgoals: list[SubGoal] = field(default_factory=list)
-    # 当前子目标 index（next subgoal to work on）
+    # 当前子目标 index（下一个待执行的子目标）
     current_index: int = 0
     # Plan 创建时间（步号），便于判断是否需要重规划
     created_at_step: int = 0

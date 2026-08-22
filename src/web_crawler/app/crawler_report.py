@@ -1,13 +1,12 @@
-"""Report / formatting layer of the web resource crawler.
+"""网页资源爬虫的报告/格式化层。
 
-Extracted from :mod:`app.crawler` during the module split. Contains the
-manifest writers (CSV/JSON), human-readable formatting helpers, error
-classification, report context building, the summary / markdown / HTML report
-writers, offline HTML rewriting, overlay stripping and smart data extraction.
+模块拆分时从 :mod:`app.crawler` 抽出，包含清单写入器（CSV/JSON）、
+人类可读的格式化工具、错误分类、报告上下文构建、摘要/Markdown/HTML
+报告写入器、离线 HTML 重写、遮罩层剥离与智能数据抽取。
 
-This module never imports ``app.crawler`` (that would be circular); it depends
-on :mod:`app.crawler_models` for the shared data classes and on
-:mod:`app.crawler_net` for classification/parsing helpers.
+本模块绝不导入 ``app.crawler``（否则会循环依赖）；依赖
+:mod:`app.crawler_models` 提供共享数据类，依赖 :mod:`app.crawler_net`
+提供分类/解析工具。
 """
 
 from __future__ import annotations
@@ -22,14 +21,14 @@ from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import urlparse
 
-from app.crawler_models import ManifestRow, Resource
-from app.crawler_net import category_for, extract_title, is_video_resource, same_domain
+from web_crawler.app.crawler_models import ManifestRow, Resource
+from web_crawler.app.crawler_net import category_for, extract_title, is_video_resource, same_domain
 
 # 与 app.crawler 共用同一个 logger：UI 通过 attach_log_handler 挂到
 # "crawler" logger 的 handler 对所有模块日志生效，行为与拆分前一致。
 _log = logging.getLogger("crawler")
 
-# app.crawler 用 `from app.crawler_report import *` 同名再导出，保证拆分后
+# web_crawler.app.crawler 用 `from web_crawler.app.crawler_report import *` 同名再导出，保证拆分后
 # `app.crawler` 模块的所有属性仍可访问（兼容 cr.xxx 访问与 patch.object(cr, ...)）。
 __all__ = [
     "EXTRACTED_DATA_FIELDS",
@@ -71,7 +70,7 @@ try:
 except ImportError:
     HAS_AES = False
 
-# ── Manifest writers ──────────────────────────────────────────────────────
+# ── 清单写入器 ──────────────────────────────────────────────────────
 
 FIELD_NAMES = [
     "status",
@@ -1106,10 +1105,10 @@ def rewrite_html(html: str, resources: list[ManifestRow], page_url: str, output_
     return rewritten
 
 
-# ── Overlay/popup/modal stripping ────────────────────────────────────────
+# ── 遮罩层/弹窗/模态框剥离 ────────────────────────────────────────
 
 OVERLAY_PATTERNS = [
-    # Common class/keyword patterns for overlays, modals, popups, paywalls
+    # 遮罩层/模态框/弹窗/付费墙的常见 class/关键词模式
     (
         re.compile(
             r'<div[^>]*\bclass\s*=\s*["\'][^"\']*'
@@ -1141,7 +1140,7 @@ OVERLAY_PATTERNS = [
         ),
         "div mask BG",
     ),
-    # Fixed/sticky overlay divs
+    # fixed/sticky 定位的遮罩 div
     (
         re.compile(
             r'<div[^>]*\bstyle\s*=\s*["\'][^"\']*'
@@ -1156,21 +1155,20 @@ OVERLAY_PATTERNS = [
 
 
 def strip_page_overlays(html: str, aggressive: bool = False) -> str:
-    """Remove overlay/popup/paywall HTML elements from page markup.
+    """移除页面标记中的遮罩层/弹窗/付费墙 HTML 元素。
 
-    Returns cleaned HTML with known overlay elements removed.
+    返回剔除已知遮罩元素后的 HTML。
     """
     result = html
 
-    # Apply pattern-based removal
+    # 按模式移除
     for pattern, label in OVERLAY_PATTERNS:
         if not aggressive and "fixed/sticky" in label:
-            continue  # skip overaggressive pattern unless --aggressive
+            continue  # 非激进模式跳过匹配过宽的正则
         result = pattern.sub("", result)
 
-    # Remove common overlay containers by known IDs — use a single compiled
-    # alternation regex per attribute (id= / class=) so each page is scanned
-    # exactly twice rather than 2 * len(ids) = ~60 times.
+    # 按已知 ID 移除常见遮罩容器 —— 每个属性（id= / class=）各用一条编译好的
+    # 交替正则，每个页面只扫描两次，而不是 2 * len(ids) ≈ 60 次。
     overlay_ids_alt = (
         "mask|overlay|shadow|shade|dialog|lightbox|modal|popup|subscribe|"
         "subscribe-box|signin|login|paywall|vip|member|register|download-app|"
@@ -1193,7 +1191,7 @@ def strip_page_overlays(html: str, aggressive: bool = False) -> str:
     return result
 
 
-# ── Smart data extraction ────────────────────────────────────────────────
+# ── 智能数据抽取 ────────────────────────────────────────────────
 
 EXTRACTED_DATA_FIELDS = [
     "page_url",
@@ -1216,17 +1214,16 @@ EXTRACTED_DATA_FIELDS = [
 
 
 def smart_extract(html: str, page_url: str) -> dict[str, object]:
-    """Auto-extract structured data from a page.
+    """自动从页面抽取结构化数据。
 
-    Returns a dict with common metadata fields. Designed to work on any HTML page
-    without configuration.
+    返回含常见元数据字段的 dict；无需配置即可用于任意 HTML 页面。
     """
     result: dict[str, object] = {
         "page_url": page_url,
         "page_title": extract_title(html),
     }
 
-    # Open Graph / Twitter / Meta tags
+    # Open Graph / Twitter / Meta 标签
     og_patterns = {
         "og_title": (r'<meta\s+property=["\']og:title["\'][^>]*content=["\']([^"\']*)["\']', False),
         "og_description": (
@@ -1243,34 +1240,34 @@ def smart_extract(html: str, page_url: str) -> dict[str, object]:
         match = re.search(pattern, html, re.IGNORECASE)
         result[key] = match.group(1) if match else ""
 
-    # Meta description (fallback: og:description)
+    # Meta description（回退：og:description）
     md = re.search(
         r'<meta\s+name=["\']description["\'][^>]*content=["\']([^"\']*)["\']', html, re.IGNORECASE
     )
     result["meta_description"] = md.group(1) if md else result.get("og_description", "")
 
-    # Meta keywords
+    # Meta 关键词
     mk = re.search(
         r'<meta\s+name=["\']keywords["\'][^>]*content=["\']([^"\']*)["\']', html, re.IGNORECASE
     )
     result["meta_keywords"] = mk.group(1) if mk else ""
 
-    # Heading counts
+    # 标题计数
     result["h1_count"] = len(re.findall(r"<h1[>\s]", html, re.IGNORECASE))
     result["h2_count"] = len(re.findall(r"<h2[>\s]", html, re.IGNORECASE))
     result["h3_count"] = len(re.findall(r"<h3[>\s]", html, re.IGNORECASE))
 
-    # Link / image / video counts
+    # 链接/图片/视频计数
     result["link_count"] = len(re.findall(r"<a\s+", html, re.IGNORECASE))
     result["image_count"] = len(re.findall(r"<img\s+", html, re.IGNORECASE))
     result["video_count"] = len(re.findall(r"<video\s+", html, re.IGNORECASE))
 
-    # Text content length (approx)
+    # 文本长度（近似值）
     text_stripped = re.sub(r"<[^>]+>", "", html)
     text_stripped = re.sub(r"\s+", " ", text_stripped).strip()
     result["text_length"] = len(text_stripped)
 
-    # Canonical URL
+    # 规范链接（canonical URL）
     canonical = re.search(
         r'<link\s+rel=["\']canonical["\'][^>]*href=["\']([^"\']*)["\']', html, re.IGNORECASE
     )
@@ -1280,7 +1277,7 @@ def smart_extract(html: str, page_url: str) -> dict[str, object]:
 
 
 def write_extracted_data(output_dir: Path, data: list[dict[str, object]]) -> None:
-    """Write extracted data to JSON and CSV."""
+    """把抽取数据写入 JSON 与 CSV。"""
     json_path = output_dir / "extracted_data.json"
     json_path.write_text(
         json.dumps(data, ensure_ascii=False, indent=2),
@@ -1296,13 +1293,13 @@ def write_extracted_data(output_dir: Path, data: list[dict[str, object]]) -> Non
 
 
 def extract_readable_text(html: str) -> str:
-    """Extract readable article/main text from HTML using simple heuristics."""
-    # Try <article> first
+    """用简单启发式从 HTML 抽取可读的正文/主要文本。"""
+    # 优先尝试 <article>
     m = re.search(r"<article[^>]*>(.*?)</article>", html, re.DOTALL | re.IGNORECASE)
     if m:
         html = m.group(1)
     else:
-        # Try common content containers
+        # 尝试常见内容容器
         for selector in (
             'id="content"',
             'id="article"',
@@ -1320,7 +1317,7 @@ def extract_readable_text(html: str) -> str:
                 html = m.group(1)
                 break
         else:
-            # Fallback: <body>
+            # 兜底：<body>
             m = re.search(r"<body[^>]*>(.*?)</body>", html, re.DOTALL | re.IGNORECASE)
             if m:
                 html = m.group(1)
@@ -1330,6 +1327,6 @@ def extract_readable_text(html: str) -> str:
     text = re.sub(r"<[^>]+>", " ", text)
     text = html_lib.unescape(text)
     text = re.sub(r"\s+", " ", text).strip()
-    # Remove very short lines (likely nav/boilerplate)
+    # 去掉过短的行（多为导航/模板文字）
     lines = [line.strip() for line in text.split("\n") if len(line.strip()) > 30]
     return "\n".join(lines) if lines else text

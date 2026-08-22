@@ -129,6 +129,30 @@ class RobustSpider(Spider):
 
 去重默认按 `method + url + body` 的 SHA1 指纹判定（同 URL 不同分页参数不再互相误杀），需要磁盘持久化等自定义行为时可传入 `dupefilter=MyDupeFilter()`。
 
+`stream()` 为持续流式调度：并发槽位空出即派发下一个请求，慢请求不会阻塞后续调度。下载流程可通过 `DownloaderMiddleware` 介入（`process_request` 返回 `Response` 可短路下载、抛 `IgnoreRequest` 可丢弃请求；`process_response` 可变换响应），回调产出的 item 经 `ItemPipeline` 链变换/过滤（抛 `DropItem` 或返回 `None` 丢弃）：
+
+```python
+from web_crawler import DownloaderMiddleware, ItemPipeline, IgnoreRequest, DropItem
+
+
+class CacheMiddleware(DownloaderMiddleware):
+    def process_request(self, request, spider):
+        cached = my_cache.get(request.url)
+        return cached  # 命中缓存时短路下载；None 则正常放行
+
+
+class CleanPipeline(ItemPipeline):
+    def process_item(self, item, spider):
+        if not item.get("name"):
+            raise DropItem("empty name")
+        return {**item, "name": item["name"].strip()}
+
+
+class MySpider(Spider):
+    middlewares = [CacheMiddleware]  # 类或实例均可，按声明顺序执行
+    item_pipelines = [CleanPipeline]
+```
+
 ### JS 渲染与反爬
 
 ```python
@@ -281,20 +305,19 @@ src/web_crawler/          # 核心库
   crawler.py              # 同域异步爬虫（robots.txt 感知）
   parser/                 # Selector + 自适应引擎 + 指纹存储 + 截图瓦片 VLM
   fetchers/               # Fetcher / AsyncFetcher / DynamicFetcher / StealthyFetcher / CamoufoxFetcher / ProxyPool
-  spider/                 # Spider + Request + SpiderStats（暂停/续跑）
+  spider/                 # Spider 框架（重试/robots/指纹去重/中间件管道/暂停续跑/流式并发）
   ai/                     # LLM 层 + AIExtractor + AIScrapeAgent + JS 逆向套件 + 生产级 Agent 能力
   pentest/                # 轻量渗透辅助工具集（纯 Python，无外部命令依赖）
   mcp/                    # ReverseMCPServer（JSON-RPC over stdio）+ CLI
+  app/                    # 应用层（随 web_crawler 包分发，不再污染顶层 app 命名空间）
+    crawler.py            # 并发资源下载器（CLI / 主流程编排，续传、去重、sitemap、UI 驱动）
+    crawler_models.py     # 共享数据类 Resource / ManifestRow
+    crawler_net.py        # 网络/解析/工具层（限速、去重、URL 分类、HTML 解析）
+    crawler_report.py     # 报告/格式层（清单、摘要、MD/HTML 报告、HTML 重写、智能抽取）
+    db.py                 # SQLite 持久化（任务 + 结果，线程安全）
+    ui.py                 # 本地 Web UI（SSE 实时推送）
+    static/index.html     # UI 前端模板（运行时读取）
   py.typed                # PEP 561 类型标记
-app/                      # 应用层
-  crawler.py              # 并发资源下载器（CLI / 主流程 / 网络编排，续传、去重、sitemap、UI 驱动）
-  crawler_models.py       # 共享数据类 Resource / ManifestRow
-  crawler_net.py          # 网络/解析/工具层（限速、去重、URL 分类、HTML 解析）
-  crawler_report.py       # 报告/格式层（清单、摘要、MD/HTML 报告、HTML 重写、智能抽取）
-  db.py                   # SQLite 持久化（任务 + 结果，线程安全）
-  ui.py                   # 本地 Web UI（SSE 实时推送）
-  static/
-    index.html            # UI 前端模板（运行时读取）
 tests/                    # pytest 测试套件
 benchmarks.py             # 解析器/fetcher 微基准 + 回归检测
 demo.py / demo.bat        # 交互式使用演示

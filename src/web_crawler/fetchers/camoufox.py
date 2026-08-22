@@ -1,23 +1,21 @@
-"""Anti-fingerprint Firefox fetcher backed by Camoufox.
+"""基于 Camoufox 的反指纹 Firefox fetcher。
 
-Borrows from the open-source `Camoufox <https://github.com/daijro/camoufox>`_
-project (MIT) — the same anti-detect Firefox that Scrapling's ``StealthyFetcher``
-builds on. Camoufox is a patched Firefox that spoofs its fingerprint at the C++
-level (navigator, screen, WebGL, fonts, timezone/geolocation, …) and exposes a
-Playwright-compatible ``Browser`` object, so it slots into the existing
-:class:`~web_crawler.fetchers.dynamic.DynamicFetcher` rendering flow.
+借鉴开源项目 `Camoufox <https://github.com/daijuro/camoufox>`_（MIT）——
+与 Scrapling ``StealthyFetcher`` 所用相同的反检测 Firefox。Camoufox 是在
+C++ 层伪装指纹（navigator、screen、WebGL、字体、时区/地理位置等）的魔改
+Firefox，并暴露 Playwright 兼容的 ``Browser`` 对象，因此可以直接接入现有
+:class:`~web_crawler.fetchers.dynamic.DynamicFetcher` 的渲染流程。
 
-Only the browser *launch* and *context creation* differ from
-:class:`DynamicFetcher`: Camoufox generates a coherent fingerprint at launch, so
-the per-fetch context must **not** override user-agent / locale / viewport
-(doing so would clash with the generated fingerprint and leak automation). All
-waiting / ``page_action`` / ``network_idle`` behaviour is inherited unchanged.
+与 :class:`DynamicFetcher` 的区别仅在浏览器*启动*与*上下文创建*：Camoufox
+在启动时生成一套自洽的指纹，因此每次抓取的 context **不得**覆盖
+user-agent / locale / viewport（否则会与生成的指纹冲突，泄漏自动化痕迹）。
+所有等待 / ``page_action`` / ``network_idle`` 行为原样继承。
 
-This is a general anti-fingerprint rendering option; it does not hook, reverse
-engineer, or forge any site-specific request signatures.
+这是一个通用的反指纹渲染选项；不 hook、不逆向、不伪造任何特定站点的
+请求签名。
 
-Example
--------
+示例
+----
 >>> from web_crawler import CamoufoxFetcher
 >>> with CamoufoxFetcher(os="windows", humanize=True, geoip=True) as f:
 ...     resp = f.fetch("https://example.com")
@@ -40,28 +38,28 @@ if TYPE_CHECKING:
 
 
 class CamoufoxFetcher(DynamicFetcher):
-    """A :class:`DynamicFetcher` that renders with the Camoufox anti-detect Firefox.
+    """用 Camoufox 反检测 Firefox 渲染的 :class:`DynamicFetcher`。
 
-    Parameters (in addition to :class:`DynamicFetcher`'s)
+    Parameters（在 :class:`DynamicFetcher` 之外新增的）
     -----------------------------------------------------
     os:
-        Fingerprint OS: ``"windows"``/``"macos"``/``"linux"`` or a list to pick
-        from randomly. ``None`` lets Camoufox choose.
+        指纹操作系统：``"windows"``/``"macos"``/``"linux"``，或传入列表
+        随机挑选。``None`` 时交给 Camoufox 决定。
     humanize:
-        Humanize cursor movement — ``True`` or the max duration in seconds.
+        拟人化光标移动——``True`` 或最大时长（秒）。
     locale:
-        Locale(s) for the Intl API, e.g. ``"en-US"`` or ``["en-US", "fr-FR"]``.
+        Intl API 的 locale，如 ``"en-US"`` 或 ``["en-US", "fr-FR"]``。
     geoip:
-        ``True`` to auto-derive geolocation/timezone from the (proxy) IP, or a
-        specific IP string. Recommended when using a proxy.
+        ``True`` 时根据（代理）IP 自动推导地理位置/时区，也可传具体 IP
+        字符串。使用代理时建议开启。
     block_webrtc:
-        Block WebRTC entirely (prevents local-IP leaks).
+        彻底屏蔽 WebRTC（防止本机 IP 泄漏）。
     window:
-        Fixed ``(width, height)``; leave ``None`` so Camoufox picks one (a fixed
-        size is itself fingerprintable).
+        固定的 ``(宽, 高)``；保持 ``None`` 让 Camoufox 自选（固定尺寸本身
+        就是指纹特征）。
     camoufox_options:
-        Escape hatch: extra keyword arguments passed straight to ``Camoufox(...)``
-        (e.g. ``screen``, ``fonts``, ``fingerprint_preset``, ``disable_coop``).
+        逃生口：直接透传给 ``Camoufox(...)`` 的额外关键字参数
+        （如 ``screen``、``fonts``、``fingerprint_preset``、``disable_coop``）。
     """
 
     def __init__(
@@ -122,9 +120,9 @@ class CamoufoxFetcher(DynamicFetcher):
         self._camoufox_cm: Any = None
         self._async_camoufox_cm: Any = None
 
-    # -- launch kwargs ------------------------------------------------------
+    # -- 启动参数 -----------------------------------------------------------
     def _launch_kwargs(self) -> dict[str, Any]:
-        """Assemble the ``Camoufox(...)`` launch options for this fetcher."""
+        """组装本次抓取所需的 ``Camoufox(...)`` 启动选项。"""
         kwargs: dict[str, Any] = {"headless": self.headless, "humanize": self.humanize}
         if self.os is not None:
             kwargs["os"] = self.os
@@ -144,7 +142,7 @@ class CamoufoxFetcher(DynamicFetcher):
         kwargs.update(self.camoufox_options)
         return kwargs
 
-    # -- context kwargs -----------------------------------------------------
+    # -- context 参数 --------------------------------------------------------
     def _context_kwargs(
         self,
         *,
@@ -158,7 +156,7 @@ class CamoufoxFetcher(DynamicFetcher):
             "ignore_https_errors": not self.verify,
         }
 
-    # -- sync browser lifecycle --------------------------------------------
+    # -- 同步浏览器生命周期 ---------------------------------------------------
     def _ensure_browser(self) -> Any:
         if self._browser is None:
             from camoufox.sync_api import Camoufox
@@ -201,7 +199,7 @@ class CamoufoxFetcher(DynamicFetcher):
         finally:
             context.close()
 
-    # -- async browser lifecycle -------------------------------------------
+    # -- 异步浏览器生命周期 ---------------------------------------------------
     async def _ensure_async_browser(self) -> Any:
         if self._async_browser is None:
             from camoufox.async_api import AsyncCamoufox
@@ -243,9 +241,9 @@ class CamoufoxFetcher(DynamicFetcher):
         finally:
             await context.close()
 
-    # -- lifecycle ----------------------------------------------------------
+    # -- 生命周期 ------------------------------------------------------------
     def close(self) -> None:
-        """Close the Camoufox browser and its managed Playwright driver (sync)."""
+        """关闭 Camoufox 浏览器及其托管的 Playwright driver（同步）。"""
         if self._camoufox_cm is not None:
             try:
                 self._camoufox_cm.__exit__(None, None, None)
@@ -255,7 +253,7 @@ class CamoufoxFetcher(DynamicFetcher):
             self._browser = None
 
     async def aclose(self) -> None:
-        """Close both sync and async Camoufox browsers."""
+        """关闭同步与异步两个 Camoufox 浏览器。"""
         if self._camoufox_cm is not None:
             try:
                 self._camoufox_cm.__exit__(None, None, None)

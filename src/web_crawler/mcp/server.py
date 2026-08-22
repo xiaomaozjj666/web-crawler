@@ -582,7 +582,7 @@ class ReverseMCPServer:
             },
         ]
 
-    # -- Prompts / Resources / Progress --------------------------------------
+    # -- Prompts / Resources / 进度 ------------------------------------------
 
     def get_prompts(self) -> list[dict]:
         """返回 MCP prompts 列表（预定义 prompt 模板）。"""

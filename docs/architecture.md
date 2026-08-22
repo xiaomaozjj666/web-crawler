@@ -1,6 +1,6 @@
 # 架构说明
 
-`web-crawler` 采用分层架构：核心库（`src/web_crawler/`）+ 应用层（`app/`）。
+`web-crawler` 采用分层架构：核心库（`src/web_crawler/`）+ 应用层（`src/web_crawler/app/`，随核心包分发）。
 核心库对外暴露统一公开 API，所有重依赖（`playwright` / `curl_cffi` / `camoufox`）
 均通过 `__getattr__` 懒加载，`import web_crawler` 不会强制加载任何可选依赖。
 
@@ -56,7 +56,7 @@ src/web_crawler/          # 核心库
     server.py             # ReverseMCPServer（JSON-RPC over stdio）
     cli.py                # web-crawler-reverse 命令行
   py.typed                # PEP 561 类型标记
-app/                      # 应用层
+src/web_crawler/app/       # 应用层（随核心包分发）
   crawler.py              # 资源下载器（CLI / 主流程 / 网络编排，续传、去重、UI 驱动）
   crawler_models.py       # 共享数据类 Resource / ManifestRow
   crawler_net.py          # 网络/解析/工具层（限速、去重、URL 分类、HTML 解析）
@@ -153,7 +153,7 @@ demo.py / demo.bat        # 交互式使用 demo
   - `click` 先 `hover` 移动鼠标，随机延迟 50–200 ms 后再点击
   - `type` 先 `focus`，思考停顿 100–300 ms，再用 `delay=30–150ms` 逐键输入
 
-### 应用层 `app/`
+### 应用层 `src/web_crawler/app/`
 
 - **`crawler.py`** 并发资源下载器：续传、去重、sitemap 发现
 - **`ui.py`** 本地 Web UI，支持 [资源采集器] 与 [JS 逆向 Agent] 双 Tab，

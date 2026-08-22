@@ -1,20 +1,20 @@
-"""Scrapling-style :class:`Selector` — a high-performance element selector.
+"""Scrapling 风格的 :class:`Selector` — 高性能元素选择器。
 
-Built on ``lxml`` for fast CSS/XPath evaluation, with an adaptive engine that
-relocates elements by structural similarity when a website's markup changes.
+基于 ``lxml`` 实现快速的 CSS/XPath 求值，并带自适应引擎：网站标记变化时
+按结构相似度重新定位元素。
 
-Example
--------
+示例
+----
 >>> from web_crawler import Selector
 >>> page = Selector('<div><a id="p1" class="product">Product 1</a></div>',
 ...                  url="https://shop.example.com", adaptive=True)
 >>> el = page.css_first("#p1", auto_save=True)
 >>> el.text
 'Product 1'
->>> # Later, even after markup changes:
+>>> # 之后即使标记变了：
 >>> page2 = Selector('<div><a data-id="p1" class="product new">Product 1</a></div>',
 ...                  url="https://shop.example.com", adaptive=True)
->>> page2.css_first("#p1", adaptive=True).text  # relocated by similarity
+>>> page2.css_first("#p1", adaptive=True).text  # 按相似度重新定位
 'Product 1'
 """
 
@@ -53,7 +53,7 @@ def _split_attr_pseudo(selector: str) -> tuple[str, str | None]:
     return selector, None
 
 
-# Module-level default storage (lazily created so importing the module is cheap).
+# 模块级默认存储（惰性创建，让模块导入保持轻量）。
 _default_storage: AdaptiveStorage | None = None
 
 
@@ -72,7 +72,7 @@ def _domain_from_url(url: str | None) -> str:
 
 
 class Adaptors:
-    """Facade over adaptive storage for a single domain."""
+    """面向单个域名的自适应存储门面。"""
 
     def __init__(
         self,
@@ -132,7 +132,7 @@ class Adaptors:
 
 
 class Selector:
-    """A Scrapling-style selector wrapping an lxml element tree."""
+    """包装 lxml 元素树的 Scrapling 风格选择器。"""
 
     def __init__(
         self,
@@ -153,7 +153,7 @@ class Selector:
         # 保留 adaptive_domain 以便 _wrap 构造子 Selector 时保持同一域名
         self._adaptive_domain = adaptive_domain
 
-    # -- parsing -----------------------------------------------------------
+    # -- 解析 -----------------------------------------------------------------
     @staticmethod
     def _parse(source: str | bytes | etree._Element, parser: str) -> etree._Element:
         if isinstance(source, etree._Element):
@@ -166,7 +166,7 @@ class Selector:
         # 无 meta charset 时 libxml2 会把 UTF-8 中文按 latin-1 误解码成乱码。
         return lxml_html.fromstring(source)
 
-    # -- basic properties --------------------------------------------------
+    # -- 基础属性 -------------------------------------------------------------
     @property
     def element(self) -> etree._Element:
         return self._element
@@ -199,10 +199,10 @@ class Selector:
     def children(self) -> ResultList[Selector]:
         return ResultList(self._wrap(c) for c in self._element if isinstance(c.tag, str))
 
-    # -- DOM traversal (Scrapling parity) ----------------------------------
+    # -- DOM 遍历（对齐 Scrapling） -------------------------------------------
     @property
     def siblings(self) -> ResultList[Selector]:
-        """Sibling elements sharing the same parent (excluding self)."""
+        """与自身同父的兄弟元素（不含自身）。"""
         parent = self._element.getparent()
         if parent is None:
             return ResultList()
@@ -212,19 +212,19 @@ class Selector:
 
     @property
     def next(self) -> Selector | None:
-        """The next sibling element, or ``None``."""
+        """下一个兄弟元素，没有时为 ``None``。"""
         nxt = self._element.getnext()
         return self._wrap(nxt) if nxt is not None and isinstance(nxt.tag, str) else None
 
     @property
     def previous(self) -> Selector | None:
-        """The previous sibling element, or ``None``."""
+        """上一个兄弟元素，没有时为 ``None``。"""
         prv = self._element.getprevious()
         return self._wrap(prv) if prv is not None and isinstance(prv.tag, str) else None
 
     @property
     def path(self) -> ResultList[Selector]:
-        """The chain of ancestors from the document root down to this element."""
+        """从文档根到本元素的祖先链。"""
         chain: list[etree._Element] = []
         node: etree._Element | None = self._element
         while node is not None and isinstance(node.tag, str):
@@ -233,7 +233,7 @@ class Selector:
         chain.reverse()
         return ResultList(self._wrap(c) for c in chain)
 
-    # -- CSS / XPath -------------------------------------------------------
+    # -- CSS / XPath ---------------------------------------------------------
     def css(
         self,
         selector: str,
@@ -242,7 +242,7 @@ class Selector:
         adaptive: bool = False,
         threshold: float = 0.5,
     ) -> ResultList[Any]:
-        """Select elements by CSS selector, with optional adaptive fallback.
+        """按 CSS 选择器选取元素，可选自适应兜底。
 
         支持 Scrapling 风格的 ``::attr(name)`` 伪元素：若选择器以
         ``::attr(name)`` 结尾，则返回匹配元素的属性值列表
@@ -277,7 +277,7 @@ class Selector:
         adaptive: bool = False,
         threshold: float = 0.5,
     ) -> Any:
-        """First match, or ``default``.
+        """首个匹配，无匹配时返回 ``default``。
 
         若选择器带 ``::attr(name)``，返回属性值（``TextHandler``），否则返回
         ``Selector``。
@@ -293,7 +293,7 @@ class Selector:
         adaptive: bool = False,
         threshold: float = 0.5,
     ) -> ResultList[Any]:
-        """Select elements by XPath, with optional adaptive fallback.
+        """按 XPath 选取元素，可选自适应兜底。
 
         支持 Scrapling 风格的 ``::attr(name)`` 伪元素（追加在 XPath 末尾）。
         若未使用伪元素，建议直接用原生 XPath ``@attr`` 语法。
@@ -326,11 +326,11 @@ class Selector:
         adaptive: bool = False,
         threshold: float = 0.5,
     ) -> Any:
-        """First match, or ``default``. 支持 ``::attr(name)`` 伪元素。"""
+        """首个匹配，无匹配时返回 ``default``。支持 ``::attr(name)`` 伪元素。"""
         result = self.xpath(selector, auto_save=auto_save, adaptive=adaptive, threshold=threshold)
         return result.first if result.first is not None else default
 
-    # -- text / similarity search -----------------------------------------
+    # -- 文本 / 相似度搜索 ----------------------------------------------------
     def find_by_text(
         self,
         text: str,
@@ -338,7 +338,7 @@ class Selector:
         exact: bool = False,
         case_sensitive: bool = False,
     ) -> ResultList[Selector]:
-        """Find elements whose direct text matches ``text``."""
+        """查找直接文本匹配 ``text`` 的元素。"""
         needle = text if case_sensitive else text.lower()
         matches: list[etree._Element] = []
         for el in self._element.iter():
@@ -356,10 +356,10 @@ class Selector:
         *,
         case_sensitive: bool = True,
     ) -> ResultList[Selector]:
-        """Find elements whose direct text matches the regex ``query``.
+        """查找直接文本匹配正则 ``query`` 的元素。
 
-        Mirrors Scrapling's ``find_by_regex``: scans every element's direct
-        text content against a compiled or string pattern.
+        对齐 Scrapling 的 ``find_by_regex``：用编译好的或字符串形式的模式
+        扫描每个元素的直接文本。
         """
         flags = 0 if case_sensitive else re.IGNORECASE
         pattern = re.compile(query, flags) if isinstance(query, str) else query
@@ -379,14 +379,14 @@ class Selector:
         threshold: float = 0.5,
         limit: int = 10,
     ) -> ResultList[Selector]:
-        """Find elements structurally similar to ``reference``."""
+        """查找与 ``reference`` 结构相似的元素。"""
         ref_el = reference.element if isinstance(reference, Selector) else reference
         if self._adaptors:
             scored = self._adaptors.find_similar(
                 ref_el, list(self._element.iter()), threshold, limit
             )
         else:
-            # Stateless fallback when adaptive mode is off.
+            # 自适应模式关闭时的无状态兜底。
             ref_fp = compute_fingerprint(ref_el)
             scored = []
             for cand in self._element.iter():
@@ -399,13 +399,12 @@ class Selector:
             scored = scored[:limit]
         return ResultList(self._wrap(el) for el, _ in scored)
 
-    # -- regex extraction (Scrapling parity) ------------------------------
+    # -- 正则提取（对齐 Scrapling） --------------------------------------------
     def re(self, regex: str | Pattern[str], *, clean_match: bool = False) -> list[str]:
-        """Return all regex matches from this element's text content.
+        """返回本元素文本内容的全部正则匹配。
 
-        Mirrors Scrapling's ``Adaptor.re``: searches the element's full text
-        and returns a list of matched strings (or groups if the pattern has
-        capturing groups).
+        对齐 Scrapling 的 ``Adaptor.re``：搜索元素的完整文本并返回匹配字符
+        串列表（模式含捕获组时返回各组内容）。
         """
         text = str(self.text)
         if clean_match:
@@ -414,7 +413,7 @@ class Selector:
         results: list[str] = []
         for match in pattern.finditer(text):
             if match.groups():
-                # With capturing groups, return the group tuple joined-like.
+                # 有捕获组时，返回各捕获组内容。
                 results.extend(g for g in match.groups() if g is not None)
             else:
                 results.append(match.group(0))
@@ -423,11 +422,11 @@ class Selector:
     def re_first(
         self, regex: str | Pattern[str], default: str | None = None, *, clean_match: bool = False
     ) -> str | None:
-        """Return the first regex match from this element's text, or ``default``."""
+        """返回本元素文本的首个正则匹配，无匹配时返回 ``default``。"""
         matches = self.re(regex, clean_match=clean_match)
         return matches[0] if matches else default
 
-    # -- serialization / text helpers (Scrapling parity) ------------------
+    # -- 序列化 / 文本辅助（对齐 Scrapling） -----------------------------------
     def get_all_text(
         self,
         *,
@@ -435,10 +434,10 @@ class Selector:
         strip: bool = False,
         ignore_tags: tuple[str, ...] = ("script", "style"),
     ) -> TextHandler:
-        """Return the concatenated text of all descendant elements.
+        """返回所有后代元素文本的拼接结果。
 
-        Mirrors Scrapling's ``get_all_text``: walks the subtree, skipping
-        ``script``/``style`` by default, joining text with ``separator``.
+        对齐 Scrapling 的 ``get_all_text``：遍历子树，默认跳过
+        ``script``/``style``，用 ``separator`` 连接文本。
         """
         parts: list[str] = []
         for el in self._element.iter():
@@ -453,16 +452,15 @@ class Selector:
         return TextHandler(separator.join(p for p in parts if p))
 
     def prettify(self) -> str:
-        """Return a pretty-printed serialization of this element (Scrapling parity)."""
+        """返回本元素格式化美化后的序列化结果（对齐 Scrapling）。"""
         return etree.tostring(self._element, encoding="unicode", pretty_print=True, method="html")
 
-    # -- adaptive public API (Scrapling parity) ---------------------------
+    # -- 自适应公开 API（对齐 Scrapling） --------------------------------------
     def save(self, element: Selector | etree._Element, identifier: str) -> None:
-        """Persist ``element``'s fingerprint under ``identifier``.
+        """把 ``element`` 的指纹以 ``identifier`` 持久化。
 
-        Mirrors Scrapling's ``Selector.save``: lets callers explicitly store an
-        element's structural fingerprint for later adaptive relocation, without
-        relying on ``auto_save=True`` during selection.
+        对齐 Scrapling 的 ``Selector.save``：让调用者显式存储元素的结构
+        指纹，供之后自适应重定位使用，而不必依赖选择时的 ``auto_save=True``。
         """
         if self._adaptors is None:
             raise RuntimeError(
@@ -472,11 +470,10 @@ class Selector:
         self._adaptors.save(identifier, el, url=self.url or "")
 
     def retrieve(self, identifier: str) -> dict[str, Any] | None:
-        """Return the stored fingerprint record for ``identifier``, or ``None``.
+        """返回 ``identifier`` 存储的指纹记录，没有时为 ``None``。
 
-        Mirrors Scrapling's ``Selector.retrieve``: fetch the previously saved
-        fingerprint (tag/text/fingerprint/url) for manual inspection or custom
-        matching.
+        对齐 Scrapling 的 ``Selector.retrieve``：取出先前保存的指纹
+        （tag/text/fingerprint/url），供人工检查或自定义匹配。
         """
         if self._adaptors is None:
             raise RuntimeError(
@@ -489,20 +486,20 @@ class Selector:
         element: dict[str, Any] | Selector | etree._Element,
         threshold: float = 0.5,
     ) -> ResultList[Selector]:
-        """Relocate ``element`` in the current document by structural similarity.
+        """按结构相似度在当前文档中重新定位 ``element``。
 
-        Mirrors Scrapling's ``Selector.relocate``: given a previously stored
-        fingerprint (as a dict from :meth:`retrieve`, a :class:`Selector`, or a
-        raw lxml element), find the best-matching element(s) in this document.
+        对齐 Scrapling 的 ``Selector.relocate``：给定先前存储的指纹
+        （:meth:`retrieve` 返回的 dict、:class:`Selector` 或原始 lxml 元素），
+        在本文档中找出最匹配的元素。
 
-        Returns a :class:`ResultList` of relocated selectors (empty if no
-        candidate exceeds ``threshold``).
+        返回重定位选择器构成的 :class:`ResultList`（无候选超过 ``threshold``
+        时为空）。
         """
         if self._adaptors is None:
             raise RuntimeError(
                 "relocate() requires adaptive=True; construct Selector(adaptive=True, storage=...)"
             )
-        # Normalize the input to a fingerprint string.
+        # 把输入归一化为指纹字符串。
         if isinstance(element, dict):
             stored_fp = element.get("fingerprint", "")
             if not stored_fp:
@@ -518,10 +515,10 @@ class Selector:
             return ResultList()
         return ResultList([self._wrap(matched)])
 
-    # -- internal helpers --------------------------------------------------
+    # -- 内部辅助 -------------------------------------------------------------
     def _css_raw(self, selector: str) -> list[etree._Element]:
-        # lxml.html elements expose a native ``cssselect`` method (cssselect is
-        # a hard dependency) — faster and simpler than translating to XPath.
+        # lxml.html 元素自带原生 ``cssselect`` 方法（cssselect 是硬依赖）——
+        # 比翻译成 XPath 更快也更简单。
         return list(self._element.cssselect(selector))
 
     def _wrap(self, element: etree._Element) -> Selector:
@@ -539,7 +536,7 @@ class Selector:
         element, _score = self._adaptors.find_adaptive(identifier, candidates, threshold)
         return element
 
-    # -- conveniences ------------------------------------------------------
+    # -- 便捷方法 -------------------------------------------------------------
     def __repr__(self) -> str:
         return f"<Selector tag={self.tag!r} text={str(self.text)[:40]!r}>"
 
@@ -547,10 +544,9 @@ class Selector:
         return iter(self.children)
 
     def __bool__(self) -> bool:
-        # A Selector is always truthy when it wraps an element. We must NOT
-        # define ``__len__`` to return the child count, otherwise
-        # ``if selector:`` would be False for leaf elements (e.g. ``<a>`` with
-        # no child elements), which breaks the ``el if el else default`` idiom.
+        # 包装了元素的 Selector 恒为真。绝不能定义 ``__len__`` 返回子元素
+        # 数，否则 ``if selector:`` 对叶子元素（如无子元素的 ``<a>``）会是
+        # False，破坏 ``el if el else default`` 惯用法。
         return self._element is not None
 
 

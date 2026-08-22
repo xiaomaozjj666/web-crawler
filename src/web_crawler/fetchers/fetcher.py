@@ -1,17 +1,14 @@
-"""Stealth HTTP fetcher backed by ``curl_cffi`` TLS-fingerprint impersonation.
+"""基于 ``curl_cffi`` TLS 指纹伪装的隐身 HTTP fetcher。
 
-Aligns with Scrapling's ``Fetcher`` / ``AsyncFetcher``: the primary workhorse
-for invisible HTTP fetching. ``curl_cffi`` replays a real browser's TLS/JA3
-fingerprint and HTTP/2 frame ordering, so requests look indistinguishable from
-Chrome at the network layer. When ``curl_cffi`` is unavailable the fetcher
-transparently degrades to ``httpx`` (with a warning) so the same API keeps
-working, albeit without fingerprint stealth.
+对齐 Scrapling 的 ``Fetcher`` / ``AsyncFetcher``：隐形 HTTP 抓取的主力。
+``curl_cffi`` 重放真实浏览器的 TLS/JA3 指纹与 HTTP/2 帧顺序，让请求在
+网络层与 Chrome 难以区分。``curl_cffi`` 不可用时，fetcher 透明降级到
+``httpx``（附告警），同一 API 继续可用，只是没有指纹隐身能力。
 
-Backend imports (``curl_cffi`` / ``httpx``) are deferred to ``__init__`` time
-rather than module import time, so merely importing the module does not force
-the optional dependencies to load.
+后端导入（``curl_cffi`` / ``httpx``）推迟到 ``__init__`` 时机而非模块
+导入时机，因此仅导入本模块不会强制加载可选依赖。
 
-All methods return the library-wide :class:`~web_crawler.response.Response`.
+所有方法返回库级统一的 :class:`~web_crawler.response.Response`。
 """
 
 from __future__ import annotations
@@ -35,7 +32,7 @@ if TYPE_CHECKING:
 
 
 def _load_curl_backend() -> tuple[Any, Any, Any, Any]:
-    """Import curl_cffi symbols lazily (only when curl backend is selected)."""
+    """惰性导入 curl_cffi 符号（仅在选用 curl 后端时）。"""
     from curl_cffi import CurlHttpVersion
     from curl_cffi.requests import AsyncSession as CurlAsyncSession
     from curl_cffi.requests import Session as CurlSession
@@ -45,7 +42,7 @@ def _load_curl_backend() -> tuple[Any, Any, Any, Any]:
 
 
 def _load_httpx_backend() -> Any:
-    """Import httpx lazily (only when the fallback path is taken)."""
+    """惰性导入 httpx（仅在走兜底路径时）。"""
     import httpx
 
     return httpx
@@ -84,12 +81,11 @@ def _parse_retry_after(value: str | None) -> float | None:
 
 
 class _FetcherCore(BaseFetcher):
-    """Shared session/retry/header logic for :class:`Fetcher` and :class:`AsyncFetcher`.
+    """:class:`Fetcher` 与 :class:`AsyncFetcher` 共享的会话/重试/请求头逻辑。
 
-    Both the sync and async fetchers share the same configuration, header
-    merging, retry loop, and curl-vs-httpx backend selection. This base holds
-    that shared state and the helper methods; the two concrete subclasses
-    expose only their respective sync/async public APIs.
+    同步与异步 fetcher 共享同一套配置、请求头合并、重试循环以及
+    curl-vs-httpx 后端选择。该基类持有这些共享状态与辅助方法；两个具体
+    子类只暴露各自的同步/异步公开 API。
     """
 
     def __init__(
@@ -145,7 +141,7 @@ class _FetcherCore(BaseFetcher):
         # httpx http2=True 缺少可选依赖 h2 时降级为 HTTP/1.1，仅告警一次
         self._http2_fallback_warned = False
 
-        # Backend is selected once at construction; sessions are built lazily.
+        # 后端在构造时一次性选定；会话惰性创建。
         self._use_curl: bool = HAS_CURL_CFFI
         if not self._use_curl and not HAS_HTTPX:  # pragma: no cover - defensive
             raise ImportError(
@@ -161,11 +157,11 @@ class _FetcherCore(BaseFetcher):
                 stacklevel=2,
             )
 
-        # Lazily-created sessions (sync / async). Each is None until first use.
+        # 惰性创建的会话（同步 / 异步）。首次使用前均为 None。
         self._session: Any = None
         self._async_session: Any = None
 
-    # -- session construction (deferred backend imports) -------------------
+    # -- 会话构建（后端导入延迟） ---------------------------------------------
     def _build_curl_sync_session(self) -> Any:
         CurlHttpVersion, CurlSession, _, _ = _load_curl_backend()
         kwargs: dict[str, Any] = {
@@ -205,8 +201,8 @@ class _FetcherCore(BaseFetcher):
             "timeout": self.timeout,
         }
         if proxy:
-            # httpx >= 0.28 deprecates ``proxy=`` in favor of ``mounts=``;
-            # use HTTPTransport when available, fall back for older httpx.
+            # httpx >= 0.28 弃用 ``proxy=`` 改为 ``mounts=``；
+            # 有 HTTPTransport 就用它，老版本 httpx 走旧参数。
             if hasattr(httpx, "HTTPTransport"):
                 kwargs["mounts"] = {"all://": httpx.HTTPTransport(proxy=proxy)}
             else:
@@ -273,14 +269,13 @@ class _FetcherCore(BaseFetcher):
             )
         return self._async_session
 
-    # -- header merging -----------------------------------------------------
+    # -- 请求头合并 -----------------------------------------------------------
     def _merge_headers(self, per_request: dict[str, str] | None) -> dict[str, str]:
-        """Merge headers without clobbering the curl_cffi impersonation fingerprint.
+        """合并请求头且不破坏 curl_cffi 伪装指纹。
 
-        curl_cffi's ``impersonate`` already injects a full browser header set
-        matching the chosen TLS fingerprint, so for the curl path we only layer
-        the user's explicit headers on top. For the httpx fallback there is no
-        fingerprint, so the realistic default header set is used as the base.
+        curl_cffi 的 ``impersonate`` 已注入与所选 TLS 指纹匹配的完整浏览器
+        请求头，因此 curl 路径只在其上叠加用户显式传入的请求头。httpx 兜底
+        路径没有指纹，改用仿真默认请求头作为基底。
         """
         if self._use_curl:
             merged: dict[str, str] = dict(self.extra_headers)
@@ -300,7 +295,7 @@ class _FetcherCore(BaseFetcher):
             return (httpx.HTTPError, OSError)
         return ()  # pragma: no cover - defensive
 
-    # -- response conversion -------------------------------------------------
+    # -- 响应转换 -------------------------------------------------------------
     def _to_response(self, raw: Any, request_headers: dict[str, str]) -> Response:
         # 运行时导入 Response 以避免模块加载期的循环导入
         from ..response import Response
@@ -315,7 +310,7 @@ class _FetcherCore(BaseFetcher):
             adaptive=self.adaptive,
         )
 
-    # -- shared async transport (used by both Fetcher and AsyncFetcher) -----
+    # -- 共享异步传输（Fetcher 与 AsyncFetcher 共用） -------------------------
     async def _send_once_async(
         self,
         method: str,
@@ -343,7 +338,7 @@ class _FetcherCore(BaseFetcher):
                 allow_redirects=allow_redirects,
                 verify=verify,
             )
-        # httpx async fallback
+        # httpx 异步兜底
         if proxy is None:
             client = self._ensure_async_session()
             close_after = False
@@ -365,7 +360,7 @@ class _FetcherCore(BaseFetcher):
             if close_after:
                 await client.aclose()
 
-    # -- redirect following (per-hop SSRF scheme validation) ----------------
+    # -- 重定向跟随（逐跳 SSRF scheme 校验） ----------------------------------
     def _next_redirect(
         self, raw: Any, current_url: str, method: str, headers: dict[str, str]
     ) -> tuple[str, str | None, dict[str, str]] | None:
@@ -510,34 +505,31 @@ class _FetcherCore(BaseFetcher):
 
 
 class Fetcher(_FetcherCore):
-    """Stealth HTTP fetcher using ``curl_cffi`` TLS impersonation (synchronous).
+    """使用 ``curl_cffi`` TLS 伪装的隐身 HTTP fetcher（同步）。
 
-    When ``curl_cffi`` is installed (the default expectation) a
-    :class:`curl_cffi.requests.Session` is held and impersonated as a real
-    browser. If ``curl_cffi`` is missing the fetcher falls back to ``httpx``
-    and emits a warning so callers know fingerprint stealth is disabled.
+    安装了 ``curl_cffi`` 时（默认预期）持有 :class:`curl_cffi.requests.Session`
+    并伪装成真实浏览器。``curl_cffi`` 缺失时回退到 ``httpx`` 并发出告警，
+    让调用者知道指纹隐身已禁用。
 
-    This class also exposes async methods (``async_get`` / ``async_request``)
-    so a single instance can serve both sync and async callers. For a pure
-    async-only API surface, use :class:`AsyncFetcher`.
+    本类同时暴露异步方法（``async_get`` / ``async_request``），单个实例
+    即可同时服务同步与异步调用方。若需要纯异步 API 面，请使用
+    :class:`AsyncFetcher`。
 
     Parameters
     ----------
     impersonate:
-        ``curl_cffi`` browser fingerprint to impersonate (default ``"chrome131"``).
+        要伪装的 ``curl_cffi`` 浏览器指纹（默认 ``"chrome131"``）。
     http2:
-        Enable HTTP/2 (default ``True``).
+        启用 HTTP/2（默认 ``True``）。
     max_redirects:
-        Maximum number of redirect hops to follow manually (default ``5``).
-        Each hop is re-validated against the allowed URL schemes (SSRF guard)
-        and cross-origin hops strip the ``Authorization`` header.
+        手动跟随重定向的最大跳数（默认 ``5``）。每一跳都会重新校验 URL
+        scheme（SSRF 防护），跨源跳转会剥离 ``Authorization`` 请求头。
     ja3_fingerprint:
-        Optional JA3 TLS-fingerprint string to override the impersonation
-        preset (e.g. a custom cipher/extension ordering). Only used on the
-        ``curl_cffi`` backend; ignored when falling back to ``httpx``.
+        可选的 JA3 TLS 指纹字符串，用于覆盖伪装预设（如自定义加密套件/
+        扩展顺序）。仅 ``curl_cffi`` 后端使用；回退 ``httpx`` 时忽略。
     """
 
-    # -- synchronous transport ----------------------------------------------
+    # -- 同步传输 -------------------------------------------------------------
     def _send_once_sync(
         self,
         method: str,
@@ -565,7 +557,7 @@ class Fetcher(_FetcherCore):
                 allow_redirects=allow_redirects,
                 verify=verify,
             )
-        # httpx fallback: proxy needs a dedicated client; no-proxy reuses the pool
+        # httpx 兜底：代理需要专用 client；无代理时复用连接池
         if proxy is None:
             client = self._ensure_sync_session()
             close_after = False
@@ -703,9 +695,9 @@ class Fetcher(_FetcherCore):
             f"request to {url} failed without a captured exception"
         )  # pragma: no cover
 
-    # -- public synchronous API ---------------------------------------------
+    # -- 公开同步 API ----------------------------------------------------------
     def request(self, method: str, url: str, **kwargs: Any) -> Response:
-        """Send a request with ``method`` and return a :class:`Response`."""
+        """以 ``method`` 发送请求并返回 :class:`Response`。"""
         return self._send_sync(method, url, **kwargs)
 
     def get(
@@ -743,9 +735,9 @@ class Fetcher(_FetcherCore):
     def options(self, url: str, **kwargs: Any) -> Response:
         return self.request("OPTIONS", url, **kwargs)
 
-    # -- public asynchronous API --------------------------------------------
+    # -- 公开异步 API ----------------------------------------------------------
     async def async_request(self, method: str, url: str, **kwargs: Any) -> Response:
-        """Asynchronously send a request with ``method`` and return a :class:`Response`."""
+        """异步以 ``method`` 发送请求并返回 :class:`Response`。"""
         return await self._send_async(method, url, **kwargs)
 
     async def async_get(self, url: str, **kwargs: Any) -> Response:
@@ -754,9 +746,9 @@ class Fetcher(_FetcherCore):
     async def async_post(self, url: str, **kwargs: Any) -> Response:
         return await self.async_request("POST", url, **kwargs)
 
-    # -- lifecycle -----------------------------------------------------------
+    # -- 生命周期 --------------------------------------------------------------
     def close(self) -> None:
-        """Close the underlying synchronous session.
+        """关闭底层同步会话。
 
         异步会话无法在同步上下文中安全关闭（需要事件循环），请使用 ``aclose()``
         或 ``async with`` 上下文管理器来清理异步会话资源。
@@ -778,7 +770,7 @@ class Fetcher(_FetcherCore):
             )
 
     async def aclose(self) -> None:
-        """Asynchronously close both sync and async sessions."""
+        """异步关闭同步与异步会话。"""
         if self._session is not None:
             try:
                 self._session.close()
@@ -806,20 +798,17 @@ class Fetcher(_FetcherCore):
 
 
 class AsyncFetcher(_FetcherCore):
-    """Async-only stealth HTTP fetcher (Scrapling ``AsyncFetcher`` parity).
+    """纯异步隐身 HTTP fetcher（对齐 Scrapling 的 ``AsyncFetcher``）。
 
-    Shares all configuration, backend selection and retry logic with
-    :class:`Fetcher` but exposes **only** the asynchronous API. There are no
-    synchronous ``get``/``post`` methods, so the intent is unambiguous and the
-    sync session is never created.
+    与 :class:`Fetcher` 共享全部配置、后端选择与重试逻辑，但**只**暴露
+    异步 API。没有同步 ``get``/``post`` 方法，意图明确且绝不创建同步会话。
 
-    Use this in async applications to avoid accidentally blocking the event
-    loop with a synchronous call.
+    异步应用中使用它，可避免同步调用意外阻塞事件循环。
     """
 
-    # -- public asynchronous API --------------------------------------------
+    # -- 公开异步 API ----------------------------------------------------------
     async def request(self, method: str, url: str, **kwargs: Any) -> Response:
-        """Asynchronously send a request with ``method`` and return a :class:`Response`."""
+        """异步以 ``method`` 发送请求并返回 :class:`Response`。"""
         return await self._send_async(method, url, **kwargs)
 
     async def get(
@@ -857,9 +846,9 @@ class AsyncFetcher(_FetcherCore):
     async def options(self, url: str, **kwargs: Any) -> Response:
         return await self.request("OPTIONS", url, **kwargs)
 
-    # -- lifecycle -----------------------------------------------------------
+    # -- 生命周期 --------------------------------------------------------------
     async def aclose(self) -> None:
-        """Asynchronously close the async session (sync session is never created)."""
+        """异步关闭异步会话（同步会话从不创建）。"""
         if self._session is not None:
             try:
                 self._session.close()

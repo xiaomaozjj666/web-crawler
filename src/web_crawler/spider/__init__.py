@@ -1,8 +1,7 @@
-"""Scrapling/Scrapy-style spider framework.
+"""Scrapling/Scrapy 风格的 spider 框架。
 
-A lightweight, dependency-light spider engine that drives the stealth fetchers
-with a callback-based request/response pipeline, breadth-first scheduling,
-domain filtering, and on-disk pause/resume state.
+轻量、低依赖的 spider 引擎，以基于回调的请求/响应管道驱动隐身 fetcher，
+提供广度优先调度、域名过滤与落盘的暂停/恢复状态。
 
 Example
 -------
@@ -19,6 +18,26 @@ Example
 
 from __future__ import annotations
 
-from .spider import DupeFilter, Request, Spider, SpiderError, SpiderStats
+from .spider import (
+    DownloaderMiddleware,
+    DropItem,
+    DupeFilter,
+    IgnoreRequest,
+    ItemPipeline,
+    Request,
+    Spider,
+    SpiderError,
+    SpiderStats,
+)
 
-__all__ = ["DupeFilter", "Request", "Spider", "SpiderError", "SpiderStats"]
+__all__ = [
+    "DownloaderMiddleware",
+    "DropItem",
+    "DupeFilter",
+    "IgnoreRequest",
+    "ItemPipeline",
+    "Request",
+    "Spider",
+    "SpiderError",
+    "SpiderStats",
+]
