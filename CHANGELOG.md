@@ -76,6 +76,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **dev 依赖上界放宽**：`pytest` 上界 `<9` → `<10`（允许 9.0.3+，
   修复 PYSEC-2026-1845），`pytest-asyncio` 上界 `<1` → `<2`（与
   pytest 9 配套）；Changelog / LICENSE 链接指向默认分支 `master`。
+- **依赖下界刷新**（Dependabot）：`httpx>=0.28.1`、`numpy>=2.2.6`、
+  `pytest-asyncio>=1.4.0`、`pycryptodome>=3.23.0`、`ddddocr>=1.6.1`，
+  CI actions 全量升级（setup-python v7 / codecov-action v7 等）。
 
 ### Fixed
 - **reverse_agent 崩溃恢复 / 多标签页 / checkpoint 续跑**：主循环统一经
@@ -90,6 +93,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   async handler 经 `asyncio.to_thread` 不阻塞事件循环。
 - **Web UI 日志与取消语义**：爬虫日志经自定义 `logging.Handler` 转发到任务
   面板（不再依赖进程级 stdout 重定向）；取消统一返回码 1 且各阶段短路。
+
+### Fixed（测试稳定性）
+- **POST 303 重定向测试在 Windows 上的偶发失败**：测试服务器的
+  `do_POST` 从不读取请求体，未读数据残留使连接关闭时发 RST 而非 FIN，
+  客户端偶发 `WinError 10053`；响应前先读完 `Content-Length` 字节根治。
 
 ### Security
 - **`file://` SSRF 拦截**：`validate_url_scheme` 在每次抓取入口与每个重定向
