@@ -4,7 +4,9 @@
   <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB" alt="Python 3.10+" />
   <img src="https://img.shields.io/badge/lxml-adaptive%20selector-8CA1B6" alt="lxml 自适应选择器" />
   <img src="https://img.shields.io/badge/TLS-impersonation-0F6B9E" alt="TLS 指纹隐身" />
-  <img src="https://img.shields.io/badge/CI-GitHub%20Actions-brightgreen" alt="CI" />
+  <img src="https://github.com/xiaomaozjj666/web-crawler/actions/workflows/ci.yml/badge.svg" alt="CI" />
+  <img src="https://codecov.io/gh/xiaomaozjj666/web-crawler/graph/badge.svg" alt="Codecov" />
+  <img src="https://img.shields.io/badge/docs-online-brightgreen" alt="文档站" />
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" />
 </p>
 

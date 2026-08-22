@@ -26,11 +26,10 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-from urllib import robotparser
-from urllib.parse import urljoin, urlparse
 
 from typing_extensions import Self
 
+from ..robots import RobotsPolicy
 from .extractor import AIExtractor, ExtractionResult
 from .llm import LLMProvider
 
@@ -115,36 +114,6 @@ class ScrapeResult:
     @property
     def ok(self) -> bool:
         return 200 <= self.status < 400 and not self.missing and not self.needs_human
-
-
-class RobotsPolicy:
-    """带按主机缓存的小型 ``robots.txt`` 闸门（仅用标准库）。"""
-
-    def __init__(self, user_agent: str = "*") -> None:
-        self.user_agent = user_agent
-        self._cache: dict[str, robotparser.RobotFileParser] = {}
-
-    def _parser_for(self, url: str, fetch_text: Any) -> robotparser.RobotFileParser | None:
-        parsed = urlparse(url)
-        host = f"{parsed.scheme}://{parsed.netloc}"
-        if host in self._cache:
-            return self._cache[host]
-        robots_url = urljoin(host, "/robots.txt")
-        rp = robotparser.RobotFileParser()
-        try:
-            text = fetch_text(robots_url)
-            rp.parse(text.splitlines())
-        except Exception:
-            rp = robotparser.RobotFileParser()
-            rp.parse([])
-        self._cache[host] = rp
-        return rp
-
-    def allowed(self, url: str, fetch_text: Any) -> bool:
-        rp = self._parser_for(url, fetch_text)
-        if rp is None:  # pragma: no cover - _parser_for 始终返回 RobotFileParser
-            return True
-        return rp.can_fetch(self.user_agent, url)
 
 
 class AIScrapeAgent:
