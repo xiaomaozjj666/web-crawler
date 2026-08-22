@@ -289,8 +289,9 @@ class TestRunLoop:
 
     def test_basic_done_no_judge_no_target(self) -> None:
         """done 动作，无 judge、无 target_params → 正常退出。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(replies=['{"action_type": "done"}'])
             try:
@@ -307,8 +308,9 @@ class TestRunLoop:
 
     def test_done_with_judge_verified_and_target(self) -> None:
         """done + judge verified + target_params 全找到 → success=True。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -333,8 +335,9 @@ class TestRunLoop:
 
     def test_done_with_judge_not_verified_continues(self) -> None:
         """done + judge not verified → 覆盖为 fallback，继续循环。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -353,8 +356,9 @@ class TestRunLoop:
 
     def test_max_steps_reached(self) -> None:
         """循环到 max_steps 后退出。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "wait", "params": {"seconds": 0.1}}'],
@@ -368,8 +372,9 @@ class TestRunLoop:
 
     def test_observe_error_recover_then_done(self) -> None:
         """_observe 第一步抛异常，crash_recovery 恢复后继续，第二步 done。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(replies=['{"action_type": "done"}'])
             agent._observe = MagicMock(  # type: ignore[assignment]
@@ -391,8 +396,9 @@ class TestRunLoop:
 
     def test_observe_error_break(self) -> None:
         """_observe 持续抛异常，crash_recovery 耗尽后 break。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -411,8 +417,9 @@ class TestRunLoop:
 
     def test_think_error_fallback(self) -> None:
         """provider.chat 抛异常 → think_error + fallback action。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, provider = _make_loop_agent(replies=None)
             provider.chat = MagicMock(side_effect=RuntimeError("think boom"))  # type: ignore[assignment]
@@ -427,8 +434,9 @@ class TestRunLoop:
 
     def test_confidence_low_fallback(self) -> None:
         """confidence 低于阈值 → fallback action。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -445,8 +453,9 @@ class TestRunLoop:
 
     def test_guard_deny(self) -> None:
         """guard DENY → 跳过执行，直接进入下一步。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -466,8 +475,9 @@ class TestRunLoop:
 
     def test_act_error(self) -> None:
         """_act 抛异常 → act_error + 截图。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -486,8 +496,9 @@ class TestRunLoop:
 
     def test_inject_hook_failed(self) -> None:
         """inject_hook 返回 False → history 记录 inject_hook_failed。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -506,8 +517,9 @@ class TestRunLoop:
 
     def test_extract_updates_target_params(self) -> None:
         """extract 动作返回值 → target_params_found 更新。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -529,8 +541,9 @@ class TestRunLoop:
         """analyze_js 返回 AnalysisResult → analysis 字段更新。"""
         from web_crawler.ai.analyzer import AnalysisResult
 
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -551,8 +564,9 @@ class TestRunLoop:
 
     def test_loop_detected_with_planner(self) -> None:
         """3 步相同观察 → LoopDetector 触发 → Planner 重规划。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -580,8 +594,9 @@ class TestRunLoop:
 
     def test_loop_detected_without_planner(self) -> None:
         """无 planner 时 LoopDetector 触发 → 跳过重规划。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "wait"}', '{"action_type": "done"}'],
@@ -598,8 +613,9 @@ class TestRunLoop:
 
     def test_planner_interval_triggers(self) -> None:
         """planner_interval 到期 → 周期重规划。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -621,8 +637,9 @@ class TestRunLoop:
 
     def test_context_compressed(self) -> None:
         """context_compressor.maybe_compress 返回 compressed=True → 发事件。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(replies=['{"action_type": "done"}'])
             agent.context_compressor.maybe_compress = MagicMock(  # type: ignore[assignment]
@@ -641,8 +658,9 @@ class TestRunLoop:
         done 动作会 break 在 checkpoint save 之前，所以用 wait + done 让
         step 1 触发一次 checkpoint save。
         """
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -669,8 +687,9 @@ class TestRunLoop:
         """从 checkpoint 恢复 → 导航到 resume URL + 注入 hooks + start_step 跳过。"""
         from web_crawler.ai.checkpoint import Checkpoint
 
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -705,8 +724,9 @@ class TestRunLoop:
         """resume 的 step >= max_steps → 直接退出，不进入循环。"""
         from web_crawler.ai.checkpoint import Checkpoint
 
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[],
@@ -724,8 +744,9 @@ class TestRunLoop:
 
     def test_navigate_error(self) -> None:
         """page.goto 抛异常 → history 记录 navigate_error。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -739,8 +760,9 @@ class TestRunLoop:
 
     def test_recorder_compile_error(self) -> None:
         """recorder.compile_script 抛异常 → _compiled_script=""。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -762,11 +784,14 @@ class TestRunLoop:
 
     def test_screenshot_enabled(self, tmp_path: Path) -> None:
         """enable_screenshot=True → _observe 中截图，result 含 screenshots。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
-        ), patch.object(Path, "mkdir"), patch(
-            "web_crawler.ai.reverse_agent.ReverseAgent._screenshot_dir",
-            return_value=tmp_path,
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch.object(Path, "mkdir"),
+            patch(
+                "web_crawler.ai.reverse_agent.ReverseAgent._screenshot_dir",
+                return_value=tmp_path,
+            ),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -781,8 +806,9 @@ class TestRunLoop:
 
     def test_done_without_judge(self) -> None:
         """done 动作 + 无 judge → 走 else 分支直接 break。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -796,8 +822,9 @@ class TestRunLoop:
 
     def test_judge_verified_affects_success(self) -> None:
         """judge verified=True → success = success and verified。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -819,8 +846,9 @@ class TestRunLoop:
 
     def test_new_tab_loop_observes_new_page(self) -> None:
         """new_tab 后循环后续 observe 应使用新标签页（修复循环持有旧 page）。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, page, _ = _make_loop_agent(
                 replies=[
@@ -847,8 +875,9 @@ class TestRunLoop:
 
     def test_switch_tab_loop_observes_switched_page(self) -> None:
         """switch_tab 后循环后续 observe 应使用切换后的标签页。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, page, _ = _make_loop_agent(
                 replies=[
@@ -893,8 +922,9 @@ class TestRunLoop:
                 cumulative_summary="past summary",
             )
         )
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -920,8 +950,9 @@ class TestRunLoop:
         """enable_checkpoint 时 run() 自动用 url 设置稳定 task_id。"""
         from web_crawler.ai.checkpoint import CheckpointStore
 
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -942,8 +973,9 @@ class TestRunLoop:
 
     def test_plan_advances_on_extract_success(self) -> None:
         """extract 成功 → Planner 当前子目标推进到下一个。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -970,8 +1002,9 @@ class TestRunLoop:
 
     def test_plan_advances_on_judge_verified(self) -> None:
         """done 通过 judge 验证 → Planner 当前子目标推进。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -993,8 +1026,9 @@ class TestRunLoop:
 
     async def test_plan_advances_on_extract_success_async(self) -> None:
         """异步循环：extract 成功 → Planner 当前子目标推进到下一个。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -1022,8 +1056,9 @@ class TestRunLoop:
 
     async def test_plan_advances_on_judge_verified_async(self) -> None:
         """异步循环：done 通过 judge 验证 → Planner 当前子目标推进。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -1048,8 +1083,9 @@ class TestRunLoop:
         """think 前 check_stall 检测到卡死 → 发布 stall 事件。"""
         import time as _time
 
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(replies=['{"action_type": "done"}'])
             agent.heartbeat.max_interval = 1.0
@@ -1070,8 +1106,9 @@ class TestRunLoop:
 
     def test_unknown_action_recorded_in_history(self) -> None:
         """未知 action_type → act_error 写入 history（不再静默空转）。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -1095,8 +1132,9 @@ class TestRunLoop:
             calls["n"] += 1
             return calls["n"] >= 2  # 第 2 步循环顶部返回 True
 
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "wait", "params": {"seconds": 0.1}}'],
@@ -1115,8 +1153,9 @@ class TestRunLoop:
 
     def test_should_stop_false_runs_to_completion(self) -> None:
         """should_stop 恒返回 False → 正常完成，状态为 completed。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -1131,8 +1170,9 @@ class TestRunLoop:
 
     def test_act_error_marks_current_record_only(self) -> None:
         """act 异常只把当前步记录标失败，不误标上一步（修复 recorder 记录错位）。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -1155,8 +1195,9 @@ class TestRunLoop:
 
     def test_result_hook_data_merged_with_cache(self) -> None:
         """结果 dict 的 hook_data 应合并最后一次观察缓存，而非近空。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.time.sleep"
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -1180,8 +1221,9 @@ class TestArunLoop:
 
     async def test_basic_done_no_judge(self) -> None:
         """done 动作，无 judge、无 target_params → 正常退出。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -1197,8 +1239,9 @@ class TestArunLoop:
 
     async def test_done_with_judge_verified(self) -> None:
         """done + judge verified + target_params 全找到 → success=True。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -1221,8 +1264,9 @@ class TestArunLoop:
 
     async def test_done_with_judge_not_verified(self) -> None:
         """done + judge not verified → fallback，继续循环。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}', '{"action_type": "done"}'],
@@ -1239,8 +1283,9 @@ class TestArunLoop:
 
     async def test_max_steps_reached(self) -> None:
         """循环到 max_steps 后退出。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "wait", "params": {"seconds": 0.1}}'],
@@ -1255,8 +1300,9 @@ class TestArunLoop:
 
     async def test_observe_error_recover_then_done(self) -> None:
         """_observe_async 第一步抛异常，恢复后继续，第二步 done。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -1283,8 +1329,9 @@ class TestArunLoop:
 
     async def test_observe_error_break(self) -> None:
         """_observe_async 持续抛异常，crash_recovery 耗尽后 break。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -1305,8 +1352,9 @@ class TestArunLoop:
 
     async def test_think_error_fallback(self) -> None:
         """provider.achat 抛异常 → think_error + fallback action。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, provider = _make_loop_agent(replies=None, async_mode=True)
             provider.achat = AsyncMock(side_effect=RuntimeError("think boom"))  # type: ignore[assignment]
@@ -1321,8 +1369,9 @@ class TestArunLoop:
 
     async def test_confidence_low_fallback(self) -> None:
         """confidence 低于阈值 → fallback action。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -1340,8 +1389,9 @@ class TestArunLoop:
 
     async def test_guard_deny(self) -> None:
         """guard DENY → 跳过执行，直接进入下一步。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -1361,8 +1411,9 @@ class TestArunLoop:
 
     async def test_act_error(self) -> None:
         """_act_async 抛异常 → act_error。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -1384,8 +1435,9 @@ class TestArunLoop:
         """一步测试 inject_hook 失败 + extract 成功 + analyze_js 返回。"""
         from web_crawler.ai.analyzer import AnalysisResult
 
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -1418,9 +1470,7 @@ class TestArunLoop:
             agent._act_async = _mock_act_async  # type: ignore[assignment]
             try:
                 result = await agent.arun("https://x.example", "task")
-                assert any(
-                    e.get("event") == "inject_hook_failed" for e in result["history"]
-                )
+                assert any(e.get("event") == "inject_hook_failed" for e in result["history"])
                 assert result["target_params_found"] == {"sign": "v"}
                 assert result["analysis"] is fake_analysis
             finally:
@@ -1428,8 +1478,9 @@ class TestArunLoop:
 
     async def test_loop_detected_with_planner(self) -> None:
         """3 步相同观察 → LoopDetector 触发 → Planner 重规划。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -1456,8 +1507,9 @@ class TestArunLoop:
         done 动作会 break 在 checkpoint save 之前，所以用 wait + done 让
         step 1 触发一次 checkpoint save。
         """
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -1483,8 +1535,9 @@ class TestArunLoop:
         """从 checkpoint 恢复 → 导航到 resume URL + 注入 hooks。"""
         from web_crawler.ai.checkpoint import Checkpoint
 
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -1514,8 +1567,9 @@ class TestArunLoop:
         """resume 的 step >= max_steps → 直接退出，不进入循环（覆盖 arun 行 856）。"""
         from web_crawler.ai.checkpoint import Checkpoint
 
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[],
@@ -1534,8 +1588,9 @@ class TestArunLoop:
 
     async def test_navigate_error(self) -> None:
         """page.goto 抛异常 → history 记录 navigate_error。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -1550,8 +1605,9 @@ class TestArunLoop:
 
     async def test_recorder_compile_error(self) -> None:
         """recorder.compile_script 抛异常 → _compiled_script=""。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -1574,8 +1630,9 @@ class TestArunLoop:
 
     async def test_context_compressed(self) -> None:
         """context_compressor.maybe_compress_async 返回 compressed=True。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -1592,8 +1649,9 @@ class TestArunLoop:
 
     async def test_new_tab_async_loop_observes_new_page(self) -> None:
         """异步：new_tab 后循环后续 observe 应使用新标签页。"""
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, page, _ = _make_loop_agent(
                 replies=[
@@ -1626,8 +1684,9 @@ class TestArunLoop:
             calls["n"] += 1
             return calls["n"] >= 2
 
-        with patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"), patch(
-            "web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "wait", "params": {"seconds": 0.1}}'],

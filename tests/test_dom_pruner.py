@@ -201,7 +201,7 @@ def test_dom_pruner_crypto_attr_hint() -> None:
 def test_dom_pruner_crypto_text_hint() -> None:
     """文本命中加密关键词应加分。"""
     pruner = DomPruner(max_chars=8000, max_candidates=50)
-    html = '<div>acw_sc__v2 anti-content x-bogus</div>'
+    html = "<div>acw_sc__v2 anti-content x-bogus</div>"
     result = pruner.prune(html)
     # 文本命中 -> +4.0
     assert result.top_score >= 5.0
@@ -316,10 +316,8 @@ def test_dom_pruner_llm_rerank_applies_scores() -> None:
 
 def test_dom_pruner_llm_rerank_skips_when_too_few_candidates() -> None:
     """候选数 < 2 时 LLM 重排应直接返回（不调用 provider）。"""
-    provider = _FakeLLMProvider('[]')
-    pruner = DomPruner(
-        max_chars=8000, max_candidates=50, enable_llm_rank=True, provider=provider
-    )
+    provider = _FakeLLMProvider("[]")
+    pruner = DomPruner(max_chars=8000, max_candidates=50, enable_llm_rank=True, provider=provider)
     # 直接调用 _llm_rerank，传入单元素列表触发 len(top) < 2 分支
     single = [_Candidate(html="<form></form>", score=3.0, tag="form")]
     out = pruner._llm_rerank(single)
@@ -362,7 +360,7 @@ async def test_dom_pruner_llm_rerank_async_without_achat() -> None:
 @pytest.mark.asyncio
 async def test_dom_pruner_llm_rerank_async_skips_few_candidates() -> None:
     """异步路径候选数 < 2 时跳过 LLM。"""
-    provider = _AsyncFakeLLMProvider('[]')
+    provider = _AsyncFakeLLMProvider("[]")
     pruner = DomPruner(max_chars=8000, enable_llm_rank=True, provider=provider)
     # 直接调用 _llm_rerank_async，传入单元素列表触发 len(top) < 2 分支
     single = [_Candidate(html="<form></form>", score=3.0, tag="form")]

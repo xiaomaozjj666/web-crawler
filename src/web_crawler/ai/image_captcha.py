@@ -56,9 +56,7 @@ class ImageSolverConfig:
     use_pillow_slider: bool = True
     detail: str = "high"
     temperature: float = 0.0
-    ocr_charset: str = (
-        "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    )
+    ocr_charset: str = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
     ocr_max_length: int = 8
 
 
@@ -357,9 +355,7 @@ class ImageCaptchaSolver:
             return self._pillow_only_slider(bg_data, slider_data)
 
         try:
-            bg_img = np.asarray(
-                Image.open(io.BytesIO(bg_data)).convert("L"), dtype=np.float32
-            )
+            bg_img = np.asarray(Image.open(io.BytesIO(bg_data)).convert("L"), dtype=np.float32)
             slider_img = np.asarray(
                 Image.open(io.BytesIO(slider_data)).convert("L"), dtype=np.float32
             )

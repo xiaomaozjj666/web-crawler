@@ -16,7 +16,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-pytest.importorskip("playwright", reason="CamoufoxFetcher requires playwright (install with pip install playwright && playwright install chromium)")
+pytest.importorskip(
+    "playwright",
+    reason="CamoufoxFetcher requires playwright (install with pip install playwright && playwright install chromium)",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -143,10 +146,15 @@ def test_camoufox_fetcher_requires_camoufox() -> None:
     """camoufox 未安装时 require_camoufox 抛 ImportError，构造失败。"""
     from web_crawler import CamoufoxFetcher
 
-    with patch(
-        "web_crawler.fetchers.camoufox.require_camoufox",
-        side_effect=ImportError("camoufox is required for the anti-fingerprint Firefox fetcher"),
-    ), pytest.raises(ImportError, match="camoufox"):
+    with (
+        patch(
+            "web_crawler.fetchers.camoufox.require_camoufox",
+            side_effect=ImportError(
+                "camoufox is required for the anti-fingerprint Firefox fetcher"
+            ),
+        ),
+        pytest.raises(ImportError, match="camoufox"),
+    ):
         CamoufoxFetcher()
 
 
@@ -226,7 +234,9 @@ def test_launch_kwargs_no_proxy_when_none(fetcher: Any) -> None:
     assert "proxy" not in fetcher._launch_kwargs()
 
 
-def test_launch_kwargs_camoufox_options_override_defaults(mock_camoufox: dict[str, MagicMock]) -> None:
+def test_launch_kwargs_camoufox_options_override_defaults(
+    mock_camoufox: dict[str, MagicMock],
+) -> None:
     """camoufox_options 覆盖默认值并补充新键。"""
     from web_crawler import CamoufoxFetcher
 

@@ -63,9 +63,14 @@ class TestUpdateTaskStatus:
     def test_update_with_all_fields(self) -> None:
         db.create_task("u2", "https://x.com", {}, "/tmp")
         db.update_task_status(
-            "u2", "done", exit_code=0, log="done\n",
-            total_resources=10, processed_resources=10,
-            pages_scanned=3, current_url="https://x.com/page2",
+            "u2",
+            "done",
+            exit_code=0,
+            log="done\n",
+            total_resources=10,
+            processed_resources=10,
+            pages_scanned=3,
+            current_url="https://x.com/page2",
         )
         task = db.get_task("u2")
         assert task["status"] == "done"
@@ -170,15 +175,39 @@ class TestImportResults:
     def test_import_from_jsonl(self, tmp_path: Path) -> None:
         jsonl = tmp_path / "resources_manifest.jsonl"
         jsonl.write_text(
-            json.dumps({"url": "https://a.com/img.png", "saved_path": "/out/a.png",
-                        "content_type": "image/png", "bytes": 1024, "category": "image",
-                        "found_in": "img", "kind": "resource", "page_url": "https://a.com",
-                        "page_title": "A", "sha256": "abc", "status": "ok", "diagnostic": ""})
+            json.dumps(
+                {
+                    "url": "https://a.com/img.png",
+                    "saved_path": "/out/a.png",
+                    "content_type": "image/png",
+                    "bytes": 1024,
+                    "category": "image",
+                    "found_in": "img",
+                    "kind": "resource",
+                    "page_url": "https://a.com",
+                    "page_title": "A",
+                    "sha256": "abc",
+                    "status": "ok",
+                    "diagnostic": "",
+                }
+            )
             + "\n"
-            + json.dumps({"url": "https://a.com/style.css", "saved_path": "/out/a.css",
-                          "content_type": "text/css", "bytes": 512, "category": "css",
-                          "found_in": "link", "kind": "resource", "page_url": "https://a.com",
-                          "page_title": "A", "sha256": "def", "status": "ok", "diagnostic": ""})
+            + json.dumps(
+                {
+                    "url": "https://a.com/style.css",
+                    "saved_path": "/out/a.css",
+                    "content_type": "text/css",
+                    "bytes": 512,
+                    "category": "css",
+                    "found_in": "link",
+                    "kind": "resource",
+                    "page_url": "https://a.com",
+                    "page_title": "A",
+                    "sha256": "def",
+                    "status": "ok",
+                    "diagnostic": "",
+                }
+            )
             + "\n",
             encoding="utf-8",
         )
@@ -288,9 +317,7 @@ class TestImportResultsTolerance:
 
     def test_fallback_to_csv_when_jsonl_unreadable(self, tmp_path: Path) -> None:
         """JSONL 完全不可读时回退 CSV。"""
-        (tmp_path / "resources_manifest.jsonl").write_text(
-            "garbage\nnot json\n", encoding="utf-8"
-        )
+        (tmp_path / "resources_manifest.jsonl").write_text("garbage\nnot json\n", encoding="utf-8")
         (tmp_path / "resources_manifest.csv").write_text(
             "url,saved_path,content_type,bytes,category,found_in,kind,page_url,page_title,sha256,status,diagnostic\n"
             "https://b.com/x.js,/out/x.js,application/javascript,2048,script,script,resource,https://b.com,B,ghi,ok,\n",

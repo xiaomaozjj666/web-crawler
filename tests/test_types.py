@@ -182,6 +182,7 @@ def test_result_list_texts_handles_non_text_items() -> None:
 
 def test_result_list_attr_method_on_items_without_attr() -> None:
     """attr 方法对无 attr 方法的元素返回 default（lines 124-131）。"""
+
     # 混合：有 attr 方法的 Selector-like 和无 attr 方法的纯 str
     class HasAttr:
         def attr(self, name: str, default: Any = None) -> Any:

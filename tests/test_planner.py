@@ -235,9 +235,11 @@ class TestPlannerMakePlan:
 
     def test_make_plan_handles_code_fence_wrapped_json(self) -> None:
         """LLM 返回带 ```json ... ``` 代码块时应能解析。"""
-        reply = "```json\n" + json.dumps(
-            {"subgoals": [{"description": "step1", "success_criteria": "ok"}]}
-        ) + "\n```"
+        reply = (
+            "```json\n"
+            + json.dumps({"subgoals": [{"description": "step1", "success_criteria": "ok"}]})
+            + "\n```"
+        )
         provider = _FakeProvider([reply])
         planner = Planner(provider)
         plan = planner.make_plan("task", _Observation())

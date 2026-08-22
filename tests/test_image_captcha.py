@@ -420,9 +420,7 @@ def test_solve_click_filters_negative_coords() -> None:
 
 
 def test_solve_click_async_llm_path() -> None:
-    provider = _FakeVisionProvider(
-        achat_response='{"points": [{"x": 100, "y": 200}]}'
-    )
+    provider = _FakeVisionProvider(achat_response='{"points": [{"x": 100, "y": 200}]}')
     solver = ImageCaptchaSolver(provider=provider)  # type: ignore[arg-type]
     result = asyncio.run(solver.solve_click_async(b"img", "请点击"))
     assert result is not None
@@ -503,7 +501,7 @@ def test_extract_json_fence_with_invalid_json_returns_empty() -> None:
 
 def test_extract_json_fence_without_lang_tag() -> None:
     """无语言标签的代码围栏也能解析。"""
-    text = "```\n{\"x\": 7}\n```"
+    text = '```\n{"x": 7}\n```'
     parsed = _extract_json(text)
     assert parsed == {"x": 7}
 
@@ -652,6 +650,7 @@ def test_local_slider_numpy_skips_dark_pixels() -> None:
     import io
 
     from PIL import Image
+
     img = Image.new("L", (12, 12), color=10)  # 大部分像素 < 30
     for x in range(2, 8):
         for y in range(2, 8):
@@ -986,9 +985,7 @@ def test_solve_text_local_ocr_too_long_falls_back_to_llm() -> None:
 
 def test_local_slider_bad_base64_returns_none() -> None:
     """_local_slider 遇到坏 padding 的 base64 应返回 None 而非抛异常。"""
-    solver = ImageCaptchaSolver(
-        provider=None, config=ImageSolverConfig(use_llm=False)
-    )
+    solver = ImageCaptchaSolver(provider=None, config=ImageSolverConfig(use_llm=False))
     # "abcde=" 数据字符数 % 4 == 1，binascii 拒绝解码
     assert solver._local_slider("abcde=", "aGVsbG8=") is None
 

@@ -133,9 +133,7 @@ def test_script_compiler_done_action_skipped_in_body() -> None:
 def test_script_compiler_unsupported_action_logs_warning() -> None:
     """未知 action_type 写一条 NOTE 注释并触发 logger.warning。"""
     compiler = ScriptCompiler()
-    src = compiler.compile(
-        [ActionRecord(step=2, action_type="unsupported_xxx")]
-    )
+    src = compiler.compile([ActionRecord(step=2, action_type="unsupported_xxx")])
     assert "unsupported action 'unsupported_xxx'" in src
     assert "NOTE: unsupported action" in src
 
@@ -190,9 +188,7 @@ def test_script_compiler_inject_hook_all_new() -> None:
 def test_script_compiler_inject_hook_empty_hooks_returns_skipped() -> None:
     """hooks=[] 时 dedup 直接跳过。"""
     compiler = ScriptCompiler()
-    src = compiler.compile(
-        [ActionRecord(step=1, action_type="inject_hook", params={"hooks": []})]
-    )
+    src = compiler.compile([ActionRecord(step=1, action_type="inject_hook", params={"hooks": []})])
     assert "dedup, skipped" in src
 
 
@@ -200,14 +196,10 @@ def test_script_compiler_wait_action_clamps_seconds() -> None:
     """wait 编译为 time.sleep，且 seconds 被 clamp 到 [0.1, 30.0]。"""
     compiler = ScriptCompiler()
     # seconds 超过 30
-    src = compiler.compile(
-        [ActionRecord(step=1, action_type="wait", params={"seconds": 100.0})]
-    )
+    src = compiler.compile([ActionRecord(step=1, action_type="wait", params={"seconds": 100.0})])
     assert "time.sleep(30.0" in src
     # seconds 过小
-    src2 = compiler.compile(
-        [ActionRecord(step=1, action_type="wait", params={"seconds": 0.0})]
-    )
+    src2 = compiler.compile([ActionRecord(step=1, action_type="wait", params={"seconds": 0.0})])
     assert "time.sleep(0.1" in src2
 
 
@@ -305,7 +297,7 @@ def test_script_compiler_type_action_with_clear() -> None:
             )
         ]
     )
-    assert 'page.fill(' in src
+    assert "page.fill(" in src
     assert '""' in src  # 清空
     assert "page.type(" in src
 
@@ -345,9 +337,7 @@ def test_script_compiler_scroll_with_selector() -> None:
 def test_script_compiler_scroll_without_selector() -> None:
     """scroll 不带 selector 时走 window.scrollBy。"""
     compiler = ScriptCompiler()
-    src = compiler.compile(
-        [ActionRecord(step=1, action_type="scroll", params={"x": 0, "y": 800})]
-    )
+    src = compiler.compile([ActionRecord(step=1, action_type="scroll", params={"x": 0, "y": 800})])
     assert "window.scrollBy(" in src
 
 
@@ -370,9 +360,7 @@ def test_script_compiler_press_with_selector_focuses() -> None:
 def test_script_compiler_press_without_selector() -> None:
     """press 不带 selector 时仅 page.press。"""
     compiler = ScriptCompiler()
-    src = compiler.compile(
-        [ActionRecord(step=1, action_type="press", params={"key": "Escape"})]
-    )
+    src = compiler.compile([ActionRecord(step=1, action_type="press", params={"key": "Escape"})])
     assert "page.focus(" not in src
     assert "page.press('Escape')" in src
 
@@ -380,9 +368,7 @@ def test_script_compiler_press_without_selector() -> None:
 def test_script_compiler_hover_action() -> None:
     """hover 编译为 page.hover。"""
     compiler = ScriptCompiler()
-    src = compiler.compile(
-        [ActionRecord(step=1, action_type="hover", params={"selector": "#el"})]
-    )
+    src = compiler.compile([ActionRecord(step=1, action_type="hover", params={"selector": "#el"})])
     assert "page.hover(" in src
     assert '"#el"' in src
 

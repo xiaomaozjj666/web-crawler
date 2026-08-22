@@ -662,5 +662,3 @@ def test_str_source_utf8_adaptive_relocation() -> None:
     assert page1.css_first("#product-title", auto_save=True).text == "旧版标题"
     page2 = Selector(v2, url="https://shop.example.com/p", adaptive=True)
     assert page2.css_first("#product-title", adaptive=True).text == "改版后标题"
-
-

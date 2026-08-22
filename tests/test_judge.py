@@ -278,9 +278,11 @@ class TestTaskJudgeValidateStrict:
 
     def test_extract_json_handles_embedded_json(self) -> None:
         """LLM 在 JSON 前后有多余文字时应能提取内嵌 JSON。"""
-        reply = "好的，以下是判断结果：\n" + json.dumps(
-            {"verified": False, "missing": ["x"], "reasoning": "no x"}
-        ) + "\n请查阅。"
+        reply = (
+            "好的，以下是判断结果：\n"
+            + json.dumps({"verified": False, "missing": ["x"], "reasoning": "no x"})
+            + "\n请查阅。"
+        )
         provider = _FakeProvider([reply])
         judge = TaskJudge(provider, strict=False)
         result = judge.validate(
@@ -361,9 +363,7 @@ class TestTaskJudgeValidateAsync:
         """provider 有 achat 时走异步路径。"""
         provider = MagicMock()
         provider.achat = AsyncMock(
-            return_value=LLMResponse(
-                content='{"verified": true, "missing": []}', model="fake"
-            )
+            return_value=LLMResponse(content='{"verified": true, "missing": []}', model="fake")
         )
         judge = TaskJudge(provider, strict=False)
         result = await judge.validate_async(
@@ -414,9 +414,7 @@ class TestTaskJudgeValidateAsync:
         """异步严格模式 + LLM 返回 verified=True 但 missing 非空 → 强制 False。"""
         provider = MagicMock()
         provider.achat = AsyncMock(
-            return_value=LLMResponse(
-                content='{"verified": true, "missing": ["z"]}', model="fake"
-            )
+            return_value=LLMResponse(content='{"verified": true, "missing": ["z"]}', model="fake")
         )
         judge = TaskJudge(provider, strict=True)
         result = await judge.validate_async(
@@ -434,9 +432,7 @@ class TestTaskJudgeValidateAsync:
         """异步严格模式 + LLM 返回 verified=False 且 missing 空 → 重算。"""
         provider = MagicMock()
         provider.achat = AsyncMock(
-            return_value=LLMResponse(
-                content='{"verified": false, "missing": []}', model="fake"
-            )
+            return_value=LLMResponse(content='{"verified": false, "missing": []}', model="fake")
         )
         judge = TaskJudge(provider, strict=True)
         result = await judge.validate_async(
@@ -596,7 +592,7 @@ class TestVerifiedStrictParsing:
         assert result.verified is False
 
     def test_verified_yes_string_is_not_true(self) -> None:
-        """"verified": "yes" 也不得判为 True。"""
+        """ "verified": "yes" 也不得判为 True。"""
         provider = _FakeProvider(['{"verified": "yes"}'])
         judge = TaskJudge(provider, strict=False)
         result = judge.validate(
@@ -608,7 +604,7 @@ class TestVerifiedStrictParsing:
         assert result.verified is False
 
     def test_verified_string_true_is_true(self) -> None:
-        """"verified": "true"（字符串）应判为 True。"""
+        """ "verified": "true"（字符串）应判为 True。"""
         provider = _FakeProvider(['{"verified": "true", "missing": []}'])
         judge = TaskJudge(provider, strict=False)
         result = judge.validate(
@@ -620,7 +616,7 @@ class TestVerifiedStrictParsing:
         assert result.verified is True
 
     def test_verified_string_one_is_true(self) -> None:
-        """"verified": "1"（字符串）应判为 True。"""
+        """ "verified": "1"（字符串）应判为 True。"""
         provider = _FakeProvider(['{"verified": "1", "missing": []}'])
         judge = TaskJudge(provider, strict=False)
         result = judge.validate(

@@ -434,8 +434,7 @@ def test_analyzer_model_fallback_when_provider_model_empty() -> None:
     class _EmptyModel:
         model = ""
 
-        def chat(self, *a: Any, **k: Any) -> LLMResponse:
-            ...
+        def chat(self, *a: Any, **k: Any) -> LLMResponse: ...
 
     analyzer = JSAnalyzer(provider=_EmptyModel())  # type: ignore[arg-type]
     assert analyzer.model == "deepseek-v4-pro"

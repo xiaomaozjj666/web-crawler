@@ -271,12 +271,8 @@ def test_guard_confirm_callback_all_rules_confirmed_allows() -> None:
     )
 
     rules = [
-        GuardrailRule(
-            name="c1", check=lambda a, c: (True, "1"), action=GuardrailAction.CONFIRM
-        ),
-        GuardrailRule(
-            name="c2", check=lambda a, c: (True, "2"), action=GuardrailAction.CONFIRM
-        ),
+        GuardrailRule(name="c1", check=lambda a, c: (True, "1"), action=GuardrailAction.CONFIRM),
+        GuardrailRule(name="c2", check=lambda a, c: (True, "2"), action=GuardrailAction.CONFIRM),
     ]
     guard = ActionGuard(extra_rules=rules, on_confirm=lambda name, detail: True)
     result = guard.check({"action_type": "navigate", "params": {"url": "https://example.com"}})
@@ -611,9 +607,7 @@ def test_guard_denies_new_tab_to_localhost() -> None:
     from web_crawler.ai.guardrails import ActionGuard
 
     guard = ActionGuard(allow_localhost=False)
-    result = guard.check(
-        {"action_type": "new_tab", "params": {"url": "http://127.0.0.1/admin"}}
-    )
+    result = guard.check({"action_type": "new_tab", "params": {"url": "http://127.0.0.1/admin"}})
     assert result.denied
     assert "no-localhost-nav" in result.matched_rules
 
@@ -623,9 +617,7 @@ def test_guard_denies_new_tab_non_https() -> None:
     from web_crawler.ai.guardrails import ActionGuard
 
     guard = ActionGuard()
-    result = guard.check(
-        {"action_type": "new_tab", "params": {"url": "http://example.com/login"}}
-    )
+    result = guard.check({"action_type": "new_tab", "params": {"url": "http://example.com/login"}})
     assert result.denied
     assert "https-only" in result.matched_rules
 
@@ -635,14 +627,10 @@ def test_guard_new_tab_domain_whitelist() -> None:
     from web_crawler.ai.guardrails import ActionGuard
 
     guard = ActionGuard(allowed_domains=["example.com"])
-    blocked = guard.check(
-        {"action_type": "new_tab", "params": {"url": "https://evil.com/x"}}
-    )
+    blocked = guard.check({"action_type": "new_tab", "params": {"url": "https://evil.com/x"}})
     assert blocked.denied
     assert "domain-whitelist" in blocked.matched_rules
-    ok = guard.check(
-        {"action_type": "new_tab", "params": {"url": "https://example.com/x"}}
-    )
+    ok = guard.check({"action_type": "new_tab", "params": {"url": "https://example.com/x"}})
     assert not ok.denied
 
 
@@ -666,9 +654,7 @@ def test_guard_blocks_decimal_encoded_ip() -> None:
     from web_crawler.ai.guardrails import ActionGuard
 
     guard = ActionGuard(allow_localhost=False)
-    result = guard.check(
-        {"action_type": "navigate", "params": {"url": "http://2130706433/"}}
-    )
+    result = guard.check({"action_type": "navigate", "params": {"url": "http://2130706433/"}})
     assert result.denied
     assert "no-localhost-nav" in result.matched_rules
 
@@ -678,9 +664,7 @@ def test_guard_blocks_hex_encoded_ip() -> None:
     from web_crawler.ai.guardrails import ActionGuard
 
     guard = ActionGuard(allow_localhost=False)
-    result = guard.check(
-        {"action_type": "navigate", "params": {"url": "http://0x7f000001/"}}
-    )
+    result = guard.check({"action_type": "navigate", "params": {"url": "http://0x7f000001/"}})
     assert result.denied
 
 
@@ -689,9 +673,7 @@ def test_guard_blocks_octal_dotted_ip() -> None:
     from web_crawler.ai.guardrails import ActionGuard
 
     guard = ActionGuard(allow_localhost=False)
-    result = guard.check(
-        {"action_type": "navigate", "params": {"url": "http://0177.0.0.1/"}}
-    )
+    result = guard.check({"action_type": "navigate", "params": {"url": "http://0177.0.0.1/"}})
     assert result.denied
 
 
@@ -700,9 +682,7 @@ def test_guard_encoded_ip_new_tab_also_blocked() -> None:
     from web_crawler.ai.guardrails import ActionGuard
 
     guard = ActionGuard(allow_localhost=False)
-    result = guard.check(
-        {"action_type": "new_tab", "params": {"url": "http://2130706433/"}}
-    )
+    result = guard.check({"action_type": "new_tab", "params": {"url": "http://2130706433/"}})
     assert result.denied
 
 
@@ -922,4 +902,3 @@ def test_host_is_private_decode_result_invalid_ip_skipped() -> None:
         ),
     ):
         assert ActionGuard._host_is_private("127.1") is False
-

@@ -457,9 +457,7 @@ class _FetcherCore(BaseFetcher):
         verify = kwargs.pop("verify", self.verify)
         allow_redirects = kwargs.pop("allow_redirects", self.follow_redirects)
         if kwargs:
-            raise TypeError(
-                f"unexpected keyword argument(s): {', '.join(sorted(kwargs))}"
-            )
+            raise TypeError(f"unexpected keyword argument(s): {', '.join(sorted(kwargs))}")
         proxy = self._resolve_proxy()
         retry_errors = self._retry_errors()
         last_exc: BaseException | None = None
@@ -506,7 +504,9 @@ class _FetcherCore(BaseFetcher):
             await asyncio.sleep(delay)
         if last_exc is not None:  # pragma: no cover - 重试循环在最后一次必定 return 或 raise
             raise last_exc
-        raise RuntimeError(f"request to {url} failed without a captured exception")  # pragma: no cover
+        raise RuntimeError(
+            f"request to {url} failed without a captured exception"
+        )  # pragma: no cover
 
 
 class Fetcher(_FetcherCore):
@@ -652,9 +652,7 @@ class Fetcher(_FetcherCore):
         verify = kwargs.pop("verify", self.verify)
         allow_redirects = kwargs.pop("allow_redirects", self.follow_redirects)
         if kwargs:
-            raise TypeError(
-                f"unexpected keyword argument(s): {', '.join(sorted(kwargs))}"
-            )
+            raise TypeError(f"unexpected keyword argument(s): {', '.join(sorted(kwargs))}")
         proxy = self._resolve_proxy()
         retry_errors = self._retry_errors()
         last_exc: BaseException | None = None
@@ -701,7 +699,9 @@ class Fetcher(_FetcherCore):
             time.sleep(delay)
         if last_exc is not None:  # pragma: no cover - 重试循环在最后一次必定 return 或 raise
             raise last_exc
-        raise RuntimeError(f"request to {url} failed without a captured exception")  # pragma: no cover
+        raise RuntimeError(
+            f"request to {url} failed without a captured exception"
+        )  # pragma: no cover
 
     # -- public synchronous API ---------------------------------------------
     def request(self, method: str, url: str, **kwargs: Any) -> Response:
