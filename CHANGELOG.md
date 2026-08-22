@@ -289,7 +289,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (mock page.screenshot), CLI run arg parsing, defaults, mocked execution,
   save-script-to-file.
 - **JS reverse-engineering agent** (`web_crawler.ai.reverse_agent.ReverseAgent`):
-  Camoufox-driven browser observe→think→act loop powered by DeepSeek-V4-Pro.
+  Camoufox-driven browser observe→think→act loop（由大模型驱动）。
   Injects JS hooks (fetch / XHR / cookie / `crypto.subtle` / webpack / console),
   captures network traffic, splits webpack bundles, then asks the LLM to
   deobfuscate and reimplement signing algorithms in Python.
