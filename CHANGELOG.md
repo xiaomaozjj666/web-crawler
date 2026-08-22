@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-23
+
 ### Added
 - **Spider 下载中间件**：`DownloaderMiddleware`（`process_request` 返回
   `Response` 可短路下载、抛 `IgnoreRequest` 丢弃请求；`process_response`
@@ -60,6 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   开启，控制面无鉴权、仅限可信网络；`Dockerfile` CMD 已启用。
 
 ### Changed
+- **三套 robots.txt 实现收敛**：`RobotsPolicy` 提取到公共模块
+  `web_crawler/robots.py`（附标准库默认拉取 `fetch_robots_text`），
+  Spider 与 AIScrapeAgent 共用同一实现；`web_crawler.ai.agent.RobotsPolicy`
+  保留 re-export，既有导入路径不变。
 - **`app` 包迁入 `src/web_crawler/app/`**：安装时不再向 site-packages 污染
   顶层 `app` 命名空间；entry points、测试、启动脚本引用同步更新
   （`web-crawler` / `crawler-ui` 命令行为不变）。

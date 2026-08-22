@@ -1323,7 +1323,7 @@ def test_spider_robots_denied_request_is_filtered() -> None:
     spider.respect_robots = True
     parser = urllib.robotparser.RobotFileParser()
     parser.parse(["User-agent: *", "Disallow: /private"])
-    spider._robots_cache["https://shop.example.com"] = parser
+    spider._robots_policy._cache["https://shop.example.com"] = parser
     assert spider._filter(Request("https://shop.example.com/private")) is False
     assert spider._filter(Request("https://shop.example.com/public")) is True
 
@@ -1332,13 +1332,13 @@ def test_spider_robots_fetch_failure_treated_as_allowed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """robots.txt 拉取失败时保守视为允许，且同 host 不再重复外呼。"""
-    read_calls: list[str] = []
+    fetch_calls: list[str] = []
 
-    def fake_read(self: urllib.robotparser.RobotFileParser) -> None:
-        read_calls.append(self.url)  # type: ignore[attr-defined]
+    def fake_fetch(url: str) -> str:
+        fetch_calls.append(url)
         raise OSError("network unreachable")
 
-    monkeypatch.setattr(urllib.robotparser.RobotFileParser, "read", fake_read)
+    monkeypatch.setattr("web_crawler.spider.spider.fetch_robots_text", fake_fetch)
 
     class S(Spider):
         start_urls = ["https://shop.example.com/"]
@@ -1351,20 +1351,20 @@ def test_spider_robots_fetch_failure_treated_as_allowed(
     assert spider._robots_allowed("https://shop.example.com/a") is True
     assert spider._robots_allowed("https://shop.example.com/b") is True
     # 失败判定被缓存：只外呼一次
-    assert len(read_calls) == 1
+    assert len(fetch_calls) == 1
 
 
 def test_spider_robots_fetch_success_caches_parser(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """robots.txt 拉取成功后解析器被缓存，同 host 只外呼一次。"""
-    read_calls: list[str] = []
+    fetch_calls: list[str] = []
 
-    def fake_read(self: urllib.robotparser.RobotFileParser) -> None:
-        read_calls.append(self.url)  # type: ignore[attr-defined]
-        self.parse(["User-agent: *", "Disallow: /private", "Crawl-delay: 1"])
+    def fake_fetch(url: str) -> str:
+        fetch_calls.append(url)
+        return "User-agent: *\nDisallow: /private\nCrawl-delay: 1"
 
-    monkeypatch.setattr(urllib.robotparser.RobotFileParser, "read", fake_read)
+    monkeypatch.setattr("web_crawler.spider.spider.fetch_robots_text", fake_fetch)
 
     class S(Spider):
         start_urls = ["https://shop.example.com/"]
@@ -1374,14 +1374,14 @@ def test_spider_robots_fetch_success_caches_parser(
     assert spider._robots_allowed("https://shop.example.com/private") is False
     assert spider._robots_allowed("https://shop.example.com/public") is True
     # 命中缓存：两个 URL 只触发一次 robots.txt 拉取
-    assert len(read_calls) == 1
+    assert len(fetch_calls) == 1
 
 
 def test_spider_robots_disabled_by_default() -> None:
     """默认 respect_robots=False 时不做任何 robots 检查。"""
     spider = ItemSpider()
     assert spider._robots_allowed("https://shop.example.com/private") is True
-    assert spider._robots_cache == {}
+    assert spider._robots_policy._cache == {}
 
 
 def test_spider_callback_error_still_saves_state(tmp_path: Path) -> None:
