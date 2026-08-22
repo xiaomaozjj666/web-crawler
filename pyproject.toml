@@ -77,7 +77,7 @@ captcha = [
     "numpy>=1.26,<3",
 ]
 crypto = [
-    "pycryptodome>=3.20,<4",
+    "pycryptodome>=3.23.0,<4",
 ]
 mcp = [
     "mcp>=1.0,<2",
