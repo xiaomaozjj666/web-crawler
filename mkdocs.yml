@@ -3,7 +3,7 @@ site_description: Scrapling 风格隐身爬虫库 + JS 逆向 Agent
 site_url: https://github.com/xiaomaozjj666/web-crawler
 repo_url: https://github.com/xiaomaozjj666/web-crawler
 repo_name: xiaomaozjj666/web-crawler
-edit_uri: edit/main/docs/
+edit_uri: edit/master/docs/
 
 docs_dir: docs
 

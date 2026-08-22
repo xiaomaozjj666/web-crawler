@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Spider 失败重试**：`Spider.max_retries`（默认 `0` 保持旧行为）— 下载失败的
+  请求按 `0.5 * 2^n` 秒指数退避（上限 8s）重新入队，`Request.retries` 字段
+  现在被引擎真实消费；重试耗尽才计入 `requests_failed`。
+- **Spider robots.txt 遵守**：`Spider.respect_robots`（默认 `False`）+
+  `Spider.user_agent`，对回调产出的请求做 robots 检查（per-host 缓存，
+  拉取失败保守视为允许且不再重复外呼）。
+- **`DupeFilter` 指纹去重**：Spider 去重从裸 URL 集合升级为
+  method + url + body 的 SHA1 指纹（同 URL 不同分页参数不再互相误杀），
+  可经 `Spider(dupefilter=...)` 替换为自定义实现；从 `web_crawler` 顶层
+  导出。
+- **CI 测试矩阵**：test job 扩展为 Ubuntu × Python 3.10–3.14 +
+  Windows × 3.12（此前仅 ubuntu/3.12 单点），`fail-fast` 关闭以完整暴露
+  兼容性问题；增加 workflow `concurrency` 取消组；release 构建前先跑测试。
+- **覆盖率门禁**：`[tool.coverage.report] fail_under = 85`（实测 ~96%，
+  门禁值为 CI 各平台波动留余量），`[tool.coverage.run] source` 修正为
+  `web_crawler + app`（此前仅 `app`，与 CI 命令行参数不一致）。
+- **治理文件**：新增 `CONTRIBUTING.md`、`SECURITY.md`、`CODE_OF_CONDUCT.md`。
+- **文档站自动发布**：新增 `.github/workflows/docs.yml`，push master 时
+  `mkdocs gh-deploy --strict` 发布到 gh-pages；修正 `mkdocs.yml` 的
+  `edit_uri`（`edit/main` → `edit/master`）。
+- **自动化配套**：`.pre-commit-config.yaml`（ruff lint + format）与
+  `.github/dependabot.yml`（pip + github-actions 周更）。
+- **`DynamicFetcher.get` / `async_get` 别名**：与 `Fetcher.get` 动词统一，
+  `Spider` / `AIScrapeAgent` 等上层组件不再需要 `hasattr` 探测 fetcher 类型。
+- **PEP 561 类型标记**：`src/web_crawler/py.typed` 与 `app/py.typed` 入包
+  （`package-data` 登记），下游 mypy 可正常解析本库类型。
 - **SQLite 任务历史与结果持久化**（`app/db.py`）：任务/结果双表、线程安全连接、
   WAL 模式，数据库默认位于项目根目录 `crawler_data.db`，可通过
   `CRAWLER_DB_PATH` 环境变量覆盖；进程退出时由 atexit 统一关闭全部连接。
@@ -27,6 +53,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   开启，控制面无鉴权、仅限可信网络；`Dockerfile` CMD 已启用。
 
 ### Changed
+- **Spider 状态持久化移入 `finally`**：`run()` / `stream()` 的回调异常、
+  消费方提前 break 等中断路径不再跳过 `_dump_state`，已排队请求不丢；
+  `stream()` 的 `asyncio.gather` 改用 `return_exceptions=True` 后逐个重抛，
+  保持"单个回调致命错误中止整个流"的既有语义。
+- **全库统一 `ruff format`**：一次性格式化 48 个文件，配套
+  `.git-blame-ignore-revs` 缓解 blame 污染；CI 增加
+  `ruff format --check`。
 - **LLM 调用指数退避重试**：`OpenAICompatibleProvider.chat` / `achat` 对
   429 / 5xx / httpx 传输层错误按 `2^n` 秒退避最多重试 3 次（上限 30s），
   替代原先的一次性调用。
@@ -72,6 +105,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`analyze_js` 同源限制**：Agent 服务端拉取脚本仅限同源/白名单域、
   非内网的 http(s) URL（拒绝重定向到内网），并设内容大小上限，防止
   SSRF 与内网响应数据外带。
+
+### Removed
+- **`REVIEW-REPORT.md` 移出仓库追踪**：内部审查过程文档不随开源仓库分发
+  （本地文件保留，已加入 `.gitignore`）。
 
 ## [0.3.0] - 2026-07-29
 
