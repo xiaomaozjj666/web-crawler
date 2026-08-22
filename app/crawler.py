@@ -776,9 +776,13 @@ def crawl(args: argparse.Namespace) -> int:
         if is_blocked_url(page_url, block_keywords):
             _log.info("blocked page: %s", page_url)
             continue
-        if args.same_domain and not same_domain(page_url, args.url):  # pragma: no cover - 防御性：入队时已过滤
+        if args.same_domain and not same_domain(
+            page_url, args.url
+        ):  # pragma: no cover - 防御性：入队时已过滤
             continue
-        if robots and not robots.can_fetch(args.user_agent, page_url):  # pragma: no cover - 防御性：页面 robots 检查
+        if robots and not robots.can_fetch(
+            args.user_agent, page_url
+        ):  # pragma: no cover - 防御性：页面 robots 检查
             _log.info("robots.txt skipped page: %s", page_url)
             continue
 
@@ -822,7 +826,9 @@ def crawl(args: argparse.Namespace) -> int:
         if args.crawl_pages:
             for link in parser.page_links:
                 if link not in seen_pages and link not in page_queue:
-                    if is_blocked_url(link, block_keywords):  # pragma: no cover - 防御性：资源级 block 检查已在更上层处理
+                    if is_blocked_url(
+                        link, block_keywords
+                    ):  # pragma: no cover - 防御性：资源级 block 检查已在更上层处理
                         continue
                     if not args.same_domain or same_domain(link, args.url):
                         page_queue.append(link)
@@ -944,9 +950,12 @@ def crawl(args: argparse.Namespace) -> int:
             target.parent.mkdir(parents=True, exist_ok=True)
             # 需要完整内容（去重/解密/CSS 解析/播放清单展开）时走内存路径;
             # 否则流式写入 .part 临时文件,避免大文件整包驻留内存（fetch 返回 b""）
-            needs_content = bool(dedup) or (
-                getattr(args, "decrypt", False) and HAS_AES
-            ) or bool(args.include_css_urls) or bool(args.expand_playlists)
+            needs_content = (
+                bool(dedup)
+                or (getattr(args, "decrypt", False) and HAS_AES)
+                or bool(args.include_css_urls)
+                or bool(args.expand_playlists)
+            )
             stream_to_disk = not getattr(args, "resume", False) and not needs_content
             data, content_type = fetch(
                 resource.url,
@@ -959,9 +968,7 @@ def crawl(args: argparse.Namespace) -> int:
                 control_args=args,
             )
             byte_count = (
-                target.stat().st_size
-                if (stream_to_disk and target.exists())
-                else len(data)
+                target.stat().st_size if (stream_to_disk and target.exists()) else len(data)
             )
 
             # Content deduplication
@@ -990,7 +997,9 @@ def crawl(args: argparse.Namespace) -> int:
             target.parent.mkdir(parents=True, exist_ok=True)
             if not getattr(args, "resume", False) and not stream_to_disk:
                 write_data = data
-                if getattr(args, "decrypt", False) and HAS_AES:  # pragma: no cover - pycryptodome 未安装时不可达
+                if (
+                    getattr(args, "decrypt", False) and HAS_AES
+                ):  # pragma: no cover - pycryptodome 未安装时不可达
                     key_info = get_segment_key(resource.url)
                     if key_info:
                         try:
@@ -1010,9 +1019,13 @@ def crawl(args: argparse.Namespace) -> int:
             ):
                 css_text = decode_text(data, content_type, args.encoding)
                 for extra in discover_css_resources(css_text, resource.url, resource.page_url):
-                    if args.same_domain and not same_domain(extra.url, args.url):  # pragma: no cover - 防御性：CSS 资源跨域过滤
+                    if args.same_domain and not same_domain(
+                        extra.url, args.url
+                    ):  # pragma: no cover - 防御性：CSS 资源跨域过滤
                         continue
-                    if is_blocked_url(extra.url, block_keywords):  # pragma: no cover - 防御性：CSS 资源 block 过滤
+                    if is_blocked_url(
+                        extra.url, block_keywords
+                    ):  # pragma: no cover - 防御性：CSS 资源 block 过滤
                         continue
                     local_discoveries.append(extra)
 
@@ -1035,11 +1048,17 @@ def crawl(args: argparse.Namespace) -> int:
                 if playlist_note:  # pragma: no cover - 播放列表 note 极少出现
                     status = f"{status}; {playlist_note}"
                 for extra in extra_resources:
-                    if args.same_domain and not same_domain(extra.url, args.url):  # pragma: no cover - 防御性：播放列表跨域过滤
+                    if args.same_domain and not same_domain(
+                        extra.url, args.url
+                    ):  # pragma: no cover - 防御性：播放列表跨域过滤
                         continue
-                    if is_blocked_url(extra.url, block_keywords):  # pragma: no cover - 防御性：播放列表 block 过滤
+                    if is_blocked_url(
+                        extra.url, block_keywords
+                    ):  # pragma: no cover - 防御性：播放列表 block 过滤
                         continue
-                    if args.video_only and not is_video_candidate(extra):  # pragma: no cover - 防御性：播放列表 video_only 过滤
+                    if args.video_only and not is_video_candidate(
+                        extra
+                    ):  # pragma: no cover - 防御性：播放列表 video_only 过滤
                         continue
                     local_discoveries.append(extra)
 
@@ -1170,7 +1189,9 @@ def crawl(args: argparse.Namespace) -> int:
         failed_count = 0
         if not _post_pause_check():
             try:
-                video_count = write_video_manifests(output_dir, manifest_rows) if args.video_mode else 0
+                video_count = (
+                    write_video_manifests(output_dir, manifest_rows) if args.video_mode else 0
+                )
                 failed_count = write_failed_manifests(output_dir, manifest_rows)
             except Exception as exc:
                 _log.warning("failed to write video/failed manifests: %s", exc)

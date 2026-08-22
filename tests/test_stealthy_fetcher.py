@@ -162,8 +162,17 @@ def test_stealth_js_patches_all_fingerprint_surfaces() -> None:
     """stealth JS 覆盖所有关键指纹面。"""
     from web_crawler.fetchers.stealthy import _STEALTH_JS
 
-    for key in ("webdriver", "plugins", "languages", "platform", "vendor",
-                "appVersion", "userAgent", "chrome", "permissions"):
+    for key in (
+        "webdriver",
+        "plugins",
+        "languages",
+        "platform",
+        "vendor",
+        "appVersion",
+        "userAgent",
+        "chrome",
+        "permissions",
+    ):
         assert key in _STEALTH_JS, f"_STEALTH_JS 缺少 {key} 补丁"
 
 
@@ -207,8 +216,10 @@ def test_setup_page_no_route_when_no_blocked(stealthy: Any) -> None:
 def test_post_load_calls_cloudflare_and_humanize(stealthy: Any) -> None:
     """_post_load 在两个开关都开时调用 _solve_cloudflare_sync + _humanize_sync。"""
     page = MagicMock()
-    with patch.object(stealthy, "_solve_cloudflare_sync") as mock_cf, \
-         patch.object(stealthy, "_humanize_sync") as mock_h:
+    with (
+        patch.object(stealthy, "_solve_cloudflare_sync") as mock_cf,
+        patch.object(stealthy, "_humanize_sync") as mock_h,
+    ):
         stealthy._post_load(page)
         mock_cf.assert_called_once_with(page)
         mock_h.assert_called_once_with(page)
@@ -218,8 +229,10 @@ def test_post_load_skips_cloudflare_when_disabled(stealthy: Any) -> None:
     """solve_cloudflare=False 时跳过 _solve_cloudflare_sync。"""
     stealthy.solve_cloudflare = False
     page = MagicMock()
-    with patch.object(stealthy, "_solve_cloudflare_sync") as mock_cf, \
-         patch.object(stealthy, "_humanize_sync") as mock_h:
+    with (
+        patch.object(stealthy, "_solve_cloudflare_sync") as mock_cf,
+        patch.object(stealthy, "_humanize_sync") as mock_h,
+    ):
         stealthy._post_load(page)
         mock_cf.assert_not_called()
         mock_h.assert_called_once_with(page)
@@ -229,8 +242,10 @@ def test_post_load_skips_humanize_when_disabled(stealthy: Any) -> None:
     """humanize=False 时跳过 _humanize_sync。"""
     stealthy.humanize = False
     page = MagicMock()
-    with patch.object(stealthy, "_solve_cloudflare_sync") as mock_cf, \
-         patch.object(stealthy, "_humanize_sync") as mock_h:
+    with (
+        patch.object(stealthy, "_solve_cloudflare_sync") as mock_cf,
+        patch.object(stealthy, "_humanize_sync") as mock_h,
+    ):
         stealthy._post_load(page)
         mock_cf.assert_called_once_with(page)
         mock_h.assert_not_called()
@@ -241,8 +256,10 @@ def test_post_load_skips_both_when_disabled(stealthy: Any) -> None:
     stealthy.solve_cloudflare = False
     stealthy.humanize = False
     page = MagicMock()
-    with patch.object(stealthy, "_solve_cloudflare_sync") as mock_cf, \
-         patch.object(stealthy, "_humanize_sync") as mock_h:
+    with (
+        patch.object(stealthy, "_solve_cloudflare_sync") as mock_cf,
+        patch.object(stealthy, "_humanize_sync") as mock_h,
+    ):
         stealthy._post_load(page)
         mock_cf.assert_not_called()
         mock_h.assert_not_called()
@@ -450,8 +467,10 @@ def test_post_load_async_calls_both_hooks(stealthy: Any) -> None:
 
     async def go() -> None:
         page = AsyncMock()
-        with patch.object(stealthy, "_solve_cloudflare_async", new=AsyncMock()) as mock_cf, \
-             patch.object(stealthy, "_humanize_async", new=AsyncMock()) as mock_h:
+        with (
+            patch.object(stealthy, "_solve_cloudflare_async", new=AsyncMock()) as mock_cf,
+            patch.object(stealthy, "_humanize_async", new=AsyncMock()) as mock_h,
+        ):
             await stealthy._post_load_async(page)
             mock_cf.assert_awaited_once_with(page)
             mock_h.assert_awaited_once_with(page)
@@ -467,8 +486,10 @@ def test_post_load_async_skips_cloudflare_when_disabled(stealthy: Any) -> None:
 
     async def go() -> None:
         page = AsyncMock()
-        with patch.object(stealthy, "_solve_cloudflare_async", new=AsyncMock()) as mock_cf, \
-             patch.object(stealthy, "_humanize_async", new=AsyncMock()) as mock_h:
+        with (
+            patch.object(stealthy, "_solve_cloudflare_async", new=AsyncMock()) as mock_cf,
+            patch.object(stealthy, "_humanize_async", new=AsyncMock()) as mock_h,
+        ):
             await stealthy._post_load_async(page)
             mock_cf.assert_not_called()
             mock_h.assert_awaited_once_with(page)
@@ -484,8 +505,10 @@ def test_post_load_async_skips_humanize_when_disabled(stealthy: Any) -> None:
 
     async def go() -> None:
         page = AsyncMock()
-        with patch.object(stealthy, "_solve_cloudflare_async", new=AsyncMock()) as mock_cf, \
-             patch.object(stealthy, "_humanize_async", new=AsyncMock()) as mock_h:
+        with (
+            patch.object(stealthy, "_solve_cloudflare_async", new=AsyncMock()) as mock_cf,
+            patch.object(stealthy, "_humanize_async", new=AsyncMock()) as mock_h,
+        ):
             await stealthy._post_load_async(page)
             mock_cf.assert_awaited_once_with(page)
             mock_h.assert_not_called()

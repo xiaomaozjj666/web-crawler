@@ -25,8 +25,12 @@ from app import crawler as cr
 
 class TestResource:
     def test_creation(self) -> None:
-        r = cr.Resource(url="https://x.com/a.js", found_in="script[src]", kind="script",
-                        page_url="https://x.com/")
+        r = cr.Resource(
+            url="https://x.com/a.js",
+            found_in="script[src]",
+            kind="script",
+            page_url="https://x.com/",
+        )
         assert r.url == "https://x.com/a.js"
         assert r.kind == "script"
 
@@ -39,8 +43,16 @@ class TestResource:
 class TestManifestRow:
     def test_defaults(self) -> None:
         row = cr.ManifestRow(
-            status="ok", url="u", saved_path="p", content_type="ct", bytes=10,
-            category="img", found_in="f", kind="k", page_url="pu", page_title="t",
+            status="ok",
+            url="u",
+            saved_path="p",
+            content_type="ct",
+            bytes=10,
+            category="img",
+            found_in="f",
+            kind="k",
+            page_url="pu",
+            page_title="t",
             diagnostic="d",
         )
         assert row.sha256 == ""
@@ -262,10 +274,20 @@ class TestLooksLikeResourceUrl:
 
 
 class TestIsVideoResource:
-    def _row(self, url: str = "", ct: str = "", found_in: str = "", kind: str = "") -> cr.ManifestRow:
+    def _row(
+        self, url: str = "", ct: str = "", found_in: str = "", kind: str = ""
+    ) -> cr.ManifestRow:
         return cr.ManifestRow(
-            status="ok", url=url, saved_path="", content_type=ct, bytes=0,
-            category="video", found_in=found_in, kind=kind, page_url="", page_title="",
+            status="ok",
+            url=url,
+            saved_path="",
+            content_type=ct,
+            bytes=0,
+            category="video",
+            found_in=found_in,
+            kind=kind,
+            page_url="",
+            page_title="",
             diagnostic="",
         )
 
@@ -380,8 +402,10 @@ class TestCallbacks:
 
     def test_wait_if_paused(self) -> None:
         called = [0]
+
         def cb() -> None:
             called[0] += 1
+
         args = Mock()
         args.wait_if_paused = cb
         cr.wait_if_paused(args)
@@ -392,8 +416,10 @@ class TestCallbacks:
 
     def test_report_progress(self) -> None:
         received: list[dict] = []
+
         def cb(payload: dict) -> None:
             received.append(payload)
+
         args = Mock()
         args.progress_callback = cb
         cr.report_progress(args, phase="test", url="https://x.com")
@@ -454,9 +480,12 @@ class TestOutputPrefixForResource:
     def test_with_organize(self) -> None:
         args = Mock()
         args.organize = True
-        resource = cr.Resource(url="https://x.com/img.png", found_in="img[src]",
-                               kind="img", page_url="https://x.com/")
-        result = cr.output_prefix_for_resource(args, resource, "image/png", {"https://x.com/": "Page"})
+        resource = cr.Resource(
+            url="https://x.com/img.png", found_in="img[src]", kind="img", page_url="https://x.com/"
+        )
+        result = cr.output_prefix_for_resource(
+            args, resource, "image/png", {"https://x.com/": "Page"}
+        )
         assert "image" in result
         assert "Page" in result
 
@@ -503,7 +532,7 @@ class TestDiscoverPlaylistResources:
         assert "encrypted" in note
 
     def test_mpd(self) -> None:
-        text = '<MPD><BaseURL>seg1.mp4</BaseURL></MPD>'
+        text = "<MPD><BaseURL>seg1.mp4</BaseURL></MPD>"
         resources, note = cr.discover_playlist_resources(
             text, "https://x.com/playlist.mpd", "https://x.com/"
         )
@@ -601,7 +630,9 @@ class TestPageParser:
 
 class TestMakeRobotsParser:
     def test_with_fetch_mock(self) -> None:
-        with patch.object(cr, "fetch", return_value=(b"User-agent: *\nDisallow: /private", "text/plain")):
+        with patch.object(
+            cr, "fetch", return_value=(b"User-agent: *\nDisallow: /private", "text/plain")
+        ):
             parser = cr.make_robots_parser("https://example.com", {}, 10)
         assert parser.can_fetch("*", "https://example.com/page") is True
         assert parser.can_fetch("*", "https://example.com/private") is False
@@ -616,13 +647,22 @@ class TestMakeRobotsParser:
 class TestRewriteHtml:
     def test_basic(self, tmp_path: Path) -> None:
         html = '<img src="https://x.com/logo.png">'
-        rows = [cr.ManifestRow(
-            status="ok", url="https://x.com/logo.png",
-            saved_path=str(tmp_path / "assets" / "logo.png"),
-            content_type="image/png", bytes=100, category="image",
-            found_in="img[src]", kind="img", page_url="https://x.com/",
-            page_title="", diagnostic="", sha256="",
-        )]
+        rows = [
+            cr.ManifestRow(
+                status="ok",
+                url="https://x.com/logo.png",
+                saved_path=str(tmp_path / "assets" / "logo.png"),
+                content_type="image/png",
+                bytes=100,
+                category="image",
+                found_in="img[src]",
+                kind="img",
+                page_url="https://x.com/",
+                page_title="",
+                diagnostic="",
+                sha256="",
+            )
+        ]
         result = cr.rewrite_html(html, rows, "https://x.com/", tmp_path)
         assert "logo.png" in result
         assert "https://x.com/logo.png" not in result
@@ -640,7 +680,7 @@ class TestStripPageOverlays:
         assert "spam" not in result
 
     def test_preserves_content(self) -> None:
-        html = '<p>main content</p>'
+        html = "<p>main content</p>"
         result = cr.strip_page_overlays(html)
         assert "main content" in result
 
@@ -682,17 +722,19 @@ class TestSmartExtract:
 
 class TestExtractReadableText:
     def test_article_tag(self) -> None:
-        html = '<article><p>Main article text that is long enough to be kept</p></article>'
+        html = "<article><p>Main article text that is long enough to be kept</p></article>"
         result = cr.extract_readable_text(html)
         assert "Main article text" in result
 
     def test_body_fallback(self) -> None:
-        html = '<body><p>Body text that is long enough to be kept here</p></body>'
+        html = "<body><p>Body text that is long enough to be kept here</p></body>"
         result = cr.extract_readable_text(html)
         assert "Body text" in result
 
     def test_strips_scripts(self) -> None:
-        html = '<article><script>var x = 1;</script><p>Visible text here is long enough</p></article>'
+        html = (
+            "<article><script>var x = 1;</script><p>Visible text here is long enough</p></article>"
+        )
         result = cr.extract_readable_text(html)
         assert "var x" not in result
         assert "Visible text" in result
@@ -768,16 +810,31 @@ class TestManifests:
     def _rows(self) -> list[cr.ManifestRow]:
         return [
             cr.ManifestRow(
-                status="ok", url="https://x.com/a.js", saved_path="/tmp/a.js",
-                content_type="application/javascript", bytes=100, category="script",
-                found_in="script[src]", kind="script", page_url="https://x.com/",
-                page_title="Page", diagnostic="", sha256="abc",
+                status="ok",
+                url="https://x.com/a.js",
+                saved_path="/tmp/a.js",
+                content_type="application/javascript",
+                bytes=100,
+                category="script",
+                found_in="script[src]",
+                kind="script",
+                page_url="https://x.com/",
+                page_title="Page",
+                diagnostic="",
+                sha256="abc",
             ),
             cr.ManifestRow(
-                status="error: 404", url="https://x.com/b.js", saved_path="",
-                content_type="", bytes=0, category="script",
-                found_in="script[src]", kind="script", page_url="https://x.com/",
-                page_title="Page", diagnostic="not found",
+                status="error: 404",
+                url="https://x.com/b.js",
+                saved_path="",
+                content_type="",
+                bytes=0,
+                category="script",
+                found_in="script[src]",
+                kind="script",
+                page_url="https://x.com/",
+                page_title="Page",
+                diagnostic="not found",
             ),
         ]
 
@@ -789,12 +846,21 @@ class TestManifests:
         assert len(data) == 2
 
     def test_write_video_manifests(self, tmp_path: Path) -> None:
-        rows = self._rows() + [cr.ManifestRow(
-            status="ok", url="https://x.com/v.mp4", saved_path="/tmp/v.mp4",
-            content_type="video/mp4", bytes=1000, category="video",
-            found_in="video[src]", kind="video", page_url="https://x.com/",
-            page_title="Page", diagnostic="",
-        )]
+        rows = self._rows() + [
+            cr.ManifestRow(
+                status="ok",
+                url="https://x.com/v.mp4",
+                saved_path="/tmp/v.mp4",
+                content_type="video/mp4",
+                bytes=1000,
+                category="video",
+                found_in="video[src]",
+                kind="video",
+                page_url="https://x.com/",
+                page_title="Page",
+                diagnostic="",
+            )
+        ]
         count = cr.write_video_manifests(tmp_path, rows)
         assert count == 1
         assert (tmp_path / "video_manifest.csv").exists()
@@ -909,22 +975,45 @@ class TestBuildReportContext:
     def _rows(self) -> list[cr.ManifestRow]:
         return [
             cr.ManifestRow(
-                status="ok", url="https://x.com/a.js", saved_path="/tmp/a.js",
-                content_type="application/javascript", bytes=100, category="script",
-                found_in="script[src]", kind="script", page_url="https://x.com/",
-                page_title="Page", diagnostic="", sha256="abc",
+                status="ok",
+                url="https://x.com/a.js",
+                saved_path="/tmp/a.js",
+                content_type="application/javascript",
+                bytes=100,
+                category="script",
+                found_in="script[src]",
+                kind="script",
+                page_url="https://x.com/",
+                page_title="Page",
+                diagnostic="",
+                sha256="abc",
             ),
             cr.ManifestRow(
-                status="error: HTTP Error 404", url="https://x.com/b.js", saved_path="",
-                content_type="", bytes=0, category="script",
-                found_in="script[src]", kind="script", page_url="https://x.com/",
-                page_title="Page", diagnostic="not found",
+                status="error: HTTP Error 404",
+                url="https://x.com/b.js",
+                saved_path="",
+                content_type="",
+                bytes=0,
+                category="script",
+                found_in="script[src]",
+                kind="script",
+                page_url="https://x.com/",
+                page_title="Page",
+                diagnostic="not found",
             ),
             cr.ManifestRow(
-                status="skipped by dedup", url="https://x.com/c.js", saved_path="",
-                content_type="application/javascript", bytes=50, category="script",
-                found_in="script[src]", kind="script", page_url="https://x.com/",
-                page_title="Page", diagnostic="dedup", sha256="def",
+                status="skipped by dedup",
+                url="https://x.com/c.js",
+                saved_path="",
+                content_type="application/javascript",
+                bytes=50,
+                category="script",
+                found_in="script[src]",
+                kind="script",
+                page_url="https://x.com/",
+                page_title="Page",
+                diagnostic="dedup",
+                sha256="def",
             ),
         ]
 
@@ -962,18 +1051,31 @@ class TestBuildRecommendations:
         assert any("未发现" in r["title"] for r in recs)
 
     def test_auth_error(self) -> None:
-        rows = [cr.ManifestRow(
-            "error: HTTP Error 401", "https://x.com/private", "", "", 0, "", "", "", "", "", ""
-        )]
+        rows = [
+            cr.ManifestRow(
+                "error: HTTP Error 401", "https://x.com/private", "", "", 0, "", "", "", "", "", ""
+            )
+        ]
         ctx = cr.build_report_context(rows, 1, 0.0, 1.0)
         recs = cr.build_recommendations(ctx)
         assert any("401/403" in r["title"] for r in recs)
 
     def test_normal(self) -> None:
-        rows = [cr.ManifestRow(
-            "ok", "https://x.com/a.js", "/tmp/a.js", "application/javascript", 100,
-            "script", "script[src]", "script", "https://x.com/", "Page", ""
-        )]
+        rows = [
+            cr.ManifestRow(
+                "ok",
+                "https://x.com/a.js",
+                "/tmp/a.js",
+                "application/javascript",
+                100,
+                "script",
+                "script[src]",
+                "script",
+                "https://x.com/",
+                "Page",
+                "",
+            )
+        ]
         ctx = cr.build_report_context(rows, 1, 0.0, 1.0)
         recs = cr.build_recommendations(ctx)
         assert len(recs) >= 1
@@ -981,11 +1083,24 @@ class TestBuildRecommendations:
 
 class TestWriteSummary:
     def test_writes_file(self, tmp_path: Path) -> None:
-        rows = [cr.ManifestRow(
-            "ok", "https://x.com/a.js", "/tmp/a.js", "application/javascript", 100,
-            "script", "script[src]", "script", "https://x.com/", "Page", ""
-        )]
-        cr.write_summary(tmp_path, rows, 1, start_time=0.0, end_time=1.0, config={"url": "https://x.com"})
+        rows = [
+            cr.ManifestRow(
+                "ok",
+                "https://x.com/a.js",
+                "/tmp/a.js",
+                "application/javascript",
+                100,
+                "script",
+                "script[src]",
+                "script",
+                "https://x.com/",
+                "Page",
+                "",
+            )
+        ]
+        cr.write_summary(
+            tmp_path, rows, 1, start_time=0.0, end_time=1.0, config={"url": "https://x.com"}
+        )
         assert (tmp_path / "summary.txt").exists()
         content = (tmp_path / "summary.txt").read_text(encoding="utf-8")
         assert "网页资源采集" in content
@@ -993,11 +1108,24 @@ class TestWriteSummary:
 
 class TestWriteRunReport:
     def test_writes_all_formats(self, tmp_path: Path) -> None:
-        rows = [cr.ManifestRow(
-            "ok", "https://x.com/a.js", "/tmp/a.js", "application/javascript", 100,
-            "script", "script[src]", "script", "https://x.com/", "Page", ""
-        )]
-        cr.write_run_report(tmp_path, rows, 1, start_time=0.0, end_time=1.0, config={"url": "https://x.com"})
+        rows = [
+            cr.ManifestRow(
+                "ok",
+                "https://x.com/a.js",
+                "/tmp/a.js",
+                "application/javascript",
+                100,
+                "script",
+                "script[src]",
+                "script",
+                "https://x.com/",
+                "Page",
+                "",
+            )
+        ]
+        cr.write_run_report(
+            tmp_path, rows, 1, start_time=0.0, end_time=1.0, config={"url": "https://x.com"}
+        )
         assert (tmp_path / "run_report.json").exists()
         assert (tmp_path / "run_report.md").exists()
         assert (tmp_path / "run_report.html").exists()
@@ -1042,8 +1170,15 @@ class TestDiagnosticForStatus:
 class TestRowFor:
     def test_basic(self) -> None:
         resource = cr.Resource("https://x.com/a.js", "script[src]", "script", "https://x.com/")
-        row = cr.row_for("ok", resource, "/tmp/a.js", "application/javascript", 100,
-                         {"https://x.com/": "Page"}, sha256="abc123")
+        row = cr.row_for(
+            "ok",
+            resource,
+            "/tmp/a.js",
+            "application/javascript",
+            100,
+            {"https://x.com/": "Page"},
+            sha256="abc123",
+        )
         assert row.status == "ok"
         assert row.url == "https://x.com/a.js"
         assert row.category == "script"
@@ -1087,7 +1222,11 @@ class TestFetch:
 
         mock_opener = MagicMock()
         mock_opener.open.side_effect = HTTPError(
-            "https://x.com", 404, "Not Found", {}, None  # type: ignore[arg-type]
+            "https://x.com",
+            404,
+            "Not Found",
+            {},
+            None,  # type: ignore[arg-type]
         )
 
         with (
@@ -1105,12 +1244,17 @@ class TestCrawl:
         """页面无资源时生成空清单。"""
         html = b"<html><body><p>no resources</p></body></html>"
         with patch.object(cr, "fetch", return_value=(html, "text/html")):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
         assert (tmp_path / "resources_manifest.json").exists()
@@ -1121,12 +1265,17 @@ class TestCrawl:
         """list_only 模式下发现资源但不下载。"""
         html = b'<html><body><img src="logo.png"><script src="app.js"></script></body></html>'
         with patch.object(cr, "fetch", return_value=(html, "text/html")):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
         manifest = json.loads((tmp_path / "resources_manifest.json").read_text())
@@ -1144,11 +1293,16 @@ class TestCrawl:
             return (img_data, "image/png")
 
         with patch.object(cr, "fetch", side_effect=mock_fetch):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
         manifest = json.loads((tmp_path / "resources_manifest.json").read_text())
@@ -1157,10 +1311,14 @@ class TestCrawl:
 
     def test_header_parse_error(self, tmp_path: Path) -> None:
         """header 解析错误返回 exit code 2。"""
-        args = cr.build_parser().parse_args([
-            "--url", "https://example.com",
-            "--out", str(tmp_path),
-        ])
+        args = cr.build_parser().parse_args(
+            [
+                "--url",
+                "https://example.com",
+                "--out",
+                str(tmp_path),
+            ]
+        )
         args.header = ["invalid header without colon"]
         exit_code = cr.crawl(args)
         assert exit_code == 2
@@ -1177,12 +1335,17 @@ class TestCrawl:
             patch.object(cr, "fetch", return_value=(html, "text/html")),
             patch.object(cr, "should_stop", side_effect=mock_should_stop),
         ):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             # 第一次 should_stop 返回 False（进入循环前），第二次返回 True
             stop_flag[0] = True
             exit_code = cr.crawl(args)
@@ -1203,20 +1366,29 @@ class TestBuildParser:
 
     def test_all_args(self) -> None:
         parser = cr.build_parser()
-        args = parser.parse_args([
-            "--url", "https://x.com",
-            "--out", "/tmp/out",
-            "--workers", "4",
-            "--delay", "1.0",
-            "--timeout", "60",
-            "--retries", "3",
-            "--max-pages", "10",
-            "--same-domain",
-            "--include-css-urls",
-            "--list-only",
-            "--dedup",
-            "--stealth",
-        ])
+        args = parser.parse_args(
+            [
+                "--url",
+                "https://x.com",
+                "--out",
+                "/tmp/out",
+                "--workers",
+                "4",
+                "--delay",
+                "1.0",
+                "--timeout",
+                "60",
+                "--retries",
+                "3",
+                "--max-pages",
+                "10",
+                "--same-domain",
+                "--include-css-urls",
+                "--list-only",
+                "--dedup",
+                "--stealth",
+            ]
+        )
         assert args.workers == 4
         assert args.same_domain is True
         assert args.include_css_urls is True
@@ -1235,53 +1407,64 @@ class TestMain:
     def test_save_config(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """--save-config 保存配置后退出。"""
         config_path = tmp_path / "config.json"
-        monkeypatch.setattr("sys.argv", [
-            "crawler", "--url", "https://x.com", "--save-config", str(config_path),
-        ])
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "crawler",
+                "--url",
+                "https://x.com",
+                "--save-config",
+                str(config_path),
+            ],
+        )
         cr.main()
         assert config_path.exists()
 
     def test_load_config(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """--load-config 加载配置并运行。"""
         config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "url": "https://example.com",
-            "out": str(tmp_path),
-            "workers": 1,
-            "list_only": True,
-            "save_config": None,
-            "same_domain": True,
-            "include_css_urls": True,
-            "rewrite_html": False,
-            "strip_overlays": False,
-            "decrypt": False,
-            "video_mode": False,
-            "video_only": False,
-            "expand_playlists": False,
-            "respect_robots": False,
-            "timeout": 20,
-            "retries": 1,
-            "delay": 0.5,
-            "max_bytes": 0,
-            "encoding": None,
-            "user_agent": cr.DEFAULT_USER_AGENT,
-            "header": [],
-            "block_keyword": [],
-            "include_pattern": None,
-            "exclude_pattern": None,
-            "proxy": None,
-            "stealth": False,
-            "impersonate": "chrome131",
-            "resume": False,
-            "organize": False,
-            "dedup": False,
-            "sitemap": False,
-            "smart_extract": False,
-            "resume_crawl": False,
-            "extract_text": False,
-            "max_pages": 1,
-            "crawl_pages": False,
-        }))
+        config_path.write_text(
+            json.dumps(
+                {
+                    "url": "https://example.com",
+                    "out": str(tmp_path),
+                    "workers": 1,
+                    "list_only": True,
+                    "save_config": None,
+                    "same_domain": True,
+                    "include_css_urls": True,
+                    "rewrite_html": False,
+                    "strip_overlays": False,
+                    "decrypt": False,
+                    "video_mode": False,
+                    "video_only": False,
+                    "expand_playlists": False,
+                    "respect_robots": False,
+                    "timeout": 20,
+                    "retries": 1,
+                    "delay": 0.5,
+                    "max_bytes": 0,
+                    "encoding": None,
+                    "user_agent": cr.DEFAULT_USER_AGENT,
+                    "header": [],
+                    "block_keyword": [],
+                    "include_pattern": None,
+                    "exclude_pattern": None,
+                    "proxy": None,
+                    "stealth": False,
+                    "impersonate": "chrome131",
+                    "resume": False,
+                    "organize": False,
+                    "dedup": False,
+                    "sitemap": False,
+                    "smart_extract": False,
+                    "resume_crawl": False,
+                    "extract_text": False,
+                    "max_pages": 1,
+                    "crawl_pages": False,
+                }
+            )
+        )
 
         monkeypatch.setattr("sys.argv", ["crawler", "--load-config", str(config_path)])
 
@@ -1441,6 +1624,7 @@ class TestStealthFetch:
 
         # 清空模块级缓存，避免跨测试缓存污染
         import app.crawler as cr_mod
+
         cr_mod._stealth_fetcher = None
         cr_mod._stealth_fetcher_key = ("", None, "")
 
@@ -1457,6 +1641,7 @@ class TestStealthFetch:
     def test_stealth_fetch_unavailable_raises(self) -> None:
         """Fetcher 不可用时抛 RuntimeError。"""
         import app.crawler as cr_mod
+
         cr_mod._stealth_fetcher = None
         cr_mod._stealth_fetcher_key = ("", None, "")
 
@@ -1480,6 +1665,7 @@ class TestStealthFetch:
         fake_fetcher_cls = Mock(return_value=fake_fetcher_instance)
 
         import app.crawler as cr_mod
+
         cr_mod._stealth_fetcher = None
         cr_mod._stealth_fetcher_key = ("", None, "")
 
@@ -1508,7 +1694,11 @@ class TestSafeRedirectHandler:
 
         with pytest.raises(ValueError, match="unsafe"):
             self._handler().redirect_request(
-                self._request(), None, 302, "Found", Message(),
+                self._request(),
+                None,
+                302,
+                "Found",
+                Message(),
                 "http://169.254.169.254/latest/meta-data/",
             )
 
@@ -1517,7 +1707,11 @@ class TestSafeRedirectHandler:
 
         with pytest.raises(ValueError, match="unsafe"):
             self._handler().redirect_request(
-                self._request(), None, 302, "Found", Message(),
+                self._request(),
+                None,
+                302,
+                "Found",
+                Message(),
                 "http://127.0.0.1/admin",
             )
 
@@ -1526,7 +1720,11 @@ class TestSafeRedirectHandler:
 
         with pytest.raises(ValueError, match="non-http"):
             self._handler().redirect_request(
-                self._request(), None, 302, "Found", Message(),
+                self._request(),
+                None,
+                302,
+                "Found",
+                Message(),
                 "file:///etc/passwd",
             )
 
@@ -1534,7 +1732,11 @@ class TestSafeRedirectHandler:
         from email.message import Message
 
         result = self._handler().redirect_request(
-            self._request(), None, 302, "Found", Message(),
+            self._request(),
+            None,
+            302,
+            "Found",
+            Message(),
             "https://cdn.example.com/lib.js",
         )
         assert result is not None
@@ -1835,7 +2037,11 @@ class TestFetchAdvanced:
 
         mock_opener = MagicMock()
         mock_opener.open.side_effect = HTTPError(
-            "https://x.com", 403, "Forbidden", {}, None  # type: ignore[arg-type]
+            "https://x.com",
+            403,
+            "Forbidden",
+            {},
+            None,  # type: ignore[arg-type]
         )
 
         with (
@@ -1977,7 +2183,9 @@ class TestPlaylistEncrypted:
         fake_aes.MODE_CBC = 2
         with (
             patch.object(cr, "HAS_AES", True),
-            patch.object(cr, "fetch", return_value=(b"16bytekey1234567", "application/octet-stream")),
+            patch.object(
+                cr, "fetch", return_value=(b"16bytekey1234567", "application/octet-stream")
+            ),
         ):
             resources, note = cr.discover_playlist_resources(
                 text, "https://x.com/playlist.m3u8", "https://x.com/", decrypt=True
@@ -1993,7 +2201,9 @@ class TestPlaylistEncrypted:
         )
         with (
             patch.object(cr, "HAS_AES", True),
-            patch.object(cr, "fetch", return_value=(b"16bytekey1234567", "application/octet-stream")),
+            patch.object(
+                cr, "fetch", return_value=(b"16bytekey1234567", "application/octet-stream")
+            ),
         ):
             resources, note = cr.discover_playlist_resources(
                 text, "https://x.com/playlist.m3u8", "https://x.com/", decrypt=True
@@ -2046,7 +2256,7 @@ class TestPlaylistEncrypted:
 
     def test_mpd_skips_non_downloadable(self) -> None:
         """MPD 中非 downloadable 的 BaseURL 被跳过。"""
-        text = '<MPD><BaseURL></BaseURL><BaseURL>seg1.mp4</BaseURL></MPD>'
+        text = "<MPD><BaseURL></BaseURL><BaseURL>seg1.mp4</BaseURL></MPD>"
         resources, note = cr.discover_playlist_resources(
             text, "https://x.com/playlist.mpd", "https://x.com/"
         )
@@ -2169,9 +2379,17 @@ class TestBuildRecommendationsAllErrors:
     def _make_rows(self, statuses: list[str]) -> list[cr.ManifestRow]:
         return [
             cr.ManifestRow(
-                status=s, url=f"https://x.com/{i}", saved_path="", content_type="",
-                bytes=0, category="other", found_in="", kind="", page_url="",
-                page_title="", diagnostic="",
+                status=s,
+                url=f"https://x.com/{i}",
+                saved_path="",
+                content_type="",
+                bytes=0,
+                category="other",
+                found_in="",
+                kind="",
+                page_url="",
+                page_title="",
+                diagnostic="",
             )
             for i, s in enumerate(statuses)
         ]
@@ -2222,16 +2440,32 @@ class TestBuildRecommendationsAllErrors:
         """有去重时触发去重建议。"""
         rows = [
             cr.ManifestRow(
-                status="ok", url="https://x.com/a.js", saved_path="/tmp/a.js",
-                content_type="application/javascript", bytes=100, category="script",
-                found_in="script[src]", kind="script", page_url="https://x.com/",
-                page_title="", diagnostic="", sha256="abc",
+                status="ok",
+                url="https://x.com/a.js",
+                saved_path="/tmp/a.js",
+                content_type="application/javascript",
+                bytes=100,
+                category="script",
+                found_in="script[src]",
+                kind="script",
+                page_url="https://x.com/",
+                page_title="",
+                diagnostic="",
+                sha256="abc",
             ),
             cr.ManifestRow(
-                status="skipped by dedup", url="https://x.com/b.js", saved_path="",
-                content_type="application/javascript", bytes=50, category="script",
-                found_in="script[src]", kind="script", page_url="https://x.com/",
-                page_title="", diagnostic="dedup", sha256="abc",
+                status="skipped by dedup",
+                url="https://x.com/b.js",
+                saved_path="",
+                content_type="application/javascript",
+                bytes=50,
+                category="script",
+                found_in="script[src]",
+                kind="script",
+                page_url="https://x.com/",
+                page_title="",
+                diagnostic="dedup",
+                sha256="abc",
             ),
         ]
         ctx = cr.build_report_context(rows, 1, 0.0, 1.0)
@@ -2254,25 +2488,51 @@ class TestWriteSummaryWithErrors:
         """summary 包含失败原因分类和跳过原因分类。"""
         rows = [
             cr.ManifestRow(
-                status="ok", url="https://x.com/a.js", saved_path="/tmp/a.js",
-                content_type="application/javascript", bytes=100, category="script",
-                found_in="script[src]", kind="script", page_url="https://x.com/",
-                page_title="Page", diagnostic="", sha256="abc",
+                status="ok",
+                url="https://x.com/a.js",
+                saved_path="/tmp/a.js",
+                content_type="application/javascript",
+                bytes=100,
+                category="script",
+                found_in="script[src]",
+                kind="script",
+                page_url="https://x.com/",
+                page_title="Page",
+                diagnostic="",
+                sha256="abc",
             ),
             cr.ManifestRow(
-                status="error: HTTP Error 404", url="https://x.com/b.js", saved_path="",
-                content_type="", bytes=0, category="script", found_in="script[src]",
-                kind="script", page_url="https://x.com/", page_title="Page",
-                diagnostic="not found", sha256="",
+                status="error: HTTP Error 404",
+                url="https://x.com/b.js",
+                saved_path="",
+                content_type="",
+                bytes=0,
+                category="script",
+                found_in="script[src]",
+                kind="script",
+                page_url="https://x.com/",
+                page_title="Page",
+                diagnostic="not found",
+                sha256="",
             ),
             cr.ManifestRow(
-                status="skipped by dedup", url="https://x.com/c.js", saved_path="",
-                content_type="application/javascript", bytes=50, category="script",
-                found_in="script[src]", kind="script", page_url="https://x.com/",
-                page_title="Page", diagnostic="dedup", sha256="def",
+                status="skipped by dedup",
+                url="https://x.com/c.js",
+                saved_path="",
+                content_type="application/javascript",
+                bytes=50,
+                category="script",
+                found_in="script[src]",
+                kind="script",
+                page_url="https://x.com/",
+                page_title="Page",
+                diagnostic="dedup",
+                sha256="def",
             ),
         ]
-        cr.write_summary(tmp_path, rows, 1, start_time=0.0, end_time=1.0, config={"url": "https://x.com"})
+        cr.write_summary(
+            tmp_path, rows, 1, start_time=0.0, end_time=1.0, config={"url": "https://x.com"}
+        )
         content = (tmp_path / "summary.txt").read_text(encoding="utf-8")
         assert "失败原因分类" in content
         assert "跳过原因分类" in content
@@ -2287,19 +2547,37 @@ class TestWriteRunReportWithFailures:
         """Markdown 报告包含失败资源明细（按原因分组）。"""
         rows = [
             cr.ManifestRow(
-                status="error: HTTP Error 404", url="https://x.com/b.js", saved_path="",
-                content_type="", bytes=0, category="script", found_in="script[src]",
-                kind="script", page_url="https://x.com/", page_title="Page",
-                diagnostic="not found", sha256="",
+                status="error: HTTP Error 404",
+                url="https://x.com/b.js",
+                saved_path="",
+                content_type="",
+                bytes=0,
+                category="script",
+                found_in="script[src]",
+                kind="script",
+                page_url="https://x.com/",
+                page_title="Page",
+                diagnostic="not found",
+                sha256="",
             ),
             cr.ManifestRow(
-                status="error: HTTP Error 401", url="https://x.com/c.js", saved_path="",
-                content_type="", bytes=0, category="script", found_in="script[src]",
-                kind="script", page_url="https://x.com/", page_title="Page",
-                diagnostic="unauthorized", sha256="",
+                status="error: HTTP Error 401",
+                url="https://x.com/c.js",
+                saved_path="",
+                content_type="",
+                bytes=0,
+                category="script",
+                found_in="script[src]",
+                kind="script",
+                page_url="https://x.com/",
+                page_title="Page",
+                diagnostic="unauthorized",
+                sha256="",
             ),
         ]
-        cr.write_run_report(tmp_path, rows, 1, start_time=0.0, end_time=1.0, config={"url": "https://x.com"})
+        cr.write_run_report(
+            tmp_path, rows, 1, start_time=0.0, end_time=1.0, config={"url": "https://x.com"}
+        )
         md = (tmp_path / "run_report.md").read_text(encoding="utf-8")
         assert "失败资源明细" in md
         assert "404" in md or "不存在" in md
@@ -2314,19 +2592,37 @@ class TestWriteRunReportWithFailures:
         """HTML 报告包含失败原因和跳过原因分类。"""
         rows = [
             cr.ManifestRow(
-                status="error: HTTP Error 404", url="https://x.com/b.js", saved_path="",
-                content_type="", bytes=0, category="script", found_in="script[src]",
-                kind="script", page_url="https://x.com/", page_title="Page",
-                diagnostic="not found", sha256="",
+                status="error: HTTP Error 404",
+                url="https://x.com/b.js",
+                saved_path="",
+                content_type="",
+                bytes=0,
+                category="script",
+                found_in="script[src]",
+                kind="script",
+                page_url="https://x.com/",
+                page_title="Page",
+                diagnostic="not found",
+                sha256="",
             ),
             cr.ManifestRow(
-                status="skipped by robots.txt", url="https://x.com/c.js", saved_path="",
-                content_type="", bytes=0, category="script", found_in="script[src]",
-                kind="script", page_url="https://x.com/", page_title="Page",
-                diagnostic="robots", sha256="",
+                status="skipped by robots.txt",
+                url="https://x.com/c.js",
+                saved_path="",
+                content_type="",
+                bytes=0,
+                category="script",
+                found_in="script[src]",
+                kind="script",
+                page_url="https://x.com/",
+                page_title="Page",
+                diagnostic="robots",
+                sha256="",
             ),
         ]
-        cr.write_run_report(tmp_path, rows, 1, start_time=0.0, end_time=1.0, config={"url": "https://x.com"})
+        cr.write_run_report(
+            tmp_path, rows, 1, start_time=0.0, end_time=1.0, config={"url": "https://x.com"}
+        )
         html = (tmp_path / "run_report.html").read_text(encoding="utf-8")
         assert "失败原因" in html
         assert "跳过原因" in html
@@ -2361,14 +2657,20 @@ class TestCrawlSitemap:
             return (html, "text/html")
 
         with patch.object(cr, "fetch", side_effect=mock_fetch):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--sitemap",
-                "--max-pages", "3",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--sitemap",
+                    "--max-pages",
+                    "3",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -2387,13 +2689,18 @@ class TestCrawlResumeCrawl:
         )
         html = b"<html><body><p>content</p></body></html>"
         with patch.object(cr, "fetch", return_value=(html, "text/html")):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--resume-crawl",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--resume-crawl",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -2401,13 +2708,18 @@ class TestCrawlResumeCrawl:
         """resume_crawl 无保存状态时从头开始。"""
         html = b"<html><body><p>content</p></body></html>"
         with patch.object(cr, "fetch", return_value=(html, "text/html")):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--resume-crawl",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--resume-crawl",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -2420,13 +2732,18 @@ class TestCrawlResumeCrawl:
             patch.object(cr, "fetch", return_value=(html, "text/html")),
             patch.object(cr, "clear_crawl_state") as mock_clear,
         ):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--resume-crawl",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--resume-crawl",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
         mock_clear.assert_called_once_with(tmp_path.resolve())
@@ -2437,13 +2754,19 @@ class TestCrawlBlockedPages:
         """被 block_keyword 匹配的页面被跳过。"""
         html = b"<html><body><p>content</p></body></html>"
         with patch.object(cr, "fetch", return_value=(html, "text/html")):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--block-keyword", "ads",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--block-keyword",
+                    "ads",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -2451,13 +2774,18 @@ class TestCrawlBlockedPages:
         """--same-domain 过滤跨域资源。"""
         html = b'<html><body><img src="https://cdn.other.com/img.png"></body></html>'
         with patch.object(cr, "fetch", return_value=(html, "text/html")):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--same-domain",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--same-domain",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
         manifest = json.loads((tmp_path / "resources_manifest.json").read_text())
@@ -2473,13 +2801,18 @@ class TestCrawlBlockedPages:
             return (html, "text/html")
 
         with patch.object(cr, "fetch", side_effect=mock_fetch):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--respect-robots",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--respect-robots",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -2496,15 +2829,21 @@ class TestCrawlCrawlPages:
             return (page1, "text/html")
 
         with patch.object(cr, "fetch", side_effect=mock_fetch):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--crawl-pages",
-                "--max-pages", "2",
-                "--list-only",
-                "--workers", "1",
-                "--resume-crawl",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--crawl-pages",
+                    "--max-pages",
+                    "2",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                    "--resume-crawl",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -2514,13 +2853,19 @@ class TestCrawlUrlPatterns:
         """--include-pattern 过滤匹配的资源。"""
         html = b'<html><body><img src="https://example.com/img.png"><img src="https://example.com/logo.jpg"></body></html>'
         with patch.object(cr, "fetch", return_value=(html, "text/html")):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--include-pattern", r"logo",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--include-pattern",
+                    r"logo",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
         manifest = json.loads((tmp_path / "resources_manifest.json").read_text())
@@ -2531,13 +2876,19 @@ class TestCrawlUrlPatterns:
         """--exclude-pattern 排除匹配的资源。"""
         html = b'<html><body><img src="https://example.com/img.png"><img src="https://example.com/logo.jpg"></body></html>'
         with patch.object(cr, "fetch", return_value=(html, "text/html")):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--exclude-pattern", r"logo",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--exclude-pattern",
+                    r"logo",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
         manifest = json.loads((tmp_path / "resources_manifest.json").read_text())
@@ -2557,12 +2908,17 @@ class TestCrawlDedup:
             return (html, "text/html")
 
         with patch.object(cr, "fetch", side_effect=mock_fetch):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--dedup",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--dedup",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
         manifest = json.loads((tmp_path / "resources_manifest.json").read_text())
@@ -2583,13 +2939,18 @@ class TestCrawlCssUrls:
             return (html, "text/html")
 
         with patch.object(cr, "fetch", side_effect=mock_fetch):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--include-css-urls",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--include-css-urls",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -2606,12 +2967,17 @@ class TestCrawlRewriteHtml:
             return (html, "text/html")
 
         with patch.object(cr, "fetch", side_effect=mock_fetch):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--rewrite-html",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--rewrite-html",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
         # offline_pages 目录存在
@@ -2630,13 +2996,18 @@ class TestCrawlRewriteHtml:
             return (html, "text/html")
 
         with patch.object(cr, "fetch", side_effect=mock_fetch):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--rewrite-html",
-                "--strip-overlays",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--rewrite-html",
+                    "--strip-overlays",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -2652,13 +3023,18 @@ class TestCrawlSmartExtract:
         <img src="https://example.com/logo.png"></body></html>"""
 
         with patch.object(cr, "fetch", return_value=(html, "text/html")):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--smart-extract",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--smart-extract",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
         assert (tmp_path / "extracted_data.json").exists()
@@ -2672,13 +3048,18 @@ class TestCrawlExtractText:
         <img src="https://example.com/img.png"></body></html>"""
 
         with patch.object(cr, "fetch", return_value=(html, "text/html")):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--extract-text",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--extract-text",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
         assert (tmp_path / "extracted_text").exists()
@@ -2690,13 +3071,18 @@ class TestCrawlVideoMode:
         html = b'<html><body><video src="https://example.com/v.mp4"></video></body></html>'
 
         with patch.object(cr, "fetch", return_value=(html, "text/html")):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--video-mode",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--video-mode",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -2712,11 +3098,16 @@ class TestCrawlDownloadError:
             return (html, "text/html")
 
         with patch.object(cr, "fetch", side_effect=mock_fetch):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
         manifest = json.loads((tmp_path / "resources_manifest.json").read_text())
@@ -2741,11 +3132,16 @@ class TestCrawlDownloadError:
             patch.object(cr, "fetch", side_effect=mock_fetch),
             patch.object(cr, "should_stop", side_effect=mock_should_stop),
         ):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         # 取消统一返回 1，且跳过后处理（不写清单）
         assert exit_code == 1
@@ -2764,13 +3160,18 @@ class TestCrawlExpandPlaylists:
             return (html, "text/html")
 
         with patch.object(cr, "fetch", side_effect=mock_fetch):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--expand-playlists",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--expand-playlists",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -2783,52 +3184,63 @@ class TestMainSaveConfigNoUrl:
         with pytest.raises(SystemExit):
             cr.main()
 
-    def test_load_config_with_cli_override(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_load_config_with_cli_override(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         """--load-config 后 CLI 参数覆盖配置文件。"""
         config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "url": "https://example.com",
-            "out": str(tmp_path),
-            "workers": 1,
-            "list_only": False,
-            "save_config": None,
-            "same_domain": False,
-            "include_css_urls": False,
-            "rewrite_html": False,
-            "strip_overlays": False,
-            "decrypt": False,
-            "video_mode": False,
-            "video_only": False,
-            "expand_playlists": False,
-            "respect_robots": False,
-            "timeout": 20,
-            "retries": 1,
-            "delay": 0.5,
-            "max_bytes": 0,
-            "encoding": None,
-            "user_agent": cr.DEFAULT_USER_AGENT,
-            "header": [],
-            "block_keyword": [],
-            "include_pattern": None,
-            "exclude_pattern": None,
-            "proxy": None,
-            "stealth": False,
-            "impersonate": "chrome131",
-            "resume": False,
-            "organize": False,
-            "dedup": False,
-            "sitemap": False,
-            "smart_extract": False,
-            "resume_crawl": False,
-            "extract_text": False,
-            "max_pages": 1,
-            "crawl_pages": False,
-        }))
+        config_path.write_text(
+            json.dumps(
+                {
+                    "url": "https://example.com",
+                    "out": str(tmp_path),
+                    "workers": 1,
+                    "list_only": False,
+                    "save_config": None,
+                    "same_domain": False,
+                    "include_css_urls": False,
+                    "rewrite_html": False,
+                    "strip_overlays": False,
+                    "decrypt": False,
+                    "video_mode": False,
+                    "video_only": False,
+                    "expand_playlists": False,
+                    "respect_robots": False,
+                    "timeout": 20,
+                    "retries": 1,
+                    "delay": 0.5,
+                    "max_bytes": 0,
+                    "encoding": None,
+                    "user_agent": cr.DEFAULT_USER_AGENT,
+                    "header": [],
+                    "block_keyword": [],
+                    "include_pattern": None,
+                    "exclude_pattern": None,
+                    "proxy": None,
+                    "stealth": False,
+                    "impersonate": "chrome131",
+                    "resume": False,
+                    "organize": False,
+                    "dedup": False,
+                    "sitemap": False,
+                    "smart_extract": False,
+                    "resume_crawl": False,
+                    "extract_text": False,
+                    "max_pages": 1,
+                    "crawl_pages": False,
+                }
+            )
+        )
 
-        monkeypatch.setattr("sys.argv", [
-            "crawler", "--load-config", str(config_path),
-            "--list-only",  # CLI 覆盖配置
-        ])
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "crawler",
+                "--load-config",
+                str(config_path),
+                "--list-only",  # CLI 覆盖配置
+            ],
+        )
 
         html = b"<html><body><p>content</p></body></html>"
         with patch.object(cr, "fetch", return_value=(html, "text/html")):
@@ -2840,6 +3252,7 @@ class TestMainSaveConfigNoUrl:
 def tmp_path_for_config() -> Path:
     """临时配置路径（用于 test_save_config_without_url）。"""
     import tempfile
+
     return Path(tempfile.gettempdir()) / "test_config_save.json"
 
 
@@ -2949,22 +3362,27 @@ class TestCrawlSitemapSameDomain:
             if "sitemap.xml" in url:
                 sitemap = (
                     b'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
-                    b'<url><loc>https://other.com/page1</loc></url>'
-                    b'<url><loc>https://example.com/page2</loc></url>'
-                    b'</urlset>'
+                    b"<url><loc>https://other.com/page1</loc></url>"
+                    b"<url><loc>https://example.com/page2</loc></url>"
+                    b"</urlset>"
                 )
                 return (sitemap, "application/xml")
             return (html, "text/html")
 
         with patch.object(cr, "fetch", side_effect=mock_fetch):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--sitemap",
-                "--same-domain",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--sitemap",
+                    "--same-domain",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -2976,22 +3394,28 @@ class TestCrawlSitemapSameDomain:
             if "sitemap.xml" in url:
                 sitemap = (
                     b'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
-                    b'<url><loc>https://example.com/ad/page</loc></url>'
-                    b'<url><loc>https://example.com/ok</loc></url>'
-                    b'</urlset>'
+                    b"<url><loc>https://example.com/ad/page</loc></url>"
+                    b"<url><loc>https://example.com/ok</loc></url>"
+                    b"</urlset>"
                 )
                 return (sitemap, "application/xml")
             return (html, "text/html")
 
         with patch.object(cr, "fetch", side_effect=mock_fetch):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--sitemap",
-                "--block-keyword", "ad",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--sitemap",
+                    "--block-keyword",
+                    "ad",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -3005,8 +3429,12 @@ class TestCrawlResumeState:
             "seen_pages": ["https://example.com"],
             "page_titles": {"https://example.com": "Test"},
             "resources": [
-                {"url": "https://example.com/img.png", "found_in": "img[src]",
-                 "kind": "img", "page_url": "https://example.com"}
+                {
+                    "url": "https://example.com/img.png",
+                    "found_in": "img[src]",
+                    "kind": "img",
+                    "page_url": "https://example.com",
+                }
             ],
             "sha256_set": ["abc123"],
         }
@@ -3015,14 +3443,19 @@ class TestCrawlResumeState:
         html = b'<html><body><img src="https://example.com/img2.png"></body></html>'
 
         with patch.object(cr, "fetch", return_value=(html, "text/html")):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--resume-crawl",
-                "--dedup",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--resume-crawl",
+                    "--dedup",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -3031,13 +3464,18 @@ class TestCrawlResumeState:
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
 
         with patch.object(cr, "fetch", return_value=(html, "text/html")):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--resume-crawl",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--resume-crawl",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
         assert not (tmp_path / cr.CRAWL_STATE_FILE).exists()
@@ -3050,13 +3488,18 @@ class TestCrawlResumeState:
             patch.object(cr, "fetch", return_value=(html, "text/html")),
             patch.object(cr, "save_crawl_state", side_effect=OSError("disk full")),
         ):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--resume-crawl",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--resume-crawl",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -3068,13 +3511,18 @@ class TestCrawlResumeState:
             patch.object(cr, "fetch", return_value=(html, "text/html")),
             patch.object(cr, "clear_crawl_state", side_effect=OSError("permission")),
         ):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--resume-crawl",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--resume-crawl",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -3085,13 +3533,19 @@ class TestCrawlPageScanningSkips:
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
 
         with patch.object(cr, "fetch", return_value=(html, "text/html")):
-            args = cr.build_parser().parse_args([
-                "--url", "https://ad.example.com",
-                "--out", str(tmp_path),
-                "--block-keyword", "ad",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://ad.example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--block-keyword",
+                    "ad",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         # 页面被 block，无资源 → 返回 0（no resources found）
         assert exit_code == 0
@@ -3101,14 +3555,19 @@ class TestCrawlPageScanningSkips:
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
 
         with patch.object(cr, "fetch", return_value=(html, "text/html")):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--same-domain",
-                "--crawl-pages",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--same-domain",
+                    "--crawl-pages",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -3122,12 +3581,17 @@ class TestCrawlPageScanningSkips:
             return (html, "text/html")
 
         with patch.object(cr, "fetch", side_effect=mock_fetch):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -3141,13 +3605,18 @@ class TestCrawlVideoOnlyFilter:
         </body></html>"""
 
         with patch.object(cr, "fetch", return_value=(html, "text/html")):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--video-only",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--video-only",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -3164,12 +3633,17 @@ class TestCrawlCssDiscovery:
             return (html, "text/html")
 
         with patch.object(cr, "fetch", side_effect=mock_fetch):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--include-css-urls",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--include-css-urls",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -3193,12 +3667,17 @@ https://example.com/seg2.ts
             return (html, "text/html")
 
         with patch.object(cr, "fetch", side_effect=mock_fetch):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--expand-playlists",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--expand-playlists",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -3223,11 +3702,16 @@ class TestCrawlShouldStopDownload:
             patch.object(cr, "fetch", side_effect=mock_fetch),
             patch.object(cr, "should_stop", side_effect=mock_should_stop),
         ):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 1
 
@@ -3243,11 +3727,16 @@ class TestCrawlWorkerCrash:
             return (html, "text/html")
 
         with patch.object(cr, "fetch", side_effect=mock_fetch):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
         manifest = json.loads((tmp_path / "resources_manifest.json").read_text())
@@ -3258,12 +3747,17 @@ class TestCrawlFinalTargetMove:
     def test_final_target_differs(self, tmp_path: Path) -> None:
         """下载后 final_target 与 target 不同时移动文件。"""
         with patch.object(cr, "fetch", return_value=(b"png_data", "image/png")):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--organize",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--organize",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -3284,12 +3778,17 @@ class TestCrawlJsonlWriteException:
             patch.object(cr, "fetch", return_value=(html, "text/html")),
             patch.object(Path, "open", selective_open),
         ):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         # 即使 JSONL 写入失败也返回 0
         assert exit_code == 0
@@ -3321,11 +3820,16 @@ class TestCrawlJsonlWriteException:
             patch.object(cr, "fetch", return_value=(html, "text/html")),
             patch.object(Path, "open", selective_open),
         ):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -3338,13 +3842,18 @@ class TestCrawlExtractTextEmpty:
         </body></html>"""
 
         with patch.object(cr, "fetch", return_value=(html, "text/html")):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--extract-text",
-                "--list-only",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--extract-text",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
         # extracted_text 目录存在但可能没有 txt 文件
@@ -3372,11 +3881,16 @@ class TestCrawlDownloadLoopCancellation:
             patch.object(cr, "fetch", side_effect=mock_fetch),
             patch.object(cr, "should_stop", side_effect=mock_should_stop),
         ):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--workers", "2",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--workers",
+                    "2",
+                ]
+            )
             exit_code = cr.crawl(args)
         # 主线程取消路径与 worker 取消路径统一返回 1，且跳过后处理
         assert exit_code == 1
@@ -3403,11 +3917,16 @@ class TestCrawlCancelSkipsStages:
             patch.object(cr, "fetch", side_effect=mock_fetch),
             patch.object(cr, "should_stop", side_effect=mock_should_stop),
         ):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--workers", "2",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--workers",
+                    "2",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 1
         assert not (tmp_path / "resources_manifest.json").exists()
@@ -3435,7 +3954,7 @@ class TestStealthFetchRedirectNoLocation:
 class TestFormatBytesPB:
     def test_pb(self) -> None:
         """n ≥ 1024⁵ 返回 PB。"""
-        assert cr._format_bytes(2 * 1024 ** 5) == "2.0 PB"
+        assert cr._format_bytes(2 * 1024**5) == "2.0 PB"
 
 
 class TestCrawlWaitPausedCancel:
@@ -3443,15 +3962,21 @@ class TestCrawlWaitPausedCancel:
 
     def test_cancelled_by_pause_in_page_loop(self, tmp_path: Path) -> None:
         """页面扫描阶段 wait_if_paused 抛 RuntimeError → 按取消处理返回 1。"""
+
         def mock_wait() -> None:
             raise RuntimeError("cancelled by user")
 
         with patch.object(cr, "fetch", return_value=(b"<html></html>", "text/html")):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--workers",
+                    "1",
+                ]
+            )
             args.wait_if_paused = mock_wait
             exit_code = cr.crawl(args)
         # 暂停期间取消 → cancelled 标志置位，统一退出码 1
@@ -3473,11 +3998,16 @@ class TestCrawlWaitPausedCancel:
             return (html, "text/html")
 
         with patch.object(cr, "fetch", side_effect=mock_fetch):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--workers",
+                    "1",
+                ]
+            )
             args.wait_if_paused = mock_wait
             exit_code = cr.crawl(args)
         # 第一次（页面循环）放行，第二次（下载循环）抛 cancelled
@@ -3503,11 +4033,16 @@ class TestCrawlWaitPausedCancel:
             patch.object(cr, "fetch", side_effect=mock_fetch),
             patch.object(cr, "should_stop", side_effect=mock_should_stop),
         ):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 1
         assert not (tmp_path / "resources_manifest.json").exists()
@@ -3529,11 +4064,16 @@ class TestCrawlWaitPausedCancel:
             return (html, "text/html")
 
         with patch.object(cr, "fetch", side_effect=mock_fetch):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--workers",
+                    "1",
+                ]
+            )
             args.wait_if_paused = mock_wait
             exit_code = cr.crawl(args)
         # should_stop 未置位 → 视为未取消，后处理继续完成
@@ -3559,12 +4099,17 @@ class TestCrawlPostProcessingTolerance:
             patch.object(cr, "fetch", side_effect=self._fetch_page_with_img(html)),
             patch.object(cr, "rewrite_html", side_effect=RuntimeError("rewrite boom")),
         ):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--rewrite-html",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--rewrite-html",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -3575,11 +4120,16 @@ class TestCrawlPostProcessingTolerance:
             patch.object(cr, "fetch", side_effect=self._fetch_page_with_img(html)),
             patch.object(cr, "write_manifests", side_effect=OSError("disk full")),
         ):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -3590,11 +4140,16 @@ class TestCrawlPostProcessingTolerance:
             patch.object(cr, "fetch", side_effect=self._fetch_page_with_img(html)),
             patch.object(cr, "write_failed_manifests", side_effect=OSError("disk full")),
         ):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -3605,12 +4160,17 @@ class TestCrawlPostProcessingTolerance:
             patch.object(cr, "fetch", side_effect=self._fetch_page_with_img(html)),
             patch.object(cr, "smart_extract", side_effect=RuntimeError("llm down")),
         ):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--smart-extract",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--smart-extract",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -3621,12 +4181,17 @@ class TestCrawlPostProcessingTolerance:
             patch.object(cr, "fetch", side_effect=self._fetch_page_with_img(html)),
             patch.object(cr, "extract_readable_text", side_effect=RuntimeError("boom")),
         ):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--extract-text",
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--extract-text",
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -3637,11 +4202,16 @@ class TestCrawlPostProcessingTolerance:
             patch.object(cr, "fetch", side_effect=self._fetch_page_with_img(html)),
             patch.object(cr, "write_run_report", side_effect=OSError("disk full")),
         ):
-            args = cr.build_parser().parse_args([
-                "--url", "https://example.com",
-                "--out", str(tmp_path),
-                "--workers", "1",
-            ])
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--workers",
+                    "1",
+                ]
+            )
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
@@ -3652,14 +4222,21 @@ class TestConfigRoundTrip:
     def test_save_config_contains_new_fields(self, tmp_path: Path) -> None:
         """save 产物包含 include_pattern/stealth 等新增参数。"""
         config_path = tmp_path / "roundtrip.json"
-        args = cr.build_parser().parse_args([
-            "--url", "https://example.com",
-            "--out", str(tmp_path),
-            "--workers", "2",
-            "--include-pattern", r"\.(jpg|png)$",
-            "--stealth",
-            "--impersonate", "chrome131",
-        ])
+        args = cr.build_parser().parse_args(
+            [
+                "--url",
+                "https://example.com",
+                "--out",
+                str(tmp_path),
+                "--workers",
+                "2",
+                "--include-pattern",
+                r"\.(jpg|png)$",
+                "--stealth",
+                "--impersonate",
+                "chrome131",
+            ]
+        )
         cr.save_config_to_file(args, str(config_path))
         saved = json.loads(config_path.read_text(encoding="utf-8"))
         assert saved["include_pattern"] == r"\.(jpg|png)$"
@@ -3672,11 +4249,16 @@ class TestConfigRoundTrip:
     ) -> None:
         """save 产物 load 后可直接进入 crawl（缺省字段由 parser 默认值兜底）。"""
         config_path = tmp_path / "roundtrip.json"
-        args = cr.build_parser().parse_args([
-            "--url", "https://example.com",
-            "--out", str(tmp_path),
-            "--workers", "1",
-        ])
+        args = cr.build_parser().parse_args(
+            [
+                "--url",
+                "https://example.com",
+                "--out",
+                str(tmp_path),
+                "--workers",
+                "1",
+            ]
+        )
         cr.save_config_to_file(args, str(config_path))
 
         # 用 main() 走真实 --load-config 路径：load 后不抛 AttributeError，

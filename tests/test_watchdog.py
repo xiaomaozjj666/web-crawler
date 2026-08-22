@@ -94,7 +94,9 @@ def test_event_bus_unsubscribe_idempotent() -> None:
     assert bus.subscriber_count == 0
 
 
-def test_event_bus_subscriber_exception_does_not_affect_others(capsys: pytest.CaptureFixture[str]) -> None:
+def test_event_bus_subscriber_exception_does_not_affect_others(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """单个订阅者抛错不影响其他订阅者，错误写入 stderr。"""
     bus = EventBus()
     ok_received: list[AgentEvent] = []
@@ -379,6 +381,7 @@ def test_crash_recovery_no_bus_does_not_emit() -> None:
     assert cr.attempt(lambda: True) is True
     # 失败路径
     assert cr.attempt(lambda: False) is True
+
     # 异常路径
     def boom() -> bool:
         raise ValueError("recovery error")
@@ -456,7 +459,9 @@ def test_collect_metrics_aggregates_counts() -> None:
 def test_collect_metrics_counts_errors() -> None:
     """以 .error 或 .failed 结尾的事件计入 errors。"""
     events = [
-        AgentEvent(type=EVENT_THINK_ERROR, step=1),  # think.error -> 不以 .error 结尾? 实际是 think.error
+        AgentEvent(
+            type=EVENT_THINK_ERROR, step=1
+        ),  # think.error -> 不以 .error 结尾? 实际是 think.error
         AgentEvent(type=EVENT_RECOVER_FAILED, step=2),
         AgentEvent(type=EVENT_ACT_ERROR, step=3),
     ]

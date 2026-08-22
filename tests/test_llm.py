@@ -140,7 +140,9 @@ def test_load_dotenv_once_skips_when_no_env_file(tmp_path, monkeypatch: pytest.M
     llm_mod._load_dotenv_once()
 
 
-def test_load_dotenv_once_does_not_overwrite_existing(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_dotenv_once_does_not_overwrite_existing(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """已存在的环境变量不应被 .env 覆盖。"""
     env_file = tmp_path / ".env"
     env_file.write_text("LLM_EXISTING_KEY=from_file\n", encoding="utf-8")
@@ -373,9 +375,7 @@ def test_complete_without_system(monkeypatch: pytest.MonkeyPatch) -> None:
     """system=None 时 complete 只发送 user 消息。"""
     monkeypatch.setattr(llm_mod, "_DOTENV_LOADED", True)
     provider = OpenAICompatibleProvider(api_key="k", model="m")
-    fake_resp = _mock_httpx_response(
-        {"choices": [{"message": {"content": "ok"}}]}
-    )
+    fake_resp = _mock_httpx_response({"choices": [{"message": {"content": "ok"}}]})
     fake_client = MagicMock()
     fake_client.post.return_value = fake_resp
     fake_httpx = MagicMock()
@@ -596,7 +596,9 @@ def test_select_provider_skips_constructor_typeerror(monkeypatch: pytest.MonkeyP
     assert p.capabilities.vision is True
 
 
-def test_select_provider_skips_provider_without_capabilities(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_select_provider_skips_provider_without_capabilities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """没有 capabilities 属性的 provider 应被跳过。"""
 
     class _NoCapsProvider:
@@ -680,9 +682,7 @@ def test_chat_retries_on_429_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> N
     """429 触发指数退避重试，重试后成功。"""
     monkeypatch.setattr(llm_mod, "_DOTENV_LOADED", True)
     provider = OpenAICompatibleProvider(api_key="k", model="m")
-    ok_resp = _mock_httpx_response(
-        {"model": "m", "choices": [{"message": {"content": "hi"}}]}
-    )
+    ok_resp = _mock_httpx_response({"model": "m", "choices": [{"message": {"content": "hi"}}]})
     fake_client = MagicMock()
     fake_client.post.side_effect = [_retryable_http_error(429), _retryable_http_error(429), ok_resp]
     provider._client = fake_client
@@ -855,9 +855,7 @@ def test_load_dotenv_once_scoped_search(tmp_path, monkeypatch: pytest.MonkeyPatc
     env_file.parent.mkdir(parents=True)
     env_file.write_text("LLM_SCOPE_KEY=scoped\n", encoding="utf-8")
     # 模块文件位于 a/b/c/llm.py：a/ 在 parents[:4] 内
-    monkeypatch.setattr(
-        llm_mod, "__file__", str(tmp_path / "a" / "b" / "c" / "llm.py")
-    )
+    monkeypatch.setattr(llm_mod, "__file__", str(tmp_path / "a" / "b" / "c" / "llm.py"))
     monkeypatch.setattr(llm_mod, "_DOTENV_LOADED", False)
     monkeypatch.delenv("LLM_SCOPE_KEY", raising=False)
     monkeypatch.chdir(tmp_path)  # cwd 无 .env

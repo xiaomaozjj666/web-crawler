@@ -118,12 +118,14 @@ class TestJobState:
     def test_progress(self) -> None:
         """progress 更新统计字段。"""
         job = _make_job_state()
-        job.progress({
-            "total_resources": 10,
-            "processed_resources": 5,
-            "current_url": "https://example.com/page",
-            "pages_scanned": 3,
-        })
+        job.progress(
+            {
+                "total_resources": 10,
+                "processed_resources": 5,
+                "current_url": "https://example.com/page",
+                "pages_scanned": 3,
+            }
+        )
         assert job.total_resources == 10
         assert job.processed_resources == 5
         assert job.current_url == "https://example.com/page"
@@ -1142,7 +1144,9 @@ class TestHandlerGetRoutes:
     def test_get_reverse_screenshot_file_lost(self, http_server: str, tmp_path: Path) -> None:
         """截图文件丢失时返回错误响应。"""
         rjob = _make_reverse_job(id="sh3")
-        rjob.screenshots.append({"step": 1, "path": str(tmp_path / "nonexistent.png"), "error": False})
+        rjob.screenshots.append(
+            {"step": 1, "path": str(tmp_path / "nonexistent.png"), "error": False}
+        )
         ui.REVERSE_JOBS["sh3"] = rjob
         resp = httpx.get(f"{http_server}/reverse/screenshot?id=sh3&step=1")
         assert resp.status_code >= 400
@@ -1269,7 +1273,9 @@ class TestHandlerPostRoutes:
         assert resp.json()["ok"] is True
         mock_open.assert_called_once()
 
-    def test_post_open_output_rejects_non_whitelisted(self, http_server: str, tmp_path: Path) -> None:
+    def test_post_open_output_rejects_non_whitelisted(
+        self, http_server: str, tmp_path: Path
+    ) -> None:
         """POST /open-output 拒绝白名单之外的任意路径（防任意路径启动）。"""
         with patch.object(ui, "_open_folder") as mock_open:
             resp = httpx.post(
@@ -1464,7 +1470,9 @@ class TestMain:
 
 
 class TestOpenFolder:
-    @pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows-only: uses os.startfile")
+    @pytest.mark.skipif(
+        not sys.platform.startswith("win"), reason="Windows-only: uses os.startfile"
+    )
     def test_open_folder_win32(self, tmp_path: Path) -> None:
         """_open_folder 在 Windows 上调用 os.startfile。"""
         with patch("os.startfile") as mock_startfile:
@@ -1692,9 +1700,7 @@ class TestJobsHistoryApi:
 
     def test_get_jobs_after_create(self, http_server: str) -> None:
         """创建任务后 GET /jobs 返回该任务。"""
-        ui.database.create_task(
-            "job-1", "https://example.com", {"max_pages": 1}, "/tmp/out"
-        )
+        ui.database.create_task("job-1", "https://example.com", {"max_pages": 1}, "/tmp/out")
         resp = httpx.get(f"{http_server}/jobs")
         assert resp.status_code == 200
         data = resp.json()
@@ -1704,9 +1710,7 @@ class TestJobsHistoryApi:
 
     def test_get_job_detail(self, http_server: str) -> None:
         """GET /jobs/<id> 返回单个任务详情。"""
-        ui.database.create_task(
-            "job-2", "https://detail.example.com", {"k": "v"}, "/tmp/out2"
-        )
+        ui.database.create_task("job-2", "https://detail.example.com", {"k": "v"}, "/tmp/out2")
         resp = httpx.get(f"{http_server}/jobs/job-2")
         assert resp.status_code == 200
         data = resp.json()
@@ -1721,9 +1725,7 @@ class TestJobsHistoryApi:
 
     def test_get_job_results_empty(self, http_server: str) -> None:
         """GET /jobs/<id>/results 在无采集结果时返回空列表。"""
-        ui.database.create_task(
-            "job-3", "https://results.example.com", {}, "/tmp/out3"
-        )
+        ui.database.create_task("job-3", "https://results.example.com", {}, "/tmp/out3")
         resp = httpx.get(f"{http_server}/jobs/job-3/results")
         assert resp.status_code == 200
         data = resp.json()
@@ -1732,9 +1734,7 @@ class TestJobsHistoryApi:
 
     def test_delete_job_success(self, http_server: str) -> None:
         """DELETE /jobs/<id> 成功删除已存在任务。"""
-        ui.database.create_task(
-            "job-4", "https://del.example.com", {}, "/tmp/out4"
-        )
+        ui.database.create_task("job-4", "https://del.example.com", {}, "/tmp/out4")
         resp = httpx.delete(f"{http_server}/jobs/job-4")
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
@@ -1881,8 +1881,16 @@ class TestRunValidation:
         with patch.object(ui, "run_job"):
             resp = httpx.post(
                 f"{http_server}/run",
-                data={"url": "https://example.com", "workers": "", "retries": "", "delay": "",
-                      "timeout": "", "max_bytes": "", "max_pages": "", "out": ""},
+                data={
+                    "url": "https://example.com",
+                    "workers": "",
+                    "retries": "",
+                    "delay": "",
+                    "timeout": "",
+                    "max_bytes": "",
+                    "max_pages": "",
+                    "out": "",
+                },
             )
         assert "id" in resp.json()
 

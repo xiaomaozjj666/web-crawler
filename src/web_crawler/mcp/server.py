@@ -128,9 +128,7 @@ def _ip_is_global(ip: Any) -> bool:
 def _resolve_host_ips(host: str) -> list[str] | None:
     """解析主机名到 IP 列表（去重）；解析失败返回 None。"""
     try:
-        infos = socket.getaddrinfo(
-            host, None, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP
-        )
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)
     except (socket.gaierror, socket.herror, OSError):
         return None
     ips: list[str] = []
@@ -208,9 +206,7 @@ def _parse_pentest_target(target: str) -> tuple[str, str, str]:
         port = None
     netloc = host + (f":{port}" if port else "")
     path = parsed.path
-    base_url = urlunsplit(
-        (scheme, netloc, (path.rstrip("/") + "/") if path else "/", "", "")
-    )
+    base_url = urlunsplit((scheme, netloc, (path.rstrip("/") + "/") if path else "/", "", ""))
     if parsed.username or parsed.password:
         display = urlunsplit((scheme, netloc, path, "", ""))
     else:
@@ -498,7 +494,7 @@ class ReverseMCPServer:
                         },
                         "prompt": {
                             "type": "string",
-                            "description": "click 模式下的提示文字（如\"请按顺序点击图中所有的红绿灯\"）",
+                            "description": 'click 模式下的提示文字（如"请按顺序点击图中所有的红绿灯"）',
                         },
                         "mime": {
                             "type": "string",
@@ -527,7 +523,10 @@ class ReverseMCPServer:
                         },
                         "checks": {
                             "type": "array",
-                            "items": {"type": "string", "enum": ["ports", "dirs", "subdomains", "vulns", "headers"]},
+                            "items": {
+                                "type": "string",
+                                "enum": ["ports", "dirs", "subdomains", "vulns", "headers"],
+                            },
                             "description": "要执行的检查项列表，留空执行全部",
                         },
                         "ports": {
@@ -1241,9 +1240,7 @@ class ReverseMCPServer:
                     fut.result(timeout=timeout)
                 except concurrent.futures.TimeoutError:
                     ex.shutdown(wait=False, cancel_futures=True)
-                    raise TimeoutError(
-                        f"pentest recon timed out after {timeout}s"
-                    ) from None
+                    raise TimeoutError(f"pentest recon timed out after {timeout}s") from None
                 else:
                     ex.shutdown(wait=True)
         except Exception as exc:

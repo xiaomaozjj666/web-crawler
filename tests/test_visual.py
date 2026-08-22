@@ -137,12 +137,10 @@ def _make_urlopen_response(payload: dict[str, Any]) -> MagicMock:
 
 def test_call_api_success_returns_stripped_content() -> None:
     extractor = VisualExtractor(api_key="key", base_url="https://api.x.com/v1")
-    payload = {
-        "choices": [
-            {"message": {"content": "  extracted text  "}, "finish_reason": "stop"}
-        ]
-    }
-    with patch("web_crawler.parser.visual.urlopen", return_value=_make_urlopen_response(payload)) as mock_open:
+    payload = {"choices": [{"message": {"content": "  extracted text  "}, "finish_reason": "stop"}]}
+    with patch(
+        "web_crawler.parser.visual.urlopen", return_value=_make_urlopen_response(payload)
+    ) as mock_open:
         result = extractor._call_api([{"role": "user", "content": "hi"}], 0.3)
 
     assert result == "extracted text"
@@ -260,7 +258,9 @@ def test_extract_with_client_multiple_tiles_annotates_sections() -> None:
 
     messages = client.chat.completions.create.call_args.kwargs["messages"]
     content = messages[0]["content"]
-    section_texts = [c for c in content if c.get("type") == "text" and "Page section" in c.get("text", "")]
+    section_texts = [
+        c for c in content if c.get("type") == "text" and "Page section" in c.get("text", "")
+    ]
     assert len(section_texts) == 2
 
 

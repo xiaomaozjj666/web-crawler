@@ -400,9 +400,7 @@ def test_llm_analyze_returns_finding_when_vulnerable() -> None:
 
 def test_llm_analyze_returns_none_when_not_vulnerable() -> None:
     """provider 返回 vulnerable=false 时无 finding。"""
-    provider = _FakeProvider(
-        content=json.dumps({"vulnerable": False, "type": "none"})
-    )
+    provider = _FakeProvider(content=json.dumps({"vulnerable": False, "type": "none"}))
     fetcher = _FakeHttpxClient(response=_FakeHttpxResponse(text="clean"))
     fetcher.__class__.__module__ = "httpx._client"
     scanner = VulnScanner(fetcher=fetcher, provider=provider)
@@ -412,9 +410,7 @@ def test_llm_analyze_returns_none_when_not_vulnerable() -> None:
 
 def test_llm_analyze_returns_none_when_type_none() -> None:
     """vulnerable=true 但 type=none 时仍返回 None。"""
-    provider = _FakeProvider(
-        content=json.dumps({"vulnerable": True, "type": "none"})
-    )
+    provider = _FakeProvider(content=json.dumps({"vulnerable": True, "type": "none"}))
     fetcher = _FakeHttpxClient(response=_FakeHttpxResponse(text="clean"))
     fetcher.__class__.__module__ = "httpx._client"
     scanner = VulnScanner(fetcher=fetcher, provider=provider)

@@ -166,9 +166,7 @@ def _is_selector_loop_on_windows() -> bool:
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
-        return isinstance(
-            asyncio.get_event_loop_policy(), asyncio.WindowsSelectorEventLoopPolicy
-        )
+        return isinstance(asyncio.get_event_loop_policy(), asyncio.WindowsSelectorEventLoopPolicy)
 
 
 _skip_selector_loop = pytest.mark.skipif(

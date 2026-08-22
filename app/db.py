@@ -182,8 +182,7 @@ def create_task(
             """INSERT INTO tasks
                (id, url, config, output_dir, status, created_at)
                VALUES (?, ?, ?, ?, 'running', ?)""",
-            (task_id, url, json.dumps(config, ensure_ascii=False),
-             output_dir, time.time()),
+            (task_id, url, json.dumps(config, ensure_ascii=False), output_dir, time.time()),
         )
         conn.commit()
 
@@ -267,9 +266,7 @@ def import_results(task_id: str, output_dir: str) -> int:
 
     # JSONL 完全不可读时回退 CSV（例如清单文件被截断损坏）
     if not rows and skipped_bad and csv_path.exists():
-        _log.warning(
-            "JSONL manifest unreadable (%d bad lines), falling back to CSV", skipped_bad
-        )
+        _log.warning("JSONL manifest unreadable (%d bad lines), falling back to CSV", skipped_bad)
         with csv_path.open(encoding="utf-8") as f:
             rows = list(csv.DictReader(f))
         skipped_bad = 0
@@ -335,27 +332,27 @@ def list_tasks(
 
     tasks = []
     for r in rows:
-        tasks.append({
-            "id": r["id"],
-            "url": r["url"],
-            "status": r["status"],
-            "exit_code": r["exit_code"],
-            "output_dir": r["output_dir"],
-            "total_resources": r["total_resources"],
-            "processed_resources": r["processed_resources"],
-            "pages_scanned": r["pages_scanned"],
-            "created_at": r["created_at"],
-            "finished_at": r["finished_at"],
-        })
+        tasks.append(
+            {
+                "id": r["id"],
+                "url": r["url"],
+                "status": r["status"],
+                "exit_code": r["exit_code"],
+                "output_dir": r["output_dir"],
+                "total_resources": r["total_resources"],
+                "processed_resources": r["processed_resources"],
+                "pages_scanned": r["pages_scanned"],
+                "created_at": r["created_at"],
+                "finished_at": r["finished_at"],
+            }
+        )
     return {"tasks": tasks, "total": total, "page": page, "page_size": page_size}
 
 
 def get_task(task_id: str) -> dict[str, Any] | None:
     """查询单个任务详情。"""
     conn = _get_conn()
-    r = conn.execute(
-        "SELECT * FROM tasks WHERE id = ?", (task_id,)
-    ).fetchone()
+    r = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     if not r:
         return None
     return {
@@ -400,9 +397,7 @@ def get_results(
         params += [kw, kw, kw]
 
     conn = _get_conn()
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM results {where}", params
-    ).fetchone()[0]
+    total = conn.execute(f"SELECT COUNT(*) FROM results {where}", params).fetchone()[0]
     rows = conn.execute(
         f"""SELECT url, saved_path, content_type, bytes, category,
                   found_in, kind, page_url, page_title, sha256, status
@@ -413,17 +408,19 @@ def get_results(
 
     results = []
     for r in rows:
-        results.append({
-            "url": r["url"],
-            "saved_path": r["saved_path"],
-            "content_type": r["content_type"],
-            "bytes": r["bytes"],
-            "category": r["category"],
-            "found_in": r["found_in"],
-            "kind": r["kind"],
-            "page_url": r["page_url"],
-            "page_title": r["page_title"],
-            "sha256": r["sha256"],
-            "status": r["status"],
-        })
+        results.append(
+            {
+                "url": r["url"],
+                "saved_path": r["saved_path"],
+                "content_type": r["content_type"],
+                "bytes": r["bytes"],
+                "category": r["category"],
+                "found_in": r["found_in"],
+                "kind": r["kind"],
+                "page_url": r["page_url"],
+                "page_title": r["page_title"],
+                "sha256": r["sha256"],
+                "status": r["status"],
+            }
+        )
     return {"results": results, "total": total, "page": page, "page_size": page_size}

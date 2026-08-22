@@ -285,27 +285,21 @@ def test_score_params_wrong_type() -> None:
 def test_score_params_missing_required() -> None:
     """缺必填参数时应扣分。"""
     scorer = ConfidenceScorer()
-    result = scorer.score(
-        {"action_type": "navigate", "params": {}, "reasoning": "x" * 20}
-    )
+    result = scorer.score({"action_type": "navigate", "params": {}, "reasoning": "x" * 20})
     assert any("missing required" in r for r in result.reasons)
 
 
 def test_score_params_unknown_action_type() -> None:
     """未知 action_type 的 params 评分应返回 0.3。"""
     scorer = ConfidenceScorer()
-    result = scorer.score(
-        {"action_type": "frob", "params": {}, "reasoning": "x" * 20}
-    )
+    result = scorer.score({"action_type": "frob", "params": {}, "reasoning": "x" * 20})
     assert any("can't validate unknown" in r for r in result.reasons)
 
 
 def test_score_params_no_required_fields() -> None:
     """无必填参数的动作（如 solve_captcha/done/scroll）params 评分 1.0。"""
     scorer = ConfidenceScorer()
-    result = scorer.score(
-        {"action_type": "done", "params": {}, "reasoning": "x" * 20}
-    )
+    result = scorer.score({"action_type": "done", "params": {}, "reasoning": "x" * 20})
     assert not any("params:" in r for r in result.reasons)
 
 
@@ -535,9 +529,7 @@ def test_score_reasoning_too_short() -> None:
 def test_score_reasoning_too_verbose() -> None:
     """过长 reasoning（>500 字符）应扣分。"""
     scorer = ConfidenceScorer()
-    result = scorer.score(
-        {"action_type": "done", "params": {}, "reasoning": "x" * 501}
-    )
+    result = scorer.score({"action_type": "done", "params": {}, "reasoning": "x" * 501})
     assert any("reasoning:" in r and "too verbose" in r for r in result.reasons)
 
 
@@ -594,9 +586,7 @@ async def test_score_async_basic() -> None:
 async def test_score_async_no_llm() -> None:
     """score_async 无 LLM 时 raw 应为空 dict。"""
     scorer = ConfidenceScorer()
-    result = await scorer.score_async(
-        {"action_type": "done", "params": {}, "reasoning": "x" * 20}
-    )
+    result = await scorer.score_async({"action_type": "done", "params": {}, "reasoning": "x" * 20})
     assert result.raw == {}
 
 
@@ -605,9 +595,7 @@ async def test_score_async_with_llm_achat() -> None:
     """score_async 优先使用 provider.achat。"""
     provider = AsyncFakeProvider(['{"score": 0.85, "reason": "good"}'])
     scorer = ConfidenceScorer(enable_llm_score=True, provider=provider)
-    result = await scorer.score_async(
-        {"action_type": "done", "params": {}, "reasoning": "x" * 20}
-    )
+    result = await scorer.score_async({"action_type": "done", "params": {}, "reasoning": "x" * 20})
     assert result.raw.get("score") == 0.85
     assert len(provider.calls) == 1
 
@@ -617,9 +605,7 @@ async def test_score_async_with_llm_no_achat_falls_back_to_chat() -> None:
     """provider 无 achat 时 score_async 回退到同步 chat。"""
     provider = FakeProvider(['{"score": 0.7, "reason": "ok"}'])
     scorer = ConfidenceScorer(enable_llm_score=True, provider=provider)
-    result = await scorer.score_async(
-        {"action_type": "done", "params": {}, "reasoning": "x" * 20}
-    )
+    result = await scorer.score_async({"action_type": "done", "params": {}, "reasoning": "x" * 20})
     assert result.raw.get("score") == 0.7
     assert len(provider.calls) == 1
 
@@ -628,9 +614,7 @@ async def test_score_async_with_llm_no_achat_falls_back_to_chat() -> None:
 async def test_score_async_llm_error() -> None:
     """score_async LLM 异常时应降级返回 0.5。"""
     scorer = ConfidenceScorer(enable_llm_score=True, provider=BrokenAsyncProvider())
-    result = await scorer.score_async(
-        {"action_type": "done", "params": {}, "reasoning": "x" * 20}
-    )
+    result = await scorer.score_async({"action_type": "done", "params": {}, "reasoning": "x" * 20})
     # LLM 异常时 raw 为空，但仍返回评分
     assert result.raw == {}
     assert any("llm" in r for r in result.reasons)
@@ -736,9 +720,7 @@ def test_build_score_prompt_includes_all_sections() -> None:
 
 def test_build_score_prompt_empty_inputs() -> None:
     """空输入应使用占位符。"""
-    prompt = ConfidenceScorer._build_score_prompt(
-        action={}, task="", target_params=[], history=[]
-    )
+    prompt = ConfidenceScorer._build_score_prompt(action={}, task="", target_params=[], history=[])
     assert "未指定" in prompt
 
 

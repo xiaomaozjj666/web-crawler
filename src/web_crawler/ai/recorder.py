@@ -281,10 +281,10 @@ class ScriptCompiler:
         return [
             f"    # step {rec.step}: navigate",
             f'    page.goto({url_literal}, wait_until="domcontentloaded", timeout=30000)',
-            '    try:',
+            "    try:",
             '        page.wait_for_load_state("domcontentloaded", timeout=3000)',
-            '    except Exception:',
-            '        pass',
+            "    except Exception:",
+            "        pass",
             f"    history.append({{'step': {rec.step}, 'action': 'navigate', 'url': {url_literal}}})",
         ]
 

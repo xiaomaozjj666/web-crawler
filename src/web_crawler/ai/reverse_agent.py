@@ -1792,9 +1792,7 @@ class ReverseAgent:
             self._tabs["main"] = page
         if url:
             # 深度防御：new_tab 的导航 URL 再走一次护栏检查（循环层已检查 new_tab 动作）
-            nav_check = (
-                self.guard.check_navigation_url(url) if self.guard is not None else None
-            )
+            nav_check = self.guard.check_navigation_url(url) if self.guard is not None else None
             if nav_check is not None and nav_check.denied:
                 self._emit(
                     "guard.deny",
@@ -1830,9 +1828,7 @@ class ReverseAgent:
             self._tabs["main"] = page
         if url:
             # 深度防御：new_tab 的导航 URL 再走一次护栏检查（循环层已检查 new_tab 动作）
-            nav_check = (
-                self.guard.check_navigation_url(url) if self.guard is not None else None
-            )
+            nav_check = self.guard.check_navigation_url(url) if self.guard is not None else None
             if nav_check is not None and nav_check.denied:
                 self._emit(
                     "guard.deny",
@@ -2395,9 +2391,7 @@ class ReverseAgent:
             line = f"[{rtype}] {method} {url}"
             if isinstance(headers, dict) and headers:
                 # header 值截断到 200 字符：防注入大段指令与 token 膨胀
-                key_str = ", ".join(
-                    f"{k}={str(v)[:200]}" for k, v in list(headers.items())[:5]
-                )
+                key_str = ", ".join(f"{k}={str(v)[:200]}" for k, v in list(headers.items())[:5])
                 line += f" | headers: {key_str}"
             if body:
                 line += f" | body: {str(body)[:200]}"

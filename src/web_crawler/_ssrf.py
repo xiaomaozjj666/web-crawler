@@ -107,16 +107,16 @@ _dns_verdict_cache = _DnsVerdictCache()
 
 # 被拒绝的 IP 段：私网 / 环回 / 链路本地 / CGNAT / 本网络。
 _PRIVATE_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
-    ipaddress.ip_network("0.0.0.0/8"),      # 本网络 / 未指定
-    ipaddress.ip_network("10.0.0.0/8"),     # 私网
+    ipaddress.ip_network("0.0.0.0/8"),  # 本网络 / 未指定
+    ipaddress.ip_network("10.0.0.0/8"),  # 私网
     ipaddress.ip_network("100.64.0.0/10"),  # CGNAT（含阿里云元数据 100.100.100.200）
-    ipaddress.ip_network("127.0.0.0/8"),    # 环回
-    ipaddress.ip_network("169.254.0.0/16"), # 链路本地（含云元数据 169.254.169.254）
+    ipaddress.ip_network("127.0.0.0/8"),  # 环回
+    ipaddress.ip_network("169.254.0.0/16"),  # 链路本地（含云元数据 169.254.169.254）
     ipaddress.ip_network("172.16.0.0/12"),  # 私网
-    ipaddress.ip_network("192.168.0.0/16"), # 私网
-    ipaddress.ip_network("::1/128"),        # IPv6 环回
-    ipaddress.ip_network("fc00::/7"),       # IPv6 唯一本地地址（ULA）
-    ipaddress.ip_network("fe80::/10"),      # IPv6 链路本地
+    ipaddress.ip_network("192.168.0.0/16"),  # 私网
+    ipaddress.ip_network("::1/128"),  # IPv6 环回
+    ipaddress.ip_network("fc00::/7"),  # IPv6 唯一本地地址（ULA）
+    ipaddress.ip_network("fe80::/10"),  # IPv6 链路本地
 )
 
 # 静态黑名单主机名：即使不做 DNS 解析也能拦截的本地 / 云元数据名称。
@@ -124,9 +124,9 @@ _UNSAFE_HOSTNAMES: frozenset[str] = frozenset(
     {
         "localhost",
         "metadata.google.internal",  # GCP 元数据
-        "metadata.azure.internal",   # Azure IMDS 元数据
-        "metadata.aws.internal",     # AWS 元数据变体
-        "instance-data",             # 部分系统上 169.254.169.254 的别名
+        "metadata.azure.internal",  # Azure IMDS 元数据
+        "metadata.aws.internal",  # AWS 元数据变体
+        "instance-data",  # 部分系统上 169.254.169.254 的别名
     }
 )
 
@@ -137,11 +137,7 @@ def _is_blocked_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
         mapped = addr.ipv4_mapped
         if mapped is not None:
             addr = mapped
-    return (
-        any(addr in net for net in _PRIVATE_NETWORKS)
-        or addr.is_multicast
-        or addr.is_unspecified
-    )
+    return any(addr in net for net in _PRIVATE_NETWORKS) or addr.is_multicast or addr.is_unspecified
 
 
 def is_private_ip(host: str) -> bool:
@@ -192,9 +188,7 @@ def host_is_unsafe(host: str | None, *, resolve: bool = False) -> bool:
         try:
             infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
         except OSError:
-            _log.warning(
-                "SSRF guard: DNS resolution failed for host %r — rejecting", host
-            )
+            _log.warning("SSRF guard: DNS resolution failed for host %r — rejecting", host)
             _dns_verdict_cache.put(host, True, _DNS_CACHE_NEGATIVE_TTL_SECONDS)
             return True
         for info in infos:
