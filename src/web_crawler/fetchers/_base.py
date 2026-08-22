@@ -1,9 +1,8 @@
-"""Shared configuration base for all fetchers.
+"""所有 fetcher 共享的配置基类。
 
-Mirrors Scrapling's ``BaseFetcher``: a single place that holds the options
-common to the HTTP, dynamic and stealthy fetchers (timeouts, proxies, retries,
-adaptive storage, default headers) plus the helpers that turn a raw transport
-response into the library-wide :class:`~web_crawler.response.Response`.
+对齐 Scrapling 的 ``BaseFetcher``：集中存放 HTTP、动态与隐身 fetcher 的
+公共选项（超时、代理、重试、自适应存储、默认请求头），并提供把原始传输层
+响应包装为库级 :class:`~web_crawler.response.Response` 的辅助方法。
 """
 
 from __future__ import annotations
@@ -72,11 +71,10 @@ def validate_url(url: str, *, resolve: bool = False) -> None:
 
 
 class BaseFetcher:
-    """Shared configuration base class for all fetchers.
+    """所有 fetcher 共享的配置基类。
 
-    Subclasses (``Fetcher``, ``DynamicFetcher``, ``StealthyFetcher``) inherit
-    these options and the response-building helpers so that every fetcher
-    returns a uniform :class:`Response`.
+    子类（``Fetcher``、``DynamicFetcher``、``StealthyFetcher``）继承这些
+    选项与响应构建辅助方法，使每个 fetcher 都返回统一的 :class:`Response`。
     """
 
     def __init__(
@@ -124,10 +122,10 @@ class BaseFetcher:
             validate_url(url, resolve=getattr(self, "resolve_hosts", False))
 
     def _resolve_proxy(self) -> str | None:
-        """Resolve the proxy to use for the next request.
+        """解析下一个请求要使用的代理。
 
-        A :class:`ProxyPool` is queried (and thus rotated) per-request; a plain
-        string is returned as-is; ``None`` means no proxy.
+        :class:`ProxyPool` 按请求查询（从而实现轮换）；普通字符串原样返回；
+        ``None`` 表示不使用代理。
         """
         if self.proxy is None:
             return None
@@ -136,7 +134,7 @@ class BaseFetcher:
         return self.proxy
 
     def _default_headers(self) -> dict[str, str]:
-        """Realistic browser-style headers to lower bot-detection probability."""
+        """仿真浏览器请求头，降低被识别为 bot 的概率。"""
         return {
             "Accept": (
                 "text/html,application/xhtml+xml,application/xml;q=0.9,"
@@ -165,7 +163,7 @@ class BaseFetcher:
         *,
         request_headers: dict[str, str] | None = None,
     ) -> Response:
-        """Wrap a raw transport response in the library-wide :class:`Response`."""
+        """把原始传输层响应包装为库级统一的 :class:`Response`。"""
         return Response(
             url=url,
             status=status,

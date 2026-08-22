@@ -1,10 +1,8 @@
-"""SQLite-backed storage for adaptive element fingerprints.
+"""自适应元素指纹的 SQLite 存储。
 
-Mirrors Scrapling's approach: when an element is selected with ``auto_save=True``
-its structural fingerprint is persisted, keyed by domain and identifier. On a
-later ``adaptive=True`` lookup the stored fingerprint is retrieved and compared
-against every element in the current document to relocate the element even if
-the website's markup changed.
+对齐 Scrapling 的做法：元素以 ``auto_save=True`` 被选中时，其结构指纹
+以 domain + identifier 为键持久化。之后 ``adaptive=True`` 查找时取出存储
+的指纹，与当前文档中每个元素比对，即使网站标记变了也能重新定位元素。
 """
 
 from __future__ import annotations
@@ -35,7 +33,7 @@ CREATE INDEX IF NOT EXISTS idx_adaptive_domain ON adaptive_elements(domain);
 
 
 class AdaptiveStorage:
-    """Thread-safe SQLite store for adaptive element fingerprints."""
+    """线程安全的自适应元素指纹 SQLite 存储。"""
 
     def __init__(self, db_path: str | Path | None = None) -> None:
         path = Path(db_path) if db_path else DEFAULT_DB_PATH
@@ -44,7 +42,7 @@ class AdaptiveStorage:
         # 实例级锁：不同 AdaptiveStorage 实例（不同 DB）互不阻塞
         self._lock = threading.Lock()
         self._closed = False
-        # check_same_thread=False because crawlers use thread pools.
+        # check_same_thread=False，因为爬虫会使用线程池。
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.executescript(_SCHEMA)
         self._conn.commit()

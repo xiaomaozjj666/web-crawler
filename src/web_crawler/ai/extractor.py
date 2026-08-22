@@ -1,21 +1,20 @@
-"""AI-assisted extraction: generate, validate, and self-heal CSS selectors.
+"""AI 辅助抽取：生成、校验并自愈 CSS 选择器。
 
-This layer augments the deterministic adaptive engine (fingerprint + structural
-similarity) with an LLM. You describe *what* you want in plain language (a
-``schema`` of ``field -> description``) and the extractor asks the model to
-propose CSS selectors, then **validates every selector against the real page
-using the project's own** :class:`~web_crawler.parser.selector.Selector`. Fields
-that come back empty trigger a self-heal round where the model is re-prompted
-with the failing fields and a fresh HTML sample.
+本层用 LLM 增强确定性的自适应引擎（指纹 + 结构相似度）。你用自然语言
+描述想要*什么*（一个 ``field -> description`` 的 ``schema``），抽取器让
+模型提出 CSS 选择器，然后**用项目自身的**
+:class:`~web_crawler.parser.selector.Selector` **对每个选择器在真实页面上
+做校验**。返回为空的字段会触发一轮自愈：把失败字段和新的 HTML 样本
+重新发给模型。
 
-Nothing here bypasses site protections: it only turns already-fetched HTML into
-structured data. The heavy lifting stays in the existing, offline Selector.
+这里不会绕过任何站点防护：只把已抓取的 HTML 转成结构化数据。重活仍由
+现有的离线 Selector 承担。
 
-Example
--------
+示例
+----
 >>> from web_crawler import Fetcher, AIExtractor
 >>> resp = Fetcher().get("https://example.com")
->>> extractor = AIExtractor()  # DeepSeek-V4-Pro by default
+>>> extractor = AIExtractor()  # 默认 DeepSeek-V4-Pro
 >>> data = extractor.extract(resp, {
 ...     "title": "the main page heading",
 ...     "links": "all anchor hrefs in the nav",
@@ -46,7 +45,7 @@ _SYSTEM_PROMPT = (
 
 @dataclass
 class ExtractionResult:
-    """Outcome of an :meth:`AIExtractor.extract` call."""
+    """:meth:`AIExtractor.extract` 调用的结果。"""
 
     data: dict[str, Any]
     selectors: dict[str, str]
@@ -59,8 +58,8 @@ class ExtractionResult:
 
 
 def _as_selector(source: Response | Selector) -> Selector:
-    """Accept a :class:`Response` or a :class:`Selector` and return a Selector."""
-    # Response exposes a `.selector` property; Selector has `.css` directly.
+    """接受 :class:`Response` 或 :class:`Selector`，返回 Selector。"""
+    # Response 暴露 `.selector` 属性；Selector 自身直接有 `.css`。
     sel = getattr(source, "selector", None)
     if sel is not None and hasattr(sel, "css_first"):
         return sel
@@ -68,19 +67,19 @@ def _as_selector(source: Response | Selector) -> Selector:
 
 
 class AIExtractor:
-    """LLM-backed selector generation with validation and self-healing.
+    """基于 LLM 的选择器生成，带校验与自愈。
 
     Parameters
     ----------
     provider:
-        Any object satisfying :class:`~web_crawler.ai.llm.LLMProvider`. When
-        omitted, a DeepSeek provider (model ``DeepSeek-V4-Pro``) is created.
+        任意满足 :class:`~web_crawler.ai.llm.LLMProvider` 的对象。缺省时
+        创建 DeepSeek 供应商（模型 ``DeepSeek-V4-Pro``）。
     model:
-        Convenience: model name forwarded to the default provider.
+        便捷参数：透传给默认供应商的模型名。
     max_html_chars:
-        Upper bound on the HTML sample sent to the model (keeps prompts small).
+        发送给模型的 HTML 样本长度上限（控制 prompt 体积）。
     max_heal_rounds:
-        How many extra correction rounds to attempt for empty fields.
+        针对空字段最多额外尝试的修正轮数。
     """
 
     def __init__(
@@ -99,7 +98,7 @@ class AIExtractor:
 
     # -- prompt building ----------------------------------------------------
     def _html_sample(self, sel: Selector) -> str:
-        # Selector exposes the serialized markup via its `.html` property.
+        # Selector 通过其 `.html` 属性暴露序列化后的标记。
         html = getattr(sel, "html", None)
         if not isinstance(html, str):
             html = str(html)
@@ -140,7 +139,7 @@ class AIExtractor:
         *,
         failing: dict[str, str] | None = None,
     ) -> dict[str, str]:
-        """Ask the model for a ``{field: css}`` mapping (no validation)."""
+        """向模型请求 ``{field: css}`` 映射（不做校验）。"""
         sel = _as_selector(source)
         messages = self._build_prompt(self._html_sample(sel), schema, failing=failing)
         reply = self.provider.chat(messages, temperature=0.0)
@@ -151,7 +150,7 @@ class AIExtractor:
     # -- application --------------------------------------------------------
     @staticmethod
     def _apply(sel: Selector, css: str) -> Any:
-        """Apply one selector, returning text or attribute value(s) or None.
+        """应用单个选择器，返回文本、属性值或 None。
 
         LLM 生成的选择器是不可信输入，可能非法（lxml cssselect 会抛
         ``SelectorSyntaxError`` 等），一律按未命中处理，让自愈循环接管。
@@ -162,7 +161,7 @@ class AIExtractor:
             return None
         if first is None:
             return None
-        # css_first already resolves ::attr(...) to a value; element -> text.
+        # css_first 已把 ::attr(...) 解析为值；元素则取文本。
         value = first if isinstance(first, str) else getattr(first, "text", None)
         return str(value).strip() if value is not None else None
 
@@ -173,10 +172,10 @@ class AIExtractor:
         *,
         self_heal: bool = True,
     ) -> ExtractionResult:
-        """Extract ``schema`` fields, validating and self-healing selectors.
+        """抽取 ``schema`` 字段，并对选择器做校验与自愈。
 
-        Returns an :class:`ExtractionResult` with the extracted ``data``, the
-        final ``selectors`` used, and any ``missing`` fields still unresolved.
+        返回 :class:`ExtractionResult`，包含抽取的 ``data``、最终使用的
+        ``selectors``，以及仍未能解析的 ``missing`` 字段。
         """
         sel = _as_selector(source)
         selectors = self.suggest_selectors(source, schema)

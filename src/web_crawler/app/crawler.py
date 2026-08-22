@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Compliant web resource crawler
+合规的网页资源爬虫
 
-Downloads public or authorized resources referenced by web pages. It does not
-try to bypass paywalls, login checks, DRM, signatures, or other access controls.
+下载网页引用的公开或已授权资源；不会尝试绕过付费墙、登录校验、DRM、
+签名或其他访问控制。
 
 核心特性:
   - 并发下载（--workers 控制，默认 8 线程）
@@ -42,7 +42,7 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -60,11 +60,11 @@ from urllib.robotparser import RobotFileParser
 # 拆分后各层的同名再导出：保证 `app.crawler` 模块的所有属性仍可访问，
 # 测试对 cr.xxx 的访问与 patch.object(cr, ...) 不受影响（函数体内对模块
 # 全局名的解析在 patch 后拿到替换值）。
-from app.crawler_models import ManifestRow, Resource
-from app.crawler_net import *
-from app.crawler_report import *
+from web_crawler.app.crawler_models import ManifestRow, Resource
+from web_crawler.app.crawler_net import *
+from web_crawler.app.crawler_report import *
 
-# ── Logging ──────────────────────────────────────────────────────────────
+# ── 日志 ──────────────────────────────────────────────────────────────
 
 logging.basicConfig(
     level=logging.INFO,
@@ -87,7 +87,7 @@ def detach_log_handler(handler: logging.Handler) -> None:
         _log.removeHandler(handler)
 
 
-# ── Console helpers ──────────────────────────────────────────────────────
+# ── 控制台辅助 ──────────────────────────────────────────────────────────
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -95,14 +95,14 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
-# ── Constants ────────────────────────────────────────────────────────────
+# ── 常量 ──────────────────────────────────────────────────────────────
 
 DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; ResourceCrawler/3.0)"
 DEFAULT_WORKERS = 8
 CRAWL_STATE_FILE = ".crawl_state.json"
 
 
-# ── AES decryption support ──────────────────────────────────────────────
+# ── AES 解密支持 ──────────────────────────────────────────────────────
 
 try:
     from Crypto.Cipher import AES as _AES
@@ -113,10 +113,10 @@ except ImportError:
 
 
 def decrypt_aes128(data: bytes, key: bytes, iv: bytes) -> bytes:
-    """Decrypt AES-128-CBC data with PKCS7 unpadding."""
+    """解密 AES-128-CBC 数据并做 PKCS7 去填充。"""
     cipher = _AES.new(key, _AES.MODE_CBC, iv=iv)
     decrypted = cipher.decrypt(data)
-    # PKCS7 unpadding
+    # PKCS7 去填充
     pad_len = decrypted[-1]
     if 1 <= pad_len <= 16:
         return decrypted[:-pad_len]
@@ -137,7 +137,7 @@ def get_segment_key(url: str) -> tuple[bytes, bytes] | None:
         return _segment_keys.get(url)
 
 
-# ── HTTP opener with connection reuse ────────────────────────────────────
+# ── HTTP opener（连接复用）──────────────────────────────────────────
 
 _opener: OpenerDirector | None = None
 _opener_lock = threading.Lock()
@@ -159,21 +159,20 @@ def _get_opener(proxy: str | None = None) -> OpenerDirector:
     return _opener
 
 
-# ── Stealth fetcher bridge (reuses the src/web_crawler library) ──────────
+# ── 隐身 fetcher 桥接（复用 src/web_crawler 库）─────────────────────────
 #
-# When ``--stealth`` is set, page/resource fetches that do not need streaming
-# resume are routed through ``web_crawler.fetchers.Fetcher`` (curl_cffi TLS
-# fingerprint impersonation). This makes requests indistinguishable from a real
-# browser at the network layer, defeating JA3/JA4 fingerprinting that blocks
-# plain urllib. Large/resumable downloads keep the original streaming path.
+# 设置 ``--stealth`` 后，不需要流式断点续传的页面/资源抓取会改走
+# ``web_crawler.fetchers.Fetcher``（curl_cffi TLS 指纹伪装），让请求在
+# 网络层与真实浏览器无法区分，破解拦截普通 urllib 的 JA3/JA4 指纹检测。
+# 大文件/可续传下载仍走原有流式路径。
 
 
 def _import_stealth_fetcher() -> Any:
-    """Lazily import the library ``Fetcher``; return None if unavailable."""
+    """延迟导入库级 ``Fetcher``；不可用时返回 None。"""
     try:
         from web_crawler import Fetcher  # type: ignore[import-not-found]
     except ImportError:
-        # App may run with src/ not on PYTHONPATH — try the project layout.
+        # app 运行时 src/ 可能不在 PYTHONPATH 上 —— 尝试项目目录布局。
         import sys
 
         _src = Path(__file__).resolve().parent.parent / "src"
@@ -190,8 +189,8 @@ def _import_stealth_fetcher() -> Any:
     return Fetcher
 
 
-# Module-level stealth fetcher cache so curl_cffi's TLS session is reused
-# across requests within the same job rather than re-created each call.
+# 模块级隐身 fetcher 缓存：同一任务内的多次请求复用 curl_cffi 的 TLS 会话，
+# 而不是每次调用重建。
 _stealth_fetcher: Any = None
 _stealth_fetcher_key: tuple[str, str | None, str] = ("", None, "")
 
@@ -201,10 +200,10 @@ def _get_stealth_fetcher(
     timeout: float,
     proxy: str | None,
 ) -> Any:
-    """Return a cached :class:`Fetcher` matching *impersonate*/*timeout*/*proxy*.
+    """返回与 *impersonate*/*timeout*/*proxy* 匹配的缓存 :class:`Fetcher`。
 
-    The returned object supports ``get(url, headers=…)`` with per-request
-    headers layered on top of the session's impersonation defaults.
+    返回对象支持 ``get(url, headers=…)``，可在会话伪装默认值之上叠加
+    每次请求单独传入的 headers。
     """
     global _stealth_fetcher, _stealth_fetcher_key
     key = (impersonate, proxy, str(timeout))
@@ -237,13 +236,12 @@ def _stealth_fetch(
     impersonate: str,
     max_bytes: int | None = None,
 ) -> tuple[bytes, str, int]:
-    """GET ``url`` via curl_cffi TLS-fingerprint impersonation.
+    """通过 curl_cffi TLS 指纹伪装 GET ``url``。
 
-    Returns ``(content, content_type, status)``. Raises on transport errors so
-    the caller's retry loop can handle them uniformly.
+    返回 ``(content, content_type, status)``；传输错误会抛异常，
+    由调用方的重试循环统一处理。
 
-    The underlying ``Fetcher`` (TLS session) is cached at module level so
-    repeated stealth requests reuse the same connection pool.
+    底层 ``Fetcher``（TLS 会话）缓存于模块级，重复隐身请求复用同一连接池。
 
     注：curl_cffi 会话默认整包缓冲,无法真正按块计数;这里用 Content-Length
     做预检（超过 max_bytes 直接拒绝,不等整包缓冲完成）,实际长度由调用方
@@ -282,7 +280,7 @@ def _stealth_fetch(
     raise ValueError(f"too many redirects fetching {url}")
 
 
-# ── Fetch (enhanced with 429 handling, connection reuse, streaming) ──────
+# ── Fetch（增强：429 处理、连接复用、流式下载）─────────────────────
 
 
 def fetch(
@@ -306,14 +304,13 @@ def fetch(
 
     for attempt in range(retries + 1):
         try:
-            # Wait for rate limiter
+            # 等待域级限速
             if rate_limiter:
                 rate_limiter.wait_if_needed(url)
 
-            # Stealth path: route through curl_cffi TLS-fingerprint fetcher for
-            # non-resumable fetches (page HTML discovery + small resources).
-            # Streaming resume still uses the urllib path below because the
-            # stealth fetcher buffers the full body in memory.
+            # 隐身路径：不需要断点续传的抓取（页面 HTML 发现 + 小资源）走
+            # curl_cffi TLS 指纹 fetcher。流式续传仍走下方 urllib 路径，
+            # 因为隐身 fetcher 会把整个 body 缓冲在内存里。
             stealth = bool(control_args and getattr(control_args, "stealth", False))
             if stealth and resume_path is None:
                 impersonate = (
@@ -461,14 +458,14 @@ def discover_playlist_resources(
     retries: int = 1,
     decrypt: bool = False,
 ) -> tuple[list[Resource], str]:
-    """Expand m3u8/mpd playlists. Returns (resource_list, diagnostic_message)."""
+    """展开 m3u8/mpd 播放列表。返回 (resource_list, diagnostic_message)。"""
     found: list[Resource] = []
     parsed = urlparse(playlist_url)
     is_m3u8 = parsed.path.lower().endswith(".m3u8") or "#EXTM3U" in text
     is_mpd = parsed.path.lower().endswith(".mpd") or "<MPD" in text
 
     if is_m3u8:
-        # Parse EXT-X-KEY if present
+        # 解析 EXT-X-KEY（如存在）
         key_url: str | None = None
         key_iv: str | None = None
         key_method: str | None = None
@@ -487,7 +484,7 @@ def discover_playlist_resources(
 
         is_encrypted = key_method and key_method != "NONE"
 
-        # Try to fetch key for encrypted playlists
+        # 加密播放列表尝试拉取解密密钥
         key_bytes: bytes | None = None
         iv_bytes: bytes | None = None
         if is_encrypted and decrypt and key_url and HAS_AES:
@@ -541,18 +538,18 @@ def discover_playlist_resources(
 
 
 def discover_sitemap_urls(sitemap_url: str, headers: dict[str, str], timeout: int) -> list[str]:
-    """Parse sitemap.xml and return discovered page URLs."""
+    """解析 sitemap.xml 并返回发现的页面 URL。"""
     urls: list[str] = []
     try:
         data, _ = fetch(sitemap_url, timeout, headers, retries=1, max_bytes=10 * 1024 * 1024)
         text = data.decode("utf-8", errors="replace")
-        # Standard sitemap <loc> elements
+        # 标准 sitemap 的 <loc> 元素
         for match in re.finditer(r"<loc[^>]*>(.*?)</loc>", text, re.IGNORECASE | re.DOTALL):
             url = html_lib.unescape(match.group(1).strip())
             normalized = normalize_url(url)
             if normalized:
                 urls.append(normalized)
-        # Sitemap index → nested sitemaps (one level deep)
+        # sitemap index → 嵌套 sitemap（只展开一层）
         if any(tag in text for tag in ("<sitemapindex", "<sitemap>")):
             nested_sitemaps = urls
             urls = []
@@ -577,11 +574,11 @@ def discover_sitemap_urls(sitemap_url: str, headers: dict[str, str], timeout: in
     return urls
 
 
-# ── Config save/load ──────────────────────────────────────────────────────
+# ── 配置保存/加载 ──────────────────────────────────────────────────────
 
 
 def save_config_to_file(args: argparse.Namespace, filepath: str) -> None:
-    """Save crawl configuration as JSON."""
+    """把抓取配置保存为 JSON。"""
     config = {
         "url": args.url,
         "out": str(Path(args.out).resolve()),
@@ -626,7 +623,7 @@ def save_config_to_file(args: argparse.Namespace, filepath: str) -> None:
 
 
 def load_config_from_file(filepath: str) -> dict:
-    """Load crawl configuration from JSON file and return as dict."""
+    """从 JSON 文件加载抓取配置并以 dict 返回。"""
     path = Path(filepath)
     if not path.exists():
         _log.error("config file not found: %s", path)
@@ -636,17 +633,17 @@ def load_config_from_file(filepath: str) -> dict:
     return config
 
 
-# ── Crawl state persistence (--resume-crawl) ──
+# ── 抓取状态持久化（--resume-crawl）──
 
 
 def save_crawl_state(output_dir: Path, **state: object) -> None:
-    """Save current crawl progress to a JSON state file."""
+    """把当前抓取进度保存为 JSON 状态文件。"""
     path = output_dir / CRAWL_STATE_FILE
     path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
 
 def load_crawl_state(output_dir: Path) -> dict:
-    """Load saved crawl state if it exists."""
+    """加载已保存的抓取状态（不存在时返回空 dict）。"""
     path = output_dir / CRAWL_STATE_FILE
     if not path.exists():
         return {}
@@ -663,10 +660,617 @@ def clear_crawl_state(output_dir: Path) -> None:
         path.unlink()
 
 
-# ── The main crawl function ───────────────────────────────────────────────
+# ── 抓取主函数 ───────────────────────────────────────────────────────
+
+
+@dataclass
+class _CrawlContext:
+    """crawl() 各阶段共享的可变状态（页面扫描 / 下载 / 后处理之间传递）。"""
+
+    args: argparse.Namespace
+    headers: dict[str, str]
+    output_dir: Path
+    max_bytes: int | None
+    block_keywords: list[str]
+    robots: RobotFileParser | None
+    rate_limiter: DomainRateLimiter
+    dedup: ContentDedup | None
+    page_queue: deque[str] = field(default_factory=deque)
+    seen_pages: set[str] = field(default_factory=set)
+    page_html: dict[str, str] = field(default_factory=dict)
+    page_titles: dict[str, str] = field(default_factory=dict)
+    all_resources: list[Resource] = field(default_factory=list)
+    # 下载阶段状态
+    queue: list[Resource] = field(default_factory=list)
+    queued_urls: set[str] = field(default_factory=set)
+    new_discoveries: list[Resource] = field(default_factory=list)
+    processed_count: list[int] = field(default_factory=lambda: [0])
+    discovery_lock: threading.Lock = field(default_factory=threading.Lock)
+    manifest_lock: threading.Lock = field(default_factory=threading.Lock)
+    jsonl_file: Any = None
+
+
+def _seed_page_queue(ctx: _CrawlContext) -> None:
+    """种子 URL 入队并按 --sitemap 做站点地图页面发现。"""
+    args = ctx.args
+    root_url = normalize_url(args.url)
+    if root_url:
+        ctx.page_queue.append(root_url)
+
+    if args.sitemap:
+        parsed = urlparse(args.url)
+        sitemap_url = f"{parsed.scheme}://{parsed.netloc}/sitemap.xml"
+        _log.info("discovering pages from %s", sitemap_url)
+        sitemap_urls = discover_sitemap_urls(sitemap_url, ctx.headers, args.timeout)
+        for su in sitemap_urls:
+            if su not in ctx.seen_pages and su not in ctx.page_queue:
+                if args.same_domain and not same_domain(su, args.url):
+                    continue
+                if is_blocked_url(su, ctx.block_keywords):
+                    continue
+                ctx.page_queue.append(su)
+
+
+def _restore_state(ctx: _CrawlContext) -> None:
+    """--resume-crawl：从上次保存的状态恢复队列/页面/资源/去重哈希。"""
+    args = ctx.args
+    if not getattr(args, "resume_crawl", False):
+        return
+    saved = load_crawl_state(ctx.output_dir)
+    if not saved:
+        _log.info("no saved state found, starting fresh")
+        return
+    ctx.page_queue = deque(saved.get("page_queue", []))
+    ctx.seen_pages = set(saved.get("seen_pages", []))
+    ctx.page_titles = {k: str(v) for k, v in saved.get("page_titles", {}).items()}
+    for rdict in saved.get("resources", []):
+        ctx.all_resources.append(Resource(**rdict))
+    if ctx.dedup and saved.get("sha256_set"):
+        for h in saved["sha256_set"]:
+            ctx.dedup.mark_hash_seen(str(h))
+    _log.info(
+        "resumed: %d pages seen, %d pages queued, %d resources, %d dedup hashes",
+        len(ctx.seen_pages),
+        len(ctx.page_queue),
+        len(ctx.all_resources),
+        ctx.dedup.seen_count() if ctx.dedup else 0,
+    )
+
+
+def _scan_pages(ctx: _CrawlContext) -> bool:
+    """逐页扫描：抓取页面、解析资源、按 --crawl-pages 扩展待扫队列。
+
+    返回是否被用户取消（取消后调用方应跳过下载与后处理）。
+    """
+    args = ctx.args
+    cancelled = False  # 统一取消标志：任何阶段触发取消后跳过后续耗时步骤并返回 1
+    while ctx.page_queue and len(ctx.seen_pages) < args.max_pages:
+        try:
+            wait_if_paused(args)
+        except RuntimeError:
+            # 暂停期间被取消 → wait_for_resume 抛 cancelled,按取消处理而非任务出错
+            _log.info("cancelled by user")
+            cancelled = True
+            break
+        if should_stop(args):
+            _log.info("cancelled before scanning next page")
+            cancelled = True
+            break
+        page_url = ctx.page_queue.popleft()
+        if not page_url or page_url in ctx.seen_pages:  # pragma: no cover - 防御性：队列已预过滤
+            continue
+        if is_blocked_url(page_url, ctx.block_keywords):
+            _log.info("blocked page: %s", page_url)
+            continue
+        if args.same_domain and not same_domain(
+            page_url, args.url
+        ):  # pragma: no cover - 防御性：入队时已过滤
+            continue
+        if ctx.robots and not ctx.robots.can_fetch(
+            args.user_agent, page_url
+        ):  # pragma: no cover - 防御性：页面 robots 检查
+            _log.info("robots.txt skipped page: %s", page_url)
+            continue
+
+        _log.info("scanning page: %s", page_url)
+        report_progress(
+            args,
+            phase="page",
+            current_url=page_url,
+            pages_scanned=len(ctx.seen_pages),
+            total_resources=0,
+            processed_resources=0,
+        )
+        ctx.seen_pages.add(page_url)
+        try:
+            data, content_type = fetch(
+                page_url,
+                args.timeout,
+                ctx.headers,
+                args.retries,
+                ctx.max_bytes,
+                rate_limiter=ctx.rate_limiter,
+                control_args=args,
+            )
+        except Exception as exc:
+            _log.warning("page fetch failed: %s", exc)
+            continue
+
+        page_path = output_path_for_url(page_url, ctx.output_dir, "text/html", prefix="pages")
+        if not page_path.suffix:  # pragma: no cover - text/html 总是返回带后缀的路径
+            page_path = page_path.with_suffix(".html")
+        page_path.parent.mkdir(parents=True, exist_ok=True)
+        page_path.write_bytes(data)
+
+        html = decode_text(data, content_type, args.encoding)
+        ctx.page_html[page_url] = html
+        ctx.page_titles[page_url] = extract_title(html)
+        parser = PageParser(page_url)
+        parser.feed(html)
+        ctx.all_resources.extend(parser.resources)
+
+        if args.crawl_pages:
+            for link in parser.page_links:
+                if link not in ctx.seen_pages and link not in ctx.page_queue:
+                    if is_blocked_url(
+                        link, ctx.block_keywords
+                    ):  # pragma: no cover - 防御性：资源级 block 检查已在更上层处理
+                        continue
+                    if not args.same_domain or same_domain(link, args.url):
+                        ctx.page_queue.append(link)
+
+            # 状态保存节流：每 5 页或队列耗尽时保存一次,避免每页全量重写
+            if getattr(args, "resume_crawl", False) and (
+                len(ctx.seen_pages) % 5 == 0 or not ctx.page_queue
+            ):
+                try:
+                    save_crawl_state(
+                        ctx.output_dir,
+                        page_queue=list(ctx.page_queue),
+                        seen_pages=list(ctx.seen_pages),
+                        page_titles=ctx.page_titles,
+                        resources=[asdict(r) for r in ctx.all_resources],
+                        sha256_set=ctx.dedup.seen_hashes() if ctx.dedup else [],
+                    )
+                except Exception as exc:  # pragma: no cover - 防御性：状态保存异常吞掉
+                    _log.warning("failed to save crawl state: %s", exc)
+    return cancelled
+
+
+def _filter_resources(ctx: _CrawlContext) -> list[Resource]:
+    """合并去重后按 block 关键词 / 域名 / 类型 / URL 正则过滤资源列表。"""
+    args = ctx.args
+    resources = unique_resources(ctx.all_resources)
+    if ctx.block_keywords:
+        resources = [r for r in resources if not is_blocked_url(r.url, ctx.block_keywords)]
+    if args.same_domain:
+        resources = [r for r in resources if same_domain(r.url, args.url)]
+    if args.video_only:
+        resources = [r for r in resources if is_video_candidate(r)]
+    _include_re = re.compile(args.include_pattern) if args.include_pattern else None
+    _exclude_re = re.compile(args.exclude_pattern) if args.exclude_pattern else None
+    if _include_re:
+        resources = [r for r in resources if _include_re.search(r.url)]
+    if _exclude_re:
+        resources = [r for r in resources if not _exclude_re.search(r.url)]
+    return resources
+
+
+def _append_jsonl_row(ctx: _CrawlContext, row: ManifestRow) -> None:
+    """best-effort 逐条写 JSONL；失败仅记 warning，不影响主流程。"""
+    if ctx.jsonl_file is None:
+        return
+    try:
+        ctx.jsonl_file.write(json.dumps(asdict(row), ensure_ascii=False) + "\n")
+    except OSError as exc:
+        _log.warning("failed to write JSONL manifest: %s", exc)
+
+
+def _process_resource(ctx: _CrawlContext, resource: Resource) -> ManifestRow | None:
+    """下载单个资源：去重 / 解密 / CSS 与播放列表二级发现，产出清单行。
+
+    返回 None 表示 worker 检测到用户取消（调用方据此中止下载循环）。
+    """
+    args = ctx.args
+    if ctx.robots and not ctx.robots.can_fetch(args.user_agent, resource.url):
+        return row_for("skipped by robots.txt", resource, "", "", 0, ctx.page_titles)
+
+    _log.debug("[%d/%d] %s", ctx.processed_count[0] + 1, len(ctx.queue), resource.url)
+
+    if args.list_only:
+        report_progress(
+            args,
+            phase="download",
+            current_url=resource.url,
+            total_resources=len(ctx.queue),
+            processed_resources=ctx.processed_count[0] + 1,
+            pages_scanned=len(ctx.seen_pages),
+        )
+        return row_for("listed only", resource, "", "", 0, ctx.page_titles)
+
+    try:
+        initial_prefix = output_prefix_for_resource(args, resource, "", ctx.page_titles)
+        target = output_path_for_url(resource.url, ctx.output_dir, "", prefix=initial_prefix)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # 需要完整内容（去重/解密/CSS 解析/播放清单展开）时走内存路径;
+        # 否则流式写入 .part 临时文件,避免大文件整包驻留内存（fetch 返回 b""）
+        needs_content = (
+            bool(ctx.dedup)
+            or (getattr(args, "decrypt", False) and HAS_AES)
+            or bool(args.include_css_urls)
+            or bool(args.expand_playlists)
+        )
+        stream_to_disk = not getattr(args, "resume", False) and not needs_content
+        data, content_type = fetch(
+            resource.url,
+            args.timeout,
+            ctx.headers,
+            args.retries,
+            ctx.max_bytes,
+            resume_path=target if (getattr(args, "resume", False) or stream_to_disk) else None,
+            rate_limiter=ctx.rate_limiter,
+            control_args=args,
+        )
+        byte_count = target.stat().st_size if (stream_to_disk and target.exists()) else len(data)
+
+        # 内容去重
+        sha256 = ""
+        if ctx.dedup:
+            is_dup, sha256 = ctx.dedup.is_duplicate(data, resource.url)
+            if is_dup:
+                return row_for(
+                    "skipped by dedup",
+                    resource,
+                    "",
+                    content_type,
+                    len(data),
+                    ctx.page_titles,
+                    sha256=sha256,
+                )
+
+        final_prefix = output_prefix_for_resource(args, resource, content_type, ctx.page_titles)
+        final_target = output_path_for_url(
+            resource.url, ctx.output_dir, content_type, prefix=final_prefix
+        )
+        if final_target != target and target.exists():  # pragma: no cover - 仅 resume 场景触发
+            final_target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(target), str(final_target))
+            target = final_target
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not getattr(args, "resume", False) and not stream_to_disk:
+            write_data = data
+            if (
+                getattr(args, "decrypt", False) and HAS_AES
+            ):  # pragma: no cover - pycryptodome 未安装时不可达
+                key_info = get_segment_key(resource.url)
+                if key_info:
+                    try:
+                        write_data = decrypt_aes128(data, key_info[0], key_info[1])
+                        _log.info("decrypted segment: %s", resource.url)
+                    except Exception as exc:
+                        _log.warning("decryption failed for %s: %s", resource.url, exc)
+                        raise ValueError(f"decryption failed, skipped: {resource.url}") from exc
+            target.write_bytes(write_data)
+
+        status = "ok"
+        local_discoveries: list[Resource] = []
+
+        # CSS 资源发现
+        if args.include_css_urls and (
+            "text/css" in content_type or resource.url.lower().endswith(".css")
+        ):
+            css_text = decode_text(data, content_type, args.encoding)
+            for extra in discover_css_resources(css_text, resource.url, resource.page_url):
+                if args.same_domain and not same_domain(
+                    extra.url, args.url
+                ):  # pragma: no cover - 防御性：CSS 资源跨域过滤
+                    continue
+                if is_blocked_url(
+                    extra.url, ctx.block_keywords
+                ):  # pragma: no cover - 防御性：CSS 资源 block 过滤
+                    continue
+                local_discoveries.append(extra)
+
+        # 播放列表展开
+        if (
+            args.expand_playlists
+            and category_for(resource.url, content_type, resource.kind, resource.found_in)
+            == "playlist"
+        ):
+            playlist_text = decode_text(data, content_type, args.encoding)
+            extra_resources, playlist_note = discover_playlist_resources(
+                playlist_text,
+                resource.url,
+                resource.page_url,
+                headers=ctx.headers,
+                timeout=args.timeout,
+                retries=args.retries,
+                decrypt=getattr(args, "decrypt", False),
+            )
+            if playlist_note:  # pragma: no cover - 播放列表 note 极少出现
+                status = f"{status}; {playlist_note}"
+            for extra in extra_resources:
+                if args.same_domain and not same_domain(
+                    extra.url, args.url
+                ):  # pragma: no cover - 防御性：播放列表跨域过滤
+                    continue
+                if is_blocked_url(
+                    extra.url, ctx.block_keywords
+                ):  # pragma: no cover - 防御性：播放列表 block 过滤
+                    continue
+                if args.video_only and not is_video_candidate(
+                    extra
+                ):  # pragma: no cover - 防御性：播放列表 video_only 过滤
+                    continue
+                local_discoveries.append(extra)
+
+        # 线程安全：把新发现的资源加入全局列表
+        if local_discoveries:
+            with ctx.discovery_lock:
+                for extra in local_discoveries:
+                    if extra.url not in ctx.queued_urls:
+                        ctx.queued_urls.add(extra.url)
+                        ctx.new_discoveries.append(extra)
+                        ctx.queue.append(extra)
+
+        manifest_row = row_for(
+            status, resource, str(target), content_type, byte_count, ctx.page_titles, sha256=sha256
+        )
+
+    except Exception as exc:
+        if "cancelled by user" in str(exc):
+            return None  # 取消信号
+        status = f"error: {exc}"
+        manifest_row = row_for(status, resource, "", "", 0, ctx.page_titles)
+
+    return manifest_row
+
+
+def _run_downloads(ctx: _CrawlContext, manifest_rows: list[ManifestRow]) -> bool:
+    """并发下载阶段：线程池消费队列并吸收运行期新发现的资源。
+
+    返回是否被用户取消。
+    """
+    args = ctx.args
+    cancelled = False
+    _log.info("downloading %d resources with %d workers...", len(ctx.queue), args.workers)
+    report_progress(
+        args,
+        phase="resources",
+        total_resources=len(ctx.queue),
+        processed_resources=0,
+        pages_scanned=len(ctx.seen_pages),
+    )
+
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures = {executor.submit(_process_resource, ctx, r): r for r in ctx.queue[:]}
+        index = 0
+        download_queue_size = len(ctx.queue)
+
+        while futures and not cancelled:
+            try:
+                wait_if_paused(args)
+            except RuntimeError:
+                # 暂停期间被取消 → 按取消处理,统一退出码 1
+                _log.info("cancelled by user")
+                cancelled = True
+                break
+            if should_stop(args):
+                for f in futures:
+                    f.cancel()
+                _log.info("cancelled by user")
+                cancelled = True
+                break
+
+            done, _pending = wait(futures.keys(), timeout=0.5, return_when=FIRST_EXCEPTION)
+            for future in done:
+                resource_for_future = futures.pop(future)
+                index += 1
+                ctx.processed_count[0] = index
+                try:
+                    result = future.result()
+                    if result is None:
+                        # worker 检测到取消 → 与主线程取消路径统一：置标志后退出循环
+                        _log.info("cancelled by user")
+                        cancelled = True
+                        break
+                    with ctx.manifest_lock:
+                        manifest_rows.append(result)
+                        _append_jsonl_row(ctx, result)
+                except (
+                    Exception
+                ) as exc:  # pragma: no cover - 防御性：_process_resource 已捕获所有异常
+                    _log.error("unexpected worker error: %s", exc)
+                    with ctx.manifest_lock:
+                        failed_row = row_for(
+                            "error: worker crashed", resource_for_future, "", "", 0, ctx.page_titles
+                        )
+                        manifest_rows.append(failed_row)
+                        _append_jsonl_row(ctx, failed_row)
+
+                report_progress(
+                    args,
+                    phase="download",
+                    current_url=getattr(resource_for_future, "url", ""),
+                    total_resources=download_queue_size,
+                    processed_resources=index,
+                    pages_scanned=len(ctx.seen_pages),
+                )
+
+            # 把运行期新发现的资源加入队列
+            if ctx.new_discoveries and not cancelled:
+                with ctx.discovery_lock:
+                    while ctx.new_discoveries:
+                        r = ctx.new_discoveries.pop(0)
+                        fut = executor.submit(_process_resource, ctx, r)
+                        futures[fut] = r
+                        download_queue_size += 1
+    return cancelled
+
+
+def _post_pause_check(args: argparse.Namespace) -> bool:
+    """后处理阶段入口的暂停/取消检查：暂停会阻塞到恢复；取消（含暂停中取消）返回 True。"""
+    try:
+        wait_if_paused(args)
+    except RuntimeError:
+        pass  # 暂停期间取消 → should_stop 为 True,由返回值统一处理
+    return should_stop(args)
+
+
+def _post_process(
+    ctx: _CrawlContext,
+    manifest_rows: list[ManifestRow],
+    crawl_start_time: float,
+    report_config: dict[str, object],
+    *,
+    cancelled: bool,
+) -> tuple[int, int]:
+    """后处理阶段：离线 HTML 重写、各类清单、智能/文本抽取与运行报告。
+
+    每个阶段入口检查取消标志（含后处理期间新到达的取消请求），取消后
+    跳过剩余耗时步骤。返回 ``(video_count, failed_count)``。
+    """
+    args = ctx.args
+    output_dir = ctx.output_dir
+
+    if cancelled or should_stop(args):
+        _log.info("crawl cancelled; skipping post-processing")
+        return 0, 0
+
+    # 每个后处理阶段独立 try/except：单步失败仅记 warning，保证清单与报告尽量生成
+    if args.rewrite_html and not _post_pause_check(args):
+        try:
+            for page_url, html in ctx.page_html.items():
+                rewritten = rewrite_html(html, manifest_rows, page_url, output_dir)
+                if getattr(args, "strip_overlays", False):
+                    rewritten = strip_page_overlays(rewritten)
+                rewritten_path = output_path_for_url(
+                    page_url, output_dir, "text/html", prefix="offline_pages"
+                )
+                rewritten_path = rewritten_path.with_suffix(".html")
+                rewritten_path.parent.mkdir(parents=True, exist_ok=True)
+                rewritten_path.write_text(rewritten, encoding="utf-8")
+        except Exception as exc:
+            _log.warning("offline HTML rewrite failed: %s", exc)
+
+    try:
+        write_manifests(output_dir, manifest_rows)
+    except Exception as exc:
+        _log.warning("failed to write manifests: %s", exc)
+    video_count = 0
+    failed_count = 0
+    if not _post_pause_check(args):
+        try:
+            video_count = write_video_manifests(output_dir, manifest_rows) if args.video_mode else 0
+            failed_count = write_failed_manifests(output_dir, manifest_rows)
+        except Exception as exc:
+            _log.warning("failed to write video/failed manifests: %s", exc)
+
+    # 智能数据抽取
+    if getattr(args, "smart_extract", False) and not _post_pause_check(args):
+        try:
+            extracted_data: list[dict[str, object]] = []
+            for page_url, html in ctx.page_html.items():
+                extracted_data.append(smart_extract(html, page_url))
+            if extracted_data:
+                write_extracted_data(output_dir, extracted_data)
+        except Exception as exc:
+            _log.warning("smart extraction failed: %s", exc)
+
+    # 正文抽取
+    if getattr(args, "extract_text", False) and not _post_pause_check(args):
+        try:
+            text_dir = output_dir / "extracted_text"
+            text_dir.mkdir(parents=True, exist_ok=True)
+            count = 0
+            for page_url, html in ctx.page_html.items():
+                text = extract_readable_text(html)
+                if not text:
+                    continue
+                name = urlparse(page_url).path.strip("/").replace("/", "_") or "index"
+                (text_dir / f"{name}.txt").write_text(text, encoding="utf-8")
+                count += 1
+            _log.info("extracted text: %d pages -> %s", count, text_dir)
+        except Exception as exc:
+            _log.warning("text extraction failed: %s", exc)
+
+    if not _post_pause_check(args):
+        try:
+            write_summary(
+                output_dir,
+                manifest_rows,
+                len(ctx.seen_pages),
+                start_time=crawl_start_time,
+                end_time=time.time(),
+                config=report_config,
+            )
+            write_run_report(
+                output_dir,
+                manifest_rows,
+                len(ctx.seen_pages),
+                start_time=crawl_start_time,
+                end_time=time.time(),
+                config=report_config,
+            )
+        except Exception as exc:
+            _log.warning("failed to write run report: %s", exc)
+
+    # JSONL 清单已在下载阶段逐条追加；此处仅收尾 flush/关闭
+    if ctx.jsonl_file is not None:
+        try:
+            ctx.jsonl_file.flush()
+            ctx.jsonl_file.close()
+        except OSError as _jsonl_err:
+            _log.warning("failed to finalize JSONL manifest: %s", _jsonl_err)
+
+    # 成功完成后清除续跑状态
+    if getattr(args, "resume_crawl", False) and not _post_pause_check(args):
+        try:
+            clear_crawl_state(output_dir)
+            _log.info("crawl state cleared")
+        except Exception as exc:
+            _log.warning("failed to clear crawl state: %s", exc)
+
+    return video_count, failed_count
+
+
+def _log_crawl_summary(
+    ctx: _CrawlContext,
+    manifest_rows: list[ManifestRow],
+    resources: list[Resource],
+    crawl_start_time: float,
+    cancelled: bool,
+    video_count: int,
+    failed_count: int,
+) -> None:
+    """打印本次运行汇总：页数 / 下载 / 去重 / 失败 / 时长与产物路径。"""
+    args = ctx.args
+    output_dir = ctx.output_dir
+    ok_count = sum(1 for row in manifest_rows if row.status.startswith("ok"))
+    dedup_count = sum(1 for row in manifest_rows if "dedup" in row.status)
+    total_bytes = sum(row.bytes for row in manifest_rows if row.status == "ok")
+
+    _log.info("")
+    _log.info("Pages scanned:       %d", len(ctx.seen_pages))
+    _log.info("Resources found:     %d", len(resources))
+    _log.info("Downloaded:          %d (%s)", ok_count, _format_bytes(total_bytes))
+    _log.info("Deduplicated:        %d", dedup_count)
+    _log.info("Failed:              %d", failed_count)
+    _log.info("Duration:            %s", format_duration(time.time() - crawl_start_time))
+    _log.info("Output:              %s", output_dir)
+    if not (cancelled or should_stop(args)):
+        _log.info("CSV manifest:        %s", output_dir / "resources_manifest.csv")
+        _log.info("JSON manifest:       %s", output_dir / "resources_manifest.json")
+        _log.info("Summary:             %s", output_dir / "summary.txt")
+        _log.info("Run report (JSON):   %s", output_dir / "run_report.json")
+        _log.info("Run report (MD):     %s", output_dir / "run_report.md")
+        _log.info("Run report (HTML):   %s", output_dir / "run_report.html")
+        if args.video_mode:
+            _log.info("Video resources:     %d", video_count)
 
 
 def crawl(args: argparse.Namespace) -> int:
+    """应用层爬取主流程：页面扫描 → 资源过滤 → 并发下载 → 后处理与报告。"""
     crawl_start_time = time.time()
     report_config: dict[str, object] = {
         "url": getattr(args, "url", ""),
@@ -701,168 +1305,23 @@ def crawl(args: argparse.Namespace) -> int:
     output_dir = Path(args.out).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    max_bytes = args.max_bytes if args.max_bytes > 0 else None
-    block_keywords = parse_block_keywords(args.block_keyword)
-    robots = make_robots_parser(args.url, headers, args.timeout) if args.respect_robots else None
-    rate_limiter = DomainRateLimiter(default_delay=max(0.0, args.delay))
-    dedup = ContentDedup() if args.dedup else None
+    ctx = _CrawlContext(
+        args=args,
+        headers=headers,
+        output_dir=output_dir,
+        max_bytes=args.max_bytes if args.max_bytes > 0 else None,
+        block_keywords=parse_block_keywords(args.block_keyword),
+        robots=make_robots_parser(args.url, headers, args.timeout) if args.respect_robots else None,
+        rate_limiter=DomainRateLimiter(default_delay=max(0.0, args.delay)),
+        dedup=ContentDedup() if args.dedup else None,
+    )
 
-    # ── Page discovery ──
-    page_queue: deque[str] = deque()
-    seen_pages: set[str] = set()
+    # ── 页面发现与扫描 ──
+    _seed_page_queue(ctx)
+    _restore_state(ctx)
+    cancelled = _scan_pages(ctx)
 
-    # Start with the --url
-    root_url = normalize_url(args.url)
-    if root_url:
-        page_queue.append(root_url)
-
-    # Sitemap discovery
-    if args.sitemap:
-        parsed = urlparse(args.url)
-        sitemap_url = f"{parsed.scheme}://{parsed.netloc}/sitemap.xml"
-        _log.info("discovering pages from %s", sitemap_url)
-        sitemap_urls = discover_sitemap_urls(sitemap_url, headers, args.timeout)
-        for su in sitemap_urls:
-            if su not in seen_pages and su not in page_queue:
-                if args.same_domain and not same_domain(su, args.url):
-                    continue
-                if is_blocked_url(su, block_keywords):
-                    continue
-                page_queue.append(su)
-
-    all_resources: list[Resource] = []
-    page_html: dict[str, str] = {}
-    page_titles: dict[str, str] = {}
-
-    # ── Resume from saved state? ──
-    if getattr(args, "resume_crawl", False):
-        saved = load_crawl_state(output_dir)
-        if saved:
-            page_queue = deque(saved.get("page_queue", []))
-            seen_pages = set(saved.get("seen_pages", []))
-            page_titles = {k: str(v) for k, v in saved.get("page_titles", {}).items()}
-            for rdict in saved.get("resources", []):
-                all_resources.append(Resource(**rdict))
-            if dedup and saved.get("sha256_set"):
-                for h in saved["sha256_set"]:
-                    dedup.mark_hash_seen(str(h))
-            _log.info(
-                "resumed: %d pages seen, %d pages queued, %d resources, %d dedup hashes",
-                len(seen_pages),
-                len(page_queue),
-                len(all_resources),
-                dedup.seen_count() if dedup else 0,
-            )
-        else:
-            _log.info("no saved state found, starting fresh")
-
-    # ── Scan pages ──
-    cancelled = False  # 统一取消标志：任何阶段触发取消后跳过后续耗时步骤并返回 1
-    while page_queue and len(seen_pages) < args.max_pages:
-        try:
-            wait_if_paused(args)
-        except RuntimeError:
-            # 暂停期间被取消 → wait_for_resume 抛 cancelled,按取消处理而非任务出错
-            _log.info("cancelled by user")
-            cancelled = True
-            break
-        if should_stop(args):
-            _log.info("cancelled before scanning next page")
-            cancelled = True
-            break
-        page_url = page_queue.popleft()
-        if not page_url or page_url in seen_pages:  # pragma: no cover - 防御性：队列已预过滤
-            continue
-        if is_blocked_url(page_url, block_keywords):
-            _log.info("blocked page: %s", page_url)
-            continue
-        if args.same_domain and not same_domain(
-            page_url, args.url
-        ):  # pragma: no cover - 防御性：入队时已过滤
-            continue
-        if robots and not robots.can_fetch(
-            args.user_agent, page_url
-        ):  # pragma: no cover - 防御性：页面 robots 检查
-            _log.info("robots.txt skipped page: %s", page_url)
-            continue
-
-        _log.info("scanning page: %s", page_url)
-        report_progress(
-            args,
-            phase="page",
-            current_url=page_url,
-            pages_scanned=len(seen_pages),
-            total_resources=0,
-            processed_resources=0,
-        )
-        seen_pages.add(page_url)
-        try:
-            data, content_type = fetch(
-                page_url,
-                args.timeout,
-                headers,
-                args.retries,
-                max_bytes,
-                rate_limiter=rate_limiter,
-                control_args=args,
-            )
-        except Exception as exc:
-            _log.warning("page fetch failed: %s", exc)
-            continue
-
-        page_path = output_path_for_url(page_url, output_dir, "text/html", prefix="pages")
-        if not page_path.suffix:  # pragma: no cover - text/html 总是返回带后缀的路径
-            page_path = page_path.with_suffix(".html")
-        page_path.parent.mkdir(parents=True, exist_ok=True)
-        page_path.write_bytes(data)
-
-        html = decode_text(data, content_type, args.encoding)
-        page_html[page_url] = html
-        page_titles[page_url] = extract_title(html)
-        parser = PageParser(page_url)
-        parser.feed(html)
-        all_resources.extend(parser.resources)
-
-        if args.crawl_pages:
-            for link in parser.page_links:
-                if link not in seen_pages and link not in page_queue:
-                    if is_blocked_url(
-                        link, block_keywords
-                    ):  # pragma: no cover - 防御性：资源级 block 检查已在更上层处理
-                        continue
-                    if not args.same_domain or same_domain(link, args.url):
-                        page_queue.append(link)
-
-            # Save crawl state 节流：每 5 页或队列耗尽时保存一次,避免每页全量重写
-            if getattr(args, "resume_crawl", False) and (
-                len(seen_pages) % 5 == 0 or not page_queue
-            ):
-                try:
-                    save_crawl_state(
-                        output_dir,
-                        page_queue=list(page_queue),
-                        seen_pages=list(seen_pages),
-                        page_titles=page_titles,
-                        resources=[asdict(r) for r in all_resources],
-                        sha256_set=dedup.seen_hashes() if dedup else [],
-                    )
-                except Exception as exc:  # pragma: no cover - 防御性：状态保存异常吞掉
-                    _log.warning("failed to save crawl state: %s", exc)
-
-    resources = unique_resources(all_resources)
-    if block_keywords:
-        resources = [r for r in resources if not is_blocked_url(r.url, block_keywords)]
-    if args.same_domain:
-        resources = [r for r in resources if same_domain(r.url, args.url)]
-    if args.video_only:
-        resources = [r for r in resources if is_video_candidate(r)]
-    # URL 正则过滤
-    _include_re = re.compile(args.include_pattern) if args.include_pattern else None
-    _exclude_re = re.compile(args.exclude_pattern) if args.exclude_pattern else None
-    if _include_re:
-        resources = [r for r in resources if _include_re.search(r.url)]
-    if _exclude_re:
-        resources = [r for r in resources if not _exclude_re.search(r.url)]
+    resources = _filter_resources(ctx)
 
     # 阶段入口守卫：页面扫描期间已取消 → 跳过下载阶段与后处理
     if cancelled or should_stop(args):
@@ -875,7 +1334,7 @@ def crawl(args: argparse.Namespace) -> int:
         write_summary(
             output_dir,
             [],
-            len(seen_pages),
+            len(ctx.seen_pages),
             start_time=crawl_start_time,
             end_time=time.time(),
             config=report_config,
@@ -883,411 +1342,41 @@ def crawl(args: argparse.Namespace) -> int:
         write_run_report(
             output_dir,
             [],
-            len(seen_pages),
+            len(ctx.seen_pages),
             start_time=crawl_start_time,
             end_time=time.time(),
             config=report_config,
         )
         return 0
 
-    # ── Download phase (concurrent) ──
-    manifest_rows: list[ManifestRow] = []
-    manifest_lock = threading.Lock()
-    queue = list(resources)
-    queued_urls = {r.url for r in queue}
+    # ── 下载阶段（并发）──
+    ctx.queue = list(resources)
+    ctx.queued_urls = {r.url for r in ctx.queue}
 
     # JSONL 实时清单：每下载完成一个资源立即追加一行（供监控/断点查看），
     # 打开失败（磁盘满等）降级为仅内存收集，不影响抓取
     jsonl_path = output_dir / "resources_manifest.jsonl"
     try:
-        jsonl_file = jsonl_path.open("w", encoding="utf-8")
+        ctx.jsonl_file = jsonl_path.open("w", encoding="utf-8")
     except OSError as exc:
         _log.warning("failed to open JSONL manifest: %s", exc)
-        jsonl_file = None
 
-    def _append_jsonl(row: ManifestRow) -> None:
-        """best-effort 逐条写 JSONL；失败仅记一次 warning，不影响主流程。"""
-        if jsonl_file is None:
-            return
-        try:
-            jsonl_file.write(json.dumps(asdict(row), ensure_ascii=False) + "\n")
-        except OSError as exc:
-            _log.warning("failed to write JSONL manifest: %s", exc)
+    manifest_rows: list[ManifestRow] = []
+    cancelled = _run_downloads(ctx, manifest_rows) or cancelled
 
-    _log.info("downloading %d resources with %d workers...", len(queue), args.workers)
-    report_progress(
-        args,
-        phase="resources",
-        total_resources=len(queue),
-        processed_resources=0,
-        pages_scanned=len(seen_pages),
+    # ── 后处理 ──
+    video_count, failed_count = _post_process(
+        ctx, manifest_rows, crawl_start_time, report_config, cancelled=cancelled
     )
-
-    processed_count = [0]
-    new_discoveries: list[Resource] = []
-    discovery_lock = threading.Lock()
-
-    def process_one(resource: Resource) -> ManifestRow | None:
-        if robots and not robots.can_fetch(args.user_agent, resource.url):
-            return row_for("skipped by robots.txt", resource, "", "", 0, page_titles)
-
-        _log.debug("[%d/%d] %s", processed_count[0] + 1, len(queue), resource.url)
-
-        if args.list_only:
-            report_progress(
-                args,
-                phase="download",
-                current_url=resource.url,
-                total_resources=len(queue),
-                processed_resources=processed_count[0] + 1,
-                pages_scanned=len(seen_pages),
-            )
-            return row_for("listed only", resource, "", "", 0, page_titles)
-
-        try:
-            initial_prefix = output_prefix_for_resource(args, resource, "", page_titles)
-            target = output_path_for_url(resource.url, output_dir, "", prefix=initial_prefix)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            # 需要完整内容（去重/解密/CSS 解析/播放清单展开）时走内存路径;
-            # 否则流式写入 .part 临时文件,避免大文件整包驻留内存（fetch 返回 b""）
-            needs_content = (
-                bool(dedup)
-                or (getattr(args, "decrypt", False) and HAS_AES)
-                or bool(args.include_css_urls)
-                or bool(args.expand_playlists)
-            )
-            stream_to_disk = not getattr(args, "resume", False) and not needs_content
-            data, content_type = fetch(
-                resource.url,
-                args.timeout,
-                headers,
-                args.retries,
-                max_bytes,
-                resume_path=target if (getattr(args, "resume", False) or stream_to_disk) else None,
-                rate_limiter=rate_limiter,
-                control_args=args,
-            )
-            byte_count = (
-                target.stat().st_size if (stream_to_disk and target.exists()) else len(data)
-            )
-
-            # Content deduplication
-            sha256 = ""
-            if dedup:
-                is_dup, sha256 = dedup.is_duplicate(data, resource.url)
-                if is_dup:
-                    return row_for(
-                        "skipped by dedup",
-                        resource,
-                        "",
-                        content_type,
-                        len(data),
-                        page_titles,
-                        sha256=sha256,
-                    )
-
-            final_prefix = output_prefix_for_resource(args, resource, content_type, page_titles)
-            final_target = output_path_for_url(
-                resource.url, output_dir, content_type, prefix=final_prefix
-            )
-            if final_target != target and target.exists():  # pragma: no cover - 仅 resume 场景触发
-                final_target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(target), str(final_target))
-                target = final_target
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if not getattr(args, "resume", False) and not stream_to_disk:
-                write_data = data
-                if (
-                    getattr(args, "decrypt", False) and HAS_AES
-                ):  # pragma: no cover - pycryptodome 未安装时不可达
-                    key_info = get_segment_key(resource.url)
-                    if key_info:
-                        try:
-                            write_data = decrypt_aes128(data, key_info[0], key_info[1])
-                            _log.info("decrypted segment: %s", resource.url)
-                        except Exception as exc:
-                            _log.warning("decryption failed for %s: %s", resource.url, exc)
-                            raise ValueError(f"decryption failed, skipped: {resource.url}") from exc
-                target.write_bytes(write_data)
-
-            status = "ok"
-            local_discoveries: list[Resource] = []
-
-            # CSS resource discovery
-            if args.include_css_urls and (
-                "text/css" in content_type or resource.url.lower().endswith(".css")
-            ):
-                css_text = decode_text(data, content_type, args.encoding)
-                for extra in discover_css_resources(css_text, resource.url, resource.page_url):
-                    if args.same_domain and not same_domain(
-                        extra.url, args.url
-                    ):  # pragma: no cover - 防御性：CSS 资源跨域过滤
-                        continue
-                    if is_blocked_url(
-                        extra.url, block_keywords
-                    ):  # pragma: no cover - 防御性：CSS 资源 block 过滤
-                        continue
-                    local_discoveries.append(extra)
-
-            # Playlist expansion
-            if (
-                args.expand_playlists
-                and category_for(resource.url, content_type, resource.kind, resource.found_in)
-                == "playlist"
-            ):
-                playlist_text = decode_text(data, content_type, args.encoding)
-                extra_resources, playlist_note = discover_playlist_resources(
-                    playlist_text,
-                    resource.url,
-                    resource.page_url,
-                    headers=headers,
-                    timeout=args.timeout,
-                    retries=args.retries,
-                    decrypt=getattr(args, "decrypt", False),
-                )
-                if playlist_note:  # pragma: no cover - 播放列表 note 极少出现
-                    status = f"{status}; {playlist_note}"
-                for extra in extra_resources:
-                    if args.same_domain and not same_domain(
-                        extra.url, args.url
-                    ):  # pragma: no cover - 防御性：播放列表跨域过滤
-                        continue
-                    if is_blocked_url(
-                        extra.url, block_keywords
-                    ):  # pragma: no cover - 防御性：播放列表 block 过滤
-                        continue
-                    if args.video_only and not is_video_candidate(
-                        extra
-                    ):  # pragma: no cover - 防御性：播放列表 video_only 过滤
-                        continue
-                    local_discoveries.append(extra)
-
-            # Thread-safe: add discoveries to global list
-            if local_discoveries:
-                with discovery_lock:
-                    for extra in local_discoveries:
-                        if extra.url not in queued_urls:
-                            queued_urls.add(extra.url)
-                            new_discoveries.append(extra)
-                            queue.append(extra)
-
-            manifest_row = row_for(
-                status, resource, str(target), content_type, byte_count, page_titles, sha256=sha256
-            )
-
-        except Exception as exc:
-            if "cancelled by user" in str(exc):
-                return None  # signal cancellation
-            target = Path("")
-            content_type = ""
-            data = b""
-            status = f"error: {exc}"
-            manifest_row = row_for(status, resource, "", content_type, 0, page_titles)
-
-        return manifest_row
-
-    # Concurrent download loop
-    with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = {executor.submit(process_one, r): r for r in queue[:]}
-        index = 0
-        download_queue_size = len(queue)
-
-        while futures and not cancelled:
-            try:
-                wait_if_paused(args)
-            except RuntimeError:
-                # 暂停期间被取消 → 按取消处理,统一退出码 1
-                _log.info("cancelled by user")
-                cancelled = True
-                break
-            if should_stop(args):
-                for f in futures:
-                    f.cancel()
-                _log.info("cancelled by user")
-                cancelled = True
-                break
-
-            done, _pending = wait(futures.keys(), timeout=0.5, return_when=FIRST_EXCEPTION)
-            for future in done:
-                resource_for_future = futures.pop(future)
-                index += 1
-                processed_count[0] = index
-                try:
-                    result = future.result()
-                    if result is None:
-                        # worker 检测到取消 → 与主线程取消路径统一：置标志后退出循环
-                        _log.info("cancelled by user")
-                        cancelled = True
-                        break
-                    with manifest_lock:
-                        manifest_rows.append(result)
-                        _append_jsonl(result)
-                except Exception as exc:  # pragma: no cover - 防御性：process_one 已捕获所有异常
-                    _log.error("unexpected worker error: %s", exc)
-                    with manifest_lock:
-                        failed_row = row_for(
-                            "error: worker crashed", resource_for_future, "", "", 0, page_titles
-                        )
-                        manifest_rows.append(failed_row)
-                        _append_jsonl(failed_row)
-
-                report_progress(
-                    args,
-                    phase="download",
-                    current_url=getattr(resource_for_future, "url", ""),
-                    total_resources=download_queue_size,
-                    processed_resources=index,
-                    pages_scanned=len(seen_pages),
-                )
-
-            # Add newly discovered resources
-            if new_discoveries and not cancelled:
-                with discovery_lock:
-                    while new_discoveries:
-                        r = new_discoveries.pop(0)
-                        fut = executor.submit(process_one, r)
-                        futures[fut] = r
-                        download_queue_size += 1
-
-    # ── Post-processing ──
-    # 每个阶段入口检查取消标志（含后处理期间新到达的取消请求），取消后跳过剩余耗时步骤
-
-    def _post_pause_check() -> bool:
-        """后处理阶段入口的暂停/取消检查：暂停会阻塞到恢复；取消（含暂停中取消）返回 True。"""
-        try:
-            wait_if_paused(args)
-        except RuntimeError:
-            pass  # 暂停期间取消 → should_stop 为 True,由返回值统一处理
-        return should_stop(args)
-
-    if cancelled or should_stop(args):
-        _log.info("crawl cancelled; skipping post-processing")
-        video_count = 0
-        failed_count = 0
-    else:
-        # 每个后处理阶段独立 try/except：单步失败仅记 warning，保证清单与报告尽量生成
-        if args.rewrite_html and not _post_pause_check():
-            try:
-                for page_url, html in page_html.items():
-                    rewritten = rewrite_html(html, manifest_rows, page_url, output_dir)
-                    if getattr(args, "strip_overlays", False):
-                        rewritten = strip_page_overlays(rewritten)
-                    rewritten_path = output_path_for_url(
-                        page_url, output_dir, "text/html", prefix="offline_pages"
-                    )
-                    rewritten_path = rewritten_path.with_suffix(".html")
-                    rewritten_path.parent.mkdir(parents=True, exist_ok=True)
-                    rewritten_path.write_text(rewritten, encoding="utf-8")
-            except Exception as exc:
-                _log.warning("offline HTML rewrite failed: %s", exc)
-
-        try:
-            write_manifests(output_dir, manifest_rows)
-        except Exception as exc:
-            _log.warning("failed to write manifests: %s", exc)
-        video_count = 0
-        failed_count = 0
-        if not _post_pause_check():
-            try:
-                video_count = (
-                    write_video_manifests(output_dir, manifest_rows) if args.video_mode else 0
-                )
-                failed_count = write_failed_manifests(output_dir, manifest_rows)
-            except Exception as exc:
-                _log.warning("failed to write video/failed manifests: %s", exc)
-
-        # Smart data extraction
-        if getattr(args, "smart_extract", False) and not _post_pause_check():
-            try:
-                extracted_data: list[dict[str, object]] = []
-                for page_url, html in page_html.items():
-                    extracted_data.append(smart_extract(html, page_url))
-                if extracted_data:
-                    write_extracted_data(output_dir, extracted_data)
-            except Exception as exc:
-                _log.warning("smart extraction failed: %s", exc)
-
-        # Readable text extraction
-        if getattr(args, "extract_text", False) and not _post_pause_check():
-            try:
-                text_dir = output_dir / "extracted_text"
-                text_dir.mkdir(parents=True, exist_ok=True)
-                count = 0
-                for page_url, html in page_html.items():
-                    text = extract_readable_text(html)
-                    if not text:
-                        continue
-                    name = urlparse(page_url).path.strip("/").replace("/", "_") or "index"
-                    (text_dir / f"{name}.txt").write_text(text, encoding="utf-8")
-                    count += 1
-                _log.info("extracted text: %d pages -> %s", count, text_dir)
-            except Exception as exc:
-                _log.warning("text extraction failed: %s", exc)
-
-        if not _post_pause_check():
-            try:
-                write_summary(
-                    output_dir,
-                    manifest_rows,
-                    len(seen_pages),
-                    start_time=crawl_start_time,
-                    end_time=time.time(),
-                    config=report_config,
-                )
-                write_run_report(
-                    output_dir,
-                    manifest_rows,
-                    len(seen_pages),
-                    start_time=crawl_start_time,
-                    end_time=time.time(),
-                    config=report_config,
-                )
-            except Exception as exc:
-                _log.warning("failed to write run report: %s", exc)
-
-        # JSONL 清单已在下载阶段逐条追加；此处仅收尾 flush/关闭
-        if jsonl_file is not None:
-            try:
-                jsonl_file.flush()
-                jsonl_file.close()
-            except OSError as _jsonl_err:
-                _log.warning("failed to finalize JSONL manifest: %s", _jsonl_err)
-
-        # Clear resume state on successful completion
-        if getattr(args, "resume_crawl", False) and not _post_pause_check():
-            try:
-                clear_crawl_state(output_dir)
-                _log.info("crawl state cleared")
-            except Exception as exc:
-                _log.warning("failed to clear crawl state: %s", exc)
-
-    ok_count = sum(1 for row in manifest_rows if row.status.startswith("ok"))
-    dedup_count = sum(1 for row in manifest_rows if "dedup" in row.status)
-    total_bytes = sum(row.bytes for row in manifest_rows if row.status == "ok")
-
-    _log.info("")
-    _log.info("Pages scanned:       %d", len(seen_pages))
-    _log.info("Resources found:     %d", len(resources))
-    _log.info("Downloaded:          %d (%s)", ok_count, _format_bytes(total_bytes))
-    _log.info("Deduplicated:        %d", dedup_count)
-    _log.info("Failed:              %d", failed_count)
-    _log.info("Duration:            %s", format_duration(time.time() - crawl_start_time))
-    _log.info("Output:              %s", output_dir)
-    if not (cancelled or should_stop(args)):
-        _log.info("CSV manifest:        %s", output_dir / "resources_manifest.csv")
-        _log.info("JSON manifest:       %s", output_dir / "resources_manifest.json")
-        _log.info("Summary:             %s", output_dir / "summary.txt")
-        _log.info("Run report (JSON):   %s", output_dir / "run_report.json")
-        _log.info("Run report (MD):     %s", output_dir / "run_report.md")
-        _log.info("Run report (HTML):   %s", output_dir / "run_report.html")
-        if args.video_mode:
-            _log.info("Video resources:     %d", video_count)
+    _log_crawl_summary(
+        ctx, manifest_rows, resources, crawl_start_time, cancelled, video_count, failed_count
+    )
 
     # 统一退出码：0 成功 / 1 用户取消 / 2 参数错误
     return 1 if (cancelled or should_stop(args)) else 0
 
 
-# ── CLI parser ────────────────────────────────────────────────────────────
+# ── CLI 解析器 ────────────────────────────────────────────────────────
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1434,17 +1523,17 @@ Examples:
     return parser
 
 
-# ── Entry point ───────────────────────────────────────────────────────────
+# ── 入口 ───────────────────────────────────────────────────────────
 
 
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    # Config save/load
+    # 配置保存/加载
     if args.load_config:
         config = load_config_from_file(args.load_config)
-        # Override with CLI arguments if provided
+        # CLI 显式提供的参数覆盖配置文件
         for key, value in vars(args).items():
             if key == "load_config":
                 continue

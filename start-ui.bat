@@ -31,7 +31,7 @@ set "PY_CMD=python"
 
 :execute
 echo Using Python: %PY_CMD%
-%PY_CMD% -m app.ui --open
+%PY_CMD% -m web_crawler.app.ui --open
 set "EXIT_CODE=%errorlevel%"
 
 :done

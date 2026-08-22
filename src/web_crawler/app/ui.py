@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local web UI for crawler.py."""
+"""crawler.py 的本地 Web UI。"""
 
 from __future__ import annotations
 
@@ -204,7 +204,7 @@ class ReverseJobState:
     target_params: list[str] = field(default_factory=list)
     target_params_found: dict[str, str] = field(default_factory=dict)
 
-    # Checkpoints
+    # Checkpoint 列表
     checkpoints: list[dict] = field(default_factory=list)
 
     # 最终结果
@@ -365,7 +365,7 @@ class JobLogHandler(logging.Handler):
             self.handleError(record)
 
 
-# 前端页面模板：独立文件便于维护（app/static/index.html），运行时读取。
+# 前端页面模板：独立文件便于维护（web_crawler/app/static/index.html），运行时读取。
 # 模板含 {block_keywords} 占位符，由 do_GET 在响应时替换。
 _PAGE_TEMPLATE_PATH = Path(__file__).resolve().parent / "static" / "index.html"
 
@@ -377,7 +377,7 @@ def _load_page_template() -> str:
     except OSError:  # pragma: no cover - 仅打包缺失时触发
         return (
             "<!doctype html><html><body>"
-            "<h1>模板缺失</h1><p>缺少 app/static/index.html，请重新安装。</p>"
+            "<h1>模板缺失</h1><p>缺少 web_crawler/app/static/index.html，请重新安装。</p>"
             "</body></html>"
         )
 

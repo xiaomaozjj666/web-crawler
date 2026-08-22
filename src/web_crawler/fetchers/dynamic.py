@@ -1,16 +1,14 @@
-"""JavaScript-rendering fetcher backed by Playwright.
+"""基于 Playwright 的 JavaScript 渲染 fetcher。
 
-Aligns with Scrapling's ``DynamicFetcher``: renders pages with a real headless
-Chromium so JavaScript-heavy sites can be scraped. A single browser instance is
-reused across fetches for performance, while a fresh browser context is created
-per fetch to avoid cookie/state leakage between requests.
+对齐 Scrapling 的 ``DynamicFetcher``：用真实 headless Chromium 渲染页面，
+从而能够抓取重 JavaScript 的站点。单个浏览器实例跨多次抓取复用以提升
+性能，而每次抓取创建全新的浏览器 context，避免请求间 cookie/状态泄漏。
 
-The class exposes small protected hook methods (``_setup_page``,
-``_post_load``) so the stealthy subclass can inject stealth scripts and
-humanized behavior without duplicating the rendering flow.
+类暴露了少量受保护的钩子方法（``_setup_page``、``_post_load``），隐身子类
+可以借此注入隐身脚本与拟人行为，而无需复制渲染流程。
 
-PixelRAG-inspired: ``screenshot_tiles()`` renders a page and slices it into
-fixed-height screenshot tiles, ready for visual embedding or VLM extraction.
+受 PixelRAG 启发：``screenshot_tiles()`` 渲染页面并切成固定高度的截图分块，
+可直接用于视觉嵌入或 VLM 抽取。
 """
 
 from __future__ import annotations
@@ -45,27 +43,27 @@ _BLOCKED_RESOURCE_TYPES: tuple[str, ...] = ("image", "media", "font", "styleshee
 
 
 class DynamicFetcher(BaseFetcher):
-    """Playwright-backed fetcher that renders JavaScript before returning HTML.
+    """基于 Playwright 的 fetcher，先渲染 JavaScript 再返回 HTML。
 
     Parameters
     ----------
     headless:
-        Run Chromium in headless mode.
+        以 headless 模式运行 Chromium。
     block_images:
-        Abort image requests to speed up rendering.
+        中止图片请求以加速渲染。
     disable_resources:
-        Abort image/media/font/stylesheet requests for maximum speed.
+        中止图片/媒体/字体/样式表请求，追求最快速度。
     wait_selector:
-        Optional CSS selector to wait for after navigation.
+        可选的 CSS 选择器，导航完成后等待其出现。
     wait_timeout:
-        Timeout (seconds) for ``wait_selector`` and ``networkidle`` waits.
+        ``wait_selector`` 与 ``networkidle`` 等待的超时时间（秒）。
     network_idle:
-        Wait for the ``networkidle`` load state after navigation.
+        导航后等待 ``networkidle`` 加载状态。
     page_action:
-        Callback invoked with the Playwright ``Page`` after load, allowing
-        custom interactions (scroll, click, …) before the HTML is captured.
+        页面加载后以 Playwright ``Page`` 为参数调用的回调，可在截取 HTML
+        前执行自定义交互（滚动、点击等）。
     google_search:
-        Set the referer to ``https://www.google.com/`` to disguise traffic source.
+        将 referer 设为 ``https://www.google.com/``，伪装流量来源。
     """
 
     def __init__(
@@ -116,9 +114,9 @@ class DynamicFetcher(BaseFetcher):
         self._async_pw: Any = None
         self._async_browser: Any = None
 
-    # -- proxy / resource helpers -------------------------------------------
+    # -- 代理 / 资源辅助 ------------------------------------------------------
     def _parse_proxy(self, proxy: str | None) -> dict[str, str] | None:
-        """Convert a proxy URL into Playwright's ``ProxySettings`` dict."""
+        """把代理 URL 转换为 Playwright 的 ``ProxySettings`` 字典。"""
         if not proxy:
             return None
         # 无 scheme 的代理 URL 默认按 http 处理；IPv6 地址需补方括号
@@ -178,17 +176,17 @@ class DynamicFetcher(BaseFetcher):
 
         return handler
 
-    # -- rendering hooks (overridden by StealthyFetcher) --------------------
+    # -- 渲染钩子（由 StealthyFetcher 覆写） ----------------------------------
     def _setup_page(self, page: Any) -> None:
-        """Hook: configure the page before navigation (route blocking)."""
+        """钩子：导航前配置页面（路由拦截）。"""
         blocked = self._blocked_types()
         if blocked:
             page.route("**/*", self._make_route_handler(blocked))
 
     def _post_load(self, page: Any) -> None:
-        """Hook: interact with the page after navigation (no-op by default)."""
+        """钩子：导航后与页面交互（默认空实现）。"""
 
-    # -- synchronous browser lifecycle --------------------------------------
+    # -- 同步浏览器生命周期 ---------------------------------------------------
     def _ensure_browser(self) -> Any:
         from playwright.sync_api import sync_playwright
 
@@ -238,7 +236,7 @@ class DynamicFetcher(BaseFetcher):
             context.close()
 
     def fetch(self, url: str, **kwargs: Any) -> Any:
-        """Render ``url`` with a headless browser and return a :class:`Response`."""
+        """用 headless 浏览器渲染 ``url`` 并返回 :class:`Response`。"""
         self._validate_target(url)
         browser = self._ensure_browser()
         proxy = self._resolve_proxy()
@@ -256,7 +254,7 @@ class DynamicFetcher(BaseFetcher):
         """
         return self.fetch(url, **kwargs)
 
-    # -- asynchronous browser lifecycle -------------------------------------
+    # -- 异步浏览器生命周期 ---------------------------------------------------
     async def _ensure_async_browser(self) -> Any:
         from playwright.async_api import async_playwright
 
@@ -266,13 +264,13 @@ class DynamicFetcher(BaseFetcher):
         return self._async_browser
 
     async def _setup_page_async(self, page: Any) -> None:
-        """Async hook: configure the page before navigation (route blocking)."""
+        """异步钩子：导航前配置页面（路由拦截）。"""
         blocked = self._blocked_types()
         if blocked:
             await page.route("**/*", self._make_route_handler(blocked))
 
     async def _post_load_async(self, page: Any) -> None:
-        """Async hook: interact with the page after navigation (no-op by default)."""
+        """异步钩子：导航后与页面交互（默认空实现）。"""
 
     async def _render_page_async(self, browser: Any, url: str, proxy_settings: Any) -> Any:
         from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -314,7 +312,7 @@ class DynamicFetcher(BaseFetcher):
             await context.close()
 
     async def async_fetch(self, url: str, **kwargs: Any) -> Any:
-        """Asynchronously render ``url`` and return a :class:`Response`."""
+        """异步渲染 ``url`` 并返回 :class:`Response`。"""
         self._validate_target(url)
         browser = await self._ensure_async_browser()
         proxy = self._resolve_proxy()
@@ -328,7 +326,7 @@ class DynamicFetcher(BaseFetcher):
         """``async_fetch`` 的动词统一别名（见 :meth:`get`）。"""
         return await self.async_fetch(url, **kwargs)
 
-    # -- screenshot tiling (PixelRAG-style) ----------------------------------
+    # -- 截图分块（PixelRAG 风格） --------------------------------------------
 
     def screenshot_tiles(
         self,
@@ -340,24 +338,23 @@ class DynamicFetcher(BaseFetcher):
         quality: int = 80,
         max_tiles: int = 50,
     ) -> list[dict[str, Any]]:
-        """Render ``url`` and slice the full page into fixed-height screenshot tiles.
+        """渲染 ``url`` 并把整页切成固定高度的截图分块。
 
-        PixelRAG-style visual chunking: instead of extracting text from HTML,
-        capture the rendered page as screenshot tiles that can be fed directly
-        to a vision-language model for content extraction or visual embedding.
+        PixelRAG 风格的视觉分块：不从 HTML 提取文本，而是把渲染后的页面
+        截取为分块，可直接送入视觉语言模型做内容抽取或视觉嵌入。
 
         Parameters
         ----------
         url:
-            The page URL to render and screenshot.
+            要渲染并截图的页面 URL。
         tile_height:
-            Height of each tile in CSS pixels (default 1024, matching PixelRAG).
+            每个分块的高度（CSS 像素，默认 1024，与 PixelRAG 一致）。
         viewport_width:
-            Browser viewport width in CSS pixels (default 875, matching PixelRAG).
+            浏览器视口宽度（CSS 像素，默认 875，与 PixelRAG 一致）。
         format:
-            Screenshot image format: ``"png"`` or ``"jpeg"``.
+            截图图片格式：``"png"`` 或 ``"jpeg"``。
         quality:
-            JPEG quality (1-100), ignored for PNG.
+            JPEG 质量（1-100），PNG 时忽略。
         max_tiles:
             单次调用最多生成的截图片数上限（防御超长页面/无限滚动导致的
             内存与耗时失控）；超过上限时截断并发出 RuntimeWarning。
@@ -365,8 +362,8 @@ class DynamicFetcher(BaseFetcher):
         Returns
         -------
         list[dict]
-            Each tile as ``{index, total, b64: str, width, height}`` where
-            ``b64`` is a base64-encoded image string suitable for VLM input.
+            每个分块形如 ``{index, total, b64: str, width, height}``，
+            其中 ``b64`` 是适合 VLM 输入的 base64 图片字符串。
         """
         self._validate_target(url)
         browser = self._ensure_browser()
@@ -400,7 +397,7 @@ class DynamicFetcher(BaseFetcher):
                 except PlaywrightTimeoutError:
                     pass
 
-            # Get full page dimensions
+            # 获取整页尺寸
             dims: dict[str, float] = page.evaluate("""() => ({
                 width: Math.max(
                     document.documentElement.scrollWidth,
@@ -465,7 +462,7 @@ class DynamicFetcher(BaseFetcher):
         quality: int = 80,
         max_tiles: int = 50,
     ) -> list[dict[str, Any]]:
-        """Async version of :meth:`screenshot_tiles`."""
+        """异步版 :meth:`screenshot_tiles`。"""
         self._validate_target(url)
         browser = await self._ensure_async_browser()
         proxy = self._resolve_proxy()
@@ -552,9 +549,9 @@ class DynamicFetcher(BaseFetcher):
         finally:
             await context.close()
 
-    # -- lifecycle -----------------------------------------------------------
+    # -- 生命周期 ------------------------------------------------------------
     def close(self) -> None:
-        """Close the reused sync browser and stop the Playwright driver (sync).
+        """关闭复用的同步浏览器并停止 Playwright driver（同步）。
 
         对 async 句柄做 best-effort 清理：启动临时事件循环执行 aclose。
         避免混用 async/sync 接口后 async browser 进程残留。
@@ -614,7 +611,7 @@ class DynamicFetcher(BaseFetcher):
                 pass
 
     async def aclose(self) -> None:
-        """Asynchronously close both sync and async browsers / Playwright drivers."""
+        """异步关闭同步与异步浏览器 / Playwright driver。"""
         if self._browser is not None:
             try:
                 self._browser.close()

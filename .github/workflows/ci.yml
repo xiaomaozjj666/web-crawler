@@ -37,7 +37,7 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - run: pip install -e ".[dev]"
-      - run: mypy src/web_crawler app
+      - run: mypy src/web_crawler
 
   test:
     strategy:
@@ -62,7 +62,7 @@ jobs:
       - name: Run tests with coverage
         run: >
           pytest -m "not slow" --tb=short -q
-          --cov=web_crawler --cov=app
+          --cov=web_crawler
           --cov-report=xml:coverage.xml
           --cov-report=term-missing
       - name: Upload coverage to Codecov

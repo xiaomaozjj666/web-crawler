@@ -1,9 +1,8 @@
-"""Adaptive scraping engine: element fingerprinting + similarity matching.
+"""自适应抓取引擎：元素指纹 + 相似度匹配。
 
-This is the Scrapling signature feature. When a website's markup changes,
-hard-coded CSS/XPath selectors break. Instead of rewriting the scraper,
-``adaptive=True`` retrieves a previously stored element fingerprint and
-relocates the element by structural similarity — no AI required.
+这是 Scrapling 的招牌特性。网站标记变化时，硬编码的 CSS/XPath 选择器会
+失效。``adaptive=True`` 不需要重写抓取器，而是取出先前存储的元素指纹，
+按结构相似度重新定位元素——完全不需要 AI。
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ from lxml import etree
 
 from .storage import AdaptiveStorage
 
-# Weights used when aggregating per-field similarity into a single score.
+# 把各字段相似度聚合为单一得分时使用的权重。
 _WEIGHTS: dict[str, float] = {
     "tag": 2.0,
     "text_sample": 2.5,
@@ -45,7 +44,7 @@ def _class_tokens(class_attr: str | None) -> list[str]:
 
 
 def _path_signature(element: etree._Element) -> str:
-    """A tag-only ancestor path, e.g. ``div>section>article``."""
+    """仅含标签的祖先路径，如 ``div>section>article``。"""
     parts: list[str] = []
     node: etree._Element | None = element
     while node is not None and isinstance(node.tag, str):
@@ -56,7 +55,7 @@ def _path_signature(element: etree._Element) -> str:
 
 
 def compute_fingerprint(element: etree._Element) -> str:
-    """Compute a JSON-serializable structural fingerprint for ``element``."""
+    """为 ``element`` 计算可 JSON 序列化的结构指纹。"""
     attribs = {k: v for k, v in element.attrib.items()}
     class_attr = attribs.get("class", "")
     text_sample = _normalize_text("".join(element.itertext()))
@@ -85,7 +84,7 @@ def compute_fingerprint(element: etree._Element) -> str:
 
 
 def _ratio(a: Any, b: Any) -> float:
-    """SequenceMatcher ratio for strings; 1.0 if equal lists/strings."""
+    """字符串的 SequenceMatcher 比率；列表/字符串相等时为 1.0。"""
     if isinstance(a, str) and isinstance(b, str):
         if not a and not b:
             return 1.0
@@ -100,7 +99,7 @@ def _ratio(a: Any, b: Any) -> float:
 
 
 def similarity_score(fp_a: str, fp_b: str) -> float:
-    """Return a 0..1 similarity score between two fingerprint JSON strings."""
+    """返回两个指纹 JSON 字符串之间 0..1 的相似度得分。"""
     try:
         a = json.loads(fp_a)
         b = json.loads(fp_b)
@@ -114,7 +113,7 @@ def similarity_score(fp_a: str, fp_b: str) -> float:
         va = a.get(key)
         vb = b.get(key)
         if key == "attrs":
-            # Compare attribute names + class separately for finer granularity.
+            # 属性名与 class 分开比较，粒度更细。
             keys_a = sorted(a.get("attrs", {}).keys())
             keys_b = sorted(b.get("attrs", {}).keys())
             acc += weight * _ratio(keys_a, keys_b)
@@ -132,7 +131,7 @@ def best_match(
     stored_fp: str,
     threshold: float = 0.5,
 ) -> tuple[etree._Element | None, float]:
-    """Return ``(best_element, score)`` among ``candidates`` or ``(None, 0)``."""
+    """从 ``candidates`` 中返回 ``(最佳元素, 得分)``，无匹配时 ``(None, 0)``。"""
     best: etree._Element | None = None
     best_score = 0.0
     for cand in candidates:

@@ -1,14 +1,13 @@
-"""AI-assisted, compliance-aware extraction layer.
+"""AI 辅助、合规感知的抽取层。
 
-This subpackage is purely additive on top of the core library:
+本子包在核心库之上纯增量扩展：
 
-- :mod:`~web_crawler.ai.llm` — pluggable LLM provider layer (default model
-  ``DeepSeek-V4-Pro`` via DeepSeek's OpenAI-compatible API).
-- :mod:`~web_crawler.ai.extractor` — LLM-generated CSS selectors validated
-  against the project's own :class:`~web_crawler.parser.selector.Selector`,
-  with self-healing.
-- :mod:`~web_crawler.ai.agent` — polite agent combining a fetcher with
-  the extractor (robots.txt, rate limiting, 429/503 backoff).
+- :mod:`~web_crawler.ai.llm` — 可插拔 LLM 供应商层（默认模型
+  ``DeepSeek-V4-Pro``，经 DeepSeek 的 OpenAI 兼容 API）。
+- :mod:`~web_crawler.ai.extractor` — LLM 生成 CSS 选择器，并用项目自身的
+  :class:`~web_crawler.parser.selector.Selector` 校验，支持自愈。
+- :mod:`~web_crawler.ai.agent` — 组合 fetcher 与抽取器的礼貌 agent
+  （robots.txt、限速、429/503 退避）。
 - :mod:`~web_crawler.ai.hooks` — JS Hook 脚本库（fetch/XHR/cookie/crypto 拦截）。
 - :mod:`~web_crawler.ai.analyzer` — AI webpack 混淆代码分析器。
 - :mod:`~web_crawler.ai.captcha` — 验证码检测与处理（hCaptcha/Turnstile/极验）。

@@ -21,8 +21,8 @@ from unittest.mock import MagicMock, Mock, patch
 import httpx
 import pytest
 
-from app import ui
-from app.ui import (
+from web_crawler.app import ui
+from web_crawler.app.ui import (
     Handler,
     JobState,
     JobWriter,
@@ -1441,7 +1441,7 @@ class TestMain:
         """main() 启动 ThreadingHTTPServer 并调用 serve_forever。"""
         monkeypatch.setattr("sys.argv", ["ui", "--host", "127.0.0.1", "--port", "8765"])
         mock_server = MagicMock()
-        with patch("app.ui.ThreadingHTTPServer", return_value=mock_server):
+        with patch("web_crawler.app.ui.ThreadingHTTPServer", return_value=mock_server):
             ui.main()
         mock_server.serve_forever.assert_called_once()
 
@@ -1450,7 +1450,7 @@ class TestMain:
         monkeypatch.setattr("sys.argv", ["ui", "--open"])
         mock_server = MagicMock()
         with (
-            patch("app.ui.ThreadingHTTPServer", return_value=mock_server),
+            patch("web_crawler.app.ui.ThreadingHTTPServer", return_value=mock_server),
             patch("threading.Timer") as mock_timer,
         ):
             ui.main()
@@ -1461,7 +1461,7 @@ class TestMain:
         monkeypatch.setattr("sys.argv", ["ui"])
         mock_server = MagicMock()
         mock_server.serve_forever.side_effect = KeyboardInterrupt()
-        with patch("app.ui.ThreadingHTTPServer", return_value=mock_server):
+        with patch("web_crawler.app.ui.ThreadingHTTPServer", return_value=mock_server):
             ui.main()  # 不应抛异常
         mock_server.server_close.assert_called_once()
 

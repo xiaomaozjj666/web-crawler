@@ -20,8 +20,8 @@ headers，单纯抓包无法看到生成过程，必须在浏览器内拦截才�
 - 所有 Hook 都有重入保护（``window.__hook_*__`` 标记），多次注入不会重复包裹；
 - 数据格式统一为 ``{type, url, method, headers, body, timestamp, stack}``。
 
-Example
--------
+示例
+----
 >>> from web_crawler.ai.hooks import generate_combined_script, collect_hook_data
 >>> js = generate_combined_script(["fetch_hook", "xhr_hook"])
 >>> page.add_init_script(js)            # 在导航前注入

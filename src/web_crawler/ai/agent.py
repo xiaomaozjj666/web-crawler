@@ -3,17 +3,15 @@
 把现有的 fetcher（JS 渲染 :class:`DynamicFetcher` 或普通 :class:`Fetcher`）
 和 :class:`~web_crawler.ai.extractor.AIExtractor` 串成一个小型爬取循环：
 
-- honours ``robots.txt`` (``respect_robots=True`` by default),
-- applies a configurable minimum delay between requests (rate limiting),
-- backs off and retries on ``429 Too Many Requests`` / ``503`` responses,
-  reading ``Retry-After`` when present — i.e. it *slows down* instead of trying
-  to defeat a site's throttling.
+- 遵循 ``robots.txt``（默认 ``respect_robots=True``），
+- 在请求之间应用可配置的最小间隔（限速），
+- 遇到 ``429 Too Many Requests`` / ``503`` 响应时退避重试，存在
+  ``Retry-After`` 时按其等待 — 即主动*放慢*，而不是试图突破站点的限流。
 
-This is a general automation convenience layer; it does not reverse engineer,
-hook, or forge any request signatures.
+这是一个通用自动化便利层；不做逆向、hook 或伪造任何请求签名。
 
-Example
--------
+示例
+----
 >>> from web_crawler import AIScrapeAgent
 >>> agent = AIScrapeAgent(render=True)          # DeepSeek-V4-Pro + Playwright
 >>> result = agent.scrape("https://example.com", {"title": "page heading"})
@@ -50,7 +48,7 @@ _MAX_RETRY_AFTER = 300.0
 _MAX_BACKOFF = 60.0
 
 # 反爬/验证码/人机验证的页面正文标记（小写匹配）。
-# Anti-bot detection markers: stop and hand off to human when hit
+# 命中反爬检测标记即停下并移交人工处理
 _BLOCK_MARKERS: tuple[str, ...] = (
     "captcha",
     "recaptcha",
@@ -69,10 +67,10 @@ _BLOCK_MARKERS: tuple[str, ...] = (
 
 
 def detect_block(resp: Response) -> str | None:
-    """Return a human-readable reason if ``resp`` looks like an anti-bot wall.
+    """若 ``resp`` 看起来是反爬墙，返回人类可读的原因。
 
-    Conservative on purpose: only auth/forbidden status codes or explicit
-    captcha / anti-bot markers in the body count. Returns ``None`` otherwise.
+    刻意保守：仅鉴权/禁止访问状态码，或正文中出现明确的验证码/反爬
+    标记才算命中。其余情况返回 ``None``。
     """
     if resp.status in _BLOCK_STATUS:
         return f"http {resp.status}"
@@ -102,7 +100,7 @@ def _http_get_text(
 
 @dataclass
 class ScrapeResult:
-    """Result of an :meth:`AIScrapeAgent.scrape` call."""
+    """:meth:`AIScrapeAgent.scrape` 调用的结果。"""
 
     url: str
     status: int
@@ -120,7 +118,7 @@ class ScrapeResult:
 
 
 class RobotsPolicy:
-    """Small ``robots.txt`` gate with per-host caching (stdlib only)."""
+    """带按主机缓存的小型 ``robots.txt`` 闸门（仅用标准库）。"""
 
     def __init__(self, user_agent: str = "*") -> None:
         self.user_agent = user_agent
@@ -155,27 +153,27 @@ class AIScrapeAgent:
     Parameters
     ----------
     fetcher:
-        Any object with a ``get(url)`` or ``fetch(url)`` method returning a
-        :class:`Response`. When omitted, a fetcher is created lazily
-        (:class:`DynamicFetcher` if ``render=True``, else :class:`Fetcher`).
+        任意带 ``get(url)`` 或 ``fetch(url)`` 方法且返回 :class:`Response`
+        的对象。缺省时延迟创建 fetcher（``render=True`` 用
+        :class:`DynamicFetcher`，否则 :class:`Fetcher`）。
     render:
-        Use the Playwright-backed :class:`DynamicFetcher` for JS-heavy pages.
+        对 JS 密集页面使用 Playwright 后端的 :class:`DynamicFetcher`。
     provider:
-        LLM provider for extraction (defaults to DeepSeek / ``DeepSeek-V4-Pro``).
+        用于抽取的 LLM 供应商（默认 DeepSeek / ``DeepSeek-V4-Pro``）。
     min_delay:
-        Minimum seconds between consecutive requests (rate limiting).
+        相邻请求之间的最小间隔秒数（限速）。
     respect_robots:
-        Skip URLs disallowed by ``robots.txt``.
+        跳过 ``robots.txt`` 禁止的 URL。
     max_retries:
-        Retry attempts on ``429``/``503`` with exponential backoff.
+        遇 ``429``/``503`` 时的指数退避重试次数。
     user_agent:
-        User-agent string used for the robots.txt check.
+        robots.txt 检查使用的 User-Agent 字符串。
     detect_blocks:
-        Detect anti-bot / captcha walls and hand off to a human instead of
-        attempting to bypass them (BrowserAct-inspired, responsible variant).
+        检测反爬/验证码墙并移交人工，而非尝试绕过（受 BrowserAct 启发
+        的负责任变体）。
     on_block:
-        Optional callback invoked with the :class:`ScrapeResult` when a block
-        is detected (e.g. to notify an operator or open a manual browser).
+        检测到拦截时以 :class:`ScrapeResult` 为参数调用的可选回调
+        （例如通知运维或打开手动浏览器）。
     """
 
     def __init__(
@@ -254,7 +252,7 @@ class AIScrapeAgent:
         return min(float(2**attempt), _MAX_BACKOFF)
 
     def fetch(self, url: str) -> Response:
-        """Fetch ``url`` politely: robots check, throttle, backoff on 429/503."""
+        """礼貌地抓取 ``url``：robots 检查、限速、429/503 退避。"""
         fetcher = self._ensure_fetcher()
         if self.respect_robots and not self.robots.allowed(url, self._fetch_robots_text):
             raise PermissionError(f"robots.txt disallows fetching {url!r}")
@@ -278,11 +276,11 @@ class AIScrapeAgent:
         *,
         self_heal: bool = True,
     ) -> ScrapeResult:
-        """Fetch ``url`` and extract ``schema`` fields with the AI extractor.
+        """抓取 ``url`` 并用 AI 抽取器抽取 ``schema`` 字段。
 
-        If ``detect_blocks`` is on and the page looks like an anti-bot / captcha
-        wall, extraction is skipped and a :class:`ScrapeResult` with
-        ``needs_human=True`` is returned (and ``on_block`` is invoked).
+        若 ``detect_blocks`` 开启且页面看起来是反爬/验证码墙，则跳过抽取，
+        返回 ``needs_human=True`` 的 :class:`ScrapeResult`（并调用
+        ``on_block``）。
         """
         resp = self.fetch(url)
         if self.detect_blocks:
@@ -312,7 +310,7 @@ class AIScrapeAgent:
         )
 
     def close(self) -> None:
-        """Close the underlying fetcher if it owns closeable resources."""
+        """若底层 fetcher 持有可关闭的资源，则将其关闭。"""
         if self._fetcher is not None and hasattr(self._fetcher, "close"):
             self._fetcher.close()
 

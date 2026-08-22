@@ -55,8 +55,8 @@ Changelog = "https://github.com/xiaomaozjj666/web-crawler/blob/master/CHANGELOG.
 Issues = "https://github.com/xiaomaozjj666/web-crawler/issues"
 
 [project.scripts]
-web-crawler = "app.crawler:main"
-crawler-ui = "app.ui:main"
+web-crawler = "web_crawler.app.crawler:main"
+crawler-ui = "web_crawler.app.ui:main"
 web-crawler-mcp = "web_crawler.mcp.server:main"
 web-crawler-reverse = "web_crawler.mcp.cli:main"
 
@@ -128,7 +128,7 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source = ["web_crawler", "app"]
+source = ["web_crawler"]
 branch = false
 
 [tool.coverage.report]
@@ -148,9 +148,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["src", "."]
-include = ["web_crawler*", "app*"]
+where = ["src"]
+include = ["web_crawler*"]
 
 [tool.setuptools.package-data]
 web_crawler = ["py.typed"]
-app = ["py.typed", "static/*.html"]
+"web_crawler.app" = ["py.typed", "static/*.html"]

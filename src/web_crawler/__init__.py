@@ -1,25 +1,24 @@
-"""web_crawler — a Scrapling-aligned stealth scraping library.
+"""web_crawler — 对齐 Scrapling 的隐身抓取库。
 
-Public surface mirrors Scrapling's high-level API:
+公开接口对齐 Scrapling 的高层 API：
 
-- :class:`Selector` / :class:`Adaptors` — adaptive lxml selectors with element
-  fingerprinting and structural-similarity relocation.
-- :class:`Response` — normalized fetch result with selector helpers.
-- :class:`Fetcher` — stealth HTTP via ``curl_cffi`` TLS fingerprinting
-  (httpx fallback).
-- :class:`AsyncFetcher` — async-only fetcher (same stealth, async-only API).
-- :class:`DynamicFetcher` — Playwright-rendered fetching.
-- :class:`StealthyFetcher` — anti-bot / Cloudflare-aware Playwright fetcher.
-- :class:`ProxyPool` — round-robin / random proxy rotation with health tracking.
-- :class:`Spider` / :class:`Request` — callback-driven spider framework with
-  pause/resume.
+- :class:`Selector` / :class:`Adaptors` — 自适应 lxml 选择器，支持元素指纹
+  与结构相似度重定位。
+- :class:`Response` — 带选择器助手的归一化抓取结果。
+- :class:`Fetcher` — 基于 ``curl_cffi`` TLS 指纹的隐身 HTTP（httpx 兜底）。
+- :class:`AsyncFetcher` — 纯异步 fetcher（同样的隐身能力，纯异步 API）。
+- :class:`DynamicFetcher` — Playwright 渲染抓取。
+- :class:`StealthyFetcher` — 反反爬 / 感知 Cloudflare 的 Playwright fetcher。
+- :class:`ProxyPool` — 轮询 / 随机代理轮换，带健康跟踪。
+- :class:`Spider` / :class:`Request` — 回调驱动的 spider 框架，支持
+  暂停/恢复。
 
-All public symbols are lazily imported: ``import web_crawler`` does NOT pull in
-``playwright`` or ``curl_cffi``. Heavy submodules are only loaded when the
-corresponding class is first accessed (Scrapling uses the same pattern).
+所有公开符号均为惰性导入：``import web_crawler`` 不会引入 ``playwright``
+或 ``curl_cffi``。重型子模块仅在对应类首次访问时加载（Scrapling 采用同样
+的模式）。
 
-Quick start
------------
+快速上手
+--------
 >>> from web_crawler import Fetcher, Selector
 >>> fetcher = Fetcher(impersonate="chrome131")
 >>> resp = fetcher.get("https://example.com")
@@ -34,18 +33,18 @@ from typing import TYPE_CHECKING, Any
 __version__ = "0.3.0"
 __author__ = "web-crawler contributors"
 
-# Mapping of public symbol name -> (module path, attribute name).
-# Modules are imported on first access via __getattr__, so importing
-# ``web_crawler`` never triggers playwright/curl_cffi loads.
+# 公开符号名 -> (模块路径, 属性名) 的映射。
+# 模块在首次经 __getattr__ 访问时才导入，因此 ``import web_crawler``
+# 绝不会触发 playwright/curl_cffi 加载。
 _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
-    # parser / adaptive
+    # parser / 自适应
     "Selector": ("web_crawler.parser.selector", "Selector"),
     "Adaptors": ("web_crawler.parser.selector", "Adaptors"),
     "Adaptor": ("web_crawler.parser.selector", "Selector"),
     "AdaptiveStorage": ("web_crawler.parser.adaptive", "AdaptiveStorage"),
     "compute_fingerprint": ("web_crawler.parser.adaptive", "compute_fingerprint"),
     "similarity_score": ("web_crawler.parser.adaptive", "similarity_score"),
-    # fetchers
+    # fetcher 系列
     "BaseFetcher": ("web_crawler.fetchers._base", "BaseFetcher"),
     "Fetcher": ("web_crawler.fetchers.fetcher", "Fetcher"),
     "AsyncFetcher": ("web_crawler.fetchers.fetcher", "AsyncFetcher"),
@@ -53,17 +52,21 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "StealthyFetcher": ("web_crawler.fetchers.stealthy", "StealthyFetcher"),
     "CamoufoxFetcher": ("web_crawler.fetchers.camoufox", "CamoufoxFetcher"),
     "ProxyPool": ("web_crawler.fetchers.proxy", "ProxyPool"),
-    # response
+    # 响应对象
     "Response": ("web_crawler.response", "Response"),
-    # visual extraction (PixelRAG-style)
+    # 可视化提取（PixelRAG 风格）
     "VisualExtractor": ("web_crawler.parser.visual", "VisualExtractor"),
-    # spider
+    # spider 框架
     "DupeFilter": ("web_crawler.spider.spider", "DupeFilter"),
+    "DownloaderMiddleware": ("web_crawler.spider.spider", "DownloaderMiddleware"),
+    "DropItem": ("web_crawler.spider.spider", "DropItem"),
+    "IgnoreRequest": ("web_crawler.spider.spider", "IgnoreRequest"),
+    "ItemPipeline": ("web_crawler.spider.spider", "ItemPipeline"),
     "Request": ("web_crawler.spider.spider", "Request"),
     "Spider": ("web_crawler.spider.spider", "Spider"),
     "SpiderError": ("web_crawler.spider.spider", "SpiderError"),
     "SpiderStats": ("web_crawler.spider.spider", "SpiderStats"),
-    # ai (pluggable LLM layer + AI-assisted extraction; default DeepSeek-V4-Pro)
+    # ai（可插拔 LLM 层 + AI 辅助提取；默认 DeepSeek-V4-Pro）
     "get_provider": ("web_crawler.ai.llm", "get_provider"),
     "register_provider": ("web_crawler.ai.llm", "register_provider"),
     "available_providers": ("web_crawler.ai.llm", "available_providers"),
@@ -87,7 +90,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "CaptchaManager": ("web_crawler.ai.captcha", "CaptchaManager"),
     "ReverseAgent": ("web_crawler.ai.reverse_agent", "ReverseAgent"),
     "ReverseAgentConfig": ("web_crawler.ai.reverse_agent", "ReverseAgentConfig"),
-    # mcp server
+    # MCP 服务器
     "ReverseMCPServer": ("web_crawler.mcp.server", "ReverseMCPServer"),
 }
 
@@ -98,18 +101,22 @@ __all__ = [
     "Adaptor",
     "Adaptors",
     "AsyncFetcher",
-    # fetchers
+    # fetcher 系列
     "BaseFetcher",
     "CamoufoxFetcher",
     "CaptchaManager",
     "CaptchaType",
     "DeepSeekProvider",
+    "DownloaderMiddleware",
+    "DropItem",
     "DupeFilter",
     "DynamicFetcher",
     "ExtractionResult",
     "Fetcher",
     # ai — JS 逆向 Agent 套件
     "HookLibrary",
+    "IgnoreRequest",
+    "ItemPipeline",
     "JSAnalyzer",
     "JSFragment",
     "LLMMessage",
@@ -117,23 +124,23 @@ __all__ = [
     "LLMResponse",
     "OpenAICompatibleProvider",
     "ProxyPool",
-    # spider
+    # spider 框架
     "Request",
-    # response
+    # 响应对象
     "Response",
     "ReverseAgent",
     "ReverseAgentConfig",
-    # mcp server
+    # MCP 服务器
     "ReverseMCPServer",
     "RobotsPolicy",
     "ScrapeResult",
-    # parser / adaptive
+    # parser / 自适应
     "Selector",
     "Spider",
     "SpiderError",
     "SpiderStats",
     "StealthyFetcher",
-    # visual extraction (PixelRAG-style)
+    # 可视化提取（PixelRAG 风格）
     "VisualExtractor",
     "__version__",
     "available_providers",
@@ -148,10 +155,10 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    """Lazily import public symbols on first access (Scrapling-style).
+    """首次访问时惰性导入公开符号（Scrapling 风格）。
 
-    This keeps ``import web_crawler`` cheap and avoids forcing users who only
-    need the parser to also install playwright/curl_cffi.
+    这样 ``import web_crawler`` 保持轻量，只用到解析器的用户不必安装
+    playwright/curl_cffi。
     """
     if name in _LAZY_IMPORTS:
         import importlib
@@ -159,7 +166,7 @@ def __getattr__(name: str) -> Any:
         module_path, attr_name = _LAZY_IMPORTS[name]
         module = importlib.import_module(module_path)
         value = getattr(module, attr_name)
-        # Cache on this module so subsequent lookups skip the import.
+        # 缓存到本模块，后续查找可跳过导入。
         globals()[name] = value
         return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -169,7 +176,7 @@ def __dir__() -> list[str]:
     return sorted(set(globals()) | set(__all__))
 
 
-# For type checkers, resolve the real symbols so IDE/mypy see full signatures.
+# 供类型检查器解析真实符号，让 IDE/mypy 看到完整签名。
 if TYPE_CHECKING:
     from .ai.agent import AIScrapeAgent, RobotsPolicy, ScrapeResult
     from .ai.extractor import AIExtractor, ExtractionResult
@@ -193,6 +200,16 @@ if TYPE_CHECKING:
     from .parser.selector import Adaptors, Selector
     from .parser.visual import VisualExtractor
     from .response import Response
-    from .spider.spider import DupeFilter, Request, Spider, SpiderError, SpiderStats
+    from .spider.spider import (
+        DownloaderMiddleware,
+        DropItem,
+        DupeFilter,
+        IgnoreRequest,
+        ItemPipeline,
+        Request,
+        Spider,
+        SpiderError,
+        SpiderStats,
+    )
 
     Adaptor = Selector

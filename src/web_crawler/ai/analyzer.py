@@ -1,4 +1,4 @@
-"""AI-assisted analyzer for webpack-bundled, obfuscated JavaScript.
+"""面向 webpack 打包、混淆 JavaScript 的 AI 辅助分析器。
 
 把已抓取到的 JS 代码片段交给 DeepSeek-V4-Pro 做离线分析：自动识别 webpack
 模块结构、反混淆代码、还原加密/签名算法。本模块不直接对目标站点发起请求，

@@ -1,7 +1,7 @@
-"""Structured extraction — validate LLM JSON output against expected schema.
+"""结构化抽取 — 依据预期 schema 校验 LLM 的 JSON 输出。
 
-- :class:`SchemaValidator` — JSON schema validation
-- :class:`StructuredExtractor` — LLM structured extraction with auto-retry
+- :class:`SchemaValidator` — JSON schema 校验
+- :class:`StructuredExtractor` — 带自动重试的 LLM 结构化抽取
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""MCP server + CLI for JS reverse engineering agent.
+"""JS 逆向 Agent 的 MCP 服务器 + CLI。
 
 与 ``pentest`` / ``ai`` 子包一致采用懒加载：``import web_crawler.mcp``
 不会强制加载 camoufox/playwright 等重依赖，首次访问符号时才导入。
