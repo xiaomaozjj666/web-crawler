@@ -41,6 +41,14 @@ class _RedirectHandler(BaseHTTPRequestHandler):
             self._send(404, b"no such route")
 
     def do_POST(self) -> None:
+        # 先读完请求体再响应：未读数据残留会让连接关闭时发 RST 而非 FIN，
+        # Windows 上客户端偶发 WinError 10053（主机软件中止连接）
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            length = 0
+        if length:
+            self.rfile.read(length)
         if self.path == "/post-303":
             # 303 See Other：无论原方法都改 GET
             self.send_response(303)
