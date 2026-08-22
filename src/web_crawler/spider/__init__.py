@@ -19,6 +19,6 @@ Example
 
 from __future__ import annotations
 
-from .spider import Request, Spider, SpiderError, SpiderStats
+from .spider import DupeFilter, Request, Spider, SpiderError, SpiderStats
 
-__all__ = ["Request", "Spider", "SpiderError", "SpiderStats"]
+__all__ = ["DupeFilter", "Request", "Spider", "SpiderError", "SpiderStats"]
