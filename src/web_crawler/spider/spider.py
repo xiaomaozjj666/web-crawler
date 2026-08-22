@@ -17,7 +17,6 @@ import heapq
 import json
 import logging
 import time
-import urllib.robotparser
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +24,7 @@ from typing import Any, Protocol
 from urllib.parse import urlparse
 
 from ..response import Response
+from ..robots import RobotsPolicy, fetch_robots_text
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +206,7 @@ class Spider:
         self._item_pipelines: list[ItemPipeline] = [
             pipe() if isinstance(pipe, type) else pipe for pipe in self.item_pipelines
         ]
-        self._robots_cache: dict[str, urllib.robotparser.RobotFileParser] = {}
+        self._robots_policy = RobotsPolicy(self.user_agent)
         self._paused = False
         self._heap_counter = 0
         if not self.name:
@@ -246,30 +246,13 @@ class Spider:
     def _robots_allowed(self, url: str) -> bool:
         """检查 ``url`` 是否被目标站点 robots.txt 允许（解析结果按 host 缓存）。
 
-        robots.txt 拉取失败（网络错误、超时）时保守视为允许，不让
-        一次瞬时故障拦截整个爬取；404 由 ``RobotFileParser`` 视为全允许。
+        委托公共 :class:`~web_crawler.robots.RobotsPolicy`（与
+        AIScrapeAgent 共用同一实现）：robots.txt 拉取失败时保守视为
+        允许，不让一次瞬时故障拦截整个爬取；404 视为全允许。
         """
         if not self.respect_robots:
             return True
-        parts = urlparse(url)
-        host_key = f"{parts.scheme}://{parts.netloc}"
-        parser = self._robots_cache.get(host_key)
-        if parser is None:
-            parser = urllib.robotparser.RobotFileParser()
-            parser.set_url(f"{host_key}/robots.txt")
-            try:
-                parser.read()
-            except Exception:
-                # 拉取失败视为允许。注意不能缓存"半初始化"的 parser：
-                # read() 未完成时 last_checked 为空，can_fetch 会一律返回
-                # False，因此用显式 allow_all 的解析器占位
-                fallback = urllib.robotparser.RobotFileParser()
-                # allow_all 是运行时真实属性，typeshed stub 未声明
-                fallback.allow_all = True  # type: ignore[attr-defined]
-                self._robots_cache[host_key] = fallback
-                return True
-            self._robots_cache[host_key] = parser
-        return parser.can_fetch(self.user_agent, url)
+        return self._robots_policy.allowed(url, fetch_robots_text)
 
     def _filter(self, request: Request) -> bool:
         if request.dont_filter:

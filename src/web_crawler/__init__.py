@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __author__ = "web-crawler contributors"
 
 # 公开符号名 -> (模块路径, 属性名) 的映射。
