@@ -1,0 +1,6 @@
+# git blame 忽略清单：纯格式化/重排提交的 hash 列在这里，
+# git blame --ignore-revs-file .git-blame-ignore-revs 可跳过它们定位真实改动。
+# 启用方式（一次性）：git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# be2b1d2 — style: 全库 ruff format 统一代码风格（纯格式化，无行为变化）
+be2b1d2a0a17fd2894108b7d037102c1f006a0fd

@@ -128,11 +128,13 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source = ["app"]
+source = ["web_crawler", "app"]
 branch = false
 
 [tool.coverage.report]
 show_missing = true
+# 门禁值略低于实测（~87%），为平台分支差异留余量；只升不降
+fail_under = 85
 
 [tool.mypy]
 # 类型检查目标 Python 3.12（CI 镜像与本地均 >=3.12，且现代 stub 如 numpy 2.5
@@ -150,4 +152,5 @@ where = ["src", "."]
 include = ["web_crawler*", "app*"]
 
 [tool.setuptools.package-data]
-app = ["static/*.html"]
+web_crawler = ["py.typed"]
+app = ["py.typed", "static/*.html"]
