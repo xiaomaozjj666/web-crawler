@@ -26,9 +26,7 @@ def _mock_server(handle_tool_result: str = '{"ok": true}') -> Any:
     """返回一个 mock server，handle_tool 返回给定 JSON 字符串。"""
     server = MagicMock()
     server.handle_tool.return_value = handle_tool_result
-    server.get_tools.return_value = [
-        {"name": "reverse_engineer_url", "description": "test tool"}
-    ]
+    server.get_tools.return_value = [{"name": "reverse_engineer_url", "description": "test tool"}]
     return server
 
 
@@ -312,9 +310,7 @@ def test_cmd_reimplement_empty_returns_one(
 # -- cmd_captcha ------------------------------------------------------------
 
 
-def test_cmd_captcha(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_cmd_captcha(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """cmd_captcha 调用 solve_captcha 工具。"""
     server = _mock_server(json.dumps({"type": "none", "solved": True}))
     monkeypatch.setattr(cli_module, "_make_server", lambda model: server)
@@ -432,9 +428,7 @@ def test_cmd_pentest_with_checks(
     """cmd_pentest 正确解析 --checks 参数并携带授权确认。"""
     server = _mock_server(json.dumps({"target": "x"}))
     monkeypatch.setattr(cli_module, "_make_server", lambda model: server)
-    args = _parse_args(
-        ["pentest", "example.com", "--checks", "ports,dirs", "--authorized"]
-    )
+    args = _parse_args(["pentest", "example.com", "--checks", "ports,dirs", "--authorized"])
     code = cli_module.cmd_pentest(args)
     assert code == 0
     call_args, _ = server.handle_tool.call_args
@@ -497,9 +491,7 @@ def test_cmd_pentest_without_authorized_returns_one(
 # -- cmd_capture ------------------------------------------------------------
 
 
-def test_cmd_capture(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_cmd_capture(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """cmd_capture 调用 capture_network_requests 工具。"""
     server = _mock_server(json.dumps({"count": 0}))
     monkeypatch.setattr(cli_module, "_make_server", lambda model: server)
@@ -514,9 +506,7 @@ def test_cmd_capture(
 # -- cmd_scripts ------------------------------------------------------------
 
 
-def test_cmd_scripts(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_cmd_scripts(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """cmd_scripts 调用 get_page_scripts 工具。"""
     server = _mock_server(json.dumps({"count": 0}))
     monkeypatch.setattr(cli_module, "_make_server", lambda model: server)
@@ -578,9 +568,7 @@ def test_cmd_run_save_script_os_error(
 
     monkeypatch.setattr("web_crawler.ai.llm.DeepSeekProvider", _MockProvider)
     monkeypatch.setattr("web_crawler.ai.reverse_agent.ReverseAgent", _MockAgent)
-    args = _parse_args(
-        ["run", "--url", "http://x", "--save-script", "Z:/no_such_dir/x.py"]
-    )
+    args = _parse_args(["run", "--url", "http://x", "--save-script", "Z:/no_such_dir/x.py"])
     code = cli_module.cmd_run(args)
     assert code == 0
     captured = capsys.readouterr()
@@ -608,9 +596,7 @@ def test_cmd_run_with_allowed_domains(
 
     monkeypatch.setattr("web_crawler.ai.llm.DeepSeekProvider", _MockProvider)
     monkeypatch.setattr("web_crawler.ai.reverse_agent.ReverseAgent", _MockAgent)
-    args = _parse_args(
-        ["run", "--url", "http://x", "--allowed-domains", "a.com, b.com"]
-    )
+    args = _parse_args(["run", "--url", "http://x", "--allowed-domains", "a.com, b.com"])
     code = cli_module.cmd_run(args)
     assert code == 0
 
@@ -751,23 +737,17 @@ def test_cmd_interactive_analyze_command(
     )
     args = _parse_args(["interactive"])
     cli_module.cmd_interactive(args)
-    server.handle_tool.assert_called_once_with(
-        "analyze_js_code", {"code": "var_x=1"}
-    )
+    server.handle_tool.assert_called_once_with("analyze_js_code", {"code": "var_x=1"})
 
 
 def test_cmd_interactive_webpack_command(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """interactive 模式 webpack 命令调用 extract_webpack_modules。"""
-    server = _setup_interactive(
-        monkeypatch, ["webpack var_x=1", "exit"], json.dumps({"count": 0})
-    )
+    server = _setup_interactive(monkeypatch, ["webpack var_x=1", "exit"], json.dumps({"count": 0}))
     args = _parse_args(["interactive"])
     cli_module.cmd_interactive(args)
-    server.handle_tool.assert_called_once_with(
-        "extract_webpack_modules", {"code": "var_x=1"}
-    )
+    server.handle_tool.assert_called_once_with("extract_webpack_modules", {"code": "var_x=1"})
 
 
 def test_cmd_interactive_deobfuscate_command(
@@ -924,9 +904,7 @@ def test_cmd_interactive_capture_command(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """interactive 模式 capture 命令调用 capture_network_requests。"""
-    server = _setup_interactive(
-        monkeypatch, ["capture http://x", "exit"], json.dumps({"count": 0})
-    )
+    server = _setup_interactive(monkeypatch, ["capture http://x", "exit"], json.dumps({"count": 0}))
     args = _parse_args(["interactive"])
     cli_module.cmd_interactive(args)
     server.handle_tool.assert_called_once_with(
@@ -938,9 +916,7 @@ def test_cmd_interactive_scripts_command(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """interactive 模式 scripts 命令调用 get_page_scripts。"""
-    server = _setup_interactive(
-        monkeypatch, ["scripts http://x", "exit"], json.dumps({"count": 0})
-    )
+    server = _setup_interactive(monkeypatch, ["scripts http://x", "exit"], json.dumps({"count": 0}))
     args = _parse_args(["interactive"])
     cli_module.cmd_interactive(args)
     server.handle_tool.assert_called_once_with("get_page_scripts", {"url": "http://x"})

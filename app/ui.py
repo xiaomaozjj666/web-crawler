@@ -75,6 +75,7 @@ def _open_folder(path: str) -> None:
 
         subprocess.Popen(["xdg-open", path])
 
+
 # JS 逆向 Agent 任务注册表
 REVERSE_JOBS: dict[str, ReverseJobState] = {}
 REVERSE_JOBS_LOCK = threading.Lock()
@@ -504,11 +505,32 @@ def build_args(form: dict[str, list[str]]) -> argparse.Namespace:
 
 # 入库配置白名单：显式列出可序列化字段，剔除 header（含 Cookie/Authorization）等敏感项
 _DB_CONFIG_FIELDS = (
-    "url", "out", "max_pages", "workers", "delay", "timeout", "retries", "max_bytes",
-    "same_domain", "include_css_urls", "video_mode", "video_only", "list_only",
-    "expand_playlists", "resume", "organize", "dedup", "sitemap", "strip_overlays",
-    "rewrite_html", "smart_extract", "resume_crawl", "extract_text", "crawl_pages",
-    "respect_robots", "stealth",
+    "url",
+    "out",
+    "max_pages",
+    "workers",
+    "delay",
+    "timeout",
+    "retries",
+    "max_bytes",
+    "same_domain",
+    "include_css_urls",
+    "video_mode",
+    "video_only",
+    "list_only",
+    "expand_playlists",
+    "resume",
+    "organize",
+    "dedup",
+    "sitemap",
+    "strip_overlays",
+    "rewrite_html",
+    "smart_extract",
+    "resume_crawl",
+    "extract_text",
+    "crawl_pages",
+    "respect_robots",
+    "stealth",
 )
 
 
@@ -553,7 +575,8 @@ def run_job(job: JobState) -> None:
         # 持久化到数据库
         try:
             database.update_task_status(
-                job.id, job.status,
+                job.id,
+                job.status,
                 exit_code=job.exit_code,
                 log=job.log,
                 total_resources=job.total_resources,
@@ -864,9 +887,7 @@ class ReverseAgentRunner:
         job.steps.append(entry)
         return entry
 
-    def _update_step_action_locked(
-        self, job: ReverseJobState, step: int, payload: dict
-    ) -> None:
+    def _update_step_action_locked(self, job: ReverseJobState, step: int, payload: dict) -> None:
         """收到 action 事件时更新步骤的 action_type / reasoning。
 
         调用者必须持有 job.state_lock。
@@ -1099,9 +1120,12 @@ class Handler(BaseHTTPRequestHandler):
             with JOBS_LOCK:
                 # 并发保护：采集任务日志/共享 opener 非并发安全,同一时间只允许一个任务
                 if any(j.status in ("running", "paused") for j in JOBS.values()):
-                    self.respond_json({
-                        "ok": False, "error": "已有采集任务正在运行，请等待完成或先取消",
-                    })
+                    self.respond_json(
+                        {
+                            "ok": False,
+                            "error": "已有采集任务正在运行，请等待完成或先取消",
+                        }
+                    )
                     return
                 job_id = uuid.uuid4().hex[:12]
                 job = JobState(id=job_id, args=args, output_dir=str(Path(args.out).resolve()))
@@ -1214,10 +1238,12 @@ class Handler(BaseHTTPRequestHandler):
             # 仅设置 stop_event：Agent 最终状态会被标记为 cancelled；
             # 库侧接口不支持中断,运行中的 Agent 循环会继续跑完
             rstop.stop_event.set()
-            self.respond_json({
-                "ok": True,
-                "message": "已请求停止：任务结束后将标记为取消；当前版本无法立即中断运行中的 Agent",
-            })
+            self.respond_json(
+                {
+                    "ok": True,
+                    "message": "已请求停止：任务结束后将标记为取消；当前版本无法立即中断运行中的 Agent",
+                }
+            )
             return
         if path == "/reverse/clear":
             # 清空指定任务的运行时数据（保留最终结果）

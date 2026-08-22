@@ -646,7 +646,16 @@ def test_fetcher_send_once_async_httpx_with_proxy(monkeypatch) -> None:
             f = Fetcher(timeout=5.0)
         try:
             return await f._send_once_async(
-                "GET", "https://x.example/", None, None, None, {}, "http://proxy:8080", 5.0, True, True
+                "GET",
+                "https://x.example/",
+                None,
+                None,
+                None,
+                {},
+                "http://proxy:8080",
+                5.0,
+                True,
+                True,
             )
         finally:
             f.close()
@@ -1588,9 +1597,7 @@ def test_async_fetcher_get_with_params_and_headers(monkeypatch) -> None:
         with pytest.warns(RuntimeWarning):
             f = AsyncFetcher(timeout=5.0)
         try:
-            return await f.get(
-                "https://x.example/", params={"q": "1"}, headers={"X-H": "v"}
-            )
+            return await f.get("https://x.example/", params={"q": "1"}, headers={"X-H": "v"})
         finally:
             await f.aclose()
 
@@ -1987,8 +1994,9 @@ def test_fetcher_rejects_redirect_to_non_http(redirect_server: str) -> None:
 
 def test_fetcher_max_redirects_loop_raises(redirect_server: str) -> None:
     """重定向环超过 max_redirects 上限时抛 RuntimeError。"""
-    with Fetcher(timeout=5.0, max_redirects=3) as f, pytest.raises(
-        RuntimeError, match="too many redirects"
+    with (
+        Fetcher(timeout=5.0, max_redirects=3) as f,
+        pytest.raises(RuntimeError, match="too many redirects"),
     ):
         f.get(redirect_server + "/loop")
 
@@ -2228,8 +2236,17 @@ def test_fetcher_rotates_proxy_on_connection_error(monkeypatch) -> None:
     ) -> object:
         used_proxies.append(proxy)
         result = orig(
-            self, method, url, params, data, json, headers, proxy, timeout,
-            allow_redirects, verify,
+            self,
+            method,
+            url,
+            params,
+            data,
+            json,
+            headers,
+            proxy,
+            timeout,
+            allow_redirects,
+            verify,
         )
         return result
 
@@ -2293,8 +2310,17 @@ def test_fetcher_marks_proxy_failed_on_5xx(monkeypatch) -> None:
     ) -> object:
         used_proxies.append(proxy)
         result = orig(
-            self, method, url, params, data, json, headers, proxy, timeout,
-            allow_redirects, verify,
+            self,
+            method,
+            url,
+            params,
+            data,
+            json,
+            headers,
+            proxy,
+            timeout,
+            allow_redirects,
+            verify,
         )
         return result
 
@@ -2412,9 +2438,7 @@ def test_next_redirect_cross_origin_strips_authorization() -> None:
     f = Fetcher.__new__(Fetcher)
     raw = _make_raw_response(302, {"Location": "https://b.com/y"})
     headers = {"Authorization": "Bearer tok", "X-Custom": "1"}
-    next_url, new_method, next_headers = f._next_redirect(
-        raw, "https://a.com/x", "GET", headers
-    )
+    next_url, new_method, next_headers = f._next_redirect(raw, "https://a.com/x", "GET", headers)
     assert next_url == "https://b.com/y"
     assert new_method is None
     assert "Authorization" not in next_headers
@@ -2548,8 +2572,17 @@ def test_async_fetcher_rotates_proxy_on_connection_error(monkeypatch) -> None:
     ) -> object:
         used_proxies.append(proxy)
         return await orig(
-            self, method, url, params, data, json, headers, proxy, timeout,
-            allow_redirects, verify,
+            self,
+            method,
+            url,
+            params,
+            data,
+            json,
+            headers,
+            proxy,
+            timeout,
+            allow_redirects,
+            verify,
         )
 
     monkeypatch.setattr(fetcher_mod.AsyncFetcher, "_send_once_async", spy)

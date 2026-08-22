@@ -308,9 +308,7 @@ class TestContextCompressor:
     async def test_maybe_compress_async_triggers(self) -> None:
         """异步路径压缩。"""
         provider = MagicMock()
-        provider.achat = AsyncMock(
-            return_value=LLMResponse(content="async-summary", model="fake")
-        )
+        provider.achat = AsyncMock(return_value=LLMResponse(content="async-summary", model="fake"))
         c = ContextCompressor(provider, max_history=3, compress_to=1)
         history = _make_history(6)
         new_hist, compressed = await c.maybe_compress_async(history)
@@ -365,9 +363,7 @@ class TestContextCompressor:
     async def test_force_compress_async_triggers(self) -> None:
         """异步强制压缩。"""
         provider = MagicMock()
-        provider.achat = AsyncMock(
-            return_value=LLMResponse(content="async-forced", model="fake")
-        )
+        provider.achat = AsyncMock(return_value=LLMResponse(content="async-forced", model="fake"))
         c = ContextCompressor(provider, max_history=100, compress_to=2)
         history = _make_history(5)
         _new_hist, compressed = await c.force_compress_async(history)

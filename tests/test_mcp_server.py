@@ -64,9 +64,7 @@ def _fake_dns_public(monkeypatch: pytest.MonkeyPatch) -> None:
 
     需要特定解析结果的测试（如私网主机名）在用例内再 monkeypatch 覆盖。
     """
-    monkeypatch.setattr(
-        server_module, "_resolve_host_ips", lambda host: ["93.184.216.34"]
-    )
+    monkeypatch.setattr(server_module, "_resolve_host_ips", lambda host: ["93.184.216.34"])
 
 
 # -- web_crawler.mcp 包级懒加载 ---------------------------------------------
@@ -323,9 +321,7 @@ def test_render_prompt_deobfuscate_js_without_focus() -> None:
 def test_render_prompt_deobfuscate_js_with_focus() -> None:
     """deobfuscate_js prompt 带 focus_param 时输出重点关注行。"""
     srv = _make_server()
-    rendered = srv.render_prompt(
-        "deobfuscate_js", {"code": "var a=1", "focus_param": "sign"}
-    )
+    rendered = srv.render_prompt("deobfuscate_js", {"code": "var a=1", "focus_param": "sign"})
     assert "重点关注参数：sign" in rendered
 
 
@@ -340,9 +336,7 @@ def test_render_prompt_reimplement_algorithm_default_language() -> None:
 def test_render_prompt_reimplement_algorithm_custom_language() -> None:
     """reimplement_algorithm prompt 支持自定义语言。"""
     srv = _make_server()
-    rendered = srv.render_prompt(
-        "reimplement_algorithm", {"code": "fn()", "language": "go"}
-    )
+    rendered = srv.render_prompt("reimplement_algorithm", {"code": "fn()", "language": "go"})
     assert "go" in rendered
 
 
@@ -604,9 +598,7 @@ def test_tool_reverse_engineer_url_with_agent_success(
     """agent 可用时走完整 ReverseAgent 流程，返回 agent=True。"""
     monkeypatch.setattr(server_module, "_HAS_REVERSE_AGENT", True)
 
-    base_agent = _FakeAgent(
-        config=_FakeAgentConfig(), provider=MagicMock(), analyzer=MagicMock()
-    )
+    base_agent = _FakeAgent(config=_FakeAgentConfig(), provider=MagicMock(), analyzer=MagicMock())
     srv = _make_server(agent=base_agent)
 
     monkeypatch.setattr(
@@ -623,9 +615,7 @@ def test_tool_reverse_engineer_url_with_agent_success(
 
     monkeypatch.setattr("web_crawler.ai.watchdog.EventBus", _FakeEventBus)
 
-    parsed = json.loads(
-        srv._tool_reverse_engineer_url({"url": "http://x", "max_steps": 5})
-    )
+    parsed = json.loads(srv._tool_reverse_engineer_url({"url": "http://x", "max_steps": 5}))
     assert parsed["agent"] is True
     assert parsed["result"]["success"] is True
 
@@ -674,9 +664,7 @@ def test_tool_reverse_engineer_url_no_agent_basic_collection(
     }
     with patch.object(srv, "_run_browser_task", return_value=collected) as mock_run:
         parsed = json.loads(
-            srv._tool_reverse_engineer_url(
-                {"url": "http://x", "target_params": ["Anti-Content"]}
-            )
+            srv._tool_reverse_engineer_url({"url": "http://x", "target_params": ["Anti-Content"]})
         )
     assert parsed["agent"] is False
     assert "不可用" in parsed["note"]
@@ -705,9 +693,7 @@ def test_tool_inject_hooks_success() -> None:
     srv = _make_server(agent=None)
     preview = [{"type": "fetch", "url": "http://x/api"}]
     with patch.object(srv, "_run_browser_task", return_value=preview):
-        parsed = json.loads(
-            srv._tool_inject_hooks({"url": "http://x", "hooks": ["fetch_hook"]})
-        )
+        parsed = json.loads(srv._tool_inject_hooks({"url": "http://x", "hooks": ["fetch_hook"]}))
     assert parsed["injected"] == ["fetch_hook"]
     assert parsed["invalid_hooks"] == []
     assert parsed["preview_count"] == 1
@@ -727,9 +713,7 @@ def test_tool_inject_hooks_filters_invalid_names() -> None:
 def test_tool_inject_hooks_no_valid_hooks() -> None:
     """全部 hook 名称无效时返回错误。"""
     srv = _make_server(agent=None)
-    parsed = json.loads(
-        srv._tool_inject_hooks({"url": "http://x", "hooks": ["bogus1", "bogus2"]})
-    )
+    parsed = json.loads(srv._tool_inject_hooks({"url": "http://x", "hooks": ["bogus1", "bogus2"]}))
     assert "error" in parsed
     assert "no valid hooks" in parsed["error"]
 
@@ -771,9 +755,7 @@ def test_tool_analyze_js_code_with_target_param() -> None:
         algorithm="AES", inputs=[], output="", code_flow="", confidence=0.5, deobfuscated=""
     )
     srv = _make_server(analyzer=analyzer)
-    parsed = json.loads(
-        srv._tool_analyze_js_code({"code": "x", "target_param": "sign"})
-    )
+    parsed = json.loads(srv._tool_analyze_js_code({"code": "x", "target_param": "sign"}))
     assert parsed["target_param"] == "sign"
 
 
@@ -833,9 +815,7 @@ def test_tool_reimplement_algorithm_success() -> None:
     analyzer = MagicMock()
     analyzer.suggest_reimplementation.return_value = "print('hi')"
     srv = _make_server(analyzer=analyzer)
-    parsed = json.loads(
-        srv._tool_reimplement_algorithm({"code": "fn()", "language": "go"})
-    )
+    parsed = json.loads(srv._tool_reimplement_algorithm({"code": "fn()", "language": "go"}))
     assert parsed["language"] == "go"
     assert parsed["code"] == "print('hi')"
     assert parsed["length"] == len("print('hi')")
@@ -931,9 +911,7 @@ def test_tool_solve_captcha_browser_error() -> None:
 
 def _patch_image_captcha(monkeypatch: pytest.MonkeyPatch, solver: Any) -> None:
     """patch image_captcha 模块的 ImageCaptchaSolver 与 ImageSolverConfig。"""
-    monkeypatch.setattr(
-        "web_crawler.ai.image_captcha.ImageCaptchaSolver", lambda **kw: solver
-    )
+    monkeypatch.setattr("web_crawler.ai.image_captcha.ImageCaptchaSolver", lambda **kw: solver)
     monkeypatch.setattr("web_crawler.ai.image_captcha.ImageSolverConfig", lambda: MagicMock())
 
 
@@ -951,9 +929,7 @@ def test_tool_solve_captcha_image_text_success(monkeypatch: pytest.MonkeyPatch) 
     solver.solve_text.return_value = "abc123"
     _patch_image_captcha(monkeypatch, solver)
     srv = _make_server()
-    parsed = json.loads(
-        srv._tool_solve_captcha_image({"mode": "text", "image": "base64data"})
-    )
+    parsed = json.loads(srv._tool_solve_captcha_image({"mode": "text", "image": "base64data"}))
     assert parsed["mode"] == "text"
     assert parsed["text"] == "abc123"
     assert parsed["ok"] is True
@@ -965,9 +941,7 @@ def test_tool_solve_captcha_image_text_empty(monkeypatch: pytest.MonkeyPatch) ->
     solver.solve_text.return_value = ""
     _patch_image_captcha(monkeypatch, solver)
     srv = _make_server()
-    parsed = json.loads(
-        srv._tool_solve_captcha_image({"mode": "text", "image": "base64data"})
-    )
+    parsed = json.loads(srv._tool_solve_captcha_image({"mode": "text", "image": "base64data"}))
     assert parsed["ok"] is False
 
 
@@ -989,9 +963,7 @@ def test_tool_solve_captcha_image_slider_success(
     _patch_image_captcha(monkeypatch, solver)
     srv = _make_server()
     parsed = json.loads(
-        srv._tool_solve_captcha_image(
-            {"mode": "slider", "bg": "b64", "slider": "s64"}
-        )
+        srv._tool_solve_captcha_image({"mode": "slider", "bg": "b64", "slider": "s64"})
     )
     assert parsed["mode"] == "slider"
     assert parsed["ok"] is True
@@ -1008,9 +980,7 @@ def test_tool_solve_captcha_image_slider_failed(
     _patch_image_captcha(monkeypatch, solver)
     srv = _make_server()
     parsed = json.loads(
-        srv._tool_solve_captcha_image(
-            {"mode": "slider", "bg": "b64", "slider": "s64"}
-        )
+        srv._tool_solve_captcha_image({"mode": "slider", "bg": "b64", "slider": "s64"})
     )
     assert parsed["ok"] is False
     assert parsed["message"] == "识别失败"
@@ -1038,9 +1008,7 @@ def test_tool_solve_captcha_image_click_success(
     _patch_image_captcha(monkeypatch, solver)
     srv = _make_server()
     parsed = json.loads(
-        srv._tool_solve_captcha_image(
-            {"mode": "click", "image": "b64", "prompt": "点击红绿灯"}
-        )
+        srv._tool_solve_captcha_image({"mode": "click", "image": "b64", "prompt": "点击红绿灯"})
     )
     assert parsed["mode"] == "click"
     assert parsed["ok"] is True
@@ -1081,9 +1049,7 @@ def test_tool_solve_captcha_image_exception(
     solver.solve_text.side_effect = RuntimeError("vision down")
     _patch_image_captcha(monkeypatch, solver)
     srv = _make_server()
-    parsed = json.loads(
-        srv._tool_solve_captcha_image({"mode": "text", "image": "b64"})
-    )
+    parsed = json.loads(srv._tool_solve_captcha_image({"mode": "text", "image": "b64"}))
     assert parsed["error"] == "captcha image solve failed"
 
 
@@ -1123,9 +1089,7 @@ def _patch_pentest_modules(
 
     monkeypatch.setattr("web_crawler.pentest.PortScanner", fake_port_scanner)
     monkeypatch.setattr("web_crawler.pentest.DirBruter", lambda: fake_dir_bruter)
-    monkeypatch.setattr(
-        "web_crawler.pentest.SubdomainEnumerator", lambda: fake_subdomain
-    )
+    monkeypatch.setattr("web_crawler.pentest.SubdomainEnumerator", lambda: fake_subdomain)
     monkeypatch.setattr("web_crawler.pentest.VulnScanner", lambda: fake_vuln)
     monkeypatch.setattr("web_crawler.pentest.HeaderChecker", lambda: fake_header)
 
@@ -1645,12 +1609,8 @@ def test_server_init_with_mocked_deps(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_analyzer = MagicMock(name="analyzer")
     fake_captcha = MagicMock(name="captcha")
 
-    monkeypatch.setattr(
-        server_module, "get_provider", lambda name, **kw: fake_provider
-    )
-    monkeypatch.setattr(
-        server_module, "JSAnalyzer", lambda provider, model: fake_analyzer
-    )
+    monkeypatch.setattr(server_module, "get_provider", lambda name, **kw: fake_provider)
+    monkeypatch.setattr(server_module, "JSAnalyzer", lambda provider, model: fake_analyzer)
     monkeypatch.setattr(server_module, "CaptchaManager", lambda: fake_captcha)
     monkeypatch.setattr(server_module, "_HAS_REVERSE_AGENT", False)
     monkeypatch.setattr(server_module, "ReverseAgent", None)
@@ -1793,7 +1753,12 @@ def test_tool_pentest_recon_timeout_returns_promptly(
     start = time.monotonic()
     parsed = json.loads(
         srv._tool_pentest_recon(
-            {"target": "example.com", "checks": ["dirs"], "timeout": 1, "authorization_confirmed": True}
+            {
+                "target": "example.com",
+                "checks": ["dirs"],
+                "timeout": 1,
+                "authorization_confirmed": True,
+            }
         )
     )
     elapsed = time.monotonic() - start
@@ -1868,9 +1833,7 @@ def test_tool_inject_hooks_collect_inner_function(
     hook_result = {"records": records, "count": 1}
     monkeypatch.setattr(server_module, "collect_hook_data", lambda page: hook_result)
     with patch.object(srv, "_run_browser_task", side_effect=_call_task_fn):
-        parsed = json.loads(
-            srv._tool_inject_hooks({"url": "http://x", "hooks": ["fetch_hook"]})
-        )
+        parsed = json.loads(srv._tool_inject_hooks({"url": "http://x", "hooks": ["fetch_hook"]}))
     assert parsed["injected"] == ["fetch_hook"]
     assert parsed["preview_count"] == 1
 
@@ -1889,9 +1852,7 @@ def test_tool_capture_network_requests_inner_function(
     hook_result = {"records": records, "count": 1}
     monkeypatch.setattr(server_module, "collect_hook_data", lambda page: hook_result)
     with patch.object(srv, "_run_browser_task", side_effect=_call_task_fn):
-        parsed = json.loads(
-            srv._tool_capture_network_requests({"url": "http://x"})
-        )
+        parsed = json.loads(srv._tool_capture_network_requests({"url": "http://x"}))
     assert parsed["count"] == 1
     assert parsed["requests"] == records
 
@@ -1976,9 +1937,7 @@ def test_tool_reverse_engineer_url_step_end_callback(
 
     progress_mock = MagicMock()
     with patch.object(srv, "report_progress", progress_mock):
-        parsed = json.loads(
-            srv._tool_reverse_engineer_url({"url": "http://x", "max_steps": 5})
-        )
+        parsed = json.loads(srv._tool_reverse_engineer_url({"url": "http://x", "max_steps": 5}))
     assert parsed["agent"] is True
     progress_mock.assert_called()
 
@@ -1991,9 +1950,7 @@ def test_tool_reverse_engineer_url_step_end_callback(
 def test_pentest_recon_requires_authorization() -> None:
     """pentest_recon 未传 authorization_confirmed 时默认拒绝执行。"""
     srv = _make_server()
-    parsed = json.loads(
-        srv._tool_pentest_recon({"target": "example.com", "checks": ["ports"]})
-    )
+    parsed = json.loads(srv._tool_pentest_recon({"target": "example.com", "checks": ["ports"]}))
     assert "error" in parsed
     assert "authorization" in parsed["error"]
     assert parsed.get("code") == -32602
@@ -2035,9 +1992,7 @@ def test_pentest_recon_rejects_private_hostname(
     monkeypatch.setattr(server_module, "_resolve_host_ips", lambda host: ["10.0.0.5"])
     srv = _make_server()
     parsed = json.loads(
-        srv._tool_pentest_recon(
-            {"target": "internal.example.com", "authorization_confirmed": True}
-        )
+        srv._tool_pentest_recon({"target": "internal.example.com", "authorization_confirmed": True})
     )
     assert "error" in parsed
     assert "target not allowed" in parsed["error"]
@@ -2265,9 +2220,7 @@ def test_run_mcp_call_tool_registers_progress_sender(
         session = MagicMock()
 
     handlers: dict[str, Any] = {}
-    monkeypatch.setattr(
-        server_module, "Server", _make_handlers_fake_server(handlers, _FakeCtx())
-    )
+    monkeypatch.setattr(server_module, "Server", _make_handlers_fake_server(handlers, _FakeCtx()))
 
     @asynccontextmanager
     async def _fake_stdio_server() -> Any:
@@ -2413,7 +2366,9 @@ def test_tool_reverse_engineer_url_max_steps_capped(
             analyzer: Any = None,
             event_bus: Any = None,
         ) -> None:
-            super().__init__(config=config, provider=provider, analyzer=analyzer, event_bus=event_bus)
+            super().__init__(
+                config=config, provider=provider, analyzer=analyzer, event_bus=event_bus
+            )
             recorded["config"] = config
 
     class _FakeEventBus:
@@ -2425,9 +2380,7 @@ def test_tool_reverse_engineer_url_max_steps_capped(
 
     monkeypatch.setattr("web_crawler.ai.watchdog.EventBus", _FakeEventBus)
     srv = _make_server(
-        agent=_RecordingAgent(
-            config=_FakeAgentConfig(), provider=MagicMock(), analyzer=MagicMock()
-        )
+        agent=_RecordingAgent(config=_FakeAgentConfig(), provider=MagicMock(), analyzer=MagicMock())
     )
     json.loads(srv._tool_reverse_engineer_url({"url": "http://x", "max_steps": 500}))
     assert recorded["config"].max_steps == 100
@@ -2454,7 +2407,9 @@ def test_tool_reverse_engineer_url_run_config_preserves_base(
             analyzer: Any = None,
             event_bus: Any = None,
         ) -> None:
-            super().__init__(config=config, provider=provider, analyzer=analyzer, event_bus=event_bus)
+            super().__init__(
+                config=config, provider=provider, analyzer=analyzer, event_bus=event_bus
+            )
             recorded["config"] = config
 
     class _FakeEventBus:
@@ -2471,9 +2426,7 @@ def test_tool_reverse_engineer_url_run_config_preserves_base(
     srv = _make_server(
         agent=_RecordingAgent(config=base, provider=MagicMock(), analyzer=MagicMock())
     )
-    parsed = json.loads(
-        srv._tool_reverse_engineer_url({"url": "http://x", "max_steps": 5})
-    )
+    parsed = json.loads(srv._tool_reverse_engineer_url({"url": "http://x", "max_steps": 5}))
     assert parsed["agent"] is True
     cfg = recorded["config"]
     assert cfg.headless is True  # MCP 路径显式无头
@@ -2604,9 +2557,7 @@ def test_validate_tool_args_unknown_key_ignored() -> None:
     """schema 外的多余参数被忽略。"""
     srv = _make_server()
     assert (
-        srv._validate_tool_args(
-            "reverse_engineer_url", {"url": "https://example.com/", "bogus": 1}
-        )
+        srv._validate_tool_args("reverse_engineer_url", {"url": "https://example.com/", "bogus": 1})
         is None
     )
 
@@ -2645,9 +2596,7 @@ def test_handle_tool_integer_and_array_type_rejected() -> None:
     """max_steps 传字符串、target_params 传字符串分别触发类型校验错误。"""
     srv = _make_server()
     parsed = json.loads(
-        srv.handle_tool(
-            "reverse_engineer_url", {"url": "https://example.com/", "max_steps": "20"}
-        )
+        srv.handle_tool("reverse_engineer_url", {"url": "https://example.com/", "max_steps": "20"})
     )
     assert "must be integer" in parsed["error"]
     parsed = json.loads(

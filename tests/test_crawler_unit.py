@@ -349,10 +349,7 @@ async def test_crawl_respects_max_pages() -> None:
 async def test_crawl_does_not_follow_external_links() -> None:
     """外域链接不应被跟随。"""
     c = Crawler(respect_robots=False, delay=0)
-    html = (
-        '<a href="/internal">internal</a>'
-        '<a href="https://other.com/external">external</a>'
-    )
+    html = '<a href="/internal">internal</a><a href="https://other.com/external">external</a>'
 
     async def fake_get(url: str, **kwargs: Any) -> MagicMock:
         resp = MagicMock()

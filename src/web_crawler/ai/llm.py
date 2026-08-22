@@ -218,9 +218,7 @@ def _normalize_messages(
             out.append(m.to_dict())
         elif isinstance(m, dict):
             # 缺 role/content 的 dict 做兜底，避免 KeyError
-            out.append(
-                {"role": m.get("role", "user"), "content": m.get("content", "")}
-            )
+            out.append({"role": m.get("role", "user"), "content": m.get("content", "")})
         elif isinstance(m, str):
             out.append({"role": "user", "content": m})
         else:  # pragma: no cover - defensive
@@ -359,7 +357,7 @@ class OpenAICompatibleProvider:
                 if not retryable or attempt >= _MAX_LLM_RETRIES:
                     raise
                 attempt += 1
-                time.sleep(min(2.0 ** attempt, _MAX_BACKOFF_SECONDS))
+                time.sleep(min(2.0**attempt, _MAX_BACKOFF_SECONDS))
 
     async def achat(
         self,
@@ -412,7 +410,7 @@ class OpenAICompatibleProvider:
                 if not retryable or attempt >= _MAX_LLM_RETRIES:
                     raise
                 attempt += 1
-                await asyncio.sleep(min(2.0 ** attempt, _MAX_BACKOFF_SECONDS))
+                await asyncio.sleep(min(2.0**attempt, _MAX_BACKOFF_SECONDS))
 
     # -- convenience --------------------------------------------------------
     def complete(self, prompt: str, *, system: str | None = None, **kwargs: Any) -> str:

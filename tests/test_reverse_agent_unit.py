@@ -1666,9 +1666,7 @@ class TestDoSelectOptionAsync:
         try:
             page = MagicMock()
             page.select_option = AsyncMock()
-            action = Action(
-                action_type="select_option", params={"selector": "#c", "value": "US"}
-            )
+            action = Action(action_type="select_option", params={"selector": "#c", "value": "US"})
             await agent._do_select_option_async(page, action, step=1)
             page.select_option.assert_awaited_once()
         finally:
@@ -2317,12 +2315,8 @@ class TestSearchParamInRecords:
         assert ReverseAgent._search_param_in_records(records, "sign") == "hello"
 
     def test_finds_param_in_json_body(self) -> None:
-        records = [
-            {"headers": {}, "url": "", "body": json.dumps({"Anti-Content": "json-value"})}
-        ]
-        assert (
-            ReverseAgent._search_param_in_records(records, "Anti-Content") == "json-value"
-        )
+        records = [{"headers": {}, "url": "", "body": json.dumps({"Anti-Content": "json-value"})}]
+        assert ReverseAgent._search_param_in_records(records, "Anti-Content") == "json-value"
 
     def test_finds_param_in_form_body(self) -> None:
         records = [{"headers": {}, "url": "", "body": "sign=form-value&other=x"}]
@@ -2347,9 +2341,7 @@ class TestSearchParamInRecords:
         """body 包含目标参数但 JSON 解析失败时回退到 form 解析。"""
         records = [{"headers": {}, "url": "", "body": "Anti-Content=form-val"}]
         # 不是合法 JSON 但包含目标参数，应回退到 form 解析
-        assert (
-            ReverseAgent._search_param_in_records(records, "Anti-Content") == "form-val"
-        )
+        assert ReverseAgent._search_param_in_records(records, "Anti-Content") == "form-val"
 
 
 # ---------------------------------------------------------------------------
@@ -2602,7 +2594,12 @@ class TestFormatHookSummary:
         result = ReverseAgent._format_hook_summary(
             {
                 "records": [
-                    {"type": "fetch", "method": "GET", "url": "u", "headers": {"X-Long": long_value}}
+                    {
+                        "type": "fetch",
+                        "method": "GET",
+                        "url": "u",
+                        "headers": {"X-Long": long_value},
+                    }
                 ]
             }
         )
@@ -3033,7 +3030,9 @@ class TestAnalyzeCapturedJs:
         """超过内容大小上限的脚本应被跳过。"""
         agent = _make_agent()
         try:
-            big = self._fake_resp("https://x.example/big.js", text="x" * (agent._MAX_JS_FETCH_BYTES + 1))
+            big = self._fake_resp(
+                "https://x.example/big.js", text="x" * (agent._MAX_JS_FETCH_BYTES + 1)
+            )
             client = self._fake_httpx_client([big])
             with patch("httpx.Client", return_value=client):
                 result = agent._analyze_captured_js(["https://x.example/big.js"], ["sign"])
@@ -3074,9 +3073,7 @@ class TestAnalyzeCapturedJs:
             )
             client.__aenter__.return_value = client
             with patch("httpx.AsyncClient", return_value=client):
-                result = await agent._analyze_captured_js_async(
-                    ["http://127.0.0.1/a.js"], ["sign"]
-                )
+                result = await agent._analyze_captured_js_async(["http://127.0.0.1/a.js"], ["sign"])
                 assert result is None
             client.get.assert_not_called()
         finally:
@@ -3185,7 +3182,9 @@ class TestScreenshotHelpers:
         finally:
             agent.close()
 
-    def test_screenshot_filename_sanitized(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_screenshot_filename_sanitized(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """task_id 含路径分隔符时应被清理，防止路径穿越。"""
         cfg = ReverseAgentConfig(
             enable_screenshot=True,
@@ -3212,7 +3211,9 @@ class TestScreenshotHelpers:
         finally:
             agent.close()
 
-    def test_screenshot_rotation_keeps_latest(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_screenshot_rotation_keeps_latest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """超出保留上限时按任务清理最旧截图。"""
         cfg = ReverseAgentConfig(
             enable_screenshot=True,
