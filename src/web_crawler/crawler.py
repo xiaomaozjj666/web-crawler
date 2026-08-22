@@ -1,4 +1,4 @@
-"""Core crawler logic with async concurrency and robots.txt support."""
+"""核心爬虫逻辑：异步并发抓取，支持 robots.txt。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import httpx
 
 @dataclass
 class CrawlResult:
-    """Holds the outcome of crawling a single page."""
+    """保存单个页面的抓取结果。"""
 
     url: str
     status_code: int
@@ -22,7 +22,7 @@ class CrawlResult:
 
 
 class Crawler:
-    """An async, same-domain breadth-first web crawler with robots.txt support."""
+    """异步同域广度优先爬虫，支持 robots.txt。"""
 
     def __init__(
         self,
@@ -45,7 +45,7 @@ class Crawler:
         self._last_fetch: dict[str, float] = {}
 
     async def _get_robot_parser(self, scheme: str, domain: str) -> RobotFileParser | None:
-        """Fetch and parse robots.txt for ``domain`` using the correct ``scheme``."""
+        """按对应 ``scheme`` 拉取并解析 ``domain`` 的 robots.txt。"""
         rp = RobotFileParser()
         robots_url = f"{scheme}://{domain}/robots.txt"
         try:
@@ -90,7 +90,7 @@ class Crawler:
         self._last_fetch[domain] = time.monotonic()
 
     async def fetch(self, client: httpx.AsyncClient, url: str) -> CrawlResult:
-        """Fetch a single URL and extract same-domain links."""
+        """抓取单个 URL 并提取同域链接。"""
         await self._throttle(url)
 
         try:
@@ -107,7 +107,7 @@ class Crawler:
             return CrawlResult(url=url, status_code=0, error=str(e))
 
     async def crawl(self, start_url: str, max_pages: int = 50) -> list[CrawlResult]:
-        """Crawl same-domain pages breadth-first with async concurrency."""
+        """以异步并发方式广度优先抓取同域页面。"""
         seen: set[str] = {start_url}
         queue: list[str] = [start_url]
         results: list[CrawlResult] = []
@@ -164,7 +164,7 @@ class Crawler:
 
     @staticmethod
     def _extract_links(base_url: str, html: str) -> list[str]:
-        """Extract deduplicated same-domain links from ``html``."""
+        """从 ``html`` 中提取去重后的同域链接。"""
         from bs4 import BeautifulSoup
 
         base = Crawler._normalize_url(base_url)

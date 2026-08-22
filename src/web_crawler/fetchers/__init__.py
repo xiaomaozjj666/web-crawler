@@ -1,20 +1,20 @@
-"""Scrapling-style fetchers subpackage.
+"""Scrapling 风格的 fetcher 子包。
 
-Provides a uniform interface to three complementary fetching strategies, all
-returning the library-wide :class:`~web_crawler.response.Response`:
+为三种互补的抓取策略提供统一接口，全部返回库级统一的
+:class:`~web_crawler.response.Response`：
 
-* :class:`Fetcher` — stealth HTTP via ``curl_cffi`` TLS-fingerprint
-  impersonation (with an ``httpx`` fallback).
-* :class:`AsyncFetcher` — async-only variant of :class:`Fetcher`.
-* :class:`DynamicFetcher` — JavaScript-rendered fetching via Playwright.
-* :class:`StealthyFetcher` — a :class:`DynamicFetcher` hardened with stealth
-  scripts, humanized input and Cloudflare-challenge handling.
+* :class:`Fetcher` — 基于 ``curl_cffi`` TLS 指纹伪装的隐身 HTTP
+  （带 ``httpx`` 兜底）。
+* :class:`AsyncFetcher` — :class:`Fetcher` 的纯异步版本。
+* :class:`DynamicFetcher` — 基于 Playwright 的 JavaScript 渲染抓取。
+* :class:`StealthyFetcher` — 用隐身脚本、拟人输入与 Cloudflare 质询处理
+  加固过的 :class:`DynamicFetcher`。
 
-A :class:`ProxyPool` is provided for rotating proxies with cooldown.
+另提供 :class:`ProxyPool` 用于带冷却的代理轮换。
 
-To avoid forcing ``playwright`` to load when only the HTTP fetcher is needed,
-:class:`DynamicFetcher` and :class:`StealthyFetcher` are imported lazily via
-``__getattr__``.
+为了避免只需 HTTP fetcher 时也强制加载 ``playwright``，
+:class:`DynamicFetcher` 与 :class:`StealthyFetcher` 通过 ``__getattr__``
+惰性导入。
 """
 
 from __future__ import annotations
@@ -25,8 +25,8 @@ from ._base import BaseFetcher
 from .fetcher import AsyncFetcher, Fetcher
 from .proxy import ProxyPool
 
-# DynamicFetcher / StealthyFetcher pull in playwright; import them lazily so
-# that ``from web_crawler.fetchers import Fetcher`` stays cheap.
+# DynamicFetcher / StealthyFetcher 会引入 playwright；惰性导入，让
+# ``from web_crawler.fetchers import Fetcher`` 保持轻量。
 _LAZY: dict[str, tuple[str, str]] = {
     "DynamicFetcher": ("web_crawler.fetchers.dynamic", "DynamicFetcher"),
     "StealthyFetcher": ("web_crawler.fetchers.stealthy", "StealthyFetcher"),

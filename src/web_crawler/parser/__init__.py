@@ -1,4 +1,4 @@
-"""Scrapling-style adaptive parser subpackage."""
+"""Scrapling 风格的自适应解析子包。"""
 
 from __future__ import annotations
 

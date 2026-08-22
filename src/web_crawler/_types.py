@@ -1,7 +1,7 @@
-"""Custom supporting types shared across the library.
+"""整个库共享的自定义辅助类型。
 
-These small helpers mirror Scrapling's public type surface so that selectors
-and fetchers return rich, consistent objects instead of bare strings.
+这些小工具对齐 Scrapling 的公开类型面，让选择器与 fetcher 返回丰富、
+一致的对象而非裸字符串。
 """
 
 from __future__ import annotations
@@ -15,12 +15,12 @@ T = TypeVar("T")
 
 
 class TextHandler(str):
-    """A string subclass with chainable text helpers (Scrapling-style)."""
+    """带链式文本处理方法的 str 子类（Scrapling 风格）。"""
 
     __slots__ = ()
 
     def clean(self) -> TextHandler:
-        """Collapse whitespace and return a new handler."""
+        """折叠空白字符并返回新的 handler。"""
         return TextHandler(" ".join(str(self).split()))
 
     def trim(self, chars: str | None = None) -> TextHandler:
@@ -37,7 +37,7 @@ class TextHandler(str):
 
 
 class Attrs(dict):
-    """A dict subclass for element attributes with case-insensitive lookups."""
+    """用于元素属性的 dict 子类，查找不区分大小写。"""
 
     __slots__ = ()
 
@@ -55,30 +55,29 @@ class Attrs(dict):
 
 
 class ResultList(list, Generic[T]):
-    """A list subclass with Scrapling-style helper methods on selection results.
+    """带 Scrapling 风格辅助方法的列表，用于选择结果。
 
-    Mirrors Scrapling's ``Selectors`` container: batch operations over a list
-    of selectors with attribute-style ``.first`` / ``.last`` access, ``.get()``
-    / ``.getall()`` extraction, and slice-safe typing (slices return a
-    ``ResultList`` rather than a plain ``list``).
+    对齐 Scrapling 的 ``Selectors`` 容器：对选择器列表做批量操作，支持
+    属性式的 ``.first`` / ``.last`` 访问、``.get()`` / ``.getall()`` 提取，
+    且切片安全（切片返回 ``ResultList`` 而非普通 ``list``）。
     """
 
     __slots__ = ()
 
-    # -- first / last (Scrapling exposes these as properties) --------------
+    # -- first / last（Scrapling 以 property 形式暴露） --------------------
     @property
     def first(self) -> T | None:  # type: ignore[override]
-        """The first element, or ``None`` if empty (Scrapling-style property)."""
+        """首个元素，为空时返回 ``None``（Scrapling 风格 property）。"""
         return self[0] if self else None
 
     @property
     def last(self) -> T | None:  # type: ignore[override]
-        """The last element, or ``None`` if empty (Scrapling-style property)."""
+        """最后一个元素，为空时返回 ``None``（Scrapling 风格 property）。"""
         return self[-1] if self else None
 
-    # -- Scrapling-style extraction ----------------------------------------
+    # -- Scrapling 风格提取 --------------------------------------------------
     def get(self, default: Any = None) -> Any:
-        """Return the text of the first element, or ``default`` if empty."""
+        """返回首个元素的文本，为空时返回 ``default``。"""
         if not self:
             return default
         first = self[0]
@@ -86,17 +85,17 @@ class ResultList(list, Generic[T]):
         return text if text is not None else first
 
     def getall(self) -> list[Any]:
-        """Return the text of every element as a list."""
+        """以列表返回每个元素的文本。"""
         out: list[Any] = []
         for item in self:
             text = getattr(item, "text", None)
             out.append(text if text is not None else item)
         return out
 
-    # -- batch text helpers ------------------------------------------------
+    # -- 批量文本辅助 --------------------------------------------------------
     @property
     def text(self) -> TextHandler:
-        """Concatenated text of all matched elements."""
+        """所有匹配元素的文本拼接结果。"""
         parts: list[str] = []
         for item in self:
             text = getattr(item, "text", None)
@@ -130,9 +129,9 @@ class ResultList(list, Generic[T]):
                 results.append(default)
         return results
 
-    # -- batch selector operations (Scrapling Selectors parity) -----------
+    # -- 批量选择器操作（对齐 Scrapling Selectors） --------------------------
     def css(self, selector: str, **kwargs: Any) -> ResultList[Any]:
-        """Apply ``.css(selector)`` to every element and flatten results."""
+        """对每个元素执行 ``.css(selector)`` 并展平结果。"""
         out: ResultList[Any] = ResultList()
         for item in self:
             method = getattr(item, "css", None)
@@ -141,7 +140,7 @@ class ResultList(list, Generic[T]):
         return out
 
     def xpath(self, selector: str, **kwargs: Any) -> ResultList[Any]:
-        """Apply ``.xpath(selector)`` to every element and flatten results."""
+        """对每个元素执行 ``.xpath(selector)`` 并展平结果。"""
         out: ResultList[Any] = ResultList()
         for item in self:
             method = getattr(item, "xpath", None)
@@ -151,10 +150,10 @@ class ResultList(list, Generic[T]):
 
     @property
     def length(self) -> int:
-        """Scrapling-style alias for ``len(self)``."""
+        """``len(self)`` 的 Scrapling 风格别名。"""
         return len(self)
 
-    # -- Scrapling-style export -------------------------------------------
+    # -- Scrapling 风格导出 --------------------------------------------------
     @staticmethod
     def _coerce(item: Any) -> Any:
         """把元素转为 JSON 可序列化的形式。"""
@@ -187,7 +186,7 @@ class ResultList(list, Generic[T]):
             Path(path).write_text(text + "\n", encoding="utf-8")
         return text
 
-    # -- slice-safe typing -------------------------------------------------
+    # -- 切片安全 -----------------------------------------------------------
     def __getitem__(self, index: int | slice) -> Any:  # type: ignore[override]
         if isinstance(index, slice):
             return ResultList(list.__getitem__(self, index))
@@ -195,7 +194,7 @@ class ResultList(list, Generic[T]):
 
 
 def ensure_list(value: Iterable[T] | T | None) -> list[T]:
-    """Wrap a single value into a list; pass through iterables; ``None`` -> ``[]``."""
+    """把单个值包成列表；可迭代对象原样转列表；``None`` -> ``[]``。"""
     if value is None:
         return []
     # str/bytes 虽可迭代，但语义上是"单个值"；其余 Iterable（含生成器、
@@ -204,13 +203,13 @@ def ensure_list(value: Iterable[T] | T | None) -> list[T]:
         return [cast("T", value)]
     if isinstance(value, Iterable):
         return list(value)
-    # At this point ``value`` is a single item of type T (mypy can't narrow the
-    # union that far, so help it with a cast).
+    # 到这里 ``value`` 已是单个 T 类型的值（mypy 无法把联合类型收窄到这一步，
+    # 用 cast 帮它一把）。
     return [cast("T", value)]
 
 
 def iter_chunks(seq: list[T], size: int) -> Iterator[list[T]]:
-    """Yield successive ``size``-length chunks from ``seq``."""
+    """从 ``seq`` 中依次产出长度为 ``size`` 的分块。"""
     for start in range(0, len(seq), size):
         yield seq[start : start + size]
 

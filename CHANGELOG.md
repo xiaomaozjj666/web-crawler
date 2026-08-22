@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Spider 下载中间件**：`DownloaderMiddleware`（`process_request` 返回
+  `Response` 可短路下载、抛 `IgnoreRequest` 丢弃请求；`process_response`
+  变换响应），`Spider.middlewares` 类属性声明、按序执行；`IgnoreRequest`
+  丢弃计入 `SpiderStats.requests_ignored`（新增统计字段）。
+- **Spider item 管道**：`ItemPipeline.process_item` 链式变换/过滤回调产出
+  的 item，抛 `DropItem` 或返回 `None` 丢弃；`Spider.item_pipelines` 声明。
+  两者均从顶层导出。
 - **Spider 失败重试**：`Spider.max_retries`（默认 `0` 保持旧行为）— 下载失败的
   请求按 `0.5 * 2^n` 秒指数退避（上限 8s）重新入队，`Request.retries` 字段
   现在被引擎真实消费；重试耗尽才计入 `requests_failed`。
@@ -53,6 +60,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   开启，控制面无鉴权、仅限可信网络；`Dockerfile` CMD 已启用。
 
 ### Changed
+- **`app` 包迁入 `src/web_crawler/app/`**：安装时不再向 site-packages 污染
+  顶层 `app` 命名空间；entry points、测试、启动脚本引用同步更新
+  （`web-crawler` / `crawler-ui` 命令行为不变）。
+- **Spider `stream()` 改为持续流式调度**：并发槽位空出即派发队首请求，
+  慢请求不再阻塞后续请求的调度（原实现为整批 barrier，一批中最慢的
+  请求会拖住整批）；暂停/取消/max_requests 语义保持不变。
+- **`app/crawler.py` 巨型 `crawl()`（603 行）拆分**：拆为 `_seed_page_queue`
+  / `_restore_state` / `_scan_pages` / `_filter_resources` / `_process_resource`
+  / `_run_downloads` / `_post_process` / `_log_crawl_summary` 阶段函数，
+  共享状态经 `_CrawlContext` 传递，行为逐行等价（530 个 app 层测试全过）。
+- **`reverse_agent` run/arun 重复段合并**：状态重置（`_reset_run_state`）、
+  checkpoint 加载（`_load_checkpoint_state`）、结果构造
+  （`_merge_final_hook_data` / `_build_run_result`）四段逐行重复的样板
+  提取为共享方法；顺带修复 sync `run()` 未重置 `_last_think_prompt` /
+  `_last_think_completion` / `_last_llm_usage` 的状态泄漏。
+- **全库 docstring/注释统一中文**（约 49 个源文件、600+ 条翻译）：
+  消除同文件内 docstring 英文、注释中文的混杂状态；技术术语
+  （CSS/HTTP/robots.txt/SSRF/JSON/TLS/JA3/Playwright 等）保留英文。
 - **Spider 状态持久化移入 `finally`**：`run()` / `stream()` 的回调异常、
   消费方提前 break 等中断路径不再跳过 `_dump_state`，已排队请求不丢；
   `stream()` 的 `asyncio.gather` 改用 `return_exceptions=True` 后逐个重抛，

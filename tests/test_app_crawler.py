@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from app import crawler as cr
+from web_crawler.app import crawler as cr
 
 # ========== 数据类 ==========
 
@@ -1623,7 +1623,7 @@ class TestStealthFetch:
         fake_fetcher_cls = Mock(return_value=fake_fetcher_instance)
 
         # 清空模块级缓存，避免跨测试缓存污染
-        import app.crawler as cr_mod
+        import web_crawler.app.crawler as cr_mod
 
         cr_mod._stealth_fetcher = None
         cr_mod._stealth_fetcher_key = ("", None, "")
@@ -1640,7 +1640,7 @@ class TestStealthFetch:
 
     def test_stealth_fetch_unavailable_raises(self) -> None:
         """Fetcher 不可用时抛 RuntimeError。"""
-        import app.crawler as cr_mod
+        import web_crawler.app.crawler as cr_mod
 
         cr_mod._stealth_fetcher = None
         cr_mod._stealth_fetcher_key = ("", None, "")
@@ -1664,7 +1664,7 @@ class TestStealthFetch:
 
         fake_fetcher_cls = Mock(return_value=fake_fetcher_instance)
 
-        import app.crawler as cr_mod
+        import web_crawler.app.crawler as cr_mod
 
         cr_mod._stealth_fetcher = None
         cr_mod._stealth_fetcher_key = ("", None, "")
@@ -1812,7 +1812,7 @@ class TestStealthFetcherCache:
     """模块级 stealth fetcher 缓存的复用与 key 变更。"""
 
     def _reset_cache(self) -> None:
-        import app.crawler as cr_mod
+        import web_crawler.app.crawler as cr_mod
 
         cr_mod._stealth_fetcher = None
         cr_mod._stealth_fetcher_key = ("", None, "")

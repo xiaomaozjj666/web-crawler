@@ -1,25 +1,25 @@
-"""Pluggable LLM provider layer.
+"""可插拔的 LLM 供应商层。
 
-A thin, dependency-light abstraction over OpenAI-compatible chat-completions
-endpoints so the rest of the library can talk to a model without hard-coding a
-vendor. The default provider targets **DeepSeek-V4-Pro** via DeepSeek's
-OpenAI-compatible ``/chat/completions`` API.
+一个轻量、低依赖的抽象，覆盖 OpenAI 兼容的 chat-completions 端点，
+使库的其余部分无需硬编码某个厂商即可与模型对话。默认供应商通过
+DeepSeek 的 OpenAI 兼容 ``/chat/completions`` API 指向
+**DeepSeek-V4-Pro**。
 
-Design notes
-------------
-- Only depends on ``httpx`` (already a core dependency); no extra install.
-- Providers are looked up through a small registry so new backends can be
-  registered with :func:`register_provider` without touching call sites.
-- ``httpx`` is imported lazily inside :meth:`OpenAICompatibleProvider.chat` to
-  keep ``import web_crawler`` cheap, matching the library's lazy-import style.
-- Each provider exposes a :class:`ProviderCapabilities` snapshot so callers
-  can negotiate features (vision / json_mode / tools / streaming) without
-  try/except'ing the model name.
+设计说明
+--------
+- 仅依赖 ``httpx``（已是核心依赖），无需额外安装。
+- 供应商通过小型注册表查找，新后端可用 :func:`register_provider` 注册，
+  无需修改调用点。
+- ``httpx`` 在 :meth:`OpenAICompatibleProvider.chat` 内部延迟导入，
+  以保持 ``import web_crawler`` 轻量，与库的延迟导入风格一致。
+- 每个供应商暴露一份 :class:`ProviderCapabilities` 快照，调用方可直接
+  协商能力（vision / json_mode / tools / streaming），无需对模型名
+  做 try/except。
 
-Quick start
------------
+快速上手
+--------
 >>> from web_crawler import get_provider, LLMMessage
->>> llm = get_provider("deepseek", api_key="sk-...")   # or DEEPSEEK_API_KEY env
+>>> llm = get_provider("deepseek", api_key="sk-...")   # 或 DEEPSEEK_API_KEY 环境变量
 >>> reply = llm.complete("Say hi in one word.")
 """
 
@@ -65,13 +65,12 @@ def _is_httpx_transport_error(exc: BaseException) -> bool:
 
 
 def _load_dotenv_once() -> None:
-    """Best-effort, dependency-free ``.env`` loader.
+    """尽力而为、零依赖的 ``.env`` 加载器。
 
-    Looks for a ``.env`` file in the current working directory and then in up
-    to ``_ENV_SEARCH_PARENT_DEPTH`` ancestor levels of this module (i.e. the
-    package root vicinity), loading ``KEY=VALUE`` lines into :data:`os.environ`
-    **without overwriting** already-set variables. Runs at most once per
-    process; silently does nothing if no file is found.
+    依次在当前工作目录、以及本模块至多 ``_ENV_SEARCH_PARENT_DEPTH`` 层
+    祖先目录（即包根附近）查找 ``.env`` 文件，把 ``KEY=VALUE`` 行载入
+    :data:`os.environ`，**不覆盖**已设置的变量。每个进程至多运行一次；
+    找不到文件时静默跳过。
     """
     global _DOTENV_LOADED
     if _DOTENV_LOADED:
@@ -106,7 +105,7 @@ MessageLike = "str | LLMMessage | dict[str, str]"
 
 @dataclass
 class LLMMessage:
-    """A single chat message (``role`` is one of system/user/assistant).
+    """单条聊天消息（``role`` 取 system/user/assistant 之一）。
 
     ``content`` 可以是纯文本字符串，也可以是 OpenAI 多模态消息内容列表
     （``[{"type": "text", "text": "..."}, {"type": "image_url", "image_url": {...}}]``），
@@ -171,7 +170,7 @@ class ProviderCapabilities:
 
 @dataclass
 class LLMResponse:
-    """Normalized chat-completion result."""
+    """归一化的 chat-completion 结果。"""
 
     content: str
     model: str
@@ -189,7 +188,7 @@ class LLMResponse:
 
 @runtime_checkable
 class LLMProvider(Protocol):
-    """Structural type every provider satisfies."""
+    """所有供应商都满足的结构化类型。"""
 
     model: str
     capabilities: ProviderCapabilities
@@ -204,7 +203,7 @@ class LLMProvider(Protocol):
 def _normalize_messages(
     messages: Sequence[str | LLMMessage | dict[str, str]] | str,
 ) -> list[dict[str, Any]]:
-    """Coerce assorted message forms into the OpenAI ``messages`` list.
+    """把多种消息形态统一转换为 OpenAI ``messages`` 列表。
 
     接受纯字符串（视为单条 user 消息）、``LLMMessage`` 实例（支持纯文本与
     多模态 vision 列表）、或原始 ``{"role", "content"}`` dict。``content``
@@ -227,20 +226,20 @@ def _normalize_messages(
 
 
 class OpenAICompatibleProvider:
-    """Provider for any OpenAI-compatible ``/chat/completions`` endpoint.
+    """面向任意 OpenAI 兼容 ``/chat/completions`` 端点的供应商。
 
     Parameters
     ----------
     model:
-        Model name sent in the request body.
+        请求体中发送的模型名。
     api_key:
-        Bearer token. Falls back to ``api_key_env`` environment variable.
+        Bearer token。缺省时回退到 ``api_key_env`` 环境变量。
     base_url:
-        API root, e.g. ``https://api.deepseek.com/v1``.
+        API 根地址，例如 ``https://api.deepseek.com/v1``。
     timeout:
-        Per-request timeout in seconds.
+        单次请求超时（秒）。
     default_headers:
-        Extra headers merged into every request.
+        合并进每个请求的额外 header。
     """
 
     name = "openai-compatible"
@@ -313,7 +312,7 @@ class OpenAICompatibleProvider:
         response_format: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Call the chat-completions endpoint and return an :class:`LLMResponse`."""
+        """调用 chat-completions 端点并返回 :class:`LLMResponse`。"""
         if not self.api_key:
             raise RuntimeError(
                 f"no API key for provider {self.name!r}; pass api_key= or set "
@@ -368,7 +367,7 @@ class OpenAICompatibleProvider:
         response_format: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Async counterpart of :meth:`chat`."""
+        """:meth:`chat` 的异步版本。"""
         if not self.api_key:
             raise RuntimeError(
                 f"no API key for provider {self.name!r}; pass api_key= or set "
@@ -414,7 +413,7 @@ class OpenAICompatibleProvider:
 
     # -- convenience --------------------------------------------------------
     def complete(self, prompt: str, *, system: str | None = None, **kwargs: Any) -> str:
-        """One-shot helper: return just the assistant text for ``prompt``."""
+        """一次性辅助方法：仅返回 ``prompt`` 对应的助手文本。"""
         messages: list[str | LLMMessage | dict[str, str]] = []
         if system:
             messages.append(LLMMessage("system", system))
@@ -423,7 +422,7 @@ class OpenAICompatibleProvider:
 
     # -- lifecycle ----------------------------------------------------------
     def close(self) -> None:
-        """Close the persistent synchronous HTTP client."""
+        """关闭持久的同步 HTTP 客户端。"""
         if self._client is not None:
             try:
                 self._client.close()
@@ -432,7 +431,7 @@ class OpenAICompatibleProvider:
             self._client = None
 
     async def aclose(self) -> None:
-        """Close the persistent asynchronous HTTP client."""
+        """关闭持久的异步 HTTP 客户端。"""
         if self._async_client is not None:
             try:
                 await self._async_client.aclose()
@@ -442,8 +441,8 @@ class OpenAICompatibleProvider:
 
 
 class DeepSeekProvider(OpenAICompatibleProvider):
-    """DeepSeek preset. Defaults to ``DeepSeek-V4-Pro`` and reads
-    ``DEEPSEEK_API_KEY`` from the environment when no key is passed."""
+    """DeepSeek 预置。默认 ``DeepSeek-V4-Pro``，未传密钥时从环境变量
+    ``DEEPSEEK_API_KEY`` 读取。"""
 
     name = "deepseek"
 
@@ -609,12 +608,12 @@ _PROVIDERS: dict[str, Callable[..., LLMProvider]] = {
 
 
 def register_provider(name: str, factory: Callable[..., LLMProvider]) -> None:
-    """Register a new provider factory under ``name`` (case-insensitive)."""
+    """以 ``name`` 注册新的供应商工厂（大小写不敏感）。"""
     _PROVIDERS[name.lower()] = factory
 
 
 def available_providers() -> list[str]:
-    """Return the registered provider names."""
+    """返回已注册的供应商名称列表。"""
     return sorted(_PROVIDERS)
 
 
@@ -671,10 +670,10 @@ def select_provider(
 
 
 def get_provider(name: str = "deepseek", **kwargs: Any) -> LLMProvider:
-    """Instantiate a registered provider (default: DeepSeek / DeepSeek-V4-Pro).
+    """实例化一个已注册的供应商（默认：DeepSeek / DeepSeek-V4-Pro）。
 
-    Extra keyword arguments (``model``, ``api_key``, ``base_url``, …) are
-    forwarded to the provider constructor.
+    其余关键字参数（``model``、``api_key``、``base_url`` 等）会透传给
+    供应商构造器。
     """
     key = name.lower()
     if key not in _PROVIDERS:

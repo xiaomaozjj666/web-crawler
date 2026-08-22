@@ -1,11 +1,10 @@
-"""VLM-based visual content extraction from screenshot tiles.
+"""基于 VLM 的截图分块视觉内容提取。
 
-PixelRAG-inspired: instead of parsing HTML text, render pages as screenshot
-tiles and feed them directly to a vision-language model (VLM) for content
-extraction. This preserves tables, charts, layout, and visual hierarchy that
-HTML-to-text conversion destroys.
+受 PixelRAG 启发：不解析 HTML 文本，而是把页面渲染为截图分块，直接送入
+视觉语言模型（VLM）提取内容。这样可以保留 HTML 转文本时会丢失的表格、
+图表、布局与视觉层次。
 
-Usage::
+用法::
 
     from web_crawler import DynamicFetcher, VisualExtractor
 
@@ -25,22 +24,22 @@ from urllib.request import Request, urlopen
 
 
 class VisualExtractor:
-    """Use a VLM (OpenAI-compatible vision API) to extract content from screenshot tiles.
+    """用 VLM（OpenAI 兼容视觉 API）从截图分块中提取内容。
 
     Parameters
     ----------
     api_key:
-        API key for the vision model service.
+        视觉模型服务的 API key。
     base_url:
-        OpenAI-compatible base URL (e.g. ``https://api.deepseek.com/v1`` or
-        ``https://dashscope.aliyuncs.com/compatible-mode/v1``).
+        OpenAI 兼容的 base URL（如 ``https://api.deepseek.com/v1`` 或
+        ``https://dashscope.aliyuncs.com/compatible-mode/v1``）。
     model:
-        Vision-capable model name (e.g. ``gpt-4o``, ``qwen-vl-max``,
-        ``qwen3.7-plus``, ``deepseek-chat``).
+        支持视觉的模型名（如 ``gpt-4o``、``qwen-vl-max``、
+        ``qwen3.7-plus``、``deepseek-chat``）。
     max_tokens:
-        Maximum output tokens (default 4096).
+        最大输出 token 数（默认 4096）。
     timeout:
-        HTTP request timeout in seconds (default 120).
+        HTTP 请求超时秒数（默认 120）。
     """
 
     def __init__(
@@ -59,7 +58,7 @@ class VisualExtractor:
         self.timeout = timeout
 
     # ------------------------------------------------------------------
-    # Public API
+    # 公开 API
     # ------------------------------------------------------------------
 
     def extract(
@@ -75,32 +74,32 @@ class VisualExtractor:
         temperature: float = 0.3,
         max_tiles: int = 20,
     ) -> str:
-        """Extract structured text content from screenshot tiles via VLM.
+        """通过 VLM 从截图分块提取结构化文本内容。
 
         Parameters
         ----------
         tiles:
-            List of tile dicts as returned by :meth:`DynamicFetcher.screenshot_tiles`.
-            Each must have ``b64`` (base64-encoded image).
+            :meth:`DynamicFetcher.screenshot_tiles` 返回的分块 dict 列表，
+            每个必须含 ``b64``（base64 编码图片）。
         prompt:
-            Instruction for the VLM describing what to extract.
+            给 VLM 的指令，说明要提取什么。
         temperature:
-            Sampling temperature (0.0–2.0). Lower = more deterministic.
+            采样温度（0.0–2.0）。越低越确定。
         max_tiles:
-            Maximum number of tiles to send (capped to avoid token overflow).
+            最多发送的分块数（设上限避免 token 溢出）。
 
         Returns
         -------
         str
-            The VLM's extracted text content.
+            VLM 提取出的文本内容。
         """
         if not tiles:
             raise ValueError("tiles must not be empty")
 
-        # Cap tile count to stay within typical VLM context windows
+        # 限制分块数，保持在典型 VLM 上下文窗口内
         tiles = tiles[:max_tiles]
 
-        # Build vision API content array
+        # 构造视觉 API 的 content 数组
         image_contents: list[dict[str, Any]] = []
         for i, tile in enumerate(tiles):
             b64_data = tile["b64"]
@@ -114,7 +113,7 @@ class VisualExtractor:
                     },
                 }
             )
-            # If sending multiple tiles, annotate each
+            # 发送多个分块时给每块加标注
             if len(tiles) > 1:
                 image_contents.insert(
                     len(image_contents) - 1,
@@ -134,11 +133,11 @@ class VisualExtractor:
         return self._call_api(messages, temperature)
 
     # ------------------------------------------------------------------
-    # Internal
+    # 内部实现
     # ------------------------------------------------------------------
 
     def _call_api(self, messages: list[dict[str, Any]], temperature: float) -> str:
-        """Make an OpenAI-compatible chat completion request."""
+        """发起 OpenAI 兼容的 chat completion 请求。"""
         body = json.dumps(
             {
                 "model": self.model,
@@ -165,7 +164,7 @@ class VisualExtractor:
         except Exception as exc:
             raise RuntimeError(f"VLM API call failed: {exc}") from exc
 
-        # Extract the assistant message
+        # 提取助手消息
         choices = data.get("choices", [])
         if not choices:
             error_msg = data.get("error", {}).get("message", "unknown error")
@@ -174,7 +173,7 @@ class VisualExtractor:
         message = choices[0].get("message", {})
         content = message.get("content", "")
         if content is None:
-            # Some models return null content for refusal
+            # 部分模型拒答时返回 null content
             finish = choices[0].get("finish_reason", "unknown")
             raise RuntimeError(f"VLM returned empty content (finish_reason={finish})")
 
@@ -189,16 +188,16 @@ class VisualExtractor:
         temperature: float = 0.3,
         max_tiles: int = 20,
     ) -> str:
-        """Like :meth:`extract` but accepts an existing OpenAI client instance.
+        """类似 :meth:`extract`，但接受现成的 OpenAI client 实例。
 
-        Pass an ``openai.OpenAI`` or ``openai.AsyncOpenAI`` client to reuse
-        an existing connection pool. Requires the ``openai`` package.
+        传入 ``openai.OpenAI`` 或 ``openai.AsyncOpenAI`` client 以复用现有
+        连接池。需要安装 ``openai`` 包。
 
         Parameters
         ----------
         client:
-            An ``openai.OpenAI`` instance. If ``None``, falls back to
-            :meth:`extract` using urllib.
+            ``openai.OpenAI`` 实例。为 ``None`` 时回退到基于 urllib 的
+            :meth:`extract`。
         """
         if client is None:
             return self.extract(tiles, prompt, temperature=temperature, max_tiles=max_tiles)

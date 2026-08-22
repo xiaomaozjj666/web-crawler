@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from web_crawler import Request, Response, Spider, SpiderError
+from web_crawler.spider import DownloaderMiddleware, DropItem, IgnoreRequest, ItemPipeline
 
 
 class FakeFetcher:
@@ -1433,3 +1434,220 @@ def test_spider_stream_callback_error_still_saves_state(tmp_path: Path) -> None:
     assert state_file.exists()
     state = json.loads(state_file.read_text(encoding="utf-8"))
     assert [q["url"] for q in state["queue"]] == ["https://shop.example.com/pending2"]
+
+
+# ===========================================================================
+# 下载中间件 / item 管道 / 持续流式调度
+# ===========================================================================
+
+
+class _RecordingMiddleware(DownloaderMiddleware):
+    """记录请求并支持短路/变换的可复用中间件。"""
+
+    def __init__(
+        self,
+        short_circuit: Response | None = None,
+        ignore_urls: set[str] | None = None,
+        new_status: int | None = None,
+    ) -> None:
+        self.seen: list[str] = []
+        self.short_circuit = short_circuit
+        self.ignore_urls = ignore_urls or set()
+        self.new_status = new_status
+
+    def process_request(self, request: Request, spider: Spider) -> Response | None:
+        self.seen.append(request.url)
+        if request.url in self.ignore_urls:
+            raise IgnoreRequest("denied")
+        return self.short_circuit
+
+    def process_response(self, response: Response, request: Request, spider: Spider) -> Response:
+        if self.new_status is not None:
+            response.status = self.new_status
+        return response
+
+
+def test_middleware_process_request_short_circuits_download() -> None:
+    """process_request 返回 Response 时直接短路，不再发请求。"""
+    fetched: list[str] = []
+
+    class SpyFetcher(FakeFetcher):
+        def get(self, url: str, **kwargs: Any) -> Response:
+            fetched.append(url)
+            return super().get(url, **kwargs)
+
+    canned = Response("https://shop.example.com/", 200, b"<p>cached</p>")
+    mw = _RecordingMiddleware(short_circuit=canned)
+
+    class S(ItemSpider):
+        start_urls = ["https://shop.example.com/"]
+
+    spider = S(fetcher=SpyFetcher(PAGES))
+    spider._middlewares = [mw]
+    items = spider.run()
+    # 短路响应 <p>cached</p> 无 .item，且真实 fetcher 从未被调用
+    assert items == []
+    assert fetched == []
+    assert mw.seen == ["https://shop.example.com/"]
+
+
+def test_middleware_short_circuit_content_reaches_callback() -> None:
+    """短路响应的内容可被回调读到（走完整 dispatch 链）。"""
+    canned = Response(
+        "https://shop.example.com/", 200, b'<div class="item"><span class="name">Z</span></div>'
+    )
+    mw = _RecordingMiddleware(short_circuit=canned)
+
+    class S(Spider):
+        start_urls = ["https://shop.example.com/"]
+
+        def parse(self, response: Response) -> Any:
+            for item in response.css(".item"):
+                name = item.css_first(".name")
+                if name:
+                    yield {"name": str(name.text)}
+
+    spider = S(fetcher=FakeFetcher(PAGES))
+    spider._middlewares = [mw]
+    items = spider.run()
+    assert items == [{"name": "Z"}]
+
+
+def test_middleware_ignore_request_counts_ignored() -> None:
+    """process_request 抛 IgnoreRequest 丢弃请求并计入 requests_ignored。"""
+    mw = _RecordingMiddleware(ignore_urls={"https://shop.example.com/"})
+
+    class S(Spider):
+        start_urls = ["https://shop.example.com/"]
+
+        def parse(self, response: Response) -> Any:
+            yield {"x": 1}
+
+    spider = S(fetcher=FakeFetcher(PAGES))
+    spider._middlewares = [mw]
+    items = spider.run()
+    assert items == []
+    assert spider.stats.requests_ignored == 1
+    assert spider.stats.pages_crawled == 0
+
+
+def test_middleware_process_response_transforms_response() -> None:
+    """process_response 的变换对回调可见。"""
+    mw = _RecordingMiddleware(new_status=999)
+
+    class S(Spider):
+        start_urls = ["https://shop.example.com/"]
+
+        def parse(self, response: Response) -> Any:
+            yield {"status": response.status}
+
+    spider = S(fetcher=FakeFetcher(PAGES))
+    spider._middlewares = [mw]
+    items = spider.run()
+    assert items == [{"status": 999}]
+
+
+def test_middleware_runs_in_stream_too() -> None:
+    """stream() 同样经过中间件链。"""
+    mw = _RecordingMiddleware(ignore_urls={"https://shop.example.com/page2"})
+
+    spider = ItemSpider(fetcher=FakeFetcher(PAGES))
+    spider._middlewares = [mw]
+
+    async def collect() -> list[Any]:
+        items = []
+        async for item in spider.stream():
+            items.append(item)
+        return items
+
+    items = asyncio.run(collect())
+    # 首页正常（A、B），page2 被中间件丢弃（C 缺失）
+    names = [it["name"] for it in items]
+    assert names == ["A", "B"]
+    assert spider.stats.requests_ignored == 1
+
+
+class _UpperPipeline(ItemPipeline):
+    def process_item(self, item: Any, spider: Spider) -> Any:
+        if isinstance(item, dict) and "name" in item:
+            return {**item, "name": item["name"].upper()}
+        return item
+
+
+class _DropAPipeline(ItemPipeline):
+    def process_item(self, item: Any, spider: Spider) -> Any:
+        if isinstance(item, dict) and item.get("name") == "A":
+            raise DropItem("drop A")
+        return item
+
+
+def test_item_pipeline_transforms_items() -> None:
+    """item 管道按顺序变换 item。"""
+    spider = ItemSpider(fetcher=FakeFetcher(PAGES))
+    spider._item_pipelines = [_UpperPipeline()]
+    items = spider.run()
+    assert [it["name"] for it in items] == ["A", "B", "C"]
+
+
+def test_item_pipeline_drop_item_excludes_from_output() -> None:
+    """DropItem 丢弃的 item 不进入结果、不计入 items_scraped。"""
+    spider = ItemSpider(fetcher=FakeFetcher(PAGES))
+    spider._item_pipelines = [_DropAPipeline()]
+    items = spider.run()
+    assert [it["name"] for it in items] == ["B", "C"]
+    assert spider.stats.items_scraped == 2
+
+
+def test_item_pipeline_class_attribute_instantiated() -> None:
+    """middlewares/item_pipelines 类属性传类时会被自动实例化。"""
+    assert issubclass(_UpperPipeline, ItemPipeline)
+
+    class S(ItemSpider):
+        item_pipelines = [_UpperPipeline]
+
+    spider = S(fetcher=FakeFetcher(PAGES))
+    assert len(spider._item_pipelines) == 1
+    assert isinstance(spider._item_pipelines[0], _UpperPipeline)
+    items = spider.run()
+    assert [it["name"] for it in items] == ["A", "B", "C"]
+
+
+def test_stream_schedules_new_requests_while_slow_one_in_flight() -> None:
+    """持续流式调度：慢请求在途时不阻塞新请求的派发（无整批 barrier）。
+
+    构造：/slow 延迟 0.4s；/fast 立即返回且产出 /child。
+    批式 barrier 下 /child 必须等 /slow 完成后才能调度，
+    流式下 /child 在 /slow 完成前即被抓取。
+    """
+    done_order: list[str] = []
+
+    class TimingFetcher:
+        async def async_get(self, url: str, **kwargs: Any) -> Response:
+            if url.endswith("/slow"):
+                await asyncio.sleep(0.4)
+                done_order.append("slow")
+            elif url.endswith("/child"):
+                done_order.append("child")
+            else:
+                done_order.append("fast")
+            return Response(url, 200, b"")
+
+    class S(Spider):
+        start_urls = ["https://x.example/fast", "https://x.example/slow"]
+        max_concurrency = 8
+
+        def parse(self, response: Response) -> Any:
+            if response.url.endswith("/fast"):
+                yield Request("https://x.example/child")
+
+    spider = S(fetcher=TimingFetcher())
+
+    async def collect() -> list[Any]:
+        items = []
+        async for item in spider.stream():
+            items.append(item)
+        return items
+
+    asyncio.run(collect())
+    # child 在 slow 之前完成 = 慢请求未阻塞后续调度
+    assert done_order.index("child") < done_order.index("slow")

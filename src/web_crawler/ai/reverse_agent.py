@@ -398,15 +398,8 @@ class ReverseAgent:
     # 主入口（同步）
     # ------------------------------------------------------------------
 
-    def run(self, url: str, task: str = "") -> dict:
-        """启动浏览器、注入 Hook、循环观察-思考-行动，返回结果字典。"""
-        self.fetcher = CamoufoxFetcher(
-            headless=self.config.headless,
-            os=self.config.os_name,
-            proxy=self.config.proxy,
-            network_idle=False,
-        )
-        # 重置所有有状态组件
+    def _reset_run_state(self, url: str) -> None:
+        """重置所有有状态组件与运行期缓存（run/arun 共用，支持重复调用）。"""
         self.loop_detector.reset()
         self.context_compressor.reset()
         self.heartbeat.reset()
@@ -421,6 +414,9 @@ class ReverseAgent:
         self._last_pruned_dom = None
         self._last_confidence = None
         self._last_guard_result = None
+        self._last_think_prompt = ""
+        self._last_think_completion = ""
+        self._last_llm_usage = None
         # 重置截图缓存
         self._screenshots = []
         self._last_error_screenshot = ""
@@ -429,28 +425,100 @@ class ReverseAgent:
         # 重置断点续跑（避免复用上一次 run 的 checkpoint）
         self._resume_from = None
 
-        history: list[dict] = []
-        target_params_found: dict[str, str] = {}
+    def _load_checkpoint_state(self, url: str, task: str) -> tuple[list[dict], dict[str, str]]:
+        """加载断点续跑状态；未启用或无 checkpoint 时返回空集合。"""
+        if not self.config.enable_checkpoint:
+            return [], {}
+        # 用稳定标识（url+task 哈希，不含时间戳）确保跨进程/跨 run 可续跑
+        self.checkpoint_manager.ensure_task_id(url, task)
+        self._resume_from = self.checkpoint_manager.load_latest()
+        if self._resume_from is None:
+            return [], {}
+        cp = self._resume_from
+        # 还原累积摘要（直接写内部字段，因为 property 是只读的）
+        self.context_compressor._cumulative_summary = cp.cumulative_summary
+        self._emit(
+            "checkpoint.resume",
+            step=cp.step,
+            url=cp.url,
+            target_params_found=list(cp.target_params_found.keys()),
+        )
+        return list(cp.history), dict(cp.target_params_found)
+
+    def _merge_final_hook_data(self, final_hook_data: dict[str, Any]) -> dict[str, Any]:
+        """合并最后一次观察的缓存，避免结果 hook_data 几乎为空。"""
+        cached_records = self._hook_data_cache.get("records", [])
+        fresh_records = final_hook_data.get("records", [])
+        merged_records = list(cached_records) + [
+            r for r in fresh_records if r not in cached_records
+        ]
+        return {"records": merged_records, "count": len(merged_records)}
+
+    def _build_run_result(
+        self,
+        *,
+        stopped: bool,
+        target_params_found: dict[str, str],
+        analysis: AnalysisResult | None,
+        history: list[dict],
+        final_hook_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """构造 run/arun 的结果字典（含成功判定与成功路径录制编译）。"""
+        success = bool(target_params_found)
+        if self.config.target_params:
+            success = all(p in target_params_found for p in self.config.target_params)
+        # Judge 验证过的成功才是真成功
+        if self.judge is not None and self._last_judge_result is not None:
+            success = success and self._last_judge_result.verified
+
+        # -- Recorder：编译成功路径为脚本 -----------------------------
+        if self.recorder is not None and success:
+            try:
+                self._compiled_script = self.recorder.compile_script()
+            except Exception as exc:
+                self._emit("recorder.compile_error", step=0, error=str(exc))
+                self._compiled_script = ""
+
+        return {
+            "success": success,
+            "status": "stopped" if stopped else "completed",
+            "target_params_found": target_params_found,
+            "analysis": analysis,
+            "hook_data": final_hook_data,
+            "steps": len(history),
+            "history": history,
+            "plan": self._current_plan.to_dict() if self._current_plan else None,
+            "judge_result": (
+                self._last_judge_result.to_dict() if self._last_judge_result else None
+            ),
+            "compiled_script": self._compiled_script or None,
+            "last_confidence": (
+                {
+                    "score": self._last_confidence.score,
+                    "reasons": list(self._last_confidence.reasons),
+                    "action_type": getattr(self._last_confidence, "action_type", ""),
+                }
+                if self._last_confidence is not None
+                else None
+            ),
+            "checkpoints": list(self.checkpoints_snapshot()),
+            "screenshots": list(self._screenshots),
+            "error_screenshot": self._last_error_screenshot or None,
+        }
+
+    def run(self, url: str, task: str = "") -> dict:
+        """启动浏览器、注入 Hook、循环观察-思考-行动，返回结果字典。"""
+        self.fetcher = CamoufoxFetcher(
+            headless=self.config.headless,
+            os=self.config.os_name,
+            proxy=self.config.proxy,
+            network_idle=False,
+        )
+        self._reset_run_state(url)
+
         analysis: AnalysisResult | None = None
         last_observation: Observation | None = None
-
-        # 尝试加载断点续跑
-        if self.config.enable_checkpoint:
-            # 用稳定标识（url+task 哈希，不含时间戳）确保跨进程/跨 run 可续跑
-            self.checkpoint_manager.ensure_task_id(url, task)
-            self._resume_from = self.checkpoint_manager.load_latest()
-            if self._resume_from is not None:
-                cp = self._resume_from
-                history = list(cp.history)
-                target_params_found = dict(cp.target_params_found)
-                # 还原累积摘要（直接写内部字段，因为 property 是只读的）
-                self.context_compressor._cumulative_summary = cp.cumulative_summary
-                self._emit(
-                    "checkpoint.resume",
-                    step=cp.step,
-                    url=cp.url,
-                    target_params_found=list(target_params_found.keys()),
-                )
+        history, target_params_found = self._load_checkpoint_state(url, task)
 
         try:
             context, page = self._create_page(self.config.hooks)
@@ -753,54 +821,14 @@ class ReverseAgent:
                     self.checkpoint_manager.save(cp)
 
             # 合并最后一次观察的缓存，避免结果 hook_data 几乎为空
-            final_hook_data = self._read_hook_data(page)
-            cached_records = self._hook_data_cache.get("records", [])
-            fresh_records = final_hook_data.get("records", [])
-            merged_records = list(cached_records) + [
-                r for r in fresh_records if r not in cached_records
-            ]
-            final_hook_data = {"records": merged_records, "count": len(merged_records)}
-            success = bool(target_params_found)
-            if self.config.target_params:
-                success = all(p in target_params_found for p in self.config.target_params)
-            # Judge 验证过的成功才是真成功
-            if self.judge is not None and self._last_judge_result is not None:
-                success = success and self._last_judge_result.verified
-
-            # -- Recorder：编译成功路径为脚本 -----------------------------
-            if self.recorder is not None and success:
-                try:
-                    self._compiled_script = self.recorder.compile_script()
-                except Exception as exc:
-                    self._emit("recorder.compile_error", step=0, error=str(exc))
-                    self._compiled_script = ""
-
-            return {
-                "success": success,
-                "status": "stopped" if stopped else "completed",
-                "target_params_found": target_params_found,
-                "analysis": analysis,
-                "hook_data": final_hook_data,
-                "steps": len(history),
-                "history": history,
-                "plan": self._current_plan.to_dict() if self._current_plan else None,
-                "judge_result": (
-                    self._last_judge_result.to_dict() if self._last_judge_result else None
-                ),
-                "compiled_script": self._compiled_script or None,
-                "last_confidence": (
-                    {
-                        "score": self._last_confidence.score,
-                        "reasons": list(self._last_confidence.reasons),
-                        "action_type": getattr(self._last_confidence, "action_type", ""),
-                    }
-                    if self._last_confidence is not None
-                    else None
-                ),
-                "checkpoints": list(self.checkpoints_snapshot()),
-                "screenshots": list(self._screenshots),
-                "error_screenshot": self._last_error_screenshot or None,
-            }
+            final_hook_data = self._merge_final_hook_data(self._read_hook_data(page))
+            return self._build_run_result(
+                stopped=stopped,
+                target_params_found=target_params_found,
+                analysis=analysis,
+                history=history,
+                final_hook_data=final_hook_data,
+            )
         finally:
             self._cleanup_sync()
 
@@ -816,53 +844,11 @@ class ReverseAgent:
             proxy=self.config.proxy,
             network_idle=False,
         )
-        # 重置所有有状态组件
-        self.loop_detector.reset()
-        self.context_compressor.reset()
-        self.heartbeat.reset()
-        self.crash_recovery.reset()
-        if self.recorder is not None:
-            self.recorder.reset()
-            self.recorder.set_target(url)
-        self._current_plan = None
-        self._last_judge_result = None
-        self._compiled_script = ""
-        # 重置新组件
-        self._last_pruned_dom = None
-        self._last_confidence = None
-        self._last_guard_result = None
-        self._last_think_prompt = ""
-        self._last_think_completion = ""
-        self._last_llm_usage = None
-        # 重置截图缓存
-        self._screenshots = []
-        self._last_error_screenshot = ""
-        # 重置多标签页管理
-        self._tabs = {}
-        # 重置断点续跑（避免复用上一次 run 的 checkpoint）
-        self._resume_from = None
+        self._reset_run_state(url)
 
-        history: list[dict] = []
-        target_params_found: dict[str, str] = {}
         analysis: AnalysisResult | None = None
         last_observation: Observation | None = None
-
-        # 尝试加载断点续跑
-        if self.config.enable_checkpoint:
-            # 用稳定标识（url+task 哈希，不含时间戳）确保跨进程/跨 run 可续跑
-            self.checkpoint_manager.ensure_task_id(url, task)
-            self._resume_from = self.checkpoint_manager.load_latest()
-            if self._resume_from is not None:
-                cp = self._resume_from
-                history = list(cp.history)
-                target_params_found = dict(cp.target_params_found)
-                self.context_compressor._cumulative_summary = cp.cumulative_summary
-                self._emit(
-                    "checkpoint.resume",
-                    step=cp.step,
-                    url=cp.url,
-                    target_params_found=list(target_params_found.keys()),
-                )
+        history, target_params_found = self._load_checkpoint_state(url, task)
 
         try:
             context, page = await self._create_page_async(self.config.hooks)
@@ -1162,52 +1148,14 @@ class ReverseAgent:
                     self.checkpoint_manager.save(cp)
 
             # 合并最后一次观察的缓存，避免结果 hook_data 几乎为空
-            final_hook_data = await self._read_hook_data_async(page)
-            cached_records = self._hook_data_cache.get("records", [])
-            fresh_records = final_hook_data.get("records", [])
-            merged_records = list(cached_records) + [
-                r for r in fresh_records if r not in cached_records
-            ]
-            final_hook_data = {"records": merged_records, "count": len(merged_records)}
-            success = bool(target_params_found)
-            if self.config.target_params:
-                success = all(p in target_params_found for p in self.config.target_params)
-            if self.judge is not None and self._last_judge_result is not None:
-                success = success and self._last_judge_result.verified
-
-            if self.recorder is not None and success:
-                try:
-                    self._compiled_script = self.recorder.compile_script()
-                except Exception as exc:
-                    self._emit("recorder.compile_error", step=0, error=str(exc))
-                    self._compiled_script = ""
-
-            return {
-                "success": success,
-                "status": "stopped" if stopped else "completed",
-                "target_params_found": target_params_found,
-                "analysis": analysis,
-                "hook_data": final_hook_data,
-                "steps": len(history),
-                "history": history,
-                "plan": self._current_plan.to_dict() if self._current_plan else None,
-                "judge_result": (
-                    self._last_judge_result.to_dict() if self._last_judge_result else None
-                ),
-                "compiled_script": self._compiled_script or None,
-                "last_confidence": (
-                    {
-                        "score": self._last_confidence.score,
-                        "reasons": list(self._last_confidence.reasons),
-                        "action_type": getattr(self._last_confidence, "action_type", ""),
-                    }
-                    if self._last_confidence is not None
-                    else None
-                ),
-                "checkpoints": list(self.checkpoints_snapshot()),
-                "screenshots": list(self._screenshots),
-                "error_screenshot": self._last_error_screenshot or None,
-            }
+            final_hook_data = self._merge_final_hook_data(await self._read_hook_data_async(page))
+            return self._build_run_result(
+                stopped=stopped,
+                target_params_found=target_params_found,
+                analysis=analysis,
+                history=history,
+                final_hook_data=final_hook_data,
+            )
         finally:
             await self._cleanup_async()
 

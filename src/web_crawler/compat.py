@@ -1,9 +1,8 @@
-"""Optional dependency detection.
+"""可选依赖探测。
 
-Scrapling-style architecture: the core parser and adaptive engine depend only
-on the Python standard library plus ``lxml``/``cssselect`` (already required).
-Heavy capabilities (TLS-fingerprint stealth fetching, JavaScript rendering) are
-backed by optional third-party packages and degrade gracefully when absent.
+Scrapling 风格架构：核心解析器与自适应引擎只依赖 Python 标准库加
+``lxml``/``cssselect``（必装项）。重型能力（TLS 指纹隐身抓取、JavaScript
+渲染）由可选的第三方包支撑，缺失时优雅降级。
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ try:
     from curl_cffi import requests as _curl_requests  # noqa: F401
 
     HAS_CURL_CFFI = True
-except ImportError:  # pragma: no cover - exercised only without curl_cffi
+except ImportError:  # pragma: no cover - 仅在未安装 curl_cffi 时执行
     HAS_CURL_CFFI = False
 
 try:
@@ -21,7 +20,7 @@ try:
     from playwright.async_api import async_playwright  # noqa: F401
 
     HAS_PLAYWRIGHT = True
-except ImportError:  # pragma: no cover - exercised only without playwright
+except ImportError:  # pragma: no cover - 仅在未安装 playwright 时执行
     HAS_PLAYWRIGHT = False
 
 try:
@@ -36,12 +35,12 @@ try:
     from camoufox.sync_api import Camoufox  # noqa: F401
 
     HAS_CAMOUFOX = True
-except ImportError:  # pragma: no cover - exercised only without camoufox
+except ImportError:  # pragma: no cover - 仅在未安装 camoufox 时执行
     HAS_CAMOUFOX = False
 
 
 def require_curl_cffi() -> None:
-    """Raise an informative error if ``curl_cffi`` is not installed."""
+    """``curl_cffi`` 未安装时抛出带安装指引的异常。"""
     if not HAS_CURL_CFFI:
         raise ImportError(
             "curl_cffi is required for stealth HTTP fetching with TLS "
@@ -50,7 +49,7 @@ def require_curl_cffi() -> None:
 
 
 def require_playwright() -> None:
-    """Raise an informative error if ``playwright`` is not installed."""
+    """``playwright`` 未安装时抛出带安装指引的异常。"""
     if not HAS_PLAYWRIGHT:
         raise ImportError(
             "playwright is required for JavaScript-rendered fetching. "
@@ -59,7 +58,7 @@ def require_playwright() -> None:
 
 
 def require_camoufox() -> None:
-    """Raise an informative error if ``camoufox`` is not installed."""
+    """``camoufox`` 未安装时抛出带安装指引的异常。"""
     if not HAS_CAMOUFOX:
         raise ImportError(
             "camoufox is required for the anti-fingerprint Firefox fetcher. "

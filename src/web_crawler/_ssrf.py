@@ -1,39 +1,32 @@
-"""Host-level SSRF guard shared by the fetchers and the ``app`` layer.
+"""fetchers 与 ``app`` 层共享的 host 级 SSRF 防护。
 
-The HTTP fetch paths already whitelist URL schemes (http/https only). This
-module closes the second gap: the **host** of a request target is validated
-before anything is sent, so private / loopback / link-local destinations
-(including the cloud metadata endpoints ``169.254.169.254`` and
-``100.100.100.200``) are rejected.
+HTTP 抓取路径已对 URL scheme 做白名单（仅 http/https）。本模块补上第二道
+防线：任何请求发出前先校验目标的 **host**，私网 / 环回 / 链路本地地址
+（包括云元数据端点 ``169.254.169.254`` 与 ``100.100.100.200``）一律拒绝。
 
-Policy
-------
-* IP-literal hosts are matched against blocked ranges: ``0.0.0.0/8``,
-  ``10.0.0.0/8``, ``100.64.0.0/10`` (CGNAT), ``127.0.0.0/8`` (loopback),
-  ``169.254.0.0/16`` (link-local, incl. cloud metadata), ``172.16.0.0/12``,
-  ``192.168.0.0/16``, ``::1``, ``fc00::/7`` (IPv6 ULA) and ``fe80::/10``
-  (IPv6 link-local), plus multicast and unspecified addresses. IPv4-mapped
-  IPv6 literals (``::ffff:127.0.0.1``) are unwrapped and re-checked as IPv4.
-* Hostnames containing ``localhost`` (e.g. ``localhost``, ``*.localhost``,
-  ``localhost.localdomain``), ending in ``.local`` (mDNS) or equal to
-  well-known cloud-metadata names are rejected statically.
-* With ``resolve=True`` the hostname is additionally resolved via
-  :func:`socket.getaddrinfo`; if any resolved address falls into a blocked
-  range the host is rejected. A resolution failure is **conservatively**
-  treated as unsafe and logged (public domains such as ``quotes.toscrape.com``
-  pass as long as DNS resolves them to public addresses).
+策略
+----
+* IP 字面量 host 与被封锁网段比对：``0.0.0.0/8``、``10.0.0.0/8``、
+  ``100.64.0.0/10``（CGNAT）、``127.0.0.0/8``（环回）、``169.254.0.0/16``
+  （链路本地，含云元数据）、``172.16.0.0/12``、``192.168.0.0/16``、``::1``、
+  ``fc00::/7``（IPv6 ULA）与 ``fe80::/10``（IPv6 链路本地），另加组播与
+  未指定地址。IPv4-mapped IPv6 字面量（``::ffff:127.0.0.1``）会先解包再按
+  IPv4 复查。
+* 含 ``localhost`` 的主机名（如 ``localhost``、``*.localhost``、
+  ``localhost.localdomain``）、以 ``.local`` 结尾的 mDNS 名称，以及知名的
+  云元数据主机名会被静态拒绝。
+* ``resolve=True`` 时额外通过 :func:`socket.getaddrinfo` 解析主机名；任一
+  解析结果落入被封锁网段即拒绝。解析失败按**保守策略**视为不安全并记录
+  日志（``quotes.toscrape.com`` 等公共域名只要 DNS 解析到公网地址即可通过）。
 
 Power Mode
 ----------
-Setting ``WEB_CRAWLER_POWER_MODE=1`` bypasses the host-level checks above
-(the http/https scheme whitelist always stays). It exists for trusted
-personal environments that legitimately need to reach private / link-local
-targets (LAN services, cloud metadata) — never enable it for public or
-shared deployments.
+设置 ``WEB_CRAWLER_POWER_MODE=1`` 可跳过上述 host 级校验（http/https
+scheme 白名单始终保留）。它面向确需访问私网 / 链路本地目标（局域网服务、
+云元数据）的可信个人环境——公开或共享部署切勿开启。
 
-This module is stdlib-only on purpose so it can be imported by
-``web_crawler.fetchers``, ``app.crawler_net`` and the test suite without
-pulling in lxml / playwright / curl_cffi.
+本模块刻意只用标准库，以便 ``web_crawler.fetchers``、``app.crawler_net``
+与测试套件直接导入，而无需引入 lxml / playwright / curl_cffi。
 """
 
 from __future__ import annotations

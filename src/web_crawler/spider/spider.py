@@ -1,12 +1,11 @@
-"""Spider engine: request scheduling, callback dispatch, pause/resume.
+"""Spider 引擎：请求调度、回调分发、暂停/恢复。
 
-The engine is intentionally small and synchronous-friendly while still
-supporting concurrent fetching via :class:`asyncio.Semaphore`. It treats the
-fetcher as a pluggable backend (any object exposing ``get``/``async_get``
-returning a :class:`~web_crawler.response.Response`), so the same spider can
-run against :class:`~web_crawler.fetchers.Fetcher`,
-:class:`~web_crawler.fetchers.DynamicFetcher`, or
-:class:`~web_crawler.fetchers.StealthyFetcher`.
+引擎刻意保持小巧且对同步友好，同时支持并发抓取。fetcher 被视为
+可插拔后端（任何暴露 ``get``/``async_get`` 并返回
+:class:`~web_crawler.response.Response` 的对象），因此同一个 spider
+可运行在 :class:`~web_crawler.fetchers.Fetcher`、
+:class:`~web_crawler.fetchers.DynamicFetcher` 或
+:class:`~web_crawler.fetchers.StealthyFetcher` 之上。
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 class _FetcherLike(Protocol):
-    """Structural type for any fetcher the spider can drive."""
+    """spider 可驱动的任意 fetcher 的结构化类型。"""
 
     def get(self, url: str, **kwargs: Any) -> Response: ...  # pragma: no cover
 
@@ -39,16 +38,53 @@ class _FetcherLike(Protocol):
 
 
 class SpiderError(Exception):
-    """Raised for fatal spider engine errors (bad callbacks, state corruption)."""
+    """致命 spider 引擎错误（回调错误、状态损坏）时抛出。"""
+
+
+class IgnoreRequest(Exception):
+    """中间件抛出以丢弃某个请求（计入 ``requests_ignored``，不打断运行）。"""
+
+
+class DropItem(Exception):
+    """item 管道抛出以丢弃某条 item（不计入 ``items_scraped``）。"""
+
+
+class DownloaderMiddleware:
+    """下载中间件基类：在请求发出前/响应返回后介入下载流程。
+
+    - :meth:`process_request` 返回 ``None`` 放行下载；返回
+      :class:`~web_crawler.response.Response` 直接短路（不再发请求）；
+      抛 :class:`IgnoreRequest` 丢弃该请求。
+    - :meth:`process_response` 收到下载结果，返回（可替换的）Response。
+
+    中间件按声明顺序依次执行；默认实现全部直通。
+    """
+
+    def process_request(self, request: Request, spider: Spider) -> Response | None:
+        return None
+
+    def process_response(self, response: Response, request: Request, spider: Spider) -> Response:
+        return response
+
+
+class ItemPipeline:
+    """item 管道基类：回调产出的每条 item 依次经过各管道。
+
+    :meth:`process_item` 返回变换后的 item；返回 ``None`` 或抛
+    :class:`DropItem` 丢弃该条。
+    """
+
+    def process_item(self, item: Any, spider: Spider) -> Any:
+        return item
 
 
 @dataclass(order=True)
 class Request:
-    """A scheduled request.
+    """一个已调度的请求。
 
-    ``callback`` is the name of a method on the :class:`Spider` subclass
-    (default ``"parse"``). ``priority`` higher values are processed first.
-    ``meta`` is propagated to ``response.meta`` so callbacks can pass state.
+    ``callback`` 是 :class:`Spider` 子类上的方法名（默认 ``"parse"``）。
+    ``priority`` 值越大越先处理。``meta`` 会透传到 ``response.meta``，
+    供回调传递状态。
     """
 
     url: str
@@ -68,12 +104,13 @@ class Request:
 
 @dataclass
 class SpiderStats:
-    """Lightweight run statistics."""
+    """轻量运行统计。"""
 
     pages_crawled: int = 0
     items_scraped: int = 0
     requests_scheduled: int = 0
     requests_failed: int = 0
+    requests_ignored: int = 0
     start_time: float = 0.0
     end_time: float = 0.0
 
@@ -90,6 +127,7 @@ class SpiderStats:
             "items_scraped": self.items_scraped,
             "requests_scheduled": self.requests_scheduled,
             "requests_failed": self.requests_failed,
+            "requests_ignored": self.requests_ignored,
             "elapsed_seconds": round(self.elapsed, 3),
         }
 
@@ -126,12 +164,11 @@ class DupeFilter:
 
 
 class Spider:
-    """Base class for user spiders.
+    """用户 spider 的基类。
 
-    Subclasses define :attr:`start_urls` (or override :meth:`start_requests`)
-    and a ``parse`` callback. Callbacks may ``yield`` additional
-    :class:`Request` objects (which are scheduled) or any other object
-    (treated as a scraped item and collected).
+    子类定义 :attr:`start_urls`（或重写 :meth:`start_requests`）与一个
+    ``parse`` 回调。回调可以 ``yield`` 更多 :class:`Request` 对象
+    （会被调度）或任意其他对象（视为抓取到的 item 并收集）。
     """
 
     name: str = ""
@@ -146,6 +183,10 @@ class Spider:
     respect_robots: bool = False
     # robots.txt 检查使用的 User-Agent（"*" 表示对所有 UA 的规则取并集的保守判定）
     user_agent: str = "*"
+    # 下载中间件（类或实例均可，按声明顺序执行）
+    middlewares: list[type[DownloaderMiddleware] | DownloaderMiddleware] = []
+    # item 管道（类或实例均可，按声明顺序执行）
+    item_pipelines: list[type[ItemPipeline] | ItemPipeline] = []
 
     def __init__(
         self,
@@ -154,11 +195,17 @@ class Spider:
         adaptive: bool = False,
         dupefilter: DupeFilter | None = None,
     ) -> None:
-        # ``fetcher`` is deferred so a spider can be defined without one.
+        # ``fetcher`` 允许延迟提供，spider 可先定义后绑定。
         self.fetcher = fetcher
         self.adaptive = adaptive
         self.stats = SpiderStats()
         self.dupefilter = dupefilter if dupefilter is not None else DupeFilter()
+        self._middlewares: list[DownloaderMiddleware] = [
+            mw() if isinstance(mw, type) else mw for mw in self.middlewares
+        ]
+        self._item_pipelines: list[ItemPipeline] = [
+            pipe() if isinstance(pipe, type) else pipe for pipe in self.item_pipelines
+        ]
         self._robots_cache: dict[str, urllib.robotparser.RobotFileParser] = {}
         self._paused = False
         self._heap_counter = 0
@@ -167,19 +214,19 @@ class Spider:
 
     # -- user hooks --------------------------------------------------------
     def start_requests(self) -> Iterator[Request]:
-        """Yield the initial requests. Override for custom seeding."""
+        """产出初始请求。重写以自定义种子。"""
         for url in self.start_urls:
             yield Request(url=url)
 
     def parse(self, response: Response) -> Iterator[Any]:  # pragma: no cover - abstract
-        """Default callback. Override in subclasses."""
+        """默认回调。在子类中重写。"""
         raise NotImplementedError(
             f"{type(self).__name__} must implement parse() or specify a callback"
         )
 
     # -- helpers -----------------------------------------------------------
     def allowed(self, url: str) -> bool:
-        """Return True if ``url``'s host is permitted (忽略端口与 userinfo)."""
+        """``url`` 的 host 在允许范围内时返回 True（忽略端口与 userinfo）。"""
         if not self.allowed_domains:
             return True
         host = urlparse(url).hostname
@@ -238,7 +285,7 @@ class Spider:
         return True
 
     def _dispatch(self, response: Response, request: Request) -> list[Any]:
-        """Run the named callback and collect its yielded outputs."""
+        """执行按名取得的回调并收集其 yield 的产出。"""
         # 拷贝 meta 而非共享引用，避免多个回调间意外互相修改
         response.meta = dict(request.meta)
         callback = getattr(self, request.callback, None)
@@ -248,6 +295,32 @@ class Spider:
         if result is None:
             return []
         return list(result)
+
+    # -- middleware / pipeline ----------------------------------------------
+    def _apply_request_middlewares(self, request: Request) -> Response | None:
+        """依次执行 process_request；返回 Response 表示短路下载。"""
+        for mw in self._middlewares:
+            result = mw.process_request(request, self)
+            if isinstance(result, Response):
+                return result
+        return None
+
+    def _apply_response_middlewares(self, response: Response, request: Request) -> Response:
+        """依次执行 process_response（前一个的产出是后一个的输入）。"""
+        for mw in self._middlewares:
+            response = mw.process_response(response, request, self)
+        return response
+
+    def _apply_item_pipelines(self, item: Any) -> Any:
+        """依次执行 process_item；返回 None 表示该条被丢弃。"""
+        for pipe in self._item_pipelines:
+            try:
+                item = pipe.process_item(item, self)
+            except DropItem:
+                return None
+            if item is None:
+                return None
+        return item
 
     # -- fetcher adapters -------------------------------------------------
     def _fetch_sync(self, request: Request) -> Response:
@@ -340,7 +413,7 @@ class Spider:
 
     # -- public API --------------------------------------------------------
     def pause(self) -> None:
-        """Signal the running loop to persist state and stop after current batch."""
+        """通知运行中的循环持久化状态并在当前批次后停止。"""
         self._paused = True
 
     def run(
@@ -350,17 +423,17 @@ class Spider:
         state_file: str | Path | None = None,
         resume: bool = False,
     ) -> list[Any]:
-        """Run the spider synchronously and return collected items.
+        """同步运行 spider 并返回收集到的 item。
 
         Parameters
         ----------
         max_requests:
-            Hard cap on the number of requests to issue this run.
+            本次运行发出请求数的硬上限。
         state_file:
-            Path to a JSON file used for pause/resume. If ``resume`` is True
-            and the file exists, the queue and seen-set are restored.
+            用于暂停/恢复的 JSON 文件路径。``resume`` 为 True 且文件存在时，
+            队列与已见集合会被恢复。
         resume:
-            Resume from ``state_file`` if it exists.
+            ``state_file`` 存在时从其恢复。
         """
         if self.fetcher is None:
             raise SpiderError("Spider.run requires a fetcher; pass fetcher= to the constructor")
@@ -371,9 +444,8 @@ class Spider:
         # 也不得在未显式管理时向 CWD 落盘。
         manage_state = state_file is not None or resume
         owns_state = resume  # resume 从该文件恢复，视为本次运行消费该文件
-        # queue is a min-heap of ``(-priority, counter, Request)`` — heapq
-        # yields the smallest tuple first, so negating priority gives
-        # highest-priority-first ordering.
+        # queue 是 ``(-priority, counter, Request)`` 的最小堆 —— heapq
+        # 先弹出最小元组，priority 取负即得到高优先级先出的顺序。
         queue: list[tuple[int, int, Request]] = []
         if resume:
             loaded, restored = self._load_state(path)
@@ -401,26 +473,39 @@ class Spider:
                     break
                 _, _, request = heapq.heappop(queue)
                 self.stats.requests_scheduled += 1
+                # process_request 可短路下载（返回 Response）或丢弃请求
                 try:
-                    response = self._fetch_sync(request)
-                except Exception as exc:
-                    if request.retries < self.max_retries:
-                        request.retries += 1
-                        delay = min(0.5 * 2 ** (request.retries - 1), 8.0)
-                        if delay:
-                            time.sleep(delay)
-                        self._heap_counter += 1
-                        heapq.heappush(queue, (-request.priority, self._heap_counter, request))
-                        logger.info(
-                            "retrying %s (attempt %d/%d)",
-                            request.url,
-                            request.retries,
-                            self.max_retries,
-                        )
-                    else:
-                        self.stats.requests_failed += 1
-                        logger.warning("request failed: %s (%s)", request.url, exc)
+                    response = self._apply_request_middlewares(request)
+                except IgnoreRequest:
+                    self.stats.requests_ignored += 1
+                    logger.info("request ignored by middleware: %s", request.url)
                     continue
+                if response is None:
+                    try:
+                        response = self._fetch_sync(request)
+                    except IgnoreRequest:
+                        self.stats.requests_ignored += 1
+                        logger.info("request ignored by middleware: %s", request.url)
+                        continue
+                    except Exception as exc:
+                        if request.retries < self.max_retries:
+                            request.retries += 1
+                            delay = min(0.5 * 2 ** (request.retries - 1), 8.0)
+                            if delay:
+                                time.sleep(delay)
+                            self._heap_counter += 1
+                            heapq.heappush(queue, (-request.priority, self._heap_counter, request))
+                            logger.info(
+                                "retrying %s (attempt %d/%d)",
+                                request.url,
+                                request.retries,
+                                self.max_retries,
+                            )
+                        else:
+                            self.stats.requests_failed += 1
+                            logger.warning("request failed: %s (%s)", request.url, exc)
+                        continue
+                response = self._apply_response_middlewares(response, request)
 
                 self.stats.pages_crawled += 1
                 if self.download_delay:
@@ -437,9 +522,12 @@ class Spider:
                         if self._filter(out):
                             self._heap_counter += 1
                             heapq.heappush(queue, (-out.priority, self._heap_counter, out))
-                    else:
-                        items.append(out)
-                        self.stats.items_scraped += 1
+                        continue
+                    processed = self._apply_item_pipelines(out)
+                    if processed is None:
+                        continue
+                    items.append(processed)
+                    self.stats.items_scraped += 1
         finally:
             self.stats.end_time = time.monotonic()
             if self._paused or (manage_state and queue):
@@ -456,9 +544,9 @@ class Spider:
         state_file: str | Path | None = None,
         resume: bool = False,
     ) -> list[Any]:
-        """Async variant: fetches concurrently up to :attr:`max_concurrency`.
+        """异步版本：并发抓取，上限为 :attr:`max_concurrency`。
 
-        Delegates to :meth:`stream` so the core worker loop is defined once.
+        委托给 :meth:`stream`，核心 worker 循环只实现一份。
         """
         if self.fetcher is None:
             raise SpiderError("Spider.async_run requires a fetcher")
@@ -480,13 +568,16 @@ class Spider:
     ) -> AsyncIterator[Any]:
         """异步流式产出抓取到的 item，适合长爬取与实时管道。
 
+        调度为持续流式：并发槽位空出即取队首请求派发，慢请求不会
+        阻塞后续请求的调度（无整批 barrier）。
+
         用法::
 
             async for item in spider.stream():
                 process(item)
 
         与 :meth:`async_run` 不同，不把所有 item 缓存在内存里，而是
-        每抓到一条就 ``yield`` 出去。
+        每抓到一条就 ``yield`` 出去（按完成顺序）。
         """
         if self.fetcher is None:
             raise SpiderError("Spider.stream requires a fetcher")
@@ -510,19 +601,28 @@ class Spider:
             for _, _, r in queue:
                 self.dupefilter.seen.add(self.dupefilter.fingerprint(r))
 
-        sem = asyncio.Semaphore(self.max_concurrency)
         self.stats.start_time = time.monotonic()
         self._paused = False
 
-        async def worker(item: tuple[int, int, Request]) -> list[Any]:
-            _, _, request = item
-            async with sem:
-                self.stats.requests_scheduled += 1
+        async def worker(request: Request, buf: list[Any]) -> None:
+            """下载单个请求并处理产出：新 Request 入队，item 写入 buf。"""
+            # process_request 可短路下载或丢弃请求
+            try:
+                response = self._apply_request_middlewares(request)
+            except IgnoreRequest:
+                self.stats.requests_ignored += 1
+                logger.info("request ignored by middleware: %s", request.url)
+                return
+            if response is None:
                 try:
                     response = await self._fetch_async(request)
+                except IgnoreRequest:
+                    self.stats.requests_ignored += 1
+                    logger.info("request ignored by middleware: %s", request.url)
+                    return
                 except Exception as exc:
                     # 与 run() 一致的重试语义：push 回队列而非在 worker 内自旋，
-                    # 让主循环统一控制批处理与暂停检查
+                    # 让主循环统一控制调度与暂停检查
                     if request.retries < self.max_retries:
                         request.retries += 1
                         delay = min(0.5 * 2 ** (request.retries - 1), 8.0)
@@ -539,46 +639,65 @@ class Spider:
                     else:
                         self.stats.requests_failed += 1
                         logger.warning("request failed: %s (%s)", request.url, exc)
-                    return []
-                self.stats.pages_crawled += 1
-                if self.download_delay:
-                    await asyncio.sleep(self.download_delay)
-                try:
-                    return self._dispatch(response, request)
-                except Exception as exc:
-                    raise SpiderError(
-                        f"callback {request.callback!r} raised on {request.url}: {exc}"
-                    ) from exc
+                    return
+            response = self._apply_response_middlewares(response, request)
+            self.stats.pages_crawled += 1
+            if self.download_delay:
+                await asyncio.sleep(self.download_delay)
+            try:
+                outputs = self._dispatch(response, request)
+            except Exception as exc:
+                raise SpiderError(
+                    f"callback {request.callback!r} raised on {request.url}: {exc}"
+                ) from exc
+            for out in outputs:
+                if isinstance(out, Request):
+                    if self._filter(out):
+                        self._heap_counter += 1
+                        heapq.heappush(queue, (-out.priority, self._heap_counter, out))
+                    continue
+                processed = self._apply_item_pipelines(out)
+                if processed is not None:
+                    buf.append(processed)
 
+        # 持续流式调度：只要有空闲并发槽位就立刻取队首请求派发，
+        # 慢请求不再阻塞后续请求（区别于旧的"整批等待"模式）。
         # try/finally：消费方提前 break（aclose）、回调异常或暂停时
-        # 都要完成状态持久化，不丢已排队的请求
+        # 都要完成状态持久化，不丢已排队的请求。
+        pending: set[asyncio.Task[None]] = set()
+        items_buf: list[Any] = []
         try:
-            while queue and not self._paused:
-                if max_requests is not None and self.stats.pages_crawled >= max_requests:
-                    break
-                remaining = (
-                    max_requests - self.stats.pages_crawled
-                    if max_requests is not None
-                    else len(queue)
-                )
-                batch_size = min(self.max_concurrency, len(queue), max(0, remaining))
-                if batch_size <= 0:  # pragma: no cover - 防御性：上层已保证 remaining>0
-                    break
-                batch = [heapq.heappop(queue) for _ in range(batch_size)]
-                results = await asyncio.gather(*[worker(r) for r in batch], return_exceptions=True)
-                for outputs in results:
-                    if isinstance(outputs, BaseException):
-                        # 保持单个回调致命错误中止整个流的既有语义
-                        raise outputs
-                    for out in outputs:
-                        if isinstance(out, Request):
-                            if self._filter(out):
-                                self._heap_counter += 1
-                                heapq.heappush(queue, (-out.priority, self._heap_counter, out))
-                            continue
-                        self.stats.items_scraped += 1
-                        yield out
+            while True:
+                # 补并发槽位：max_requests 以"已完成 + in-flight"为下限计数，
+                # 保证精确不超发也不少发
+                while (
+                    queue
+                    and len(pending) < self.max_concurrency
+                    and not self._paused
+                    and (
+                        max_requests is None
+                        or self.stats.pages_crawled + len(pending) < max_requests
+                    )
+                ):
+                    _, _, request = heapq.heappop(queue)
+                    self.stats.requests_scheduled += 1
+                    pending.add(asyncio.create_task(worker(request, items_buf)))
+                if not pending:
+                    break  # 无 in-flight 且（队列空或不再取件：暂停/达上限）
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    if (exc := task.exception()) is not None:
+                        for leftover in pending:
+                            leftover.cancel()
+                        raise exc
+                # drain 完成的 item（完成顺序，非调度顺序）
+                while items_buf:
+                    item = items_buf.pop(0)
+                    self.stats.items_scraped += 1
+                    yield item
         finally:
+            for leftover in pending:
+                leftover.cancel()
             self.stats.end_time = time.monotonic()
             if self._paused or (manage_state and queue):
                 self._dump_state([r for _, _, r in queue], path)
@@ -587,4 +706,14 @@ class Spider:
                 path.unlink()
 
 
-__all__ = ["DupeFilter", "Request", "Spider", "SpiderError", "SpiderStats"]
+__all__ = [
+    "DownloaderMiddleware",
+    "DropItem",
+    "DupeFilter",
+    "IgnoreRequest",
+    "ItemPipeline",
+    "Request",
+    "Spider",
+    "SpiderError",
+    "SpiderStats",
+]
