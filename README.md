@@ -44,7 +44,7 @@ flowchart TB
 - **JS 渲染** — `DynamicFetcher` 驱动 Playwright/Chromium 渲染动态页面，支持按资源类型屏蔽、按选择器等待。
 - **反爬处理** — `StealthyFetcher` 注入指纹补丁 JS、人类化鼠标/滚动轨迹，并对 Cloudflare 挑战做尽力而为的处理。
 - **代理轮换** — `ProxyPool` 支持轮询/随机策略与按代理失败次数冷却。
-- **Spider 框架** — `Spider` / `Request` 提供回调分发、优先级调度、域名过滤、URL 去重与基于 JSON 的暂停/续跑。
+- **Spider 框架** — `Spider` / `Request` 提供回调分发、优先级调度、域名过滤、指纹去重（method+url+body，`DupeFilter` 可插拔）、失败重试（指数退避）、可选 `robots.txt` 遵守与基于 JSON 的暂停/续跑。
 - **统一 `Response`** — 所有 fetcher 返回同一 `Response` 对象，内置 `.css()` / `.xpath()` / `.json()` / `urljoin()` 辅助方法。
 - **AI 辅助抓取** — `AIExtractor` 把自然语言字段描述转换为校验过的 CSS 选择器（含自愈能力）；`AIScrapeAgent` 编排抓取与抽取，遵守 `robots.txt`，对 429/503 退避（遵循 `Retry-After`），遇到卡死会返回"转人工处理"。
 - **JS 逆向 Agent** — `ReverseAgent` 通过 **观察 → 思考 → 行动** 循环（`CamoufoxFetcher` + DeepSeek-V4-Pro）逆向目标站点的加密逻辑：注入 JS Hook（fetch / XHR / cookie / `crypto.subtle` / webpack / console）、捕获网络流量、拆分 webpack 包，再让 LLM 反混淆并在 Python 中重实现签名算法。内置 6 种真实浏览器交互动作（`click` / `type` / `scroll` / `press` / `hover` / `select_option`）、3 种多标签动作（`new_tab` / `switch_tab` / `close_tab`）与人类化输入轨迹；危险点击护栏与选择器注入拦截。同时通过 MCP 服务（`web-crawler-mcp`）、命令行（`web-crawler-reverse`）与 Web UI（SSE 实时推送 `/reverse/stream`）暴露。
@@ -116,6 +116,18 @@ items = QuotesSpider(fetcher=Fetcher(impersonate="chrome131")).run()
 # spider.run(state_file="state.json")
 # QuotesSpider(fetcher=Fetcher()).run(state_file="state.json", resume=True)
 ```
+
+Spider 还内置了爬虫框架级的通用机制，均可通过类属性开关：
+
+```python
+class RobustSpider(Spider):
+    start_urls = ["https://example.com/"]
+    max_retries = 2  # 下载失败指数退避重试（默认 0 不重试）
+    respect_robots = True  # 回调产出的请求先过 robots.txt（默认关闭）
+    user_agent = "my-bot"  # robots.txt 检查使用的 UA
+```
+
+去重默认按 `method + url + body` 的 SHA1 指纹判定（同 URL 不同分页参数不再互相误杀），需要磁盘持久化等自定义行为时可传入 `dupefilter=MyDupeFilter()`。
 
 ### JS 渲染与反爬
 
@@ -328,6 +340,12 @@ export WEB_CRAWLER_POWER_MODE=1
 代码内等价方式：构造 fetcher 时传 `allow_private_hosts=True`（`resolve_hosts=True` 可单独开启 DNS 解析复查）。
 
 > ⚠️ **风险提示**：Power Mode 会绕过 SSRF 防护，**只应在你自己的内网 / 开发环境使用**；公开部署、共享服务器、处理不可信网页时请保持默认关闭。测试套件使用的 `WEB_CRAWLER_ALLOW_PRIVATE_HOSTS=1` 为同义旧开关，二者等效。
+
+## 贡献与安全
+
+- 参与贡献请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)（开发环境、质量要求、提交规范）。
+- 发现安全漏洞请按 [SECURITY.md](SECURITY.md) 私密披露，不要开公开 Issue。
+- 社区行为准则见 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
 
 ## 许可证
 

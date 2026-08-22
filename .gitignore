@@ -24,6 +24,9 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
+# Docs build output (mkdocs)
+site/
+
 # Environment / secrets
 .env
 .env.*
@@ -33,6 +36,10 @@ htmlcov/
 # IDE
 .idea/
 .vscode/
+.zcode/
+
+# 内部过程文档（不随仓库分发）
+REVIEW-REPORT.md
 
 # OS
 .DS_Store
