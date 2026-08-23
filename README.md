@@ -332,10 +332,14 @@ docs/ + mkdocs.yml        # MkDocs 文档站点
 ```bash
 ruff check .                          # 静态检查
 mypy src/web_crawler app                # 类型检查
-pytest -m "not slow"                  # 运行测试（跳过慢速集成测试）
-pytest --cov=web_crawler --cov=app    # 带覆盖率
+python -m pytest -m "not slow"        # 运行测试（跳过慢速集成测试）
+python -m pytest --cov=web_crawler --cov=app   # 带覆盖率
 python benchmarks.py --check-regression   # 性能回归检查（CI 模式）
 ```
+
+> 测试需要 dev 依赖（`pytest` / `pytest-asyncio` / `pytest-cov`）。仓库内 `.venv` 是
+> 纯运行时环境、不含 pytest，请用已安装 dev 依赖的系统 Python 运行（`python -m pytest`
+> 或直接 `pytest`，editable 安装后无需 `PYTHONPATH=src`）。
 
 GitHub Actions 在每次 push 时运行 lint、类型检查、带覆盖率的测试、基准回归检查与文档构建（`--strict`）；标记为 `@pytest.mark.slow` 的慢速测试（如 Camoufox 端到端套件）默认被排除。
 
