@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ### Changed
+- **测试升级为警告即错误的严格模式**：`filterwarnings` 首位设 `error`，
+  任何未豁免告警直接判测试失败；修复全部 55 处资源泄漏（`crawler.py`
+  提取 `_close_jsonl()`、4 处 ThreadingHTTPServer fixture 补
+  `server.server_close()`），新增 37 处 `ResourceWarning` 断言；41 个
+  静默告警清零，覆盖率恢复 **100%（minimal-deps）/ 99.95%（full-deps）**。
 - **全量可选依赖纳入测试测量**：新增 `test-extras` CI job（安装
   `all+camoufox+captcha`），此前因缺 playwright/curl_cffi 被 skip 的
   123 个测试全部执行——全依赖下 2927 passed、覆盖率 **99.73%**；
@@ -28,9 +33,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   容差，补丁覆盖不做强制，杜绝小幅波动把徽章标红。
 - **修复 ui.py 迁移遗留的 sys.path 污染**：裸 `import db/crawler` 造成
   模块双加载与覆盖率无法归属，改正规绝对导入后 db.py 恢复测量。
-
-
-### Changed
 - **reverse_agent 完整 async 核心化**：`run()` 改为
   `asyncio.run(arun())` 薄包装（事件循环内调用给出明确报错），删除
   23 个 sync/async 成对方法中的全部 sync 版（`_observe`/`_act`/20 个
