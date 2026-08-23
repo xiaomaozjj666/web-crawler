@@ -39,7 +39,7 @@ set "PY_CMD=python"
 echo 使用 Python: %PY_CMD%
 REM 免安装运行：把项目 src/ 加入模块搜索路径（与 demo.py 一致）
 set "PYTHONPATH=%~dp0src;%PYTHONPATH%"
-%PY_CMD% app/ui.py --open
+%PY_CMD% -m web_crawler.app.ui --open
 set "EXIT_CODE=%errorlevel%"
 
 :done
