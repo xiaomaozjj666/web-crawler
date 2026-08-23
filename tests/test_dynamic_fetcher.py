@@ -577,7 +577,9 @@ def test_ensure_async_browser_starts_driver_and_launches(mock_async_pw: Any) -> 
         b2 = await f._ensure_async_browser()
         assert b2 is mock_browser
         assert mock_async_pw.return_value.start.await_count == 1
-        f.close()
+        # 同步 close() 遇到活跃 async 句柄必须发 ResourceWarning 提醒改用 aclose()
+        with pytest.warns(ResourceWarning, match="aclose"):
+            f.close()
 
     import asyncio
 
@@ -716,7 +718,9 @@ def test_async_fetch_wraps_failure_in_runtime_error() -> None:
         f._async_browser.new_context.side_effect = RuntimeError("boom")
         with pytest.raises(RuntimeError, match="dynamic async fetch of https://x/ failed"):
             await f.async_fetch("https://x/")
-        f.close()
+        # 同步 close() 遇到活跃 async 句柄必须发 ResourceWarning 提醒改用 aclose()
+        with pytest.warns(ResourceWarning, match="aclose"):
+            f.close()
 
     import asyncio
 
@@ -737,7 +741,9 @@ def test_async_fetch_success() -> None:
         out = await f.async_fetch("https://example.com/x")
         assert out.status == 200
         assert b"hi" in out.content
-        f.close()
+        # 同步 close() 遇到活跃 async 句柄必须发 ResourceWarning 提醒改用 aclose()
+        with pytest.warns(ResourceWarning, match="aclose"):
+            f.close()
 
     import asyncio
 
@@ -876,7 +882,9 @@ def test_async_screenshot_tiles_slices_full_page() -> None:
         assert len(tiles) == 2
         assert tiles[0]["b64"] == base64.b64encode(b"A").decode("ascii")
         assert tiles[1]["b64"] == base64.b64encode(b"B").decode("ascii")
-        f.close()
+        # 同步 close() 遇到活跃 async 句柄必须发 ResourceWarning 提醒改用 aclose()
+        with pytest.warns(ResourceWarning, match="aclose"):
+            f.close()
 
     import asyncio
 
@@ -902,7 +910,9 @@ def test_async_screenshot_tiles_jpeg() -> None:
         kwargs = page.screenshot.call_args.kwargs
         assert kwargs["type"] == "jpeg"
         assert kwargs["quality"] == 50
-        f.close()
+        # 同步 close() 遇到活跃 async 句柄必须发 ResourceWarning 提醒改用 aclose()
+        with pytest.warns(ResourceWarning, match="aclose"):
+            f.close()
 
     import asyncio
 
@@ -1004,7 +1014,9 @@ def test_async_screenshot_tiles_with_wait_selector_and_page_action() -> None:
             "networkidle", timeout=f.wait_timeout * 1000
         )
         assert called_with == [page]
-        f.close()
+        # 同步 close() 遇到活跃 async 句柄必须发 ResourceWarning 提醒改用 aclose()
+        with pytest.warns(ResourceWarning, match="aclose"):
+            f.close()
 
     import asyncio
 
@@ -1029,7 +1041,9 @@ def test_async_screenshot_tiles_networkidle_timeout_swallowed() -> None:
 
         tiles = await f.async_screenshot_tiles("https://example.com/")
         assert len(tiles) == 1
-        f.close()
+        # 同步 close() 遇到活跃 async 句柄必须发 ResourceWarning 提醒改用 aclose()
+        with pytest.warns(ResourceWarning, match="aclose"):
+            f.close()
 
     import asyncio
 
@@ -1052,7 +1066,9 @@ def test_async_screenshot_tiles_zero_height_page_returns_no_tiles() -> None:
 
         tiles = await f.async_screenshot_tiles("https://example.com/")
         assert tiles == []
-        f.close()
+        # 同步 close() 遇到活跃 async 句柄必须发 ResourceWarning 提醒改用 aclose()
+        with pytest.warns(ResourceWarning, match="aclose"):
+            f.close()
 
     import asyncio
 
@@ -1181,7 +1197,9 @@ def test_cleanup_async_handles_swallows_exceptions() -> None:
         # 关闭失败时引用保留（不置 None），避免"失败却丢失引用导致进程泄漏"
         assert f._async_browser is async_browser_mock
         assert f._async_pw is async_pw_mock
-        f.close()
+        # 同步 close() 遇到活跃 async 句柄必须发 ResourceWarning 提醒改用 aclose()
+        with pytest.warns(ResourceWarning, match="aclose"):
+            f.close()
 
     import asyncio
 
@@ -1472,7 +1490,9 @@ def test_async_screenshot_tiles_max_tiles_cap() -> None:
                 "https://example.com/", tile_height=500, max_tiles=2
             )
         assert len(tiles) == 2
-        f.close()
+        # 同步 close() 遇到活跃 async 句柄必须发 ResourceWarning 提醒改用 aclose()
+        with pytest.warns(ResourceWarning, match="aclose"):
+            f.close()
 
     import asyncio
 

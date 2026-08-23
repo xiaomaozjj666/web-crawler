@@ -82,6 +82,7 @@ def redirect_server() -> str:
     yield f"http://127.0.0.1:{port}"
     server.shutdown()
     thread.join(timeout=5)
+    server.server_close()
 
 
 def test_fetcher_constructs_with_curl_cffi() -> None:
@@ -612,7 +613,9 @@ def test_fetcher_send_once_async_httpx_no_proxy(monkeypatch) -> None:
                 "GET", "https://x.example/", None, None, None, {}, None, 5.0, True, True
             )
         finally:
-            f.close()
+            # 同步 close() 跳过异步会话关闭时必须发 ResourceWarning 提醒改用 aclose
+            with pytest.warns(ResourceWarning, match="aclose"):
+                f.close()
 
     import asyncio
 
@@ -1071,7 +1074,9 @@ def test_fetcher_async_post_returns_response(monkeypatch) -> None:
         try:
             return await f.async_post("https://x.example/post", data={"k": "v"})
         finally:
-            f.close()
+            # 同步 close() 跳过异步会话关闭时必须发 ResourceWarning 提醒改用 aclose
+            with pytest.warns(ResourceWarning, match="aclose"):
+                f.close()
 
     import asyncio
 

@@ -52,6 +52,7 @@ def http_server() -> str:
     yield f"http://127.0.0.1:{port}"
     server.shutdown()
     thread.join(timeout=5)
+    server.server_close()
 
 
 @pytest.fixture(autouse=True)
