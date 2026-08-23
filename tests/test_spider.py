@@ -1759,3 +1759,169 @@ def test_per_domain_delay_async_serializes_same_domain() -> None:
     # y.example 不受 x 域限速约束（其请求可早于 x 域完成）
     y_times = [ts for url, ts in timestamps if url.startswith("https://y.example")]
     assert len(y_times) == 1
+
+
+# ===========================================================================
+# 基类默认实现 / 无延迟限速 / 管道丢弃 / IgnoreRequest / 在途任务取消
+# ===========================================================================
+
+
+def test_downloader_middleware_base_defaults_pass_through() -> None:
+    """DownloaderMiddleware 基类的默认实现全部直通。"""
+    mw = DownloaderMiddleware()
+    spider = Spider()
+    req = Request("https://shop.example.com/")
+    # process_request 默认返回 None（放行下载）
+    assert mw.process_request(req, spider) is None
+    # process_response 默认原样返回同一个 Response
+    resp = Response(req.url, 200, b"")
+    assert mw.process_response(resp, req, spider) is resp
+
+
+def test_item_pipeline_base_default_passes_item_through() -> None:
+    """ItemPipeline 基类的默认 process_item 原样返回 item。"""
+    pipe = ItemPipeline()
+    spider = Spider()
+    item = {"name": "A"}
+    assert pipe.process_item(item, spider) is item
+
+
+def test_throttle_domain_async_without_delay_returns_immediately() -> None:
+    """_throttle_domain_async 未配置延迟时直接返回（不进入锁、不记录时间戳）。"""
+    spider = ItemSpider(fetcher=FakeFetcher(PAGES))
+
+    async def go() -> None:
+        lock = asyncio.Lock()
+        await spider._throttle_domain_async("https://shop.example.com/", lock)
+
+    asyncio.run(go())
+    # delay <= 0 提前返回：不产生任何同域时间戳账本
+    assert spider._domain_last_ts == {}
+
+
+def test_item_pipeline_returning_none_drops_item() -> None:
+    """管道 process_item 返回 None 时该条 item 被丢弃（不进入结果）。"""
+
+    class _NullifyPipeline(ItemPipeline):
+        def process_item(self, item: Any, spider: Spider) -> Any:
+            return None
+
+    spider = ItemSpider(fetcher=FakeFetcher(PAGES))
+    spider._item_pipelines = [_NullifyPipeline()]
+    items = spider.run()
+    assert items == []
+    assert spider.stats.items_scraped == 0
+
+
+def test_spider_run_fetcher_ignore_request_counts_ignored() -> None:
+    """run() 中 fetcher 抛 IgnoreRequest 时请求被丢弃并计入 requests_ignored。"""
+
+    class _IgnoringFetcher:
+        def get(self, url: str, **kwargs: Any) -> Response:
+            raise IgnoreRequest("denied by middleware")
+
+    class S(Spider):
+        start_urls = ["https://shop.example.com/"]
+
+        def parse(self, response: Response) -> Any:
+            yield {"x": 1}
+
+    spider = S(fetcher=_IgnoringFetcher())
+    items = spider.run()
+    assert items == []
+    assert spider.stats.requests_ignored == 1
+    assert spider.stats.pages_crawled == 0
+    assert spider.stats.requests_failed == 0
+
+
+def test_spider_stream_fetcher_ignore_request_counts_ignored() -> None:
+    """stream() 中 fetcher 抛 IgnoreRequest 时计入 requests_ignored 且不打断。"""
+
+    class _IgnoringAsyncFetcher:
+        async def async_get(self, url: str, **kwargs: Any) -> Response:
+            raise IgnoreRequest("denied by middleware")
+
+    class S(Spider):
+        start_urls = ["https://shop.example.com/"]
+
+        def parse(self, response: Response) -> Any:
+            yield {"x": 1}
+
+    spider = S(fetcher=_IgnoringAsyncFetcher())
+
+    async def collect() -> list[Any]:
+        items = []
+        async for item in spider.stream():
+            items.append(item)
+        return items
+
+    items = asyncio.run(collect())
+    assert items == []
+    assert spider.stats.requests_ignored == 1
+    assert spider.stats.pages_crawled == 0
+
+
+def test_spider_stream_error_cancels_inflight_workers() -> None:
+    """stream() 中某 worker 抛异常向上传播时，其余在途任务被取消。"""
+
+    class _MixedFetcher:
+        async def async_get(self, url: str, **kwargs: Any) -> Response:
+            if url.endswith("/slow"):
+                await asyncio.sleep(30)  # 模拟慢请求：等待被取消而非真正等 30s
+            return Response(url, 200, b"")
+
+    class S(Spider):
+        start_urls = ["https://x.example/bad", "https://x.example/slow"]
+        max_concurrency = 2
+
+        def parse(self, response: Response) -> Any:
+            if response.url.endswith("/bad"):
+                raise RuntimeError("worker boom")
+            return None
+
+    spider = S(fetcher=_MixedFetcher())
+
+    async def collect() -> list[Any]:
+        items = []
+        async for item in spider.stream():
+            items.append(item)
+        return items
+
+    # 慢请求仍在途时坏请求先失败：pending 非空 -> leftover.cancel() -> 异常上抛
+    with pytest.raises(SpiderError, match="worker boom"):
+        asyncio.run(collect())
+    # 只有坏请求完成抓取；慢请求被取消，不再产出 item
+    assert spider.stats.pages_crawled == 1
+
+
+def test_spider_stream_consumer_break_cancels_inflight_workers() -> None:
+    """消费方提前 break 时，stream() 在 finally 中取消仍在途的 worker。"""
+
+    class _SlowFetcher:
+        async def async_get(self, url: str, **kwargs: Any) -> Response:
+            if url.endswith("/slow"):
+                await asyncio.sleep(30)  # 模拟慢请求：等待被取消而非真正等 30s
+            return Response(url, 200, b"")
+
+    class S(Spider):
+        start_urls = ["https://x.example/fast", "https://x.example/slow"]
+        max_concurrency = 2
+
+        def parse(self, response: Response) -> Any:
+            if response.url.endswith("/fast"):
+                yield {"x": 1}
+
+    spider = S(fetcher=_SlowFetcher())
+
+    async def consume_first() -> Any:
+        gen = spider.stream()
+        try:
+            async for item in gen:
+                return item  # 拿到第一条 item 后立即停止消费
+        finally:
+            # 显式 aclose：在 yield 点注入 GeneratorExit，触发 finally 取消在途任务
+            await gen.aclose()
+        return None
+
+    item = asyncio.run(consume_first())
+    assert item == {"x": 1}

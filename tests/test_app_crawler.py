@@ -3292,6 +3292,16 @@ class TestIsSafeHostname:
         assert cr._is_safe_hostname("metadata.google.internal") is False
 
 
+class TestIsSafeHostnamePowerMode:
+    def test_power_mode_allows_private_hostname(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Power Mode（WEB_CRAWLER_POWER_MODE=1）下内网/环回/localhost 均被放行。"""
+        monkeypatch.setenv("WEB_CRAWLER_POWER_MODE", "1")
+        assert cr._is_safe_hostname("10.0.0.1") is True
+        assert cr._is_safe_hostname("127.0.0.1") is True
+        assert cr._is_safe_hostname("169.254.169.254") is True
+        assert cr._is_safe_hostname("localhost") is True
+
+
 class TestNormalizeUrlEmptyHostname:
     def test_no_hostname(self) -> None:
         """URL 无 hostname 时返回空（覆盖 _is_safe_hostname 空值分支）。"""

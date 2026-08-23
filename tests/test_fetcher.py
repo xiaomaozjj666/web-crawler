@@ -2611,3 +2611,17 @@ def test_async_fetcher_rotates_proxy_on_connection_error(monkeypatch) -> None:
     assert used_proxies[0] == "http://p1:8080"
     assert used_proxies[1] == "http://p2:8080"
     assert pool._failures["http://p1:8080"] == 1
+
+
+# ---------------------------------------------------------------------------
+# _default_allow_private_hosts：Power Mode 优先级
+# ---------------------------------------------------------------------------
+
+
+def test_default_allow_private_hosts_power_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Power Mode 下 _default_allow_private_hosts 优先返回 True（即使旧变量未设置）。"""
+    from web_crawler.fetchers._base import _default_allow_private_hosts
+
+    monkeypatch.delenv("WEB_CRAWLER_ALLOW_PRIVATE_HOSTS", raising=False)
+    monkeypatch.setenv("WEB_CRAWLER_POWER_MODE", "1")
+    assert _default_allow_private_hosts() is True
