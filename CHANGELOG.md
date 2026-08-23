@@ -6,12 +6,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Removed
-- **移除公开版启动脚本 `start-ui.bat`**：作者本机仅保留满血版启动器
-  （Power Mode，经 `.git/info/exclude` 排除）；公开入口统一为
-  `pip install` 后的 `crawler-ui` 命令与 `python -m web_crawler.app.ui`。
-
-
 ### Changed
 - **全量可选依赖纳入测试测量**：新增 `test-extras` CI job（安装
   `all+camoufox+captcha`），此前因缺 playwright/curl_cffi 被 skip 的
