@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Spider 按域名限速**：`Spider.per_domain_delay = {"域名": 秒数}` 类属性，
+  同域相邻请求保证最小间隔（精确/子域后缀匹配，状态按匹配域名记账）；
+  同步路径直接补足等待，`stream()` 中该域自动串行化（per-domain 锁）。
+
+
 ### Removed
 - **移除 Codecov 集成**：上传长期因仓库未配置 token 被拒（tokenless
   上传不可用），CI 步骤假成功、徽章显示异常；覆盖率门禁已由
