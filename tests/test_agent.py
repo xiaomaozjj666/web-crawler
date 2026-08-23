@@ -137,6 +137,54 @@ def test_robots_policy_different_hosts_cached_separately() -> None:
 
 
 # ---------------------------------------------------------------------------
+# fetch_robots_text 测试（标准库默认拉取函数，mock urlopen，无真实网络）
+# ---------------------------------------------------------------------------
+
+
+class _FakeUrlopenResp:
+    """模拟 urllib.request.urlopen 返回的上下文管理器响应。"""
+
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    def read(self) -> bytes:
+        return self._data
+
+    def __enter__(self) -> _FakeUrlopenResp:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        return None
+
+
+def test_fetch_robots_text_reads_and_decodes() -> None:
+    """fetch_robots_text 用 urlopen 拉取 robots.txt 并按 utf-8 解码返回。"""
+    from web_crawler.robots import fetch_robots_text
+
+    body = "User-agent: *\nDisallow: /private\n"
+    with patch(
+        "web_crawler.robots.urllib.request.urlopen",
+        return_value=_FakeUrlopenResp(body.encode("utf-8")),
+    ) as mock_urlopen:
+        text = fetch_robots_text("https://example.com/robots.txt", timeout=5.0)
+    assert text == body
+    mock_urlopen.assert_called_once_with("https://example.com/robots.txt", timeout=5.0)
+
+
+def test_fetch_robots_text_decodes_invalid_bytes_with_replace() -> None:
+    """非法 utf-8 字节按 errors=replace 解码，不抛错。"""
+    from web_crawler.robots import fetch_robots_text
+
+    with patch(
+        "web_crawler.robots.urllib.request.urlopen",
+        return_value=_FakeUrlopenResp(b"\xff\xfeUser-agent: *"),
+    ):
+        text = fetch_robots_text("https://example.com/robots.txt")
+    assert "\ufffd" in text
+    assert "User-agent: *" in text
+
+
+# ---------------------------------------------------------------------------
 # _ensure_fetcher 测试（覆盖 render=True/False 的懒创建）
 # ---------------------------------------------------------------------------
 
