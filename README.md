@@ -125,6 +125,7 @@ Spider 还内置了爬虫框架级的通用机制，均可通过类属性开关�
 class RobustSpider(Spider):
     start_urls = ["https://example.com/"]
     max_retries = 2  # 下载失败指数退避重试（默认 0 不重试）
+    per_domain_delay = {"example.com": 1.0}  # 同域最小请求间隔（秒），可配多域
     respect_robots = True  # 回调产出的请求先过 robots.txt（默认关闭）
     user_agent = "my-bot"  # robots.txt 检查使用的 UA
 ```

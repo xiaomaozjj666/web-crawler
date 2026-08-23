@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import itertools
 import json
+import time
 import urllib.robotparser
 from pathlib import Path
 from typing import Any
@@ -1651,3 +1653,109 @@ def test_stream_schedules_new_requests_while_slow_one_in_flight() -> None:
     asyncio.run(collect())
     # child 在 slow 之前完成 = 慢请求未阻塞后续调度
     assert done_order.index("child") < done_order.index("slow")
+
+
+# ===========================================================================
+# per-domain 限速
+# ===========================================================================
+
+
+def test_per_domain_delay_throttles_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    """per_domain_delay 配置的域，同域相邻请求间会被补足最小间隔。"""
+    sleeps: list[float] = []
+    monkeypatch.setattr("web_crawler.spider.spider.time.sleep", lambda s: sleeps.append(s))
+
+    class S(Spider):
+        start_urls = ["https://shop.example.com/", "https://shop.example.com/page2"]
+        per_domain_delay = {"shop.example.com": 0.5}
+
+        def parse(self, response: Response) -> Any:
+            return None
+
+    spider = S(fetcher=FakeFetcher(PAGES))
+    spider.run()
+    # 第二个同域请求前 sleep 了 ~0.5s（仅限速产生，download_delay 为 0）
+    assert any(0.3 < s <= 0.5 for s in sleeps)
+
+
+def test_per_domain_delay_subdomain_suffix_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """限速规则对子域名同样生效（后缀匹配）。"""
+    sleeps: list[float] = []
+    monkeypatch.setattr("web_crawler.spider.spider.time.sleep", lambda s: sleeps.append(s))
+
+    class S(Spider):
+        start_urls = ["https://a.shop.example.com/", "https://b.shop.example.com/"]
+        per_domain_delay = {"shop.example.com": 0.5}
+
+        def parse(self, response: Response) -> Any:
+            return None
+
+    pages = {
+        "https://a.shop.example.com/": b"",
+        "https://b.shop.example.com/": b"",
+    }
+    spider = S(fetcher=FakeFetcher(pages))
+    spider.run()
+    assert any(0.3 < s <= 0.5 for s in sleeps)
+
+
+def test_per_domain_delay_other_domain_unaffected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未配置的域不产生任何等待。"""
+    sleeps: list[float] = []
+    monkeypatch.setattr("web_crawler.spider.spider.time.sleep", lambda s: sleeps.append(s))
+
+    class S(Spider):
+        start_urls = ["https://shop.example.com/", "https://shop.example.com/page2"]
+        per_domain_delay = {"other.example": 0.5}
+
+        def parse(self, response: Response) -> Any:
+            return None
+
+    spider = S(fetcher=FakeFetcher(PAGES))
+    spider.run()
+    assert sleeps == []
+
+
+def test_per_domain_delay_async_serializes_same_domain() -> None:
+    """stream() 中配置了延迟的域被串行化：同域请求逐一发出且间隔达标。"""
+    from web_crawler.spider.spider import Spider as _Spider
+
+    timestamps: list[tuple[str, float]] = []
+
+    class TimingFetcher:
+        async def async_get(self, url: str, **kwargs: Any) -> Response:
+            timestamps.append((url, time.monotonic()))
+            return Response(url, 200, b"")
+
+    class S(_Spider):
+        start_urls = [
+            "https://x.example/1",
+            "https://x.example/2",
+            "https://x.example/3",
+            "https://y.example/1",
+        ]
+        max_concurrency = 8
+        per_domain_delay = {"x.example": 0.1}
+
+        def parse(self, response: Response) -> Any:
+            return None
+
+    spider = S(fetcher=TimingFetcher())
+
+    async def collect() -> None:
+        async for _ in spider.stream():
+            pass
+
+    asyncio.run(collect())
+    # x.example 的 3 个请求应串行且间隔 >= 0.09s
+    x_times = [ts for url, ts in timestamps if url.startswith("https://x.example")]
+    assert len(x_times) == 3
+    for prev, cur in itertools.pairwise(x_times):
+        assert cur - prev >= 0.09
+    # y.example 不受 x 域限速约束（其请求可早于 x 域完成）
+    y_times = [ts for url, ts in timestamps if url.startswith("https://y.example")]
+    assert len(y_times) == 1

@@ -183,6 +183,9 @@ class Spider:
     respect_robots: bool = False
     # robots.txt 检查使用的 User-Agent（"*" 表示对所有 UA 的规则取并集的保守判定）
     user_agent: str = "*"
+    # 按域名限速：{域名: 同域相邻请求的最小间隔秒数}。空 dict 不影响行为；
+    # 设置了延迟的域在 stream() 中会被串行化（同域并发降为 1）
+    per_domain_delay: dict[str, float] = {}
     # 下载中间件（类或实例均可，按声明顺序执行）
     middlewares: list[type[DownloaderMiddleware] | DownloaderMiddleware] = []
     # item 管道（类或实例均可，按声明顺序执行）
@@ -207,6 +210,8 @@ class Spider:
             pipe() if isinstance(pipe, type) else pipe for pipe in self.item_pipelines
         ]
         self._robots_policy = RobotsPolicy(self.user_agent)
+        self._domain_last_ts: dict[str, float] = {}
+        self._domain_locks: dict[str, asyncio.Lock] = {}
         self._paused = False
         self._heap_counter = 0
         if not self.name:
@@ -253,6 +258,45 @@ class Spider:
         if not self.respect_robots:
             return True
         return self._robots_policy.allowed(url, fetch_robots_text)
+
+    def _domain_delay_for(self, url: str) -> tuple[float, str]:
+        """返回 ``(延迟, 匹配到的域名)``（精确或子域后缀匹配，取最长命中）。
+
+        状态键用匹配域名而非请求 host：同域不同子域（a.x.com / b.x.com）
+        共享同一限速账本；未配置返回 ``(0.0, "")``。
+        """
+        host = (urlparse(url).hostname or "").lower()
+        if not host or not self.per_domain_delay:
+            return 0.0, ""
+        best_delay, best_domain = 0.0, ""
+        for domain, delay in self.per_domain_delay.items():
+            d = domain.lower()
+            if (host == d or host.endswith("." + d)) and delay > best_delay:
+                best_delay, best_domain = delay, d
+        return best_delay, best_domain
+
+    def _throttle_domain_sync(self, url: str) -> None:
+        """同步路径：补足与同域上一请求的最小间隔（run() 顺序执行，无需锁）。"""
+        delay, key = self._domain_delay_for(url)
+        if delay <= 0:
+            return
+        now = time.monotonic()
+        wait = self._domain_last_ts.get(key, 0.0) + delay - now
+        if wait > 0:
+            time.sleep(wait)
+        self._domain_last_ts[key] = time.monotonic()
+
+    async def _throttle_domain_async(self, url: str, lock: asyncio.Lock) -> None:
+        """异步路径：在 per-domain 锁内补足同域最小间隔（同域串行）。"""
+        delay, key = self._domain_delay_for(url)
+        if delay <= 0:
+            return
+        async with lock:
+            now = time.monotonic()
+            wait = self._domain_last_ts.get(key, 0.0) + delay - now
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._domain_last_ts[key] = time.monotonic()
 
     def _filter(self, request: Request) -> bool:
         if request.dont_filter:
@@ -464,6 +508,7 @@ class Spider:
                     logger.info("request ignored by middleware: %s", request.url)
                     continue
                 if response is None:
+                    self._throttle_domain_sync(request.url)
                     try:
                         response = self._fetch_sync(request)
                     except IgnoreRequest:
@@ -597,6 +642,13 @@ class Spider:
                 logger.info("request ignored by middleware: %s", request.url)
                 return
             if response is None:
+                delay, domain_key = self._domain_delay_for(request.url)
+                if delay > 0:
+                    lock = self._domain_locks.get(domain_key)
+                    if lock is None:
+                        lock = asyncio.Lock()
+                        self._domain_locks[domain_key] = lock
+                    await self._throttle_domain_async(request.url, lock)
                 try:
                     response = await self._fetch_async(request)
                 except IgnoreRequest:
