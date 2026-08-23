@@ -88,6 +88,7 @@ def e2e_server_url() -> str:
     yield f"http://127.0.0.1:{port}"
     server.shutdown()
     thread.join(timeout=5)
+    server.server_close()
 
 
 # -- StubProvider ------------------------------------------------------------

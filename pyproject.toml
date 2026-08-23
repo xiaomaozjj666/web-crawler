@@ -122,12 +122,22 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]
 filterwarnings = [
+    # 默认把一切警告升级为错误（严格模式，pandas/numpy 同款做法）；
+    # 下方的 ignore 条目在其之前插入过滤器栈，优先级更高，即"先豁免后严格"
+    "error",
     # close() 同步路径用临时事件循环清理 async 句柄时，AsyncMock 协程
     # 未被完整 await 触发的告警，属于 mock 限制而非源码问题
     "ignore::RuntimeWarning:web_crawler.fetchers.dynamic",
     # reverse_agent 的 page.on()/page.close() 同步路径：测试用 AsyncMock
     # 模拟 page 时协程未被 await，属于 mock 限制而非源码问题
     "ignore::RuntimeWarning:web_crawler.ai.reverse_agent",
+    # AsyncMock 返回的协程对象在 GC finalize 时报 never-awaited：unittest.mock
+    # 无法为同步路径补 await，属于 mock 限制（与上面两条 RuntimeWarning 同源）
+    "ignore:Exception ignored while finalizing coroutine:pytest.PytestUnraisableExceptionWarning",
+    # CPython 3.14 起 HTTPError(fp=None) 会经 addbase(tempfile._TemporaryFileWrapper)
+    # 构造 _TemporaryFileCloser，对象回收时偶发 unraisable 告警：标准库行为，
+    # 与项目资源管理无关（项目自身的句柄泄漏已修复并被严格模式持续守护）
+    "ignore:Exception ignored while calling deallocator <function _TemporaryFileCloser:pytest.PytestUnraisableExceptionWarning",
 ]
 
 [tool.coverage.run]
