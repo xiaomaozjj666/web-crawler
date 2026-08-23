@@ -125,6 +125,10 @@ filterwarnings = [
     # 默认把一切警告升级为错误（严格模式，pandas/numpy 同款做法）；
     # 下方的 ignore 条目在其之前插入过滤器栈，优先级更高，即"先豁免后严格"
     "error",
+    # 最小依赖环境的 test job 故意覆盖 httpx 降级路径：此警告是设计内的
+    # 运行时提示（用户装齐依赖后不会出现），不是测试要抓的缺陷。
+    # 注意不加模块限定：警告以 stacklevel=2 抛出，来源模块是调用方
+    "ignore:curl_cffi is not installed; falling back to httpx:RuntimeWarning",
     # close() 同步路径用临时事件循环清理 async 句柄时，AsyncMock 协程
     # 未被完整 await 触发的告警，属于 mock 限制而非源码问题
     "ignore::RuntimeWarning:web_crawler.fetchers.dynamic",
