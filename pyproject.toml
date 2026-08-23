@@ -125,6 +125,9 @@ filterwarnings = [
     # close() 同步路径用临时事件循环清理 async 句柄时，AsyncMock 协程
     # 未被完整 await 触发的告警，属于 mock 限制而非源码问题
     "ignore::RuntimeWarning:web_crawler.fetchers.dynamic",
+    # reverse_agent 的 page.on()/page.close() 同步路径：测试用 AsyncMock
+    # 模拟 page 时协程未被 await，属于 mock 限制而非源码问题
+    "ignore::RuntimeWarning:web_crawler.ai.reverse_agent",
 ]
 
 [tool.coverage.run]

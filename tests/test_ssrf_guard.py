@@ -277,3 +277,27 @@ def test_dns_cache_is_bounded() -> None:
         # 最早的主机已被淘汰 → 再次调用会重新解析
         assert not host_is_unsafe("host-0.example.com", resolve=True)
         assert calls["host-0.example.com"] == 2
+
+
+# ── IPv6 zone id / host 清洗边界 / Power Mode ───────────────────────────────
+
+
+def test_ipv6_zone_id_is_stripped_before_check() -> None:
+    """IPv6 带 zone id（fe80::1%eth0）时先剥离 zone id 再判定：链路本地不安全。"""
+    assert is_private_ip("fe80::1%eth0")
+    assert host_is_unsafe("fe80::1%eth0")
+
+
+def test_host_of_only_dots_is_unsafe() -> None:
+    """host 仅由点组成（如 "."）时 strip/rstrip 清洗后为空，按不安全处理。"""
+    assert host_is_unsafe(".") is True
+    assert host_is_unsafe("...") is True
+
+
+def test_power_mode_bypasses_host_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Power Mode 下 validate_url_host 跳过 host 校验（私网/云元数据地址放行）。"""
+    monkeypatch.setenv("WEB_CRAWLER_POWER_MODE", "1")
+    # 私网 / 环回 / 云元数据地址均不再抛 ValueError
+    validate_url_host("http://169.254.169.254/latest/meta-data/")
+    validate_url_host("http://127.0.0.1:8080/")
+    validate_url_host("http://10.0.0.1/internal")

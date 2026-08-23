@@ -1899,3 +1899,45 @@ class TestSmallUncoveredBranches:
             assert agent._screenshots == []
         finally:
             agent.close()
+
+    async def test_run_inside_event_loop_raises(self) -> None:
+        """行 519-522：在已运行的事件循环内调用 run() → RuntimeError。
+
+        pytest-asyncio auto 模式下 async 测试自身运行于事件循环内，
+        此时 asyncio.get_running_loop() 成功，应命中 raise 分支
+        （raise 发生在 arun 之前，无需真正运行 agent）。
+        """
+        agent = ReverseAgent(config=ReverseAgentConfig(humanize_input=False))
+        try:
+            with pytest.raises(RuntimeError, match="不能在事件循环内调用"):
+                agent.run("https://x.example", "task")
+        finally:
+            agent.close()
+
+    def test_setup_page_listeners_page_on_failure(self) -> None:
+        """行 1477-1478：_setup_page_listeners 中 page.on 抛异常时静默不传播。"""
+        agent = ReverseAgent(config=ReverseAgentConfig(humanize_input=False))
+        try:
+            page = MagicMock()
+            page.on = MagicMock(side_effect=RuntimeError("on fail"))
+            # 不应传播异常
+            agent._setup_page_listeners(page)
+            page.on.assert_called_once()
+            assert page.on.call_args.args[0] == "request"
+        finally:
+            agent.close()
+
+    def test_cleanup_page_sync_close_failure(self) -> None:
+        """行 1721-1722：_cleanup_page_sync 中 page.close 抛异常时静默。"""
+        agent = ReverseAgent(config=ReverseAgentConfig(humanize_input=False))
+        try:
+            page = MagicMock()
+            page.close = MagicMock(side_effect=RuntimeError("close fail"))
+            agent._page = page
+            agent._context = None
+            # 不应传播异常，且 _page 被置 None
+            agent._cleanup_page_sync()
+            page.close.assert_called_once()
+            assert agent._page is None
+        finally:
+            agent.close()
