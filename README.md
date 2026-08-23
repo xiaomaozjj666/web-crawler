@@ -38,6 +38,14 @@ flowchart TB
     F --> R["统一 Response<br/>.css / .xpath / .json"]
 ```
 
+## 界面预览
+
+本地 Web UI（`python -m web_crawler.app.ui`，默认 http://127.0.0.1:8765）：采集器（图片/JS/视频/文件下载、并发与断点续传）、JS 逆向 Agent、任务历史三个入口，SSE 实时推送进度与日志。
+
+| 采集器控制台 · 本地 Web UI |
+| :---: |
+| <img src="docs/screenshots/ui-console.png" alt="Web Crawler 控制台" width="820" /> |
+
 ## 功能特性
 
 - **自适应解析器** — `Selector` 基于 `lxml`，支持元素指纹计算与结构相似度重定位：站点改版导致选择器失效时，已保存的指纹会自动在新页面中重新找到对应元素（Scrapling 的标志性能力）。公开 `save` / `retrieve` / `relocate` API 便于显式管理指纹；内置 `find_by_regex`、`re` / `re_first`、`get_all_text`、`prettify`、完整 DOM 遍历（`parent` / `children` / `siblings` / `next` / `previous` / `path`），以及 `ResultList` 批量辅助方法（`css` / `xpath` / `get` / `getall` / `.first` / `.last`）。支持 Scrapling 风格 `::attr(name)` 伪元素直接取属性。
