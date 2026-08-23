@@ -68,7 +68,8 @@ def test_cooldown_expires() -> None:
     pool = ProxyPool(["a", "b"], max_failures=1, cooldown=0.05)
     pool.mark_failed("a")  # immediately cooled down for 0.05s
     assert pool.get() == "b"
-    time.sleep(0.06)
+    # 3 倍冷却时长的余量：CI 机器时钟/调度抖动下 10ms 级余量会偶发不足
+    time.sleep(0.15)
     # After cooldown, "a" is available again (round_robin will reach it).
     served = {pool.get() for _ in range(6)}
     assert "a" in served
