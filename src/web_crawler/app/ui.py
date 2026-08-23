@@ -22,14 +22,10 @@ from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
 sys.dont_write_bytecode = True
-# 确保 app 目录在 sys.path 中，无论作为脚本运行还是作为模块导入
-_APP_DIR = os.path.dirname(os.path.abspath(__file__))
-if _APP_DIR not in sys.path:
-    sys.path.insert(0, _APP_DIR)
 _log = logging.getLogger(__name__)
 
-import crawler as web_resource_crawler  # 需先设 sys.dont_write_bytecode 再导入
-import db as database
+from web_crawler.app import crawler as web_resource_crawler
+from web_crawler.app import db as database
 
 HOST = "127.0.0.1"
 PORT = 8765
