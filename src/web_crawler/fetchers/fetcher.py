@@ -17,6 +17,7 @@ import asyncio
 import random
 import time
 import warnings
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlparse
 
@@ -46,6 +47,15 @@ def _load_httpx_backend() -> Any:
     import httpx
 
     return httpx
+
+
+def _httpx_body(data: Any) -> tuple[Any, Any]:
+    """httpx 兜底路径的 body 分流：新版 httpx 对 ``data=bytes/str`` 已发
+    DeprecationWarning（建议改 ``content=``），而表单 Mapping 仍必须走
+    ``data=``。按类型二选一，保证互斥且语义不变。"""
+    if data is not None and not isinstance(data, Mapping):
+        return data, None
+    return None, data
 
 
 def _parse_retry_after(value: str | None) -> float | None:
@@ -346,11 +356,13 @@ class _FetcherCore(BaseFetcher):
             client = self._build_httpx_async_client(proxy)
             close_after = True
         try:
+            content, data_arg = _httpx_body(data)
             return await client.request(
                 method=method,
                 url=url,
                 params=params,
-                data=data,
+                content=content,
+                data=data_arg,
                 json=json,
                 headers=headers,
                 timeout=timeout,
@@ -565,11 +577,13 @@ class Fetcher(_FetcherCore):
             client = self._build_httpx_sync_client(proxy)
             close_after = True
         try:
+            content, data_arg = _httpx_body(data)
             return client.request(
                 method=method,
                 url=url,
                 params=params,
-                data=data,
+                content=content,
+                data=data_arg,
                 json=json,
                 headers=headers,
                 timeout=timeout,
