@@ -27,7 +27,7 @@ flowchart TB
         P["Parser 层<br/>Selector 自适应解析 · 元素指纹 · 重定位"]
         S["Spider 层<br/>回调分发 · 优先级 · 暂停续跑"]
         A["AI 层<br/>AIExtractor · AIScrapeAgent · ReverseAgent<br/>ImageCaptchaSolver"]
-        PT["pentest 子包<br/>端口扫描 · 目录爆破 · 漏洞规则"]
+        PT["pentest 子包<br/>授权安全研究 · 侦察工具集"]
     end
     APP --> F
     F --> P
@@ -74,6 +74,19 @@ flowchart TB
 - **质量工具**：`pytest` / `pytest-asyncio` / `pytest-cov`、`ruff`、`mypy`
 - **文档**：MkDocs + Material + mkdocstrings
 - **CI**：GitHub Actions（`.github/workflows/ci.yml`）
+
+## 用途与边界
+
+本库是**面向开发者的隐身网页采集与安全研究工具集**，把两套能力放在同一个包里，方便做端到端的研究与自动化：
+
+- **采集 / 逆向能力** —— 自适应解析、TLS 指纹隐身、JS 渲染、反爬对抗与 JS 逆向，面向你自己拥有或已获授权的目标做数据采集与前端逻辑研究。
+- **安全研究能力** —— `web_crawler.pentest` 子包提供纯 Python 的侦察工具集（端口 / 路径 / 子域探测、常见漏洞规则检测、安全头评级），面向你自己拥有或已书面授权的资产做授权安全测试。
+
+**默认姿态**：公开发布的版本默认开启安全防护——所有抓取入口拒绝私网 / 环回 / 云元数据目标，协议仅放行 `http` / `https`，并对主机名做 DNS 解析复查以防重绑定型 SSRF。这是一个**安全默认值**，不是能力上限。
+
+**全解锁开关**：如果你在自己的可信环境（本机、内网、开发容器）需要访问内网服务或云元数据类目标，可显式开启个人 Power Mode（`WEB_CRAWLER_POWER_MODE=1` 或 `Fetcher(allow_private_hosts=True)`），此时仅放行 host 校验、`http/https` 协议白名单始终保留。详见下方 [Power Mode](#-power-mode个人全解锁默认关闭) 章节。
+
+**红线**：本库仅供合法、已授权的用途。pentest 子包与任何抓取模块只可用于你拥有或已取得书面授权的系统；未经授权对他人系统发起扫描、爬取或探测均属违法，使用者自行承担全部责任。详见 [合规说明](#合规说明)。
 
 ## 快速开始
 
@@ -355,7 +368,7 @@ GitHub Actions 在每次 push 时运行 lint、类型检查、带覆盖率的测
 
 - 逆向 Agent 仅模拟正常用户交互，不伪造登录凭证、不绕过付费墙。
 - 图片验证码（OCR / 滑块 / 点选）通过 `ImageCaptchaSolver` 自动识别；当页面返回 401/403 或出现无法处理的挑战时，Agent 会停止并返回"转人工处理"。
-- `web_crawler.pentest` 仅用于**已获书面授权**的安全测试；未经授权对他人系统使用任何模块均属违法。
+- 用途边界、默认安全姿态与全解锁开关的详细说明见上方 [用途与边界](#用途与边界)；`web_crawler.pentest` 仅用于**已获书面授权**的安全测试，使用者自行承担全部责任。
 
 ## 🔓 Power Mode（个人全解锁，默认关闭）
 
