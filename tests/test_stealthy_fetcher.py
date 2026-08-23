@@ -743,7 +743,9 @@ def test_async_fetch_delegates_to_parent_and_injects_stealth() -> None:
         out = await f.async_fetch("https://example.com/x")
         assert out.status == 200
         page.add_init_script.assert_awaited_once()
-        f.close()
+        # 同步 close() 遇到活跃 async 句柄必须发 ResourceWarning 提醒改用 aclose()
+        with pytest.warns(ResourceWarning, match="aclose"):
+            f.close()
 
     import asyncio
 
@@ -761,7 +763,9 @@ def test_async_fetch_wraps_failure_in_runtime_error() -> None:
         f._async_browser.new_context.side_effect = RuntimeError("boom")
         with pytest.raises(RuntimeError, match="dynamic async fetch of https://x/ failed"):
             await f.async_fetch("https://x/")
-        f.close()
+        # 同步 close() 遇到活跃 async 句柄必须发 ResourceWarning 提醒改用 aclose()
+        with pytest.warns(ResourceWarning, match="aclose"):
+            f.close()
 
     import asyncio
 

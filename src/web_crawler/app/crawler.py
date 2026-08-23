@@ -1117,6 +1117,21 @@ def _post_pause_check(args: argparse.Namespace) -> bool:
     return should_stop(args)
 
 
+def _close_jsonl(ctx: _CrawlContext) -> None:
+    """收尾 JSONL 实时清单（flush + close）。
+
+    取消路径同样必须调用：JSONL 句柄若只靠 GC 兜底关闭，会在解释器
+    回收时产生 unraisable 警告并延迟释放文件锁（Windows 上还会阻止
+    临时目录清理）。
+    """
+    if ctx.jsonl_file is not None:
+        try:
+            ctx.jsonl_file.flush()
+            ctx.jsonl_file.close()
+        except OSError as _jsonl_err:
+            _log.warning("failed to finalize JSONL manifest: %s", _jsonl_err)
+
+
 def _post_process(
     ctx: _CrawlContext,
     manifest_rows: list[ManifestRow],
@@ -1135,6 +1150,7 @@ def _post_process(
 
     if cancelled or should_stop(args):
         _log.info("crawl cancelled; skipping post-processing")
+        _close_jsonl(ctx)
         return 0, 0
 
     # 每个后处理阶段独立 try/except：单步失败仅记 warning，保证清单与报告尽量生成
@@ -1215,13 +1231,8 @@ def _post_process(
         except Exception as exc:
             _log.warning("failed to write run report: %s", exc)
 
-    # JSONL 清单已在下载阶段逐条追加；此处仅收尾 flush/关闭
-    if ctx.jsonl_file is not None:
-        try:
-            ctx.jsonl_file.flush()
-            ctx.jsonl_file.close()
-        except OSError as _jsonl_err:
-            _log.warning("failed to finalize JSONL manifest: %s", _jsonl_err)
+    # JSONL 清单已在下载阶段逐条追加；此处收尾 flush/关闭（正常完成路径）
+    _close_jsonl(ctx)
 
     # 成功完成后清除续跑状态
     if getattr(args, "resume_crawl", False) and not _post_pause_check(args):
