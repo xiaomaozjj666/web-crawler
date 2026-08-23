@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **移除 Codecov 集成**：上传长期因仓库未配置 token 被拒（tokenless
+  上传不可用），CI 步骤假成功、徽章显示异常；覆盖率门禁已由
+  `--cov-fail-under`（92/97）在 CI 内强制执行，README 徽章改为静态
+  覆盖率标签。
+
+
 ### Changed
 - **全量可选依赖纳入测试测量**：新增 `test-extras` CI job（安装
   `all+camoufox+captcha`），此前因缺 playwright/curl_cffi 被 skip 的
