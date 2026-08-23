@@ -95,8 +95,10 @@ def test_screenshot_disabled_returns_empty() -> None:
     from web_crawler.ai.reverse_agent import ReverseAgent, ReverseAgentConfig
 
     agent = ReverseAgent(config=ReverseAgentConfig(enable_screenshot=False))
-    page = _FakePage()
-    result = agent._take_screenshot(page, step=1)
+    page = _FakeAsyncPage()
+    import asyncio
+
+    result = asyncio.run(agent._take_screenshot_async(page, step=1))
     assert result == ""
     assert agent._screenshots == []
     agent.close()
@@ -113,8 +115,10 @@ def test_screenshot_success_returns_path_and_records(
     monkeypatch.chdir(tmp_path)
     agent = ReverseAgent(config=ReverseAgentConfig(enable_screenshot=True))
     try:
-        page = _FakePage()
-        result = agent._take_screenshot(page, step=1)
+        page = _FakeAsyncPage()
+        import asyncio
+
+        result = asyncio.run(agent._take_screenshot_async(page, step=1))
         assert result != ""
         assert os.path.exists(result)
         assert result.endswith("_step1.png")
@@ -135,8 +139,10 @@ def test_screenshot_error_marked_and_recorded(
     monkeypatch.chdir(tmp_path)
     agent = ReverseAgent(config=ReverseAgentConfig(enable_screenshot=True))
     try:
-        page = _FakePage()
-        result = agent._take_screenshot(page, step=3, error=True)
+        page = _FakeAsyncPage()
+        import asyncio
+
+        result = asyncio.run(agent._take_screenshot_async(page, step=3, error=True))
         assert result != ""
         assert "_error" in result
         assert agent._screenshots[0]["error"] is True
@@ -154,8 +160,10 @@ def test_screenshot_failure_returns_empty_and_no_crash(
     monkeypatch.chdir(tmp_path)
     agent = ReverseAgent(config=ReverseAgentConfig(enable_screenshot=True))
     try:
-        page = _FakePage(fail=True)
-        result = agent._take_screenshot(page, step=1)
+        page = _FakeAsyncPage(fail=True)
+        import asyncio
+
+        result = asyncio.run(agent._take_screenshot_async(page, step=1))
         assert result == ""
         assert agent._screenshots == []
     finally:
@@ -167,7 +175,9 @@ def test_screenshot_none_page_returns_empty() -> None:
     from web_crawler.ai.reverse_agent import ReverseAgent, ReverseAgentConfig
 
     agent = ReverseAgent(config=ReverseAgentConfig(enable_screenshot=True))
-    result = agent._take_screenshot(None, step=1)
+    import asyncio
+
+    result = asyncio.run(agent._take_screenshot_async(None, step=1))
     assert result == ""
     agent.close()
 

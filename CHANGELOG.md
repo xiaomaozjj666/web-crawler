@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **reverse_agent 完整 async 核心化**：`run()` 改为
+  `asyncio.run(arun())` 薄包装（事件循环内调用给出明确报错），删除
+  23 个 sync/async 成对方法中的全部 sync 版（`_observe`/`_act`/20 个
+  动作方法等），主循环与动作执行只剩 async 单实现，文件 2643 →
+  1801 行；128 个 sync 路径测试改写为 async 版（覆盖率 93.85%）。
+
+
 ## [0.4.0] - 2026-08-23
 
 ### Added
