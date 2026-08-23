@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/lxml-adaptive%20selector-8CA1B6" alt="lxml 自适应选择器" />
   <img src="https://img.shields.io/badge/TLS-impersonation-0F6B9E" alt="TLS 指纹隐身" />
   <img src="https://github.com/xiaomaozjj666/web-crawler/actions/workflows/ci.yml/badge.svg" alt="CI" />
-  <img src="https://img.shields.io/badge/coverage-100%25-brightgreen" alt="覆盖率 100%" />
+  <img src="https://img.shields.io/badge/coverage-99.95%25%20(full-deps)-brightgreen" alt="覆盖率 99.95%（full-deps）/ 100%（minimal-deps）" />
   <img src="https://img.shields.io/badge/docs-online-brightgreen" alt="文档站" />
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" />
 </p>
