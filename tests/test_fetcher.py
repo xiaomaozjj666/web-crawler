@@ -1677,6 +1677,31 @@ def test_async_fetcher_post_with_full_kwargs(monkeypatch) -> None:
     assert captured["json"] == {"j": "3"}
 
 
+def test_httpx_body_splits_bytes_vs_mapping() -> None:
+    """httpx 兜底路径的 body 分流：bytes/str 走 content=，表单 Mapping 走 data=。
+
+    回归：新版 httpx 对 data=bytes 发 DeprecationWarning，严格警告模式下
+    会把 POST 测试打成错误；分流后 content/data 互斥且语义不变。
+    """
+    from web_crawler.fetchers.fetcher import _httpx_body
+
+    content, data = _httpx_body(b"payload")
+    assert content == b"payload"
+    assert data is None
+
+    content, data = _httpx_body("text")
+    assert content == "text"
+    assert data is None
+
+    content, data = _httpx_body({"k": "v"})
+    assert content is None
+    assert data == {"k": "v"}
+
+    content, data = _httpx_body(None)
+    assert content is None
+    assert data is None
+
+
 def test_async_fetcher_async_context_manager(monkeypatch) -> None:
     """AsyncFetcher 应支持 async with 上下文管理器。"""
     from web_crawler.fetchers import fetcher as fetcher_mod
