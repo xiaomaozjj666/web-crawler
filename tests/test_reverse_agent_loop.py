@@ -200,7 +200,7 @@ def _make_observation(url: str = "https://x.example") -> Observation:
 def _make_loop_agent(
     *,
     replies: list[str] | None = None,
-    async_mode: bool = False,
+    async_mode: bool = True,
     confidence: float = 1.0,
     guard_denied: bool = False,
     judge_verified: bool | None = None,
@@ -253,7 +253,7 @@ def _make_loop_agent(
     if async_mode:
         agent._create_page_async = AsyncMock(return_value=(ctx, page))  # type: ignore[assignment]
     else:
-        agent._create_page = MagicMock(return_value=(ctx, page))  # type: ignore[assignment]
+        agent._create_page_async = AsyncMock(return_value=(ctx, page))  # type: ignore[assignment]
 
     # Mock confidence_scorer
     conf = ConfidenceResult(score=confidence, reasons=[], action_type="done")
@@ -292,6 +292,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(replies=['{"action_type": "done"}'])
             try:
@@ -311,6 +312,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -338,6 +340,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -359,6 +362,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "wait", "params": {"seconds": 0.1}}'],
@@ -375,21 +379,22 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(replies=['{"action_type": "done"}'])
-            agent._observe = MagicMock(  # type: ignore[assignment]
+            agent._observe_async = AsyncMock(  # type: ignore[assignment]
                 side_effect=[RuntimeError("observe boom"), _make_observation()]
             )
             # 恢复成功：返回 (True, 新 page)，循环应重新绑定到新页
             new_page = MagicMock()
-            agent._try_recover_page = MagicMock(return_value=(True, new_page))  # type: ignore[assignment]
+            agent._try_recover_page_async = AsyncMock(return_value=(True, new_page))  # type: ignore[assignment]
             try:
                 result = agent.run("https://x.example", "task")
                 # 第一步 observe_error 入 history，第二步 done 入 history → 2 条
                 assert result["steps"] == 2
                 assert any(e.get("event") == "observe_error" for e in result["history"])
                 # 恢复后第二步 observe 应使用新 page（循环已重新绑定）
-                second_call = agent._observe.call_args_list[1]
+                second_call = agent._observe_async.call_args_list[1]
                 assert second_call.args[0] is new_page
             finally:
                 agent.close()
@@ -399,15 +404,16 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
                 max_steps=5,
             )
-            agent._observe = MagicMock(  # type: ignore[assignment]
+            agent._observe_async = AsyncMock(  # type: ignore[assignment]
                 side_effect=RuntimeError("observe boom")
             )
-            agent._try_recover_page = MagicMock(return_value=(False, None))  # type: ignore[assignment]
+            agent._try_recover_page_async = AsyncMock(return_value=(False, None))  # type: ignore[assignment]
             try:
                 result = agent.run("https://x.example", "task")
                 # 恢复失败后 break，history 包含 observe_error 条目
@@ -420,6 +426,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, provider = _make_loop_agent(replies=None)
             provider.chat = MagicMock(side_effect=RuntimeError("think boom"))  # type: ignore[assignment]
@@ -437,6 +444,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -456,6 +464,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -478,6 +487,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -499,6 +509,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -508,7 +519,7 @@ class TestRunLoop:
                 enable_recorder=True,
                 max_steps=5,
             )
-            agent._inject_hooks = MagicMock(return_value=False)  # type: ignore[assignment]
+            agent._inject_hooks_async = AsyncMock(return_value=False)  # type: ignore[assignment]
             try:
                 result = agent.run("https://x.example", "task")
                 assert any(e.get("event") == "inject_hook_failed" for e in result["history"])
@@ -520,6 +531,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -544,6 +556,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -553,7 +566,7 @@ class TestRunLoop:
                 max_steps=5,
             )
             fake_analysis = MagicMock(spec=AnalysisResult)
-            agent._act = MagicMock(  # type: ignore[assignment]
+            agent._act_async = AsyncMock(  # type: ignore[assignment]
                 side_effect=[fake_analysis, None]
             )
             try:
@@ -567,6 +580,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -597,6 +611,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "wait"}', '{"action_type": "done"}'],
@@ -616,6 +631,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -640,6 +656,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(replies=['{"action_type": "done"}'])
             agent.context_compressor.maybe_compress = MagicMock(  # type: ignore[assignment]
@@ -661,6 +678,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -690,6 +708,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -708,13 +727,13 @@ class TestRunLoop:
                 cumulative_summary="past summary",
             )
             agent.checkpoint_manager.load_latest = MagicMock(return_value=cp)  # type: ignore[assignment]
-            agent._inject_hooks = MagicMock(return_value=True)  # type: ignore[assignment]
+            agent._inject_hooks_async = AsyncMock(return_value=True)  # type: ignore[assignment]
             try:
                 result = agent.run("https://init.example", "task")
                 # 应导航到 resume URL
                 assert page.goto_calls[0]["url"] == "https://resumed.example"
                 # 应重新注入 hooks
-                agent._inject_hooks.assert_called_once()
+                agent._inject_hooks_async.assert_called_once()
                 # resume 后 history 应包含 checkpoint 中的历史
                 assert result["target_params_found"] == {"sign": "val"}
             finally:
@@ -727,6 +746,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[],
@@ -747,6 +767,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -763,6 +784,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -787,6 +809,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
             patch.object(Path, "mkdir"),
             patch(
                 "web_crawler.ai.reverse_agent.ReverseAgent._screenshot_dir",
@@ -809,6 +832,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -825,6 +849,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -849,6 +874,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, page, _ = _make_loop_agent(
                 replies=[
@@ -857,17 +883,17 @@ class TestRunLoop:
                 ],
                 max_steps=5,
             )
-            new_page = _LoopPage(url="https://tab.example", title="Tab")
+            new_page = _AsyncLoopPage(url="https://tab.example", title="Tab")
             ctx = MagicMock()
-            ctx.new_page.return_value = new_page
+            ctx.new_page = AsyncMock(return_value=new_page)
             # 覆盖 _create_page，让 run() 使用能创建新标签页的 ctx
-            agent._create_page = MagicMock(return_value=(ctx, page))  # type: ignore[assignment]
+            agent._create_page_async = AsyncMock(return_value=(ctx, page))  # type: ignore[assignment]
             # spy：记录 _observe 收到的 page，验证循环页切换
-            agent._observe = MagicMock(wraps=agent._observe)  # type: ignore[assignment]
+            agent._observe_async = AsyncMock(wraps=agent._observe_async)  # type: ignore[assignment]
             try:
                 agent.run("https://x.example", "task")
                 # 第 1 步 observe 在主页面，第 2 步 observe 在新标签页
-                calls = agent._observe.call_args_list
+                calls = agent._observe_async.call_args_list
                 assert calls[0].args[0] is page
                 assert calls[1].args[0] is new_page
             finally:
@@ -878,6 +904,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, page, _ = _make_loop_agent(
                 replies=[
@@ -887,15 +914,15 @@ class TestRunLoop:
                 ],
                 max_steps=5,
             )
-            new_page = _LoopPage(url="https://tab.example", title="Tab")
+            new_page = _AsyncLoopPage(url="https://tab.example", title="Tab")
             ctx = MagicMock()
-            ctx.new_page.return_value = new_page
-            agent._create_page = MagicMock(return_value=(ctx, page))  # type: ignore[assignment]
+            ctx.new_page = AsyncMock(return_value=new_page)
+            agent._create_page_async = AsyncMock(return_value=(ctx, page))  # type: ignore[assignment]
             # spy：记录 _observe 收到的 page
-            agent._observe = MagicMock(wraps=agent._observe)  # type: ignore[assignment]
+            agent._observe_async = AsyncMock(wraps=agent._observe_async)  # type: ignore[assignment]
             try:
                 agent.run("https://x.example", "task")
-                calls = agent._observe.call_args_list
+                calls = agent._observe_async.call_args_list
                 # 第 1 步在主页面；new_tab 后第 2 步 observe 新标签页；
                 # switch_tab 后第 3 步 observe 仍是新标签页
                 assert calls[0].args[0] is page
@@ -925,6 +952,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -933,12 +961,12 @@ class TestRunLoop:
             )
             agent.checkpoint_manager.store = store
             agent.checkpoint_manager.task_id = "resume-task"
-            agent._inject_hooks = MagicMock(return_value=True)  # type: ignore[assignment]
+            agent._inject_hooks_async = AsyncMock(return_value=True)  # type: ignore[assignment]
             try:
                 result = agent.run("https://init.example", "task")
                 # 应导航回 resume URL 并续跑
                 assert page.goto_calls[0]["url"] == "https://resumed.example"
-                agent._inject_hooks.assert_called_once()
+                agent._inject_hooks_async.assert_called_once()
                 assert result["target_params_found"] == {"sign": "val"}
                 # 续跑从 step 3 开始（step 2 已完成）
                 steps = [h.get("step") for h in result["history"] if h.get("step")]
@@ -953,6 +981,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -976,6 +1005,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -1005,6 +1035,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -1086,6 +1117,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(replies=['{"action_type": "done"}'])
             agent.heartbeat.max_interval = 1.0
@@ -1109,6 +1141,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -1135,6 +1168,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "wait", "params": {"seconds": 0.1}}'],
@@ -1156,6 +1190,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],
@@ -1173,6 +1208,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=[
@@ -1198,6 +1234,7 @@ class TestRunLoop:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep"),
         ):
             agent, _page, _ = _make_loop_agent(
                 replies=['{"action_type": "done"}'],

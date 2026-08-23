@@ -48,7 +48,7 @@ from .checkpoint import Checkpoint, CheckpointManager, CheckpointStore
 from .confidence import ConfidenceResult, ConfidenceScorer
 from .dom_pruner import DomPruner, PrunedDom
 from .guardrails import ActionGuard, GuardrailResult
-from .hooks import collect_hook_data, generate_combined_script
+from .hooks import generate_combined_script
 from .judge import JudgeResult, TaskJudge
 from .llm import DEFAULT_MODEL, DeepSeekProvider, LLMMessage, LLMProvider
 from .loop import ContextCompressor, LoopDetector
@@ -507,332 +507,20 @@ class ReverseAgent:
         }
 
     def run(self, url: str, task: str = "") -> dict:
-        """启动浏览器、注入 Hook、循环观察-思考-行动，返回结果字典。"""
-        self.fetcher = CamoufoxFetcher(
-            headless=self.config.headless,
-            os=self.config.os_name,
-            proxy=self.config.proxy,
-            network_idle=False,
-        )
-        self._reset_run_state(url)
+        """同步入口：在临时事件循环中驱动 :meth:`arun`（async 为唯一实现）。
 
-        analysis: AnalysisResult | None = None
-        last_observation: Observation | None = None
-        history, target_params_found = self._load_checkpoint_state(url, task)
-
+        不能在已运行的事件循环内调用（asyncio.run 不可嵌套）；
+        async 上下文请直接 ``await agent.arun(...)``。
+        """
         try:
-            context, page = self._create_page(self.config.hooks)
-            self._context = context
-            self._page = page
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.arun(url, task))
+        raise RuntimeError(
+            "ReverseAgent.run() 不能在事件循环内调用（asyncio.run 不可嵌套），"
+            "async 上下文请使用 await agent.arun(...)"
+        )
 
-            # resume 时导航回上次 URL，否则导航到入口 url
-            nav_url = self._resume_from.url if self._resume_from and self._resume_from.url else url
-            try:
-                page.goto(nav_url, wait_until="domcontentloaded", timeout=30000)
-            except Exception as exc:
-                history.append({"step": 0, "event": "navigate_error", "error": str(exc)})
-            time.sleep(self.config.wait_after_navigate)
-
-            # resume 时重新注入已记录的 hooks
-            if self._resume_from and self._resume_from.hooks:
-                self._inject_hooks(page, self._resume_from.hooks)
-
-            # resume 时跳过已完成的步号
-            start_step = (self._resume_from.step + 1) if self._resume_from else 1
-            stopped = False
-            if start_step > self.config.max_steps:
-                self._emit(EVENT_DONE, step=0, success=True, reason="resume已完成所有步骤")
-            for step in range(start_step, self.config.max_steps + 1):
-                # 统一从 self._page 取当前页：new_tab/switch_tab/崩溃恢复后循环使用新页
-                page = self._page if self._page is not None else page
-                # 外部停止回调：返回 True 时中断循环，结果状态标为 stopped
-                if self.config.should_stop is not None and self.config.should_stop():
-                    self._emit("agent.stopped", step=step, reason="should_stop callback")
-                    stopped = True
-                    break
-                self._emit(EVENT_STEP_START, step=step)
-                try:
-                    observation = self._observe(page, step=step)
-                    last_observation = observation
-                    self._emit(
-                        EVENT_OBSERVATION,
-                        step=step,
-                        url=observation.url,
-                        hook_count=observation.hook_data.get("count", 0),
-                        network_count=len(observation.network_requests),
-                        script_count=len(observation.scripts),
-                        screenshot_path=observation.screenshot_path,
-                    )
-                except Exception as exc:
-                    history.append({"step": step, "event": "observe_error", "error": str(exc)})
-                    self._emit(EVENT_OBSERVE_ERROR, step=step, error=str(exc))
-                    # 崩溃恢复策略：CrashRecovery 控制重试次数；
-                    # _try_recover_page 返回 (是否成功, 新 page)，成功后循环重新绑定
-                    recovered, new_page = self._try_recover_page(url)
-
-                    def _recovered_fn(_r: bool = recovered) -> bool:
-                        return _r
-
-                    should_continue = self.crash_recovery.attempt(
-                        _recovered_fn,
-                        step=step,
-                        error=exc,
-                    )
-                    if should_continue:
-                        if recovered and new_page is not None:
-                            # 同时更新 self._page 与循环局部引用，二者保持一致
-                            page = new_page
-                            self._page = new_page
-                        continue
-                    break
-
-                # -- 循环检测：触发即重规划 -----------------------------
-                loop_result = self.loop_detector.observe(observation, step=step)
-                if loop_result.detected:
-                    self._emit(
-                        "loop.detected",
-                        step=step,
-                        repeated_count=loop_result.repeated_count,
-                    )
-                    if self.planner is not None:
-                        # 强制重规划
-                        self._current_plan = self.planner.make_plan(
-                            task,
-                            observation,
-                            step=step,
-                            history_summary=self.context_compressor.cumulative_summary,
-                            target_params=self.config.target_params,
-                        )
-                        self._emit(
-                            "plan",
-                            step=step,
-                            trigger="loop",
-                            subgoals=[sg.to_dict() for sg in self._current_plan.subgoals],
-                        )
-                        self.loop_detector.reset()
-
-                # -- 周期重规划 -----------------------------------------
-                if self.planner is not None and (
-                    self._current_plan is None
-                    or self._current_plan.is_complete
-                    or (step - (self._current_plan.created_at_step or 0))
-                    >= self.planner.planner_interval
-                ):
-                    self._current_plan = self.planner.make_plan(
-                        task,
-                        observation,
-                        step=step,
-                        history_summary=self.context_compressor.cumulative_summary,
-                        target_params=self.config.target_params,
-                    )
-                    self._emit(
-                        "plan",
-                        step=step,
-                        trigger="interval",
-                        subgoals=[sg.to_dict() for sg in self._current_plan.subgoals],
-                    )
-
-                # -- 上下文压缩 -----------------------------------------
-                history, compressed = self.context_compressor.maybe_compress(history)
-                if compressed:
-                    self._emit("context.compressed", step=step)
-
-                # -- 心跳：think 前后检测 AI 卡死（LLM 长时间不返回）----
-                self.heartbeat.check_stall(step=step)
-                try:
-                    action = self._think(observation, task, history, plan=self._current_plan)
-                    self._emit(
-                        EVENT_ACTION,
-                        step=step,
-                        action_type=action.action_type,
-                        reasoning=action.reasoning,
-                    )
-                except Exception as exc:
-                    history.append({"step": step, "event": "think_error", "error": str(exc)})
-                    self._emit(EVENT_THINK_ERROR, step=step, error=str(exc))
-                    # 错误时截图（失败不抛异常）
-                    self._take_screenshot(page, step, error=True)
-                    action = self._fallback_action(observation)
-                self.heartbeat.check_stall(step=step)
-
-                # -- Confidence 评分：低分动作触发 fallback ----------------
-                conf_result = self.confidence_scorer.score(
-                    action,
-                    task=task,
-                    target_params=self.config.target_params,
-                    history=history,
-                )
-                self._last_confidence = conf_result
-                if conf_result.score < self.config.min_confidence:
-                    self._emit(
-                        "confidence.low",
-                        step=step,
-                        score=conf_result.score,
-                        reasons=conf_result.reasons,
-                    )
-                    action = self._fallback_action(observation)
-
-                history.append(
-                    {
-                        "step": step,
-                        "action": action.action_type,
-                        "params": action.params,
-                        "reasoning": action.reasoning,
-                        "observation": {
-                            "url": observation.url,
-                            "hook_count": observation.hook_data.get("count", 0),
-                            "network_count": len(observation.network_requests),
-                            "script_count": len(observation.scripts),
-                            "captcha_type": observation.captcha_type.value,
-                        },
-                        "current_subgoal": (
-                            self._current_plan.current_subgoal.description
-                            if self._current_plan and self._current_plan.current_subgoal
-                            else None
-                        ),
-                        "confidence": conf_result.score,
-                    }
-                )
-
-                # -- 心跳：步进成功 -----------------------------------
-                self.heartbeat.tick(step)
-
-                # -- 危险动作护栏：DENY 时跳过执行 ----------------------
-                guard_result: GuardrailResult | None = None
-                if self.guard is not None:
-                    guard_result = self.guard.check(
-                        action,
-                        context={"url": observation.url, "task": task, "step": step},
-                    )
-                    self._last_guard_result = guard_result
-                    if guard_result.denied:
-                        self._emit(
-                            "guard.deny",
-                            step=step,
-                            matched_rules=guard_result.matched_rules,
-                            details=guard_result.details,
-                        )
-                        history.append(
-                            {
-                                "step": step,
-                                "event": "guard_denied",
-                                "matched_rules": guard_result.matched_rules,
-                                "details": guard_result.details,
-                            }
-                        )
-                        # 跳过本步执行，直接进入下一步
-                        self._emit(EVENT_STEP_END, step=step)
-                        continue
-
-                if action.action_type == "done":
-                    # -- Judge：done 动作二次验证 -------------------------
-                    if self.judge is not None and last_observation is not None:
-                        judge_result = self.judge.validate(
-                            action=action,
-                            observation=last_observation,
-                            target_params_found=target_params_found,
-                            task=task,
-                            target_params=self.config.target_params,
-                        )
-                        self._last_judge_result = judge_result
-                        self._emit(
-                            "judge.result",
-                            step=step,
-                            verified=judge_result.verified,
-                            missing=judge_result.missing,
-                        )
-                        if not judge_result.verified:
-                            # 验证失败：覆盖 done 动作为 fallback，继续循环
-                            history.append(
-                                {
-                                    "step": step,
-                                    "event": "judge_failed",
-                                    "missing": judge_result.missing,
-                                    "reasoning": judge_result.reasoning,
-                                }
-                            )
-                            action = self._fallback_action(observation)
-                        else:
-                            # 验证通过：当前子目标完成，推进 Planner
-                            if self._current_plan is not None:
-                                self._current_plan.advance()
-                            self._emit(EVENT_DONE, step=step, success=True)
-                            break
-                    else:
-                        self._emit(EVENT_DONE, step=step)
-                        break
-
-                # -- Recorder：先记录占位（执行后按结果更新），避免异常时误标上一步 ---
-                if self.recorder is not None:
-                    self.recorder.record(
-                        step=step,
-                        action_type=action.action_type,
-                        params=action.params,
-                    )
-                try:
-                    result = self._act(page, action, step=step)
-                    # -- Recorder：更新本步结果 -------------------------
-                    if self.recorder is not None:
-                        self.recorder.update_last(
-                            result_value=(
-                                str(result) if action.action_type == "extract" and result else None
-                            )
-                        )
-                    if action.action_type == "inject_hook" and result is False:
-                        history.append({"step": step, "event": "inject_hook_failed"})
-                        if self.recorder is not None:
-                            # 标记本步失败，编译时跳过
-                            self.recorder.update_last(success=False)
-                    elif action.action_type == "extract" and result:
-                        param_name = action.params.get("param_name", "")
-                        if param_name:
-                            target_params_found[param_name] = result
-                            # 提取成功 → 推进 Planner 子目标
-                            if self._current_plan is not None:
-                                self._current_plan.advance()
-                    elif action.action_type == "analyze_js" and isinstance(result, AnalysisResult):
-                        analysis = result
-                except Exception as exc:
-                    history.append({"step": step, "event": "act_error", "error": str(exc)})
-                    self._emit("act.error", step=step, error=str(exc))
-                    # 错误时截图（失败不抛异常）
-                    self._take_screenshot(page, step, error=True)
-                    if self.recorder is not None:
-                        self.recorder.update_last(success=False)
-
-                self._emit(EVENT_STEP_END, step=step)
-
-                # -- Checkpoint：步末保存断点 ----------------------------------
-                if self.config.enable_checkpoint:
-                    cp = self.checkpoint_manager.build_checkpoint(
-                        step=step,
-                        url=last_observation.url if last_observation else "",
-                        task=task,
-                        target_params_found=target_params_found,
-                        target_params=self.config.target_params,
-                        hooks=self.config.hooks,
-                        history=history,
-                        cumulative_summary=self.context_compressor.cumulative_summary,
-                        metadata={
-                            "confidence": conf_result.score,
-                            "guard_denied": bool(guard_result and guard_result.denied),
-                        },
-                    )
-                    self.checkpoint_manager.save(cp)
-
-            # 合并最后一次观察的缓存，避免结果 hook_data 几乎为空
-            final_hook_data = self._merge_final_hook_data(self._read_hook_data(page))
-            return self._build_run_result(
-                stopped=stopped,
-                target_params_found=target_params_found,
-                analysis=analysis,
-                history=history,
-                final_hook_data=final_hook_data,
-            )
-        finally:
-            self._cleanup_sync()
-
-    # ------------------------------------------------------------------
     # 主入口（异步）
     # ------------------------------------------------------------------
 
@@ -1163,46 +851,6 @@ class ReverseAgent:
     # 观察
     # ------------------------------------------------------------------
 
-    def _observe(self, page: Any, *, step: int = 0) -> Observation:
-        """收集页面状态。"""
-        url = self._safe_page_url(page)
-        # collect_hook_data 会清空浏览器侧数组，缓存一份供 _try_extract_param 复用
-        hook_data = collect_hook_data(page)
-        self._hook_data_cache = hook_data
-        # 每步只取增量请求并清空，避免跨步累积导致内存增长与重复上报
-        network_requests = list(self._network_log)
-        self._network_log.clear()
-        scripts = self._collect_scripts(page)
-        captcha_info = self.captcha_manager.detector.detect(page)
-        captcha_type = captcha_info.type if captcha_info else CaptchaType.NONE
-        try:
-            page_title = page.title()
-        except Exception:
-            page_title = ""
-        try:
-            dom_raw = page.content()
-        except Exception:
-            dom_raw = ""
-        # 启用 DomPruner 时把全文裁剪为精简结构，节省下游 LLM token
-        if self.dom_pruner is not None and dom_raw:
-            pruned = self.dom_pruner.prune(dom_raw)
-            self._last_pruned_dom = pruned
-            dom_summary = pruned.text or dom_raw[:2000]
-        else:
-            dom_summary = dom_raw[:2000]
-        # 步末截图：失败不抛异常，仅留空路径
-        screenshot_path = self._take_screenshot(page, step)
-        return Observation(
-            url=url,
-            hook_data=hook_data,
-            network_requests=network_requests,
-            scripts=scripts,
-            captcha_type=captcha_type,
-            page_title=page_title,
-            dom_summary=dom_summary,
-            screenshot_path=screenshot_path,
-        )
-
     async def _observe_async(self, page: Any, *, step: int = 0) -> Observation:
         """异步收集页面状态。"""
         url = self._safe_page_url(page)
@@ -1256,25 +904,6 @@ class ReverseAgent:
     # ------------------------------------------------------------------
     # 思考
     # ------------------------------------------------------------------
-
-    def _think(
-        self,
-        observation: Observation,
-        task: str,
-        history: list,
-        *,
-        plan: Plan | None = None,
-    ) -> Action:
-        """调 DeepSeek 分析当前状态，决定下一步。"""
-        prompt = self._build_think_prompt(observation, task, history, plan=plan)
-        self._last_think_prompt = prompt
-        self._last_think_completion = ""
-        messages = [LLMMessage("system", _THINK_SYSTEM_PROMPT), LLMMessage("user", prompt)]
-        resp = self.provider.chat(messages, temperature=0.0)
-        self._last_think_completion = resp.content or ""
-        # 暂存 LLM 真实用量（若 provider 返回）
-        self._last_llm_usage = getattr(resp, "usage", None)
-        return self._parse_action(resp.content or "")
 
     async def _think_async(
         self,
@@ -1331,67 +960,6 @@ class ReverseAgent:
     # ------------------------------------------------------------------
     # 行动
     # ------------------------------------------------------------------
-
-    def _act(self, page: Any, action: Action, *, step: int = 0) -> Any:
-        """执行动作。"""
-        atype = action.action_type
-        if atype == "navigate":
-            url = action.params.get("url")
-            if url:
-                page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                time.sleep(self.config.wait_after_navigate)
-            return None
-        if atype == "inject_hook":
-            hooks = action.params.get("hooks")
-            return self._inject_hooks(page, hooks)
-        if atype == "analyze_js":
-            scripts = action.params.get("script_urls", [])
-            target_params = action.params.get("target_params", self.config.target_params or [])
-            return self._analyze_captured_js(scripts, target_params)
-        if atype == "wait":
-            seconds = float(action.params.get("seconds", 1.0))
-            time.sleep(max(0.1, min(seconds, 30.0)))
-            return None
-        if atype == "extract":
-            param_name = action.params.get("param_name", "")
-            if not param_name:
-                return None
-            return self._try_extract_param(page, param_name)
-        if atype == "solve_captcha":
-            return self.captcha_manager.handle(page)
-        if atype == "click":
-            self._do_click(page, action, step=step)
-            return None
-        if atype == "type":
-            self._do_type(page, action, step=step)
-            return None
-        if atype == "scroll":
-            self._do_scroll(page, action, step=step)
-            return None
-        if atype == "press":
-            self._do_press(page, action, step=step)
-            return None
-        if atype == "hover":
-            self._do_hover(page, action, step=step)
-            return None
-        if atype == "select_option":
-            self._do_select_option(page, action, step=step)
-            return None
-        if atype == "new_tab":
-            self._do_new_tab(page, action, step=step)
-            return None
-        if atype == "switch_tab":
-            self._do_switch_tab(page, action, step=step)
-            return None
-        if atype == "close_tab":
-            self._do_close_tab(page, action, step=step)
-            return None
-        if atype == "done":
-            # done 由主循环在外层处理，_act 内不执行
-            return None
-        # 未知动作类型：抛错进入 act_error 路径，写入 history 便于审计，
-        # 而不是静默空转浪费步数
-        raise ValueError(f"未知动作类型: {atype!r}")
 
     async def _act_async(self, page: Any, action: Action, *, step: int = 0) -> Any:
         """异步执行动作。"""
@@ -1461,25 +1029,6 @@ class ReverseAgent:
     # 所有交互动作统一设 10s 超时；超时抛 TimeoutError 由外层 _act 调用处捕获
     _INTERACTION_TIMEOUT = 10000
 
-    def _do_click(self, page: Any, action: Action, *, step: int) -> None:
-        """同步：点击元素。``humanize_input`` 启用时先 hover 再随机延迟后点击。"""
-        selector = action.params.get("selector", "")
-        if not selector:
-            raise ValueError("click 动作需要 selector 参数")
-        button = action.params.get("button", "left")
-        if self.config.humanize_input:
-            self._humanize_click(page, selector, button=button)
-            self._emit("browser.action.humanized", step=step, action="click")
-        else:
-            page.click(selector, button=button, timeout=self._INTERACTION_TIMEOUT)
-        self._emit(
-            "browser.action",
-            step=step,
-            action="click",
-            selector=selector,
-            button=button,
-        )
-
     async def _do_click_async(self, page: Any, action: Action, *, step: int) -> None:
         """异步：点击元素。``humanize_input`` 启用时先 hover 再随机延迟后点击。"""
         selector = action.params.get("selector", "")
@@ -1499,16 +1048,6 @@ class ReverseAgent:
             button=button,
         )
 
-    def _humanize_click(self, page: Any, selector: str, *, button: str = "left") -> None:
-        """同步人类化点击：先 hover 移动鼠标，随机延迟 50-200ms 后再 click。"""
-        try:
-            page.hover(selector, timeout=self._INTERACTION_TIMEOUT)
-        except Exception:
-            # hover 失败不阻断点击流程
-            pass
-        time.sleep(random.uniform(0.05, 0.2))
-        page.click(selector, button=button, timeout=self._INTERACTION_TIMEOUT)
-
     async def _humanize_click_async(
         self, page: Any, selector: str, *, button: str = "left"
     ) -> None:
@@ -1519,28 +1058,6 @@ class ReverseAgent:
             pass
         await asyncio.sleep(random.uniform(0.05, 0.2))
         await page.click(selector, button=button, timeout=self._INTERACTION_TIMEOUT)
-
-    def _do_type(self, page: Any, action: Action, *, step: int) -> None:
-        """同步：在输入框输入文本（默认先清空）。``humanize_input`` 启用时逐字符随机延迟。"""
-        selector = action.params.get("selector", "")
-        text = action.params.get("text", "")
-        if not selector:
-            raise ValueError("type 动作需要 selector 参数")
-        clear = action.params.get("clear", True)
-        if clear:
-            page.fill(selector, "", timeout=self._INTERACTION_TIMEOUT)
-        if self.config.humanize_input:
-            self._humanize_type(page, selector, str(text))
-            self._emit("browser.action.humanized", step=step, action="type")
-        else:
-            page.type(selector, text, timeout=self._INTERACTION_TIMEOUT)
-        self._emit(
-            "browser.action",
-            step=step,
-            action="type",
-            selector=selector,
-            text_length=len(str(text)),
-        )
 
     async def _do_type_async(self, page: Any, action: Action, *, step: int) -> None:
         """异步：在输入框输入文本（默认先清空）。``humanize_input`` 启用时逐字符随机延迟。"""
@@ -1564,25 +1081,6 @@ class ReverseAgent:
             text_length=len(str(text)),
         )
 
-    def _humanize_type(self, page: Any, selector: str, text: str) -> None:
-        """同步人类化输入：先 focus 元素，随机停顿后用 delay 逐键输入。
-
-        Playwright ``page.type`` 的 ``delay`` 参数控制按键间停顿（毫秒），
-        模拟人类打字节奏。某些 mock 对象不支持 ``delay``，自动降级。
-        """
-        try:
-            page.focus(selector, timeout=self._INTERACTION_TIMEOUT)
-        except Exception:
-            pass
-        # 输入前的思考停顿
-        time.sleep(random.uniform(0.1, 0.3))
-        delay_ms = random.randint(30, 150)
-        try:
-            page.type(selector, text, delay=delay_ms)
-        except TypeError:
-            # mock 对象可能不支持 delay 参数，退化为不带 delay 的调用
-            page.type(selector, text)
-
     async def _humanize_type_async(self, page: Any, selector: str, text: str) -> None:
         """异步人类化输入：先 focus 元素，随机停顿后用 delay 逐键输入。"""
         try:
@@ -1595,25 +1093,6 @@ class ReverseAgent:
             await page.type(selector, text, delay=delay_ms)
         except TypeError:
             await page.type(selector, text)
-
-    def _do_scroll(self, page: Any, action: Action, *, step: int) -> None:
-        """同步：滚动页面或元素。"""
-        selector = action.params.get("selector")
-        x = int(action.params.get("x", 0))
-        y = int(action.params.get("y", 800))
-        if selector:
-            # 滚动到元素内（selector 经过转义后注入 JS）
-            page.evaluate(f"document.querySelector({_js_str(selector)})?.scrollBy({x}, {y})")
-        else:
-            page.evaluate(f"window.scrollBy({x}, {y})")
-        self._emit(
-            "browser.action",
-            step=step,
-            action="scroll",
-            selector=selector,
-            x=x,
-            y=y,
-        )
 
     async def _do_scroll_async(self, page: Any, action: Action, *, step: int) -> None:
         """异步：滚动页面或元素。"""
@@ -1633,21 +1112,6 @@ class ReverseAgent:
             y=y,
         )
 
-    def _do_press(self, page: Any, action: Action, *, step: int) -> None:
-        """同步：按键（可先聚焦到指定元素）。"""
-        key = action.params.get("key", "Enter")
-        selector = action.params.get("selector")
-        if selector:
-            page.focus(selector, timeout=self._INTERACTION_TIMEOUT)
-        page.press(key)
-        self._emit(
-            "browser.action",
-            step=step,
-            action="press",
-            key=key,
-            selector=selector,
-        )
-
     async def _do_press_async(self, page: Any, action: Action, *, step: int) -> None:
         """异步：按键（可先聚焦到指定元素）。"""
         key = action.params.get("key", "Enter")
@@ -1663,19 +1127,6 @@ class ReverseAgent:
             selector=selector,
         )
 
-    def _do_hover(self, page: Any, action: Action, *, step: int) -> None:
-        """同步：鼠标悬停。"""
-        selector = action.params.get("selector", "")
-        if not selector:
-            raise ValueError("hover 动作需要 selector 参数")
-        page.hover(selector, timeout=self._INTERACTION_TIMEOUT)
-        self._emit(
-            "browser.action",
-            step=step,
-            action="hover",
-            selector=selector,
-        )
-
     async def _do_hover_async(self, page: Any, action: Action, *, step: int) -> None:
         """异步：鼠标悬停。"""
         selector = action.params.get("selector", "")
@@ -1687,21 +1138,6 @@ class ReverseAgent:
             step=step,
             action="hover",
             selector=selector,
-        )
-
-    def _do_select_option(self, page: Any, action: Action, *, step: int) -> None:
-        """同步：下拉选择。"""
-        selector = action.params.get("selector", "")
-        value = action.params.get("value", "")
-        if not selector:
-            raise ValueError("select_option 动作需要 selector 参数")
-        page.select_option(selector, value, timeout=self._INTERACTION_TIMEOUT)
-        self._emit(
-            "browser.action",
-            step=step,
-            action="select_option",
-            selector=selector,
-            value=value,
         )
 
     async def _do_select_option_async(self, page: Any, action: Action, *, step: int) -> None:
@@ -1722,43 +1158,6 @@ class ReverseAgent:
     # ------------------------------------------------------------------
     # 多标签页管理（new_tab / switch_tab / close_tab）
     # ------------------------------------------------------------------
-
-    def _do_new_tab(self, page: Any, action: Action, *, step: int) -> None:
-        """同步：新建标签页并导航到指定 URL，切换 self._page 到新标签。"""
-        url = action.params.get("url", "")
-        name = action.params.get("name") or f"tab_{len(self._tabs)}"
-        assert self._context is not None
-        new_page = self._context.new_page()
-        try:
-            self.fetcher._setup_page(new_page)  # type: ignore[union-attr]
-        except Exception:
-            pass
-        self._setup_page_listeners(new_page)
-        self._tabs[name] = new_page
-        # 把主页面也登记进 _tabs（首次新建标签时）
-        if "main" not in self._tabs:
-            self._tabs["main"] = page
-        if url:
-            # 深度防御：new_tab 的导航 URL 再走一次护栏检查（循环层已检查 new_tab 动作）
-            nav_check = self.guard.check_navigation_url(url) if self.guard is not None else None
-            if nav_check is not None and nav_check.denied:
-                self._emit(
-                    "guard.deny",
-                    step=step,
-                    matched_rules=nav_check.matched_rules,
-                    details=nav_check.details,
-                )
-            else:
-                new_page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                time.sleep(self.config.wait_after_navigate)
-        self._page = new_page
-        self._emit(
-            "browser.action",
-            step=step,
-            action="new_tab",
-            name=name,
-            url=url,
-        )
 
     async def _do_new_tab_async(self, page: Any, action: Action, *, step: int) -> None:
         """异步：新建标签页并导航到指定 URL，切换 self._page 到新标签。"""
@@ -1796,21 +1195,6 @@ class ReverseAgent:
             url=url,
         )
 
-    def _do_switch_tab(self, page: Any, action: Action, *, step: int) -> None:
-        """同步：切换到指定标签页（按 name 或 index）。"""
-        name = action.params.get("name")
-        index = action.params.get("index")
-        target = self._resolve_tab(name=name, index=index)
-        if target is None:
-            raise ValueError(f"switch_tab: 找不到标签页 (name={name!r}, index={index!r})")
-        self._page = target
-        # Playwright Page.bring_to_front 把标签页置顶
-        try:
-            target.bring_to_front()
-        except Exception:
-            pass
-        self._emit("browser.action", step=step, action="switch_tab", name=name, index=index)
-
     async def _do_switch_tab_async(self, page: Any, action: Action, *, step: int) -> None:
         """异步：切换到指定标签页（按 name 或 index）。"""
         name = action.params.get("name")
@@ -1824,21 +1208,6 @@ class ReverseAgent:
         except Exception:
             pass
         self._emit("browser.action", step=step, action="switch_tab", name=name, index=index)
-
-    def _do_close_tab(self, page: Any, action: Action, *, step: int) -> None:
-        """同步：关闭指定标签页。关闭后 self._page 回退到 main（若存在）。"""
-        name = action.params.get("name", "")
-        target = self._tabs.pop(name, None)
-        if target is None:
-            raise ValueError(f"close_tab: 找不到标签页 name={name!r}")
-        try:
-            target.close()
-        except Exception:
-            pass
-        # 关闭当前活跃标签时回退到 main
-        if self._page is target:
-            self._page = self._tabs.get("main")
-        self._emit("browser.action", step=step, action="close_tab", name=name)
 
     async def _do_close_tab_async(self, page: Any, action: Action, *, step: int) -> None:
         """异步：关闭指定标签页。关闭后 self._page 回退到 main（若存在）。"""
@@ -1870,15 +1239,6 @@ class ReverseAgent:
     # Hook 注入
     # ------------------------------------------------------------------
 
-    def _inject_hooks(self, page: Any, hook_names: list[str] | None) -> bool:
-        """注入 Hook 脚本（运行时通过 evaluate 执行 IIFE）。"""
-        try:
-            script = generate_combined_script(hook_names)
-            page.evaluate(script)
-            return True
-        except Exception:
-            return False
-
     async def _inject_hooks_async(self, page: Any, hook_names: list[str] | None) -> bool:
         """异步注入 Hook 脚本。"""
         try:
@@ -1891,21 +1251,6 @@ class ReverseAgent:
     # ------------------------------------------------------------------
     # 脚本收集
     # ------------------------------------------------------------------
-
-    def _collect_scripts(self, page: Any) -> list[str]:
-        """收集页面所有 JS URL。"""
-        try:
-            return (
-                page.evaluate("""
-                () => {
-                    const scripts = document.querySelectorAll('script[src]');
-                    return Array.from(scripts).map(s => s.src).filter(Boolean);
-                }
-            """)
-                or []
-            )
-        except Exception:
-            return []
 
     async def _collect_scripts_async(self, page: Any) -> list[str]:
         """异步收集页面所有 JS URL。"""
@@ -1970,51 +1315,6 @@ class ReverseAgent:
             if not matched:
                 return False
         return True
-
-    def _analyze_captured_js(
-        self,
-        scripts: list[str],
-        target_params: list[str],
-    ) -> AnalysisResult | None:
-        """分析捕获的 JS，返回最相关的分析结果。
-
-        限制分析前 10 个脚本以避免耗时过长；用 httpx 拉取脚本源码后交给
-        :class:`JSAnalyzer` 逐段分析，按置信度与目标参数命中率选最优结果。
-        仅拉取同源/白名单域、非内网的 http(s) 脚本，防止 SSRF。
-        """
-        import httpx
-
-        fragments: list[JSFragment] = []
-        with httpx.Client(
-            timeout=15.0,
-            follow_redirects=True,
-            headers={"User-Agent": _DEFAULT_UA},
-        ) as client:
-            for url in scripts[:10]:
-                if not self._is_safe_script_url(url):
-                    continue
-                try:
-                    resp = client.get(url)
-                    # 重定向后的最终 URL 也需过安全校验
-                    if not self._is_safe_script_url(str(resp.url)):
-                        continue
-                    if resp.status_code != 200 or not resp.text:
-                        continue
-                    if len(resp.content) > self._MAX_JS_FETCH_BYTES:
-                        continue
-                    text = resp.text
-                    fragments.append(
-                        JSFragment(
-                            source=text,
-                            url=url,
-                            size=len(text),
-                            is_minified=len(text.splitlines()) < 5,
-                        )
-                    )
-                except Exception:
-                    continue
-
-        return self._pick_best_fragment(fragments, target_params)
 
     async def _analyze_captured_js_async(
         self,
@@ -2084,11 +1384,6 @@ class ReverseAgent:
     # 参数提取
     # ------------------------------------------------------------------
 
-    def _try_extract_param(self, page: Any, param_name: str) -> str | None:
-        """尝试从 Hook 数据中提取目标参数。"""
-        records = self._read_hook_records(page)
-        return self._search_param_in_records(records, param_name)
-
     async def _try_extract_param_async(self, page: Any, param_name: str) -> str | None:
         """异步尝试从 Hook 数据中提取目标参数。"""
         records = await self._read_hook_records_async(page)
@@ -2138,28 +1433,6 @@ class ReverseAgent:
     # 页面创建与恢复
     # ------------------------------------------------------------------
 
-    def _create_page(self, hook_names: list[str] | None) -> tuple[Any, Any]:
-        """创建带 Hook 注入的 (context, page)。"""
-        assert self.fetcher is not None
-        browser = self.fetcher._ensure_browser()
-        context = browser.new_context(
-            extra_http_headers=self.fetcher.extra_headers or None,
-            ignore_https_errors=not self.fetcher.verify,
-        )
-        # 导航前注入 Hook，确保页面加载时即生效
-        combined = generate_combined_script(hook_names or self.config.hooks)
-        try:
-            context.add_init_script(combined)
-        except Exception:
-            pass
-        page = context.new_page()
-        try:
-            self.fetcher._setup_page(page)
-        except Exception:
-            pass
-        self._setup_page_listeners(page)
-        return context, page
-
     async def _create_page_async(self, hook_names: list[str] | None) -> tuple[Any, Any]:
         """异步创建带 Hook 注入的 (context, page)。"""
         assert self.fetcher is not None
@@ -2204,23 +1477,6 @@ class ReverseAgent:
         except Exception:
             pass
 
-    def _try_recover_page(self, url: str) -> tuple[bool, Any | None]:
-        """浏览器崩溃后尝试重新创建 page 并导航到 url。
-
-        返回 ``(是否成功, 新 page)``；成功时新 page 已写入 ``self._page``，
-        主循环应把循环内持有的 page 引用重新绑定到返回值。
-        """
-        try:
-            self._cleanup_page_sync()
-            context, page = self._create_page(self.config.hooks)
-            self._context = context
-            self._page = page
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            time.sleep(self.config.wait_after_navigate)
-            return True, page
-        except Exception:
-            return False, None
-
     async def _try_recover_page_async(self, url: str) -> tuple[bool, Any | None]:
         """异步浏览器崩溃恢复。返回 ``(是否成功, 新 page)``。"""
         try:
@@ -2238,14 +1494,6 @@ class ReverseAgent:
     # Hook 数据读取
     # ------------------------------------------------------------------
 
-    def _read_hook_data(self, page: Any) -> dict:
-        """非破坏性读取 Hook 数据（不清除浏览器侧数组）。"""
-        try:
-            records = page.evaluate("() => (window.__hook_data__ || []).slice()") or []
-            return {"records": list(records), "count": len(records)}
-        except Exception:
-            return {"records": [], "count": 0}
-
     async def _read_hook_data_async(self, page: Any) -> dict:
         """异步非破坏性读取 Hook 数据。"""
         try:
@@ -2253,18 +1501,6 @@ class ReverseAgent:
             return {"records": list(records), "count": len(records)}
         except Exception:
             return {"records": [], "count": 0}
-
-    def _read_hook_records(self, page: Any) -> list[dict]:
-        """读取 Hook 记录列表，合并页面实时数据与缓存。"""
-        records: list[dict] = []
-        try:
-            fresh = page.evaluate("() => (window.__hook_data__ || []).slice()") or []
-            records.extend(fresh)
-        except Exception:
-            pass
-        cached = self._hook_data_cache.get("records", [])
-        records.extend(cached)
-        return records
 
     async def _read_hook_records_async(self, page: Any) -> list[dict]:
         """异步读取 Hook 记录列表。"""
@@ -2430,32 +1666,6 @@ class ReverseAgent:
                     pass
         except OSError:
             pass
-
-    def _take_screenshot(self, page: Any, step: int, *, error: bool = False) -> str:
-        """同步截图：失败返回空字符串，绝不抛异常。
-
-        ``error=True`` 时文件名加 ``_error`` 后缀，供 think/act 异常路径使用。
-        """
-        if not self.config.enable_screenshot or page is None:
-            return ""
-        try:
-            task_id = self._sanitize_filename_component(self._screenshot_task_id())
-            suffix = "_error" if error else ""
-            filename = f"{task_id}_step{step}{suffix}.png"
-            out_dir = self._screenshot_dir()
-            out_dir.mkdir(parents=True, exist_ok=True)
-            path = out_dir / filename
-            page.screenshot(path=str(path))
-            self._emit("screenshot", step=step, path=str(path), error=error)
-            entry = {"step": step, "path": str(path), "error": error, "ts": time.time()}
-            self._screenshots.append(entry)
-            if error:
-                self._last_error_screenshot = str(path)
-            self._rotate_screenshots(out_dir, task_id)
-            return str(path)
-        except Exception:
-            # 截图失败不影响主循环：仅返回空路径
-            return ""
 
     async def _take_screenshot_async(self, page: Any, step: int, *, error: bool = False) -> str:
         """异步截图：失败返回空字符串，绝不抛异常。"""
