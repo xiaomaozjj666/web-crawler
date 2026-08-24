@@ -20,7 +20,6 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY src/ ./src/
 COPY README.md ./
-COPY demo.py ./
 
 # 安装项目（含全部可选依赖：curl_cffi / playwright / pydantic / camoufox / ddddocr / pycryptodome / Pillow）
 RUN pip install --no-cache-dir -e ".[all,camoufox,captcha,crypto,visual]"
