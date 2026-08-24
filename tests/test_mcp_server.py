@@ -798,15 +798,11 @@ def test_tool_reverse_engineer_url_fallback_truncates_collected() -> None:
     }
     with patch.object(srv, "_run_browser_task", return_value=collected):
         parsed = json.loads(
-            srv._tool_reverse_engineer_url(
-                {"url": "http://x", "max_text_length": 500}
-            )
+            srv._tool_reverse_engineer_url({"url": "http://x", "max_text_length": 500})
         )
     assert parsed["agent"] is False
     assert len(parsed["hook_records"][0]["body"]) == 500
-    assert parsed["truncations"] == [
-        {"field": "hook_records[0].body", "original_length": 3000}
-    ]
+    assert parsed["truncations"] == [{"field": "hook_records[0].body", "original_length": 3000}]
     # hook_count 等数字字段不受影响
     assert parsed["hook_count"] == 1
 
@@ -971,9 +967,7 @@ def test_tool_analyze_js_code_truncates_deobfuscated() -> None:
         deobfuscated="x" * 300,
     )
     srv = _make_server(analyzer=analyzer)
-    parsed = json.loads(
-        srv._tool_analyze_js_code({"code": "x", "max_length": 100})
-    )
+    parsed = json.loads(srv._tool_analyze_js_code({"code": "x", "max_length": 100}))
     assert len(parsed["deobfuscated"]) == 100
     assert parsed["truncated"] is True
     assert parsed["full_length"] == 300
@@ -1072,9 +1066,7 @@ def test_tool_reimplement_algorithm_truncates_output() -> None:
     analyzer = MagicMock()
     analyzer.suggest_reimplementation.return_value = "z" * 400
     srv = _make_server(analyzer=analyzer)
-    parsed = json.loads(
-        srv._tool_reimplement_algorithm({"code": "x", "max_length": 150})
-    )
+    parsed = json.loads(srv._tool_reimplement_algorithm({"code": "x", "max_length": 150}))
     assert len(parsed["code"]) == 150
     assert parsed["length"] == 150
     assert parsed["truncated"] is True
@@ -1510,7 +1502,9 @@ def test_tool_get_page_scripts_browser_error() -> None:
 def test_tool_get_page_scripts_pagination() -> None:
     """offset/limit 分页：脚本列表按页返回并带翻页元数据。"""
     srv = _make_server(agent=None)
-    scripts = [{"src": f"http://x/{i}.js", "type": "", "async": False, "defer": False} for i in range(7)]
+    scripts = [
+        {"src": f"http://x/{i}.js", "type": "", "async": False, "defer": False} for i in range(7)
+    ]
     with patch.object(srv, "_run_browser_task", return_value=scripts):
         parsed = json.loads(
             srv._tool_get_page_scripts({"url": "http://x", "offset": 3, "limit": 4})

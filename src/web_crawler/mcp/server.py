@@ -297,18 +297,14 @@ def _truncate_result_strings(
         out: dict = {}
         for key, value in obj.items():
             child_path = f"{path}.{key}" if path else str(key)
-            out[key], child_truncs = _truncate_result_strings(
-                value, max_length, path=child_path
-            )
+            out[key], child_truncs = _truncate_result_strings(value, max_length, path=child_path)
             truncations.extend(child_truncs)
         return out, truncations
     if isinstance(obj, list):
         arr: list = []
         for idx, value in enumerate(obj):
             child_path = f"{path}[{idx}]"
-            new_value, child_truncs = _truncate_result_strings(
-                value, max_length, path=child_path
-            )
+            new_value, child_truncs = _truncate_result_strings(value, max_length, path=child_path)
             arr.append(new_value)
             truncations.extend(child_truncs)
         return arr, truncations
@@ -1071,9 +1067,7 @@ class ReverseMCPServer:
                 # result 内嵌超长文本（反混淆 JS、hook 请求体、history 片段），
                 # 递归截断并在顶层标注 truncations，避免一次响应塞爆上游上下文
                 trimmed, truncations = _truncate_result_strings(result, max_text_length)
-                return _to_json(
-                    {"result": trimmed, "agent": True, "truncations": truncations}
-                )
+                return _to_json({"result": trimmed, "agent": True, "truncations": truncations})
             except Exception as exc:
                 fallback_note = f"ReverseAgent 执行失败：{exc}，降级为基本采集"
 
@@ -1152,9 +1146,7 @@ class ReverseMCPServer:
         code = args["code"]
         url = args.get("url", "")
         target_param = args.get("target_param")
-        max_length = _clamp_int(
-            args.get("max_length"), _DEFAULT_TEXT_LIMIT, 1, _MAX_TEXT_LIMIT
-        )
+        max_length = _clamp_int(args.get("max_length"), _DEFAULT_TEXT_LIMIT, 1, _MAX_TEXT_LIMIT)
 
         fragment = JSFragment(source=code, url=url, is_minified=len(code) < 5000)
         try:
@@ -1162,9 +1154,7 @@ class ReverseMCPServer:
         except Exception as exc:
             return _error("LLM call failed", details=str(exc))
 
-        deobfuscated, truncated, full_len = _truncate_text(
-            result.deobfuscated or "", max_length
-        )
+        deobfuscated, truncated, full_len = _truncate_text(result.deobfuscated or "", max_length)
         payload = {
             "algorithm": result.algorithm,
             "inputs": result.inputs,
@@ -1202,9 +1192,7 @@ class ReverseMCPServer:
 
     def _tool_deobfuscate_js(self, args: dict) -> str:
         code = args["code"]
-        max_length = _clamp_int(
-            args.get("max_length"), _DEFAULT_TEXT_LIMIT, 1, _MAX_TEXT_LIMIT
-        )
+        max_length = _clamp_int(args.get("max_length"), _DEFAULT_TEXT_LIMIT, 1, _MAX_TEXT_LIMIT)
         try:
             deobfuscated = self.analyzer.deobfuscate(code)
         except Exception as exc:
@@ -1222,9 +1210,7 @@ class ReverseMCPServer:
     def _tool_reimplement_algorithm(self, args: dict) -> str:
         code = args["code"]
         language = args.get("language", "python")
-        max_length = _clamp_int(
-            args.get("max_length"), _DEFAULT_TEXT_LIMIT, 1, _MAX_TEXT_LIMIT
-        )
+        max_length = _clamp_int(args.get("max_length"), _DEFAULT_TEXT_LIMIT, 1, _MAX_TEXT_LIMIT)
         try:
             reimplemented = self.analyzer.suggest_reimplementation(code, language=language)
         except Exception as exc:
