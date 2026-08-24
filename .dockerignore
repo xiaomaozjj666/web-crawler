@@ -43,4 +43,3 @@ mkdocs.yml
 !README.md
 tests/
 benchmarks.py
-demo.bat

@@ -233,34 +233,27 @@ playwright install chromium        # 仅 DynamicFetcher / StealthyFetcher 需要
 | `web-crawler-mcp` | MCP 服务（JSON-RPC over stdio） |
 | `web-crawler-reverse` | JS 逆向 Agent 命令行 |
 
-### 直接运行
+### 直接运行（源码树，免 pip install）
 
 ```bash
-# 资源下载器
-python app/crawler.py --url https://example.com --out ./out --workers 8
-python app/crawler.py --url https://example.com --stealth --impersonate chrome131
+# Windows（cmd）：把 src/ 加入模块路径后按模块运行
+set PYTHONPATH=src
+py -m web_crawler.app.crawler --url https://example.com --out ./out --workers 8
+py -m web_crawler.app.crawler --url https://example.com --stealth --impersonate chrome131
 
 # 本地 Web UI（默认 http://127.0.0.1:8765，--open 自动打开浏览器）
-python app/ui.py --open
+py -m web_crawler.app.ui --open
 
 # 远程/容器绑定需显式放行：--allow-remote（控制面无鉴权，仅限可信网络）
-python app/ui.py --host 0.0.0.0 --port 8765 --allow-remote
+py -m web_crawler.app.ui --host 0.0.0.0 --port 8765 --allow-remote
 
-# 演示脚本（Windows 也可双击 demo.bat）
-python demo.py
+# Linux / macOS
+PYTHONPATH=src python -m web_crawler.app.ui --open
 ```
 
-**Windows 一键启动（免安装，启动器自动把 `src/` 加入模块路径）：**
-
-| 启动器 | 模式 | 说明 |
-| --- | --- | --- |
-| 双击 [`启动爬虫.cmd`](启动爬虫.cmd) | 安全版（默认） | 公开默认安全配置，拒绝私网/环回/云元数据目标 |
-
-启动器会打开本地 Web UI（http://127.0.0.1:8765）并自动唤起浏览器。
-
-> 个人如需解锁内网/云元数据目标，可在**自己的可信环境**里设置
-> `WEB_CRAWLER_POWER_MODE=1` 后运行（见下方 [Power Mode](#-power-mode个人全解锁默认关闭) 章节），
-> 该开关不会随本仓库提供任何一键启动脚本。
+> 本仓库不附带任何一键启动脚本。个人如需解锁内网/云元数据目标，可在
+> **自己的可信环境**里设置 `WEB_CRAWLER_POWER_MODE=1` 后运行
+> （见下方 [Power Mode](#-power-mode个人全解锁默认关闭) 章节）。
 
 ### Docker
 
@@ -344,7 +337,6 @@ src/web_crawler/          # 核心库
   py.typed                # PEP 561 类型标记
 tests/                    # pytest 测试套件
 benchmarks.py             # 解析器/fetcher 微基准 + 回归检测
-demo.py / demo.bat        # 交互式使用演示
 docs/ + mkdocs.yml        # MkDocs 文档站点
 ```
 
