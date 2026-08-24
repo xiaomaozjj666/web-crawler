@@ -242,11 +242,13 @@ def cmd_pentest(args: argparse.Namespace) -> int:
 def cmd_capture(args: argparse.Namespace) -> int:
     """捕获页面网络请求。"""
     server = _make_server(args.model)
+    payload: dict[str, Any] = {"url": args.url, "wait_time": args.wait}
+    if args.offset is not None:
+        payload["offset"] = args.offset
+    if args.limit is not None:
+        payload["limit"] = args.limit
     try:
-        result = server.handle_tool(
-            "capture_network_requests",
-            {"url": args.url, "wait_time": args.wait},
-        )
+        result = server.handle_tool("capture_network_requests", payload)
         return _print_result(result)
     finally:
         server.close()
@@ -255,8 +257,13 @@ def cmd_capture(args: argparse.Namespace) -> int:
 def cmd_scripts(args: argparse.Namespace) -> int:
     """获取页面加载的 JS 脚本列表。"""
     server = _make_server(args.model)
+    payload: dict[str, Any] = {"url": args.url}
+    if args.offset is not None:
+        payload["offset"] = args.offset
+    if args.limit is not None:
+        payload["limit"] = args.limit
     try:
-        result = server.handle_tool("get_page_scripts", {"url": args.url})
+        result = server.handle_tool("get_page_scripts", payload)
         return _print_result(result)
     finally:
         server.close()
@@ -573,11 +580,15 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("capture", help="捕获页面网络请求")
     p.add_argument("url", help="目标 URL")
     p.add_argument("--wait", type=float, default=5.0, help="等待时间（秒）")
+    p.add_argument("--offset", type=int, default=None, help="分页起点（默认 0）")
+    p.add_argument("--limit", type=int, default=None, help="每页条数（1-500，默认 50）")
     p.set_defaults(func=cmd_capture)
 
     # scripts
     p = sub.add_parser("scripts", help="获取页面加载的 JS 脚本列表")
     p.add_argument("url", help="目标 URL")
+    p.add_argument("--offset", type=int, default=None, help="分页起点（默认 0）")
+    p.add_argument("--limit", type=int, default=None, help="每页条数（1-500，默认 50）")
     p.set_defaults(func=cmd_scripts)
 
     # interactive

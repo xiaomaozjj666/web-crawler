@@ -503,6 +503,21 @@ def test_cmd_capture(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixt
     )
 
 
+def test_cmd_capture_with_pagination(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """cmd_capture 的 --offset/--limit 透传到工具参数。"""
+    server = _mock_server(json.dumps({"count": 10, "has_more": False}))
+    monkeypatch.setattr(cli_module, "_make_server", lambda model: server)
+    args = _parse_args(["capture", "http://x", "--offset", "50", "--limit", "100"])
+    code = cli_module.cmd_capture(args)
+    assert code == 0
+    server.handle_tool.assert_called_once_with(
+        "capture_network_requests",
+        {"url": "http://x", "wait_time": 5.0, "offset": 50, "limit": 100},
+    )
+
+
 # -- cmd_scripts ------------------------------------------------------------
 
 
@@ -514,6 +529,20 @@ def test_cmd_scripts(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixt
     code = cli_module.cmd_scripts(args)
     assert code == 0
     server.handle_tool.assert_called_once_with("get_page_scripts", {"url": "http://x"})
+
+
+def test_cmd_scripts_with_pagination(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """cmd_scripts 的 --offset/--limit 透传到工具参数。"""
+    server = _mock_server(json.dumps({"count": 3, "has_more": True, "next_offset": 13}))
+    monkeypatch.setattr(cli_module, "_make_server", lambda model: server)
+    args = _parse_args(["scripts", "http://x", "--offset", "10", "--limit", "3"])
+    code = cli_module.cmd_scripts(args)
+    assert code == 0
+    server.handle_tool.assert_called_once_with(
+        "get_page_scripts", {"url": "http://x", "offset": 10, "limit": 3}
+    )
 
 
 # -- cmd_run 错误路径（成功路径已在 test_cli_run.py 覆盖） ---------------------
