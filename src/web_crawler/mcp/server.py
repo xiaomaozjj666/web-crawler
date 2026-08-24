@@ -228,6 +228,97 @@ _FIELD_LIMITS: dict[str, int] = {
     "slider": 5_000_000,
 }
 
+# -- 响应分页 / 截断 ----------------------------------------------------------
+#
+# 大响应分页（借鉴 ida-pro-mcp 的 pagination 设计）：列表类工具返回当前页 +
+# 翻页元数据（total/offset/limit/has_more/next_offset），上游 AI 按需取下一页，
+# 避免一次调用塞爆上下文；长文本（LLM 反混淆输出、逆向 result 内嵌的 JS 源码）
+# 按 max_length 截断并显式标注 truncated 与 full_length。
+
+# 列表类工具默认分页大小与硬上限（条数）
+_DEFAULT_PAGE_SIZE = 50
+_MAX_PAGE_SIZE = 500
+# 长文本默认截断阈值与硬上限（字符数）
+_DEFAULT_TEXT_LIMIT = 50_000
+_MAX_TEXT_LIMIT = 200_000
+
+
+def _clamp_int(value: Any, default: int, lo: int, hi: int) -> int:
+    """把任意输入安全收敛为 [lo, hi] 内的整数（非法/越界回退默认或边界）。"""
+    try:
+        iv = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(iv, hi))
+
+
+def _paginate(items: list, offset: Any, limit: Any) -> tuple[list, dict]:
+    """统一分页：返回 (当前页, 翻页元数据)。
+
+    元数据字段与 MCP 客户端约定：``total``（总条数）、``offset``（本页起点）、
+    ``limit``（本页大小）、``has_more``（是否还有下一页）、``next_offset``
+    （下一页起点，无更多时为 None）。
+    """
+    total = len(items)
+    start = _clamp_int(offset, 0, 0, max(0, total - 1) if total else 0)
+    lim = _clamp_int(limit, _DEFAULT_PAGE_SIZE, 1, _MAX_PAGE_SIZE)
+    end = start + lim
+    page = items[start:end]
+    has_more = end < total
+    meta = {
+        "total": total,
+        "offset": start,
+        "limit": lim,
+        "has_more": has_more,
+        "next_offset": end if has_more else None,
+    }
+    return page, meta
+
+
+def _truncate_text(text: str, max_length: int) -> tuple[str, bool, int]:
+    """按 max_length 截断字符串，返回 (截断后文本, 是否截断, 原始长度)。"""
+    if max_length <= 0 or len(text) <= max_length:
+        return text, False, len(text)
+    return text[:max_length], True, len(text)
+
+
+def _truncate_result_strings(
+    obj: Any, max_length: int, *, path: str = ""
+) -> tuple[Any, list[dict]]:
+    """递归截断嵌套结构（dict/list）中的超长字符串。
+
+    返回 (截断后的副本, 截断记录列表)；截断记录形如
+    ``{"field": "result.analysis.deobfuscated", "original_length": 123456}``，
+    便于上游 AI 知晓哪些字段不完整、需要换工具（如 deobfuscate_js）单独取全文。
+    非字符串叶子节点原样保留，输入对象不被修改（返回新副本）。
+    """
+    truncations: list[dict] = []
+    if isinstance(obj, dict):
+        out: dict = {}
+        for key, value in obj.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            out[key], child_truncs = _truncate_result_strings(
+                value, max_length, path=child_path
+            )
+            truncations.extend(child_truncs)
+        return out, truncations
+    if isinstance(obj, list):
+        arr: list = []
+        for idx, value in enumerate(obj):
+            child_path = f"{path}[{idx}]"
+            new_value, child_truncs = _truncate_result_strings(
+                value, max_length, path=child_path
+            )
+            arr.append(new_value)
+            truncations.extend(child_truncs)
+        return arr, truncations
+    if isinstance(obj, str):
+        sliced, truncated, full_len = _truncate_text(obj, max_length)
+        if truncated:
+            return sliced, [{"field": path or "<root>", "original_length": full_len}]
+        return obj, []
+    return obj, []
+
 
 def _type_ok(ptype: str, value: Any) -> bool:
     """按 JSON Schema 类型检查单个值（bool 不算 int）。"""
@@ -354,6 +445,9 @@ class ReverseMCPServer:
                     "（最近一次置信度评分）、checkpoints（断点列表）、screenshots"
                     "（每步截图路径）与 error_screenshot（错误截图）字段，"
                     "上游 AI 一次调用即可拿到全部运行时状态。"
+                    "result 内超长文本（反混淆 JS、hook 捕获的请求体等）默认超过 "
+                    f"{_DEFAULT_TEXT_LIMIT} 字符时截断，响应顶层的 truncations 列表"
+                    "标注被截断字段与原始长度，可传更大的 max_text_length 取更多内容。"
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -369,6 +463,14 @@ class ReverseMCPServer:
                             "type": "integer",
                             "default": 20,
                             "description": "Agent 最大执行步数",
+                        },
+                        "max_text_length": {
+                            "type": "integer",
+                            "default": _DEFAULT_TEXT_LIMIT,
+                            "description": (
+                                "result 内单个字符串字段的最大字符数"
+                                f"（上限 {_MAX_TEXT_LIMIT}，默认 {_DEFAULT_TEXT_LIMIT}）"
+                            ),
                         },
                     },
                     "required": ["url"],
@@ -397,7 +499,9 @@ class ReverseMCPServer:
                 "name": "analyze_js_code",
                 "description": (
                     "用 AI 分析 JS 代码片段的加密逻辑，输出算法、输入参数、输出格式、"
-                    "执行流程与置信度。"
+                    "执行流程与置信度。反混淆结果（deobfuscated 字段）默认超过 "
+                    f"{_DEFAULT_TEXT_LIMIT} 字符时截断，响应会标注 truncated=true 与 "
+                    "full_length，可传更大的 max_length 取更多内容。"
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -405,6 +509,14 @@ class ReverseMCPServer:
                         "code": {"type": "string", "description": "JS 代码片段"},
                         "url": {"type": "string", "description": "代码来源 URL（可选）"},
                         "target_param": {"type": "string", "description": "目标参数名（可选）"},
+                        "max_length": {
+                            "type": "integer",
+                            "default": _DEFAULT_TEXT_LIMIT,
+                            "description": (
+                                "deobfuscated 字段的最大字符数"
+                                f"（上限 {_MAX_TEXT_LIMIT}，默认 {_DEFAULT_TEXT_LIMIT}）"
+                            ),
+                        },
                     },
                     "required": ["code"],
                 },
@@ -422,18 +534,34 @@ class ReverseMCPServer:
             },
             {
                 "name": "deobfuscate_js",
-                "description": "用 AI 反混淆 JS 代码，返回可读的等价版本。",
+                "description": (
+                    "用 AI 反混淆 JS 代码，返回可读的等价版本。"
+                    f"输出默认超过 {_DEFAULT_TEXT_LIMIT} 字符时截断，响应会标注 "
+                    "truncated=true 与 full_length，可传更大的 max_length 取更多内容。"
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "code": {"type": "string", "description": "混淆后的 JS 代码"},
+                        "max_length": {
+                            "type": "integer",
+                            "default": _DEFAULT_TEXT_LIMIT,
+                            "description": (
+                                "输出最大字符数"
+                                f"（上限 {_MAX_TEXT_LIMIT}，默认 {_DEFAULT_TEXT_LIMIT}）"
+                            ),
+                        },
                     },
                     "required": ["code"],
                 },
             },
             {
                 "name": "reimplement_algorithm",
-                "description": "用指定语言重写 JS 加密逻辑，输出可独立运行的等价代码。",
+                "description": (
+                    "用指定语言重写 JS 加密逻辑，输出可独立运行的等价代码。"
+                    f"输出默认超过 {_DEFAULT_TEXT_LIMIT} 字符时截断，响应会标注 "
+                    "truncated=true 与 full_length，可传更大的 max_length 取更多内容。"
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -442,6 +570,14 @@ class ReverseMCPServer:
                             "type": "string",
                             "default": "python",
                             "description": "目标语言",
+                        },
+                        "max_length": {
+                            "type": "integer",
+                            "default": _DEFAULT_TEXT_LIMIT,
+                            "description": (
+                                "输出最大字符数"
+                                f"（上限 {_MAX_TEXT_LIMIT}，默认 {_DEFAULT_TEXT_LIMIT}）"
+                            ),
                         },
                     },
                     "required": ["code"],
@@ -555,7 +691,11 @@ class ReverseMCPServer:
             },
             {
                 "name": "capture_network_requests",
-                "description": "捕获页面加载过程中的网络请求（url、method、headers、body）。",
+                "description": (
+                    "捕获页面加载过程中的网络请求（url、method、headers、body）。"
+                    "结果分页返回：默认每页 50 条（上限 500），响应包含 total/offset/"
+                    "limit/has_more/next_offset 翻页元数据，可用 offset+limit 取下一页。"
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -565,17 +705,41 @@ class ReverseMCPServer:
                             "default": _DEFAULT_WAIT_TIME,
                             "description": "采集等待时间（秒，上限 60）",
                         },
+                        "offset": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "分页起点（默认 0）",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "default": _DEFAULT_PAGE_SIZE,
+                            "description": f"每页条数（1-{_MAX_PAGE_SIZE}，默认 {_DEFAULT_PAGE_SIZE}）",
+                        },
                     },
                     "required": ["url"],
                 },
             },
             {
                 "name": "get_page_scripts",
-                "description": "获取页面加载的 JS 脚本 URL 列表。",
+                "description": (
+                    "获取页面加载的 JS 脚本 URL 列表。"
+                    "结果分页返回：默认每页 50 条（上限 500），响应包含 total/offset/"
+                    "limit/has_more/next_offset 翻页元数据，可用 offset+limit 取下一页。"
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "url": {"type": "string", "description": "目标页面 URL"},
+                        "offset": {
+                            "type": "integer",
+                            "default": 0,
+                            "description": "分页起点（默认 0）",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "default": _DEFAULT_PAGE_SIZE,
+                            "description": f"每页条数（1-{_MAX_PAGE_SIZE}，默认 {_DEFAULT_PAGE_SIZE}）",
+                        },
                     },
                     "required": ["url"],
                 },
@@ -849,6 +1013,9 @@ class ReverseMCPServer:
         target_params = args.get("target_params") or []
         task = args.get("task") or f"分析 {url} 的加密参数"
         max_steps = max(1, min(int(args.get("max_steps", 20)), 100))
+        max_text_length = _clamp_int(
+            args.get("max_text_length"), _DEFAULT_TEXT_LIMIT, 1, _MAX_TEXT_LIMIT
+        )
 
         # URL 门禁：仅 http/https、公网主机、无 userinfo（agent 路径不经 _run_browser_task）
         gate_error = _check_url(url)
@@ -901,7 +1068,12 @@ class ReverseMCPServer:
                 self.report_progress(
                     progress["progressToken"], max_steps, max_steps, message="done"
                 )
-                return _to_json({"result": result, "agent": True})
+                # result 内嵌超长文本（反混淆 JS、hook 请求体、history 片段），
+                # 递归截断并在顶层标注 truncations，避免一次响应塞爆上游上下文
+                trimmed, truncations = _truncate_result_strings(result, max_text_length)
+                return _to_json(
+                    {"result": trimmed, "agent": True, "truncations": truncations}
+                )
             except Exception as exc:
                 fallback_note = f"ReverseAgent 执行失败：{exc}，降级为基本采集"
 
@@ -931,6 +1103,8 @@ class ReverseMCPServer:
         note = (
             "ReverseAgent 模块不可用，仅返回基本采集结果" if self.agent is None else fallback_note
         )
+        # 降级采集同样递归截断超长文本（hook 捕获的请求体可能非常大）
+        trimmed, truncations = _truncate_result_strings(collected, max_text_length)
         return _to_json(
             {
                 "agent": False,
@@ -938,7 +1112,8 @@ class ReverseMCPServer:
                 "url": url,
                 "target_params": target_params,
                 "task": task,
-                **collected,
+                "truncations": truncations,
+                **trimmed,
             }
         )
 
@@ -977,6 +1152,9 @@ class ReverseMCPServer:
         code = args["code"]
         url = args.get("url", "")
         target_param = args.get("target_param")
+        max_length = _clamp_int(
+            args.get("max_length"), _DEFAULT_TEXT_LIMIT, 1, _MAX_TEXT_LIMIT
+        )
 
         fragment = JSFragment(source=code, url=url, is_minified=len(code) < 5000)
         try:
@@ -984,13 +1162,18 @@ class ReverseMCPServer:
         except Exception as exc:
             return _error("LLM call failed", details=str(exc))
 
+        deobfuscated, truncated, full_len = _truncate_text(
+            result.deobfuscated or "", max_length
+        )
         payload = {
             "algorithm": result.algorithm,
             "inputs": result.inputs,
             "output": result.output,
             "code_flow": result.code_flow,
             "confidence": result.confidence,
-            "deobfuscated": result.deobfuscated,
+            "deobfuscated": deobfuscated,
+            "truncated": truncated,
+            "full_length": full_len,
         }
         if target_param:
             payload["target_param"] = target_param
@@ -1019,20 +1202,43 @@ class ReverseMCPServer:
 
     def _tool_deobfuscate_js(self, args: dict) -> str:
         code = args["code"]
+        max_length = _clamp_int(
+            args.get("max_length"), _DEFAULT_TEXT_LIMIT, 1, _MAX_TEXT_LIMIT
+        )
         try:
             deobfuscated = self.analyzer.deobfuscate(code)
         except Exception as exc:
             return _error("LLM call failed", details=str(exc))
-        return _to_json({"deobfuscated": deobfuscated, "length": len(deobfuscated)})
+        sliced, truncated, full_len = _truncate_text(deobfuscated, max_length)
+        return _to_json(
+            {
+                "deobfuscated": sliced,
+                "length": len(sliced),
+                "truncated": truncated,
+                "full_length": full_len,
+            }
+        )
 
     def _tool_reimplement_algorithm(self, args: dict) -> str:
         code = args["code"]
         language = args.get("language", "python")
+        max_length = _clamp_int(
+            args.get("max_length"), _DEFAULT_TEXT_LIMIT, 1, _MAX_TEXT_LIMIT
+        )
         try:
             reimplemented = self.analyzer.suggest_reimplementation(code, language=language)
         except Exception as exc:
             return _error("LLM call failed", details=str(exc))
-        return _to_json({"language": language, "code": reimplemented, "length": len(reimplemented)})
+        sliced, truncated, full_len = _truncate_text(reimplemented, max_length)
+        return _to_json(
+            {
+                "language": language,
+                "code": sliced,
+                "length": len(sliced),
+                "truncated": truncated,
+                "full_length": full_len,
+            }
+        )
 
     def _tool_solve_captcha(self, args: dict) -> str:
         url = args["url"]
@@ -1263,7 +1469,8 @@ class ReverseMCPServer:
             records = self._run_browser_task(url, _capture, hooks=hooks, wait_time=wait_time)
         except Exception as exc:
             return _error("浏览器操作失败", details=str(exc))
-        return _to_json({"requests": records, "count": len(records)})
+        page_items, page_meta = _paginate(records, args.get("offset"), args.get("limit"))
+        return _to_json({"requests": page_items, "count": len(page_items), **page_meta})
 
     def _tool_get_page_scripts(self, args: dict) -> str:
         url = args["url"]
@@ -1287,7 +1494,8 @@ class ReverseMCPServer:
             scripts = self._run_browser_task(url, _get_scripts, wait_time=2.0)
         except Exception as exc:
             return _error("浏览器操作失败", details=str(exc))
-        return _to_json({"scripts": scripts, "count": len(scripts)})
+        page_items, page_meta = _paginate(scripts, args.get("offset"), args.get("limit"))
+        return _to_json({"scripts": page_items, "count": len(page_items), **page_meta})
 
     # -- MCP 协议入口 --------------------------------------------------------
 
