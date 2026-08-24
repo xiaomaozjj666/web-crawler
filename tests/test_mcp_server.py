@@ -158,6 +158,122 @@ def test_error_includes_extra_fields() -> None:
     assert parsed["code"] == 42
 
 
+# -- 分页 / 截断辅助 ---------------------------------------------------------
+
+
+def test_clamp_int_normal_and_boundary() -> None:
+    """_clamp_int 正常值直通，越界收敛到边界，非法输入回退默认。"""
+    assert server_module._clamp_int(7, 50, 1, 100) == 7
+    assert server_module._clamp_int(0, 50, 1, 100) == 1  # 下界
+    assert server_module._clamp_int(999, 50, 1, 100) == 100  # 上界
+    assert server_module._clamp_int("abc", 50, 1, 100) == 50  # 非法 → 默认
+    assert server_module._clamp_int(None, 25, 1, 100) == 25  # None → 默认
+    assert server_module._clamp_int("42", 50, 1, 100) == 42  # 数字字符串可解析
+
+
+def test_paginate_first_middle_last_page() -> None:
+    """_paginate 首页/中间页/尾页元数据正确。"""
+    items = list(range(10))
+    # 首页
+    page, meta = server_module._paginate(items, 0, 4)
+    assert page == [0, 1, 2, 3]
+    assert meta == {
+        "total": 10,
+        "offset": 0,
+        "limit": 4,
+        "has_more": True,
+        "next_offset": 4,
+    }
+    # 中间页
+    page, meta = server_module._paginate(items, 4, 4)
+    assert page == [4, 5, 6, 7]
+    assert meta["has_more"] is True
+    assert meta["next_offset"] == 8
+    # 尾页（不满一页）
+    page, meta = server_module._paginate(items, 8, 4)
+    assert page == [8, 9]
+    assert meta["has_more"] is False
+    assert meta["next_offset"] is None
+
+
+def test_paginate_limit_clamped_and_invalid_inputs() -> None:
+    """limit 超上限被收敛；offset/limit 非法输入回退默认。"""
+    items = list(range(1000))
+    page, meta = server_module._paginate(items, 0, 99999)
+    assert meta["limit"] == server_module._MAX_PAGE_SIZE
+    assert len(page) == server_module._MAX_PAGE_SIZE
+    # 非法 offset → 0，非法 limit → 默认页大小
+    page, meta = server_module._paginate(items, "bad", None)
+    assert meta["offset"] == 0
+    assert meta["limit"] == server_module._DEFAULT_PAGE_SIZE
+
+
+def test_paginate_offset_beyond_end_and_empty_list() -> None:
+    """offset 越界回退到最后有效起点；空列表返回空页。"""
+    items = list(range(5))
+    page, meta = server_module._paginate(items, 100, 2)
+    assert meta["offset"] == 4  # clamp 到 total-1
+    assert page == [4]
+    assert meta["has_more"] is False
+    # 空列表
+    page, meta = server_module._paginate([], 0, 10)
+    assert page == []
+    assert meta == {
+        "total": 0,
+        "offset": 0,
+        "limit": 10,
+        "has_more": False,
+        "next_offset": None,
+    }
+
+
+def test_truncate_text_no_truncation_and_truncation() -> None:
+    """_truncate_text：短文本原样返回，长文本按 max_length 截断并报全长。"""
+    text = "abcde"
+    sliced, truncated, full_len = server_module._truncate_text(text, 10)
+    assert (sliced, truncated, full_len) == ("abcde", False, 5)
+    sliced, truncated, full_len = server_module._truncate_text(text, 3)
+    assert sliced == "abc"
+    assert truncated is True
+    assert full_len == 5
+    # max_length<=0 视为不截断
+    sliced, truncated, full_len = server_module._truncate_text(text, 0)
+    assert (sliced, truncated, full_len) == ("abcde", False, 5)
+
+
+def test_truncate_result_strings_nested_paths() -> None:
+    """_truncate_result_strings 递归截断 dict/list 内的超长字符串并记录路径。"""
+    long_js = "x" * 30
+    obj = {
+        "analysis": {"deobfuscated": long_js, "confidence": 0.9},
+        "history": [{"js": long_js}, {"js": "short"}],
+        "plain": 123,
+    }
+    trimmed, truncations = server_module._truncate_result_strings(obj, 10)
+    assert len(trimmed["analysis"]["deobfuscated"]) == 10
+    assert trimmed["analysis"]["confidence"] == 0.9  # 非字符串叶子原样保留
+    assert len(trimmed["history"][0]["js"]) == 10
+    assert trimmed["history"][1]["js"] == "short"
+    assert trimmed["plain"] == 123
+    fields = {t["field"] for t in truncations}
+    assert fields == {"analysis.deobfuscated", "history[0].js"}
+    assert all(t["original_length"] == 30 for t in truncations)
+    # 输入对象不被修改
+    assert len(obj["analysis"]["deobfuscated"]) == 30
+
+
+def test_truncate_result_strings_root_string_and_no_truncation() -> None:
+    """根级字符串与无截断场景。"""
+    trimmed, truncations = server_module._truncate_result_strings("x" * 20, 5)
+    assert len(trimmed) == 5
+    assert truncations == [{"field": "<root>", "original_length": 20}]
+    # 全部短字符串 → 无截断记录
+    obj = {"a": "ok", "b": ["fine"]}
+    trimmed, truncations = server_module._truncate_result_strings(obj, 100)
+    assert trimmed == obj
+    assert truncations == []
+
+
 # -- 资源管理 ----------------------------------------------------------------
 
 
@@ -592,6 +708,18 @@ class _FakeAgentCrash(_FakeAgent):
         raise RuntimeError("agent crashed")
 
 
+class _FakeAgentBigResult(_FakeAgent):
+    """run() 返回含超长字符串的 result，用于验证递归截断。"""
+
+    def run(self, url: str, task: str = "") -> dict:
+        return {
+            "success": True,
+            "steps": 2,
+            "analysis": {"deobfuscated": "A" * 5000},
+            "hook_data": {"records": [{"body": "B" * 8000}]},
+        }
+
+
 def test_tool_reverse_engineer_url_with_agent_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -618,6 +746,69 @@ def test_tool_reverse_engineer_url_with_agent_success(
     parsed = json.loads(srv._tool_reverse_engineer_url({"url": "http://x", "max_steps": 5}))
     assert parsed["agent"] is True
     assert parsed["result"]["success"] is True
+
+
+def test_tool_reverse_engineer_url_truncates_big_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent result 内超长文本被递归截断，顶层 truncations 标注字段与原始长度。"""
+    monkeypatch.setattr(server_module, "_HAS_REVERSE_AGENT", True)
+
+    base_agent = _FakeAgentBigResult(
+        config=_FakeAgentConfig(), provider=MagicMock(), analyzer=MagicMock()
+    )
+    srv = _make_server(agent=base_agent)
+    monkeypatch.setattr(
+        "web_crawler.ai.reverse_agent.ReverseAgentConfig",
+        lambda **kw: MagicMock(**kw),
+    )
+
+    class _FakeEventBus:
+        def __init__(self) -> None:
+            self.subscribers: list[Any] = []
+
+        def subscribe(self, fn: Any) -> None:
+            self.subscribers.append(fn)
+
+    monkeypatch.setattr("web_crawler.ai.watchdog.EventBus", _FakeEventBus)
+
+    parsed = json.loads(
+        srv._tool_reverse_engineer_url({"url": "http://x", "max_text_length": 1000})
+    )
+    assert parsed["agent"] is True
+    assert parsed["result"]["success"] is True
+    # 超长字段被截断到 max_text_length
+    assert len(parsed["result"]["analysis"]["deobfuscated"]) == 1000
+    assert len(parsed["result"]["hook_data"]["records"][0]["body"]) == 1000
+    # 顶层 truncations 记录被截断字段与原始长度
+    by_field = {t["field"]: t["original_length"] for t in parsed["truncations"]}
+    assert by_field == {
+        "analysis.deobfuscated": 5000,
+        "hook_data.records[0].body": 8000,
+    }
+
+
+def test_tool_reverse_engineer_url_fallback_truncates_collected() -> None:
+    """降级采集路径同样递归截断 hook_records 中的超长文本。"""
+    srv = _make_server(agent=None)
+    collected = {
+        "hook_records": [{"type": "fetch", "url": "http://x/api", "body": "C" * 3000}],
+        "hook_count": 1,
+        "scripts": ["http://x/a.js"],
+    }
+    with patch.object(srv, "_run_browser_task", return_value=collected):
+        parsed = json.loads(
+            srv._tool_reverse_engineer_url(
+                {"url": "http://x", "max_text_length": 500}
+            )
+        )
+    assert parsed["agent"] is False
+    assert len(parsed["hook_records"][0]["body"]) == 500
+    assert parsed["truncations"] == [
+        {"field": "hook_records[0].body", "original_length": 3000}
+    ]
+    # hook_count 等数字字段不受影响
+    assert parsed["hook_count"] == 1
 
 
 def test_tool_reverse_engineer_url_agent_failure_falls_back(
@@ -768,6 +959,31 @@ def test_tool_analyze_js_code_llm_error() -> None:
     assert parsed["error"] == "LLM call failed"
 
 
+def test_tool_analyze_js_code_truncates_deobfuscated() -> None:
+    """max_length 截断 deobfuscated 字段并标注 truncated/full_length。"""
+    analyzer = MagicMock()
+    analyzer.analyze_fragment.return_value = MagicMock(
+        algorithm="MD5",
+        inputs=[],
+        output="",
+        code_flow="",
+        confidence=0.9,
+        deobfuscated="x" * 300,
+    )
+    srv = _make_server(analyzer=analyzer)
+    parsed = json.loads(
+        srv._tool_analyze_js_code({"code": "x", "max_length": 100})
+    )
+    assert len(parsed["deobfuscated"]) == 100
+    assert parsed["truncated"] is True
+    assert parsed["full_length"] == 300
+    # 不传 max_length 且输出较短 → 不截断
+    analyzer.analyze_fragment.return_value.deobfuscated = "short"
+    parsed = json.loads(srv._tool_analyze_js_code({"code": "x"}))
+    assert parsed["truncated"] is False
+    assert parsed["full_length"] == 5
+
+
 # -- _tool_extract_webpack_modules ------------------------------------------
 
 
@@ -807,6 +1023,18 @@ def test_tool_deobfuscate_js_error() -> None:
     assert parsed["error"] == "LLM call failed"
 
 
+def test_tool_deobfuscate_js_truncates_output() -> None:
+    """max_length 截断反混淆输出并标注 truncated/full_length。"""
+    analyzer = MagicMock()
+    analyzer.deobfuscate.return_value = "y" * 500
+    srv = _make_server(analyzer=analyzer)
+    parsed = json.loads(srv._tool_deobfuscate_js({"code": "x", "max_length": 200}))
+    assert len(parsed["deobfuscated"]) == 200
+    assert parsed["length"] == 200
+    assert parsed["truncated"] is True
+    assert parsed["full_length"] == 500
+
+
 # -- _tool_reimplement_algorithm --------------------------------------------
 
 
@@ -837,6 +1065,20 @@ def test_tool_reimplement_algorithm_error() -> None:
     srv = _make_server(analyzer=analyzer)
     parsed = json.loads(srv._tool_reimplement_algorithm({"code": "x"}))
     assert parsed["error"] == "LLM call failed"
+
+
+def test_tool_reimplement_algorithm_truncates_output() -> None:
+    """max_length 截断重写输出并标注 truncated/full_length。"""
+    analyzer = MagicMock()
+    analyzer.suggest_reimplementation.return_value = "z" * 400
+    srv = _make_server(analyzer=analyzer)
+    parsed = json.loads(
+        srv._tool_reimplement_algorithm({"code": "x", "max_length": 150})
+    )
+    assert len(parsed["code"]) == 150
+    assert parsed["length"] == 150
+    assert parsed["truncated"] is True
+    assert parsed["full_length"] == 400
 
 
 # -- _tool_solve_captcha ----------------------------------------------------
@@ -1215,6 +1457,35 @@ def test_tool_capture_network_requests_browser_error() -> None:
     assert "error" in parsed
 
 
+def test_tool_capture_network_requests_pagination() -> None:
+    """offset/limit 分页：默认页大小、翻页元数据与下一页取数。"""
+    srv = _make_server(agent=None)
+    records = [{"type": "fetch", "url": f"http://x/api/{i}"} for i in range(120)]
+    with patch.object(srv, "_run_browser_task", return_value=records):
+        # 默认：前 50 条 + 翻页元数据
+        parsed = json.loads(
+            srv._tool_capture_network_requests({"url": "http://x", "wait_time": 1.0})
+        )
+    assert parsed["count"] == 50
+    assert parsed["total"] == 120
+    assert parsed["offset"] == 0
+    assert parsed["limit"] == 50
+    assert parsed["has_more"] is True
+    assert parsed["next_offset"] == 50
+    assert parsed["requests"][0]["url"] == "http://x/api/0"
+    # 用 next_offset 取下一页
+    with patch.object(srv, "_run_browser_task", return_value=records):
+        parsed = json.loads(
+            srv._tool_capture_network_requests(
+                {"url": "http://x", "wait_time": 1.0, "offset": 50, "limit": 100}
+            )
+        )
+    assert parsed["count"] == 70  # 50..119 共 70 条
+    assert parsed["has_more"] is False
+    assert parsed["next_offset"] is None
+    assert parsed["requests"][0]["url"] == "http://x/api/50"
+
+
 # -- _tool_get_page_scripts -------------------------------------------------
 
 
@@ -1234,6 +1505,21 @@ def test_tool_get_page_scripts_browser_error() -> None:
     with patch.object(srv, "_run_browser_task", side_effect=RuntimeError("boom")):
         parsed = json.loads(srv._tool_get_page_scripts({"url": "http://x"}))
     assert "error" in parsed
+
+
+def test_tool_get_page_scripts_pagination() -> None:
+    """offset/limit 分页：脚本列表按页返回并带翻页元数据。"""
+    srv = _make_server(agent=None)
+    scripts = [{"src": f"http://x/{i}.js", "type": "", "async": False, "defer": False} for i in range(7)]
+    with patch.object(srv, "_run_browser_task", return_value=scripts):
+        parsed = json.loads(
+            srv._tool_get_page_scripts({"url": "http://x", "offset": 3, "limit": 4})
+        )
+    assert parsed["count"] == 4
+    assert parsed["total"] == 7
+    assert parsed["offset"] == 3
+    assert parsed["has_more"] is False
+    assert parsed["scripts"][0]["src"] == "http://x/3.js"
 
 
 # -- _handle_jsonrpc 协议 ---------------------------------------------------
