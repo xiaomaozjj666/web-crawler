@@ -68,7 +68,6 @@ src/web_crawler/app/       # 应用层（随核心包分发）
 tests/                    # pytest 测试套件
 benchmarks.py             # 解析器/fetcher 微基准 + 内置基线 + 回归检测
 mkdocs.yml                # API 文档站点配置
-demo.py / demo.bat        # 交互式使用 demo
 ```
 
 ## 各层职责
