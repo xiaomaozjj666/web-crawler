@@ -70,7 +70,7 @@ all = [
     "pydantic>=2.5,<3",
 ]
 camoufox = [
-    "camoufox[geoip]>=0.4.4,<1",
+    "camoufox[geoip]>=0.5.5,<1",
 ]
 captcha = [
     "ddddocr>=1.6.1,<2",
@@ -81,7 +81,7 @@ crypto = [
 ]
 mcp = [
     "mcp>=1.0,<2",
-    "camoufox[geoip]>=0.4.4,<1",
+    "camoufox[geoip]>=0.5.5,<1",
     "pydantic>=2.5,<3",
 ]
 dev = [
