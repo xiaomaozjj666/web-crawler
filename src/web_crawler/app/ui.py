@@ -713,11 +713,10 @@ def _normalize_imported_config(data: dict[str, object]) -> dict[str, object]:
 class ReverseAgentRunner:
     """在子线程中启动 ReverseAgent，订阅 EventBus，把事件推到 ReverseJobState。
 
-    停止策略（收尾阶段统一接线）：UI 的"停止"按钮目前仅设置 stop_event——
-    agent.run 是同步阻塞调用,停止后任务会在 Agent 自然结束时被标记为
-    cancelled,不能立即中断正在执行的循环。库侧 ReverseAgentConfig.should_stop
-    可选回调（默认 None）即将支持,届时在构造 agent 处透传
-    should_stop=job.stop_event.is_set 即可真正中断（见构造处的 TODO 注释）。
+    停止策略：UI 的"停止"按钮设置 job.stop_event；构造 agent 时透传
+    should_stop=job.stop_event.is_set，库侧在每步循环顶部检查该回调，
+    返回 True 立即中断循环并把结果标记为 stopped——正在执行的
+    Playwright 动作完成后不再进入下一步，无需等 Agent 自然结束。
     """
 
     def run_job(self, job: ReverseJobState) -> None:
