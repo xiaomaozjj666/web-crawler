@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, Mock, patch
 import httpx
 import pytest
 
-from web_crawler.app import ui
+from web_crawler.app import _ui_helpers, _ui_http, ui
 from web_crawler.app.ui import (
     Handler,
     JobState,
@@ -1223,7 +1223,7 @@ class TestHandlerSSE:
 class TestHandlerPostRoutes:
     def test_post_run(self, http_server: str) -> None:
         """POST /run 启动采集任务并返回 job id。"""
-        with patch.object(ui, "run_job"):
+        with patch.object(_ui_http, "run_job"):
             resp = httpx.post(
                 f"{http_server}/run",
                 data={"url": "https://example.com", "out": "", "max_pages": "1"},
@@ -1266,7 +1266,7 @@ class TestHandlerPostRoutes:
         """POST /open-output 打开已登记任务的输出目录（白名单内）。"""
         job = _make_job_state(id="open1", output_dir=str(tmp_path))
         ui.JOBS["open1"] = job
-        with patch.object(ui, "_open_folder") as mock_open:
+        with patch.object(_ui_http, "_open_folder") as mock_open:
             resp = httpx.post(
                 f"{http_server}/open-output",
                 data={"out": str(tmp_path)},
@@ -1278,7 +1278,7 @@ class TestHandlerPostRoutes:
         self, http_server: str, tmp_path: Path
     ) -> None:
         """POST /open-output 拒绝白名单之外的任意路径（防任意路径启动）。"""
-        with patch.object(ui, "_open_folder") as mock_open:
+        with patch.object(_ui_http, "_open_folder") as mock_open:
             resp = httpx.post(
                 f"{http_server}/open-output",
                 data={"out": str(tmp_path)},
@@ -1290,7 +1290,7 @@ class TestHandlerPostRoutes:
         """POST /open-output 打开失败时返回错误 JSON。"""
         job = _make_job_state(id="open2", output_dir=str(tmp_path))
         ui.JOBS["open2"] = job
-        with patch.object(ui, "_open_folder", side_effect=OSError("denied")):
+        with patch.object(_ui_http, "_open_folder", side_effect=OSError("denied")):
             resp = httpx.post(
                 f"{http_server}/open-output",
                 data={"out": str(tmp_path)},
@@ -1325,7 +1325,7 @@ class TestHandlerPostRoutes:
 
     def test_post_reverse_run(self, http_server: str) -> None:
         """POST /reverse/run 启动逆向任务。"""
-        with patch.object(ui, "run_reverse_job"):
+        with patch.object(_ui_http, "run_reverse_job"):
             resp = httpx.post(
                 f"{http_server}/reverse/run",
                 data={"url": "https://example.com", "task": "提取签名"},
@@ -1431,7 +1431,7 @@ class TestPageTemplate:
     def test_load_page_template_missing_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """模板文件缺失时返回占位页（不崩溃）。"""
         monkeypatch.setattr(
-            ui, "_PAGE_TEMPLATE_PATH", Path(__file__).parent / "no_such_template.html"
+            _ui_helpers, "_PAGE_TEMPLATE_PATH", Path(__file__).parent / "no_such_template.html"
         )
         page = ui._load_page_template()
         assert "模板缺失" in page
@@ -1638,7 +1638,7 @@ class TestJobsCleanup:
             ui.JOBS[f"old{i}"] = job
 
         # 发起 /run 请求触发清理
-        with patch.object(ui, "run_job"):
+        with patch.object(_ui_http, "run_job"):
             resp = httpx.post(
                 f"{http_server}/run",
                 data={"url": "https://example.com", "out": "", "max_pages": "1"},
@@ -1656,7 +1656,7 @@ class TestReverseJobsCleanup:
             rjob.status = "done"
             ui.REVERSE_JOBS[f"rold{i}"] = rjob
 
-        with patch.object(ui, "run_reverse_job"):
+        with patch.object(_ui_http, "run_reverse_job"):
             resp = httpx.post(
                 f"{http_server}/reverse/run",
                 data={"url": "https://example.com", "task": "提取签名"},
@@ -1749,7 +1749,7 @@ class TestJobsHistoryApi:
 
     def test_post_run_writes_db(self, http_server: str) -> None:
         """POST /run 后数据库中存在对应的任务记录。"""
-        with patch.object(ui, "run_job"):
+        with patch.object(_ui_http, "run_job"):
             resp = httpx.post(
                 f"{http_server}/run",
                 data={"url": "https://run.example.com", "out": "", "max_pages": "1"},
@@ -1765,7 +1765,7 @@ class TestCsrfOriginCheck:
     """跨站请求（Origin/Referer 非本机）应被拒绝。"""
 
     def test_post_run_cross_origin_rejected(self, http_server: str) -> None:
-        with patch.object(ui, "run_job") as mock_run:
+        with patch.object(_ui_http, "run_job") as mock_run:
             resp = httpx.post(
                 f"{http_server}/run",
                 data={"url": "https://example.com", "out": "", "max_pages": "1"},
@@ -1776,7 +1776,7 @@ class TestCsrfOriginCheck:
         mock_run.assert_not_called()
 
     def test_post_run_cross_origin_referer_rejected(self, http_server: str) -> None:
-        with patch.object(ui, "run_job") as mock_run:
+        with patch.object(_ui_http, "run_job") as mock_run:
             resp = httpx.post(
                 f"{http_server}/run",
                 data={"url": "https://example.com", "out": "", "max_pages": "1"},
@@ -1786,7 +1786,7 @@ class TestCsrfOriginCheck:
         mock_run.assert_not_called()
 
     def test_post_run_same_origin_allowed(self, http_server: str) -> None:
-        with patch.object(ui, "run_job"):
+        with patch.object(_ui_http, "run_job"):
             resp = httpx.post(
                 f"{http_server}/run",
                 data={"url": "https://example.com", "out": "", "max_pages": "1"},
@@ -1803,7 +1803,7 @@ class TestCsrfOriginCheck:
 
     def test_origin_null_rejected(self, http_server: str) -> None:
         """sandboxed iframe 的 Origin: null 不可信,应被拒绝。"""
-        with patch.object(ui, "run_job") as mock_run:
+        with patch.object(_ui_http, "run_job") as mock_run:
             resp = httpx.post(
                 f"{http_server}/run",
                 data={"url": "https://example.com", "out": "", "max_pages": "1"},
@@ -1814,7 +1814,7 @@ class TestCsrfOriginCheck:
 
     def test_origin_non_http_scheme_rejected(self, http_server: str) -> None:
         """Origin 不是 http(s) 方案（如 file://）时拒绝。"""
-        with patch.object(ui, "run_job") as mock_run:
+        with patch.object(_ui_http, "run_job") as mock_run:
             resp = httpx.post(
                 f"{http_server}/run",
                 data={"url": "https://example.com", "out": "", "max_pages": "1"},
@@ -1870,7 +1870,7 @@ class TestRunValidation:
         assert "retries" in resp.json()["error"]
 
     def test_valid_bounds_accepted(self, http_server: str) -> None:
-        with patch.object(ui, "run_job"):
+        with patch.object(_ui_http, "run_job"):
             resp = httpx.post(
                 f"{http_server}/run",
                 data={"url": "https://example.com", "workers": "64", "out": ""},
@@ -1879,7 +1879,7 @@ class TestRunValidation:
 
     def test_empty_numeric_fields_use_defaults(self, http_server: str) -> None:
         """空字符串数字字段回退默认值（覆盖校验器默认分支）。"""
-        with patch.object(ui, "run_job"):
+        with patch.object(_ui_http, "run_job"):
             resp = httpx.post(
                 f"{http_server}/run",
                 data={
@@ -1918,7 +1918,7 @@ class TestSingleCrawlGuard:
     def test_run_rejected_while_running(self, http_server: str) -> None:
         job = _make_job_state(id="busy1")
         ui.JOBS["busy1"] = job  # status 默认为 running
-        with patch.object(ui, "run_job") as mock_run:
+        with patch.object(_ui_http, "run_job") as mock_run:
             resp = httpx.post(
                 f"{http_server}/run",
                 data={"url": "https://example.com", "out": "", "max_pages": "1"},
@@ -1931,7 +1931,7 @@ class TestSingleCrawlGuard:
         job = _make_job_state(id="done1")
         job.status = "done"
         ui.JOBS["done1"] = job
-        with patch.object(ui, "run_job"):
+        with patch.object(_ui_http, "run_job"):
             resp = httpx.post(
                 f"{http_server}/run",
                 data={"url": "https://example.com", "out": "", "max_pages": "1"},
