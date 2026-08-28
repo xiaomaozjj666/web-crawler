@@ -4354,7 +4354,9 @@ class TestPostProcessErrorPaths:
     ) -> None:
         """任一后处理阶段抛异常:整体不崩,返回 (0, 0)。"""
         _crawler_post, ctx = self._make_ctx(tmp_path, **flags)
-        monkeypatch.setattr(_crawler_post, patch_target, MagicMock(side_effect=RuntimeError("boom")))
+        monkeypatch.setattr(
+            _crawler_post, patch_target, MagicMock(side_effect=RuntimeError("boom"))
+        )
         video_count, failed_count = _crawler_post._post_process(
             ctx,
             manifest_rows=[],
