@@ -4292,3 +4292,75 @@ class TestConfigRoundTrip:
         assert crawl_args.stealth is False
         assert crawl_args.save_config is None  # 不再 AttributeError
         assert crawl_args.url == "https://example.com"
+
+
+# ========== 后处理异常兜底(_crawler_post) ==========
+
+
+class TestPostProcessErrorPaths:
+    """_post_process 各阶段独立 try/except:单步失败仅记 warning、不中断收尾。"""
+
+    @staticmethod
+    def _make_ctx(tmp_path: Path, **flags: Any) -> Any:
+        """构造能走完后处理流程的最小 _CrawlContext。"""
+        from web_crawler.app import _crawler_post
+        from web_crawler.app._crawler_context import _CrawlContext
+
+        args = argparse.Namespace(
+            url="https://example.com/",
+            output_dir=str(tmp_path / "out"),
+            rewrite_html=flags.get("rewrite_html", False),
+            strip_overlays=flags.get("strip_overlays", False),
+            video_mode=flags.get("video_mode", False),
+            smart_extract=flags.get("smart_extract", False),
+            extract_text=flags.get("extract_text", False),
+            pause_file=None,
+            progress_callback=None,
+        )
+        ctx = _CrawlContext(
+            args=args,
+            headers={},
+            output_dir=tmp_path / "out",
+            max_bytes=None,
+            block_keywords=[],
+            robots=None,
+            rate_limiter=MagicMock(),
+            dedup=None,
+        )
+        ctx.output_dir.mkdir(parents=True, exist_ok=True)
+        ctx.page_html["https://example.com/"] = "<html><body>x</body></html>"
+        ctx.seen_pages.add("https://example.com/")
+        return _crawler_post, ctx
+
+    @pytest.mark.parametrize(
+        "flags,patch_target,patch_name",
+        [
+            ({"rewrite_html": True}, "rewrite_html", "rewrite_html"),
+            ({"rewrite_html": True, "strip_overlays": True}, "strip_page_overlays", "rewrite_html"),
+            ({}, "write_manifests", "manifests"),
+            ({"video_mode": True}, "write_video_manifests", "video_manifests"),
+            ({"smart_extract": True}, "smart_extract", "smart_extract"),
+            ({"extract_text": True}, "extract_readable_text", "extract_text"),
+            ({}, "write_summary", "summary"),
+        ],
+    )
+    def test_stage_failure_does_not_abort(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        flags: dict[str, Any],
+        patch_target: str,
+        patch_name: str,
+    ) -> None:
+        """任一后处理阶段抛异常:整体不崩,返回 (0, 0)。"""
+        _crawler_post, ctx = self._make_ctx(tmp_path, **flags)
+        monkeypatch.setattr(_crawler_post, patch_target, MagicMock(side_effect=RuntimeError("boom")))
+        video_count, failed_count = _crawler_post._post_process(
+            ctx,
+            manifest_rows=[],
+            crawl_start_time=time.time(),
+            report_config={},
+            cancelled=False,
+        )
+        assert (video_count, failed_count) == (0, 0)
+        assert patch_name  # 占位说明,便于按名筛选用例
