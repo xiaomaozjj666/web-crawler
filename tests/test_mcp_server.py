@@ -20,6 +20,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from web_crawler.mcp import (
+    _ssrf_gate,
+    _tools_pentest,
+    _tools_reverse,
+    _transport,
+)
 from web_crawler.mcp import server as server_module
 from web_crawler.mcp.server import (
     ReverseMCPServer,
@@ -64,7 +70,7 @@ def _fake_dns_public(monkeypatch: pytest.MonkeyPatch) -> None:
 
     需要特定解析结果的测试（如私网主机名）在用例内再 monkeypatch 覆盖。
     """
-    monkeypatch.setattr(server_module, "_resolve_host_ips", lambda host: ["93.184.216.34"])
+    monkeypatch.setattr(_ssrf_gate, "_resolve_host_ips", lambda host: ["93.184.216.34"])
 
 
 # -- web_crawler.mcp 包级懒加载 ---------------------------------------------
@@ -554,7 +560,7 @@ def test_report_progress_writes_to_stderr_without_mcp(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """_HAS_MCP 为 False 时 report_progress 写 stderr。"""
-    monkeypatch.setattr(server_module, "_HAS_MCP", False)
+    monkeypatch.setattr(_transport, "_HAS_MCP", False)
     srv = _make_server()
     srv.report_progress("tok-1", 2, 5, message="halfway")
     captured = capsys.readouterr()
@@ -566,7 +572,7 @@ def test_report_progress_writes_to_stderr_with_mcp(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """_HAS_MCP 为 True 时 report_progress 仍写 stderr（mcp 上下文外无真正推送）。"""
-    monkeypatch.setattr(server_module, "_HAS_MCP", True)
+    monkeypatch.setattr(_transport, "_HAS_MCP", True)
     srv = _make_server()
     srv.report_progress("tok-2", 1, 3)
     captured = capsys.readouterr()
@@ -1646,7 +1652,7 @@ def test_run_stdio_manual_handles_initialize(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """stdio 手动模式正确处理 initialize 请求并输出 JSON-RPC 响应。"""
-    monkeypatch.setattr(server_module, "_HAS_MCP", False)
+    monkeypatch.setattr(_transport, "_HAS_MCP", False)
     srv = _make_server()
     request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
     monkeypatch.setattr("sys.stdin", io.StringIO(request + "\n"))
@@ -1661,7 +1667,7 @@ def test_run_stdio_manual_parse_error(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """非法 JSON 返回 Parse error（id=null）。"""
-    monkeypatch.setattr(server_module, "_HAS_MCP", False)
+    monkeypatch.setattr(_transport, "_HAS_MCP", False)
     srv = _make_server()
     monkeypatch.setattr("sys.stdin", io.StringIO("not json\n"))
     srv._run_stdio_manual()
@@ -1675,7 +1681,7 @@ def test_run_stdio_manual_skips_empty_lines(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """空行被跳过，不产生输出。"""
-    monkeypatch.setattr(server_module, "_HAS_MCP", False)
+    monkeypatch.setattr(_transport, "_HAS_MCP", False)
     srv = _make_server()
     monkeypatch.setattr("sys.stdin", io.StringIO("\n   \n"))
     srv._run_stdio_manual()
@@ -1687,7 +1693,7 @@ def test_run_stdio_manual_skips_non_dict_request(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """JSON 解析为非 dict（如数组）时静默跳过。"""
-    monkeypatch.setattr(server_module, "_HAS_MCP", False)
+    monkeypatch.setattr(_transport, "_HAS_MCP", False)
     srv = _make_server()
     monkeypatch.setattr("sys.stdin", io.StringIO("[1, 2, 3]\n"))
     srv._run_stdio_manual()
@@ -1699,7 +1705,7 @@ def test_run_stdio_manual_notification_no_reply(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """无 id 的通知不产生回复。"""
-    monkeypatch.setattr(server_module, "_HAS_MCP", False)
+    monkeypatch.setattr(_transport, "_HAS_MCP", False)
     srv = _make_server()
     request = json.dumps({"jsonrpc": "2.0", "method": "initialize"})
     monkeypatch.setattr("sys.stdin", io.StringIO(request + "\n"))
@@ -1712,7 +1718,7 @@ def test_run_stdio_manual_writes_warning_without_mcp(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """_HAS_MCP 为 False 时写 stderr 警告。"""
-    monkeypatch.setattr(server_module, "_HAS_MCP", False)
+    monkeypatch.setattr(_transport, "_HAS_MCP", False)
     srv = _make_server()
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
     srv._run_stdio_manual()
@@ -1725,7 +1731,7 @@ def test_run_stdio_manual_writes_warning_without_mcp(
 
 def test_run_uses_mcp_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
     """_HAS_MCP 为 True 时 run 走 asyncio _run_mcp 路径。"""
-    monkeypatch.setattr(server_module, "_HAS_MCP", True)
+    monkeypatch.setattr(_transport, "_HAS_MCP", True)
     srv = _make_server()
     called = {"async_run": False}
 
@@ -1739,7 +1745,7 @@ def test_run_uses_mcp_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_run_uses_manual_when_no_mcp(monkeypatch: pytest.MonkeyPatch) -> None:
     """_HAS_MCP 为 False 时 run 走 _run_stdio_manual 路径。"""
-    monkeypatch.setattr(server_module, "_HAS_MCP", False)
+    monkeypatch.setattr(_transport, "_HAS_MCP", False)
     srv = _make_server()
     called = {"manual": False}
 
@@ -1753,7 +1759,7 @@ def test_run_uses_manual_when_no_mcp(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_serve_is_alias_for_run(monkeypatch: pytest.MonkeyPatch) -> None:
     """serve 方法是 run 的别名。"""
-    monkeypatch.setattr(server_module, "_HAS_MCP", False)
+    monkeypatch.setattr(_transport, "_HAS_MCP", False)
     srv = _make_server()
     called = {"run": False}
 
@@ -1799,7 +1805,7 @@ def test_run_mcp_registers_handlers(monkeypatch: pytest.MonkeyPatch) -> None:
 
     通过 mock stdio_server 与 Server，验证 _run_mcp 能完整执行而不报错。
     """
-    monkeypatch.setattr(server_module, "_HAS_MCP", True)
+    monkeypatch.setattr(_transport, "_HAS_MCP", True)
 
     # 构造 fake mcp SDK
     fake_types = MagicMock()
@@ -1811,7 +1817,7 @@ def test_run_mcp_registers_handlers(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_types.PromptMessage = MagicMock()
     fake_types.Resource = MagicMock()
     fake_types.CallToolResult = MagicMock()
-    monkeypatch.setattr(server_module, "types", fake_types)
+    monkeypatch.setattr(_transport, "types", fake_types)
 
     fake_server_instance = MagicMock()
 
@@ -1865,13 +1871,13 @@ def test_run_mcp_registers_handlers(monkeypatch: pytest.MonkeyPatch) -> None:
         async def run(self, *args: Any, **kwargs: Any) -> None:
             fake_server_instance.run_called = True
 
-    monkeypatch.setattr(server_module, "Server", _FakeServer)
+    monkeypatch.setattr(_transport, "Server", _FakeServer)
 
     @asynccontextmanager
     async def _fake_stdio_server() -> Any:
         yield (MagicMock(), MagicMock())
 
-    monkeypatch.setattr(server_module, "stdio_server", _fake_stdio_server)
+    monkeypatch.setattr(_transport, "stdio_server", _fake_stdio_server)
 
     srv = _make_server()
     import asyncio
@@ -2091,7 +2097,7 @@ def test_tool_reverse_engineer_url_collect_inner_function(
         return task_fn(fake_page)
 
     hook_result = {"records": [{"type": "fetch"}], "count": 1}
-    monkeypatch.setattr(server_module, "collect_hook_data", lambda page: hook_result)
+    monkeypatch.setattr(_tools_reverse, "collect_hook_data", lambda page: hook_result)
     with patch.object(srv, "_run_browser_task", side_effect=_call_task_fn):
         parsed = json.loads(srv._tool_reverse_engineer_url({"url": "http://x"}))
     assert parsed["agent"] is False
@@ -2111,7 +2117,7 @@ def test_tool_inject_hooks_collect_inner_function(
 
     records = [{"type": "fetch", "url": "http://x/api"}]
     hook_result = {"records": records, "count": 1}
-    monkeypatch.setattr(server_module, "collect_hook_data", lambda page: hook_result)
+    monkeypatch.setattr(_tools_reverse, "collect_hook_data", lambda page: hook_result)
     with patch.object(srv, "_run_browser_task", side_effect=_call_task_fn):
         parsed = json.loads(srv._tool_inject_hooks({"url": "http://x", "hooks": ["fetch_hook"]}))
     assert parsed["injected"] == ["fetch_hook"]
@@ -2130,7 +2136,7 @@ def test_tool_capture_network_requests_inner_function(
 
     records = [{"type": "fetch", "url": "http://x/api"}]
     hook_result = {"records": records, "count": 1}
-    monkeypatch.setattr(server_module, "collect_hook_data", lambda page: hook_result)
+    monkeypatch.setattr(_tools_pentest, "collect_hook_data", lambda page: hook_result)
     with patch.object(srv, "_run_browser_task", side_effect=_call_task_fn):
         parsed = json.loads(srv._tool_capture_network_requests({"url": "http://x"}))
     assert parsed["count"] == 1
@@ -2269,7 +2275,7 @@ def test_pentest_recon_rejects_private_hostname(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """主机名解析到私网地址时被拒绝（覆盖 autouse 公网占位解析）。"""
-    monkeypatch.setattr(server_module, "_resolve_host_ips", lambda host: ["10.0.0.5"])
+    monkeypatch.setattr(_ssrf_gate, "_resolve_host_ips", lambda host: ["10.0.0.5"])
     srv = _make_server()
     parsed = json.loads(
         srv._tool_pentest_recon({"target": "internal.example.com", "authorization_confirmed": True})
@@ -2318,7 +2324,7 @@ def test_check_url_rejects_private_hostname(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """主机名解析到私网地址的 URL 被拒绝。"""
-    monkeypatch.setattr(server_module, "_resolve_host_ips", lambda host: ["192.168.0.9"])
+    monkeypatch.setattr(_ssrf_gate, "_resolve_host_ips", lambda host: ["192.168.0.9"])
     assert _check_url("http://internal.example.com/") is not None
 
 
@@ -2429,7 +2435,7 @@ def _make_handlers_fake_server(handlers: dict[str, Any], ctx: Any) -> type:
 
 def test_run_mcp_call_tool_runs_in_thread(monkeypatch: pytest.MonkeyPatch) -> None:
     """_call_tool 经 to_thread 在线程执行 handle_tool，并发调用不串行阻塞事件循环。"""
-    monkeypatch.setattr(server_module, "_HAS_MCP", True)
+    monkeypatch.setattr(_transport, "_HAS_MCP", True)
     fake_types = MagicMock()
     fake_types.TextContent = MagicMock(
         side_effect=lambda **kw: {"type": "text", "text": kw["text"]}
@@ -2440,18 +2446,18 @@ def test_run_mcp_call_tool_runs_in_thread(monkeypatch: pytest.MonkeyPatch) -> No
             "isError": kw.get("isError", False),
         }
     )
-    monkeypatch.setattr(server_module, "types", fake_types)
+    monkeypatch.setattr(_transport, "types", fake_types)
 
     handlers: dict[str, Any] = {}
     monkeypatch.setattr(
-        server_module, "Server", _make_handlers_fake_server(handlers, MagicMock(meta=None))
+        _transport, "Server", _make_handlers_fake_server(handlers, MagicMock(meta=None))
     )
 
     @asynccontextmanager
     async def _fake_stdio_server() -> Any:
         yield (MagicMock(), MagicMock())
 
-    monkeypatch.setattr(server_module, "stdio_server", _fake_stdio_server)
+    monkeypatch.setattr(_transport, "stdio_server", _fake_stdio_server)
 
     srv = _make_server()
 
@@ -2488,25 +2494,25 @@ def test_run_mcp_call_tool_registers_progress_sender(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """_call_tool 从 request_context.meta.progressToken 注册并在调用后注销 progress sender。"""
-    monkeypatch.setattr(server_module, "_HAS_MCP", True)
+    monkeypatch.setattr(_transport, "_HAS_MCP", True)
     fake_types = MagicMock()
     fake_types.TextContent = MagicMock(
         side_effect=lambda **kw: {"type": "text", "text": kw["text"]}
     )
-    monkeypatch.setattr(server_module, "types", fake_types)
+    monkeypatch.setattr(_transport, "types", fake_types)
 
     class _FakeCtx:
         meta = type("Meta", (), {"progressToken": "pt-1"})()
         session = MagicMock()
 
     handlers: dict[str, Any] = {}
-    monkeypatch.setattr(server_module, "Server", _make_handlers_fake_server(handlers, _FakeCtx()))
+    monkeypatch.setattr(_transport, "Server", _make_handlers_fake_server(handlers, _FakeCtx()))
 
     @asynccontextmanager
     async def _fake_stdio_server() -> Any:
         yield (MagicMock(), MagicMock())
 
-    monkeypatch.setattr(server_module, "stdio_server", _fake_stdio_server)
+    monkeypatch.setattr(_transport, "stdio_server", _fake_stdio_server)
 
     srv = _make_server()
     observed: dict[str, Any] = {}
@@ -2751,7 +2757,7 @@ def test_resolve_host_ips_dedups_and_skips_empty(
     import socket as _socket
 
     # autouse fixture 会替换 _resolve_host_ips，这里恢复真实实现后只 mock DNS
-    monkeypatch.setattr(server_module, "_resolve_host_ips", _resolve_host_ips)
+    monkeypatch.setattr(_ssrf_gate, "_resolve_host_ips", _resolve_host_ips)
     infos = [
         (2, 1, 6, "", ("93.184.216.34", 0)),
         (2, 1, 6, "", ("93.184.216.34", 0)),
@@ -2771,7 +2777,7 @@ def test_resolve_host_ips_empty_result_returns_none(
     """getaddrinfo 返回空列表时 _resolve_host_ips 返回 None。"""
     import socket as _socket
 
-    monkeypatch.setattr(server_module, "_resolve_host_ips", _resolve_host_ips)
+    monkeypatch.setattr(_ssrf_gate, "_resolve_host_ips", _resolve_host_ips)
     monkeypatch.setattr(_socket, "getaddrinfo", lambda *a, **k: [])
     assert server_module._resolve_host_ips("example.com") is None
 
@@ -2782,7 +2788,7 @@ def test_resolve_host_ips_gaierror_returns_none(
     """DNS 解析失败（gaierror/OSError）时 _resolve_host_ips 返回 None。"""
     import socket as _socket
 
-    monkeypatch.setattr(server_module, "_resolve_host_ips", _resolve_host_ips)
+    monkeypatch.setattr(_ssrf_gate, "_resolve_host_ips", _resolve_host_ips)
 
     def _fail(*a: object, **k: object) -> list:
         raise _socket.gaierror("nxdomain")
@@ -2795,7 +2801,7 @@ def test_host_is_public_resolve_none_returns_false(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """解析失败/无结果时 _host_is_public 返回 False（保守拒绝）。"""
-    monkeypatch.setattr(server_module, "_resolve_host_ips", lambda host: None)
+    monkeypatch.setattr(_ssrf_gate, "_resolve_host_ips", lambda host: None)
     assert server_module._host_is_public("internal.example.com") is False
 
 
