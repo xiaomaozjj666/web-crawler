@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ### Changed
+- **回退 playwright 下限提升**：camoufox 0.5.5 要求 `playwright<1.61`，
+  与 `all` extra 的 `>=1.62` 交集为空（两个 Dependabot PR 单独 CI 绿、
+  合并后冲突）；约束恢复 `>=1.40,<2`，组合安装由 pip 自动选兼容版本。
 - **测试升级为警告即错误的严格模式**：`filterwarnings` 首位设 `error`，
   任何未豁免告警直接判测试失败；修复全部 55 处资源泄漏（`crawler.py`
   提取 `_close_jsonl()`、4 处 ThreadingHTTPServer fixture 补

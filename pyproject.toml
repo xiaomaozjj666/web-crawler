@@ -66,7 +66,9 @@ visual = [
 ]
 all = [
     "curl_cffi>=0.9,<1",
-    "playwright>=1.62.0,<2",
+    # 上限保持宽松：camoufox（<1.61）与 all 组合安装时由 pip 自动选兼容版本；
+    # 不要把下限提到 >=1.61，否则 all+camoufox 交集为空（Dependabot 提升会被 CI 拒绝）
+    "playwright>=1.40,<2",
     "pydantic>=2.5,<3",
 ]
 camoufox = [
