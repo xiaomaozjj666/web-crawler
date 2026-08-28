@@ -4,12 +4,16 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-08-28
 
 ### Added
 - **Spider 按域名限速**：`Spider.per_domain_delay = {"域名": 秒数}` 类属性，
   同域相邻请求保证最小间隔（精确/子域后缀匹配，状态按匹配域名记账）；
   同步路径直接补足等待，`stream()` 中该域自动串行化（per-domain 锁）。
+- **UI 逆向任务「停止」按钮即时生效**：`ReverseAgentConfig.should_stop`
+  协作式中断回调由 UI 构造 agent 时透传（`job.stop_event.is_set`），
+  Agent 在每步循环顶部检查，返回 True 立即中断并把结果标记为
+  `stopped`——无需再等 Agent 自然结束。
 
 
 ### Removed
@@ -29,10 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `all+camoufox+captcha`），此前因缺 playwright/curl_cffi 被 skip 的
   123 个测试全部执行——全依赖下 2927 passed、覆盖率 **99.73%**；
   extras job 门禁 97%，标准 job 门禁 92%（`--cov-fail-under` 各设）。
-- **Codecov 配置落地**（`codecov.yml`）：项目覆盖目标 92% + 1% 波动
-  容差，补丁覆盖不做强制，杜绝小幅波动把徽章标红。
 - **修复 ui.py 迁移遗留的 sys.path 污染**：裸 `import db/crawler` 造成
   模块双加载与覆盖率无法归属，改正规绝对导入后 db.py 恢复测量。
+- **数据库默认路径改到当前工作目录**：`crawler_data.db` 此前默认写入
+  包目录（`src/web_crawler/`），pip 安装到 site-packages 后可能无写
+  权限、数据也会随重装丢失；现默认落在启动时的当前工作目录
+  （`CRAWLER_DB_PATH` 仍可覆盖）。
 - **reverse_agent 完整 async 核心化**：`run()` 改为
   `asyncio.run(arun())` 薄包装（事件循环内调用给出明确报错），删除
   23 个 sync/async 成对方法中的全部 sync 版（`_observe`/`_act`/20 个

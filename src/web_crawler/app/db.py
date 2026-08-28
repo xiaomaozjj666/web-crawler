@@ -1,6 +1,6 @@
 """SQLite 持久化层 —— 任务历史与采集结果存储。
 
-使用标准库 sqlite3，零外部依赖。数据库文件默认放在项目根目录
+使用标准库 sqlite3，零外部依赖。数据库文件默认放在当前工作目录
 ``crawler_data.db``，可通过环境变量 ``CRAWLER_DB_PATH`` 覆盖。
 """
 
@@ -19,10 +19,9 @@ from typing import Any
 
 _log = logging.getLogger(__name__)
 
-_DB_PATH = os.environ.get(
-    "CRAWLER_DB_PATH",
-    str(Path(__file__).resolve().parent.parent / "crawler_data.db"),
-)
+# 默认放在启动时的当前工作目录：pip 安装后包目录位于 site-packages，
+# 可能无写权限，用户数据写进包内也会随重装/升级丢失。
+_DB_PATH = os.environ.get("CRAWLER_DB_PATH", str(Path.cwd() / "crawler_data.db"))
 
 _local = threading.local()
 _write_lock = threading.Lock()
