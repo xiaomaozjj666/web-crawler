@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-08-28
+
+### Changed
+- **四个千行级模块拆分**（内部结构重构，行为零变化）：
+  `mcp/server.py` 1805→587 行（工具目录/工具 Mixin/stdio 传输/SSRF 门禁/
+  序列化助手各自成模块）、`app/ui.py` 1458→114（状态/runner/HTTP 路由/
+  helper）、`app/crawler.py` 1573→612（上下文/扫描/发现/下载/后处理/CLI）、
+  `app/crawler_report.py` 1332→100（清单/上下文/Markdown/HTML/抽取）。
+  原模块保留全部历史导入路径（re-export），测试断言零改动；补 7 个
+  后处理异常兜底分支测试。
+- **Dependabot 忽略 playwright >=1.61**：camoufox 0.5.5 依赖
+  `playwright<1.61`，组合安装交集为空——忽略规则避免每周产生注定
+  失败的升级 PR，待 camoufox 放开依赖后移除。
+
 ## [0.5.0] - 2026-08-28
 
 ### Added
