@@ -14,11 +14,12 @@ import sys
 
 def test_crawler_module_entry_runs() -> None:
     """``python -m web_crawler.app.crawler --help`` 正常退出(无循环导入)。"""
-    r = subprocess.run(  # noqa: S603
+    r = subprocess.run(
         [sys.executable, "-m", "web_crawler.app.crawler", "--help"],
         capture_output=True,
         text=True,
         timeout=60,
+        check=True,
     )
     assert r.returncode == 0, f"stdout={r.stdout!r}\nstderr={r.stderr!r}"
     assert "--url" in r.stdout
@@ -26,11 +27,12 @@ def test_crawler_module_entry_runs() -> None:
 
 def test_ui_module_importable() -> None:
     """``import web_crawler.app.ui`` 无循环导入(ui 薄壳 re-export 链完整)。"""
-    r = subprocess.run(  # noqa: S603
+    r = subprocess.run(
         [sys.executable, "-c", "import web_crawler.app.ui as m; print(m.__name__)"],
         capture_output=True,
         text=True,
         timeout=60,
+        check=True,
     )
     assert r.returncode == 0, f"stdout={r.stdout!r}\nstderr={r.stderr!r}"
     assert "web_crawler.app.ui" in r.stdout
@@ -38,10 +40,11 @@ def test_ui_module_importable() -> None:
 
 def test_mcp_server_module_entry_runs() -> None:
     """``python -m web_crawler.mcp.server --help`` 正常退出(无循环导入)。"""
-    r = subprocess.run(  # noqa: S603
+    r = subprocess.run(
         [sys.executable, "-m", "web_crawler.mcp.server", "--help"],
         capture_output=True,
         text=True,
         timeout=60,
+        check=True,
     )
     assert r.returncode == 0, f"stdout={r.stdout!r}\nstderr={r.stderr!r}"
