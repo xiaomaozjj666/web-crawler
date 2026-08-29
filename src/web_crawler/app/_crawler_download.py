@@ -23,8 +23,9 @@ import shutil
 from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from dataclasses import asdict
 
-from web_crawler.app import crawler as cr
+from web_crawler.app import _crawler_core as cr
 from web_crawler.app._crawler_context import _CrawlContext
+from web_crawler.app._crawler_discovery import discover_playlist_resources
 from web_crawler.app.crawler_models import ManifestRow, Resource
 from web_crawler.app.crawler_net import (
     category_for,
@@ -185,7 +186,7 @@ def _process_resource(ctx: _CrawlContext, resource: Resource) -> ManifestRow | N
             == "playlist"
         ):
             playlist_text = decode_text(data, content_type, args.encoding)
-            extra_resources, playlist_note = cr.discover_playlist_resources(
+            extra_resources, playlist_note = discover_playlist_resources(
                 playlist_text,
                 resource.url,
                 resource.page_url,
