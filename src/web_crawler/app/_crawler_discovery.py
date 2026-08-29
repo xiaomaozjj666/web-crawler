@@ -21,7 +21,7 @@ import re
 from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 
-from web_crawler.app import crawler as cr
+from web_crawler.app import _crawler_core as cr
 from web_crawler.app.crawler_models import Resource
 from web_crawler.app.crawler_net import looks_like_downloadable, normalize_url
 

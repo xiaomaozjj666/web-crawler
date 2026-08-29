@@ -18,6 +18,8 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+from web_crawler.app import _crawler_context as ctx_mod
+from web_crawler.app import _crawler_core as core
 from web_crawler.app import crawler as cr
 
 # ========== 数据类 ==========
@@ -631,7 +633,7 @@ class TestPageParser:
 class TestMakeRobotsParser:
     def test_with_fetch_mock(self) -> None:
         with patch.object(
-            cr, "fetch", return_value=(b"User-agent: *\nDisallow: /private", "text/plain")
+            core, "fetch", return_value=(b"User-agent: *\nDisallow: /private", "text/plain")
         ):
             parser = cr.make_robots_parser("https://example.com", {}, 10)
         assert parser.can_fetch("*", "https://example.com/page") is True
@@ -639,7 +641,7 @@ class TestMakeRobotsParser:
 
     def test_fetch_error(self) -> None:
         """fetch 失败时返回空 robots parser（允许所有）。"""
-        with patch.object(cr, "fetch", side_effect=Exception("network error")):
+        with patch.object(core, "fetch", side_effect=Exception("network error")):
             parser = cr.make_robots_parser("https://example.com", {}, 10)
         assert parser.can_fetch("*", "https://example.com/anything") is True
 
@@ -760,12 +762,12 @@ class TestWriteExtractedData:
 class TestDiscoverSitemapUrls:
     def test_basic(self) -> None:
         sitemap = '<?xml version="1.0"?><urlset><url><loc>https://x.com/a</loc></url><url><loc>https://x.com/b</loc></url></urlset>'
-        with patch.object(cr, "fetch", return_value=(sitemap.encode(), "application/xml")):
+        with patch.object(core, "fetch", return_value=(sitemap.encode(), "application/xml")):
             urls = cr.discover_sitemap_urls("https://x.com/sitemap.xml", {}, 10)
         assert len(urls) == 2
 
     def test_fetch_error(self) -> None:
-        with patch.object(cr, "fetch", side_effect=Exception("err")):
+        with patch.object(core, "fetch", side_effect=Exception("err")):
             urls = cr.discover_sitemap_urls("https://x.com/sitemap.xml", {}, 10)
         assert urls == []
 
@@ -1197,7 +1199,7 @@ class TestFetch:
         mock_opener = MagicMock()
         mock_opener.open.return_value = mock_response
 
-        with patch.object(cr, "_get_opener", return_value=mock_opener):
+        with patch.object(core, "_get_opener", return_value=mock_opener):
             data, ct = cr.fetch("https://example.com", 30, {}, 0, None)
         assert data == b"<html>data</html>"
         assert ct == "text/html"
@@ -1211,7 +1213,7 @@ class TestFetch:
         mock_opener.open.return_value = mock_response
 
         with (
-            patch.object(cr, "_get_opener", return_value=mock_opener),
+            patch.object(core, "_get_opener", return_value=mock_opener),
             pytest.raises(ValueError, match="max-bytes"),
         ):
             cr.fetch("https://example.com", 30, {}, 0, 100)
@@ -1230,7 +1232,7 @@ class TestFetch:
         )
 
         with (
-            patch.object(cr, "_get_opener", return_value=mock_opener),
+            patch.object(core, "_get_opener", return_value=mock_opener),
             pytest.raises(HTTPError),
         ):
             cr.fetch("https://x.com", 30, {}, 0, None)
@@ -1243,7 +1245,7 @@ class TestCrawl:
     def test_no_resources(self, tmp_path: Path) -> None:
         """页面无资源时生成空清单。"""
         html = b"<html><body><p>no resources</p></body></html>"
-        with patch.object(cr, "fetch", return_value=(html, "text/html")):
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -1264,7 +1266,7 @@ class TestCrawl:
     def test_list_only(self, tmp_path: Path) -> None:
         """list_only 模式下发现资源但不下载。"""
         html = b'<html><body><img src="logo.png"><script src="app.js"></script></body></html>'
-        with patch.object(cr, "fetch", return_value=(html, "text/html")):
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -1292,7 +1294,7 @@ class TestCrawl:
                 return (html, "text/html")
             return (img_data, "image/png")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -1332,8 +1334,8 @@ class TestCrawl:
             return stop_flag[0]
 
         with (
-            patch.object(cr, "fetch", return_value=(html, "text/html")),
-            patch.object(cr, "should_stop", side_effect=mock_should_stop),
+            patch.object(core, "fetch", return_value=(html, "text/html")),
+            patch.object(core, "should_stop", side_effect=mock_should_stop),
         ):
             args = cr.build_parser().parse_args(
                 [
@@ -1469,7 +1471,7 @@ class TestMain:
         monkeypatch.setattr("sys.argv", ["crawler", "--load-config", str(config_path)])
 
         html = b"<html><body><p>content</p></body></html>"
-        with patch.object(cr, "fetch", return_value=(html, "text/html")):
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
             with pytest.raises(SystemExit) as exc_info:
                 cr.main()
             assert exc_info.value.code == 0
@@ -1494,7 +1496,7 @@ class TestAESMocked:
         fake_aes.new.return_value = fake_cipher
         fake_aes.MODE_CBC = 2
 
-        with patch.object(cr, "_AES", fake_aes, create=True):
+        with patch.object(core, "_AES", fake_aes, create=True):
             result = cr.decrypt_aes128(padded, b"k" * 16, b"iv" * 8)
         assert result == plaintext
 
@@ -1509,7 +1511,7 @@ class TestAESMocked:
         fake_aes.new.return_value = fake_cipher
         fake_aes.MODE_CBC = 2
 
-        with patch.object(cr, "_AES", fake_aes, create=True):
+        with patch.object(core, "_AES", fake_aes, create=True):
             result = cr.decrypt_aes128(data, b"k" * 16, b"iv" * 8)
         assert result == data
 
@@ -1523,7 +1525,7 @@ class TestAESMocked:
         fake_aes.new.return_value = fake_cipher
         fake_aes.MODE_CBC = 2
 
-        with patch.object(cr, "_AES", fake_aes, create=True):
+        with patch.object(core, "_AES", fake_aes, create=True):
             result = cr.decrypt_aes128(data, b"k" * 16, b"iv" * 8)
         assert result == data
 
@@ -1623,12 +1625,10 @@ class TestStealthFetch:
         fake_fetcher_cls = Mock(return_value=fake_fetcher_instance)
 
         # 清空模块级缓存，避免跨测试缓存污染
-        import web_crawler.app.crawler as cr_mod
+        core._stealth_fetcher = None
+        core._stealth_fetcher_key = ("", None, "")
 
-        cr_mod._stealth_fetcher = None
-        cr_mod._stealth_fetcher_key = ("", None, "")
-
-        with patch.object(cr, "_import_stealth_fetcher", return_value=fake_fetcher_cls):
+        with patch.object(core, "_import_stealth_fetcher", return_value=fake_fetcher_cls):
             content, ct, status = cr._stealth_fetch(
                 "https://example.com", {"X": "Y"}, 30, None, "chrome131"
             )
@@ -1640,13 +1640,11 @@ class TestStealthFetch:
 
     def test_stealth_fetch_unavailable_raises(self) -> None:
         """Fetcher 不可用时抛 RuntimeError。"""
-        import web_crawler.app.crawler as cr_mod
-
-        cr_mod._stealth_fetcher = None
-        cr_mod._stealth_fetcher_key = ("", None, "")
+        core._stealth_fetcher = None
+        core._stealth_fetcher_key = ("", None, "")
 
         with (
-            patch.object(cr, "_import_stealth_fetcher", return_value=None),
+            patch.object(core, "_import_stealth_fetcher", return_value=None),
             pytest.raises(RuntimeError, match="stealth fetcher unavailable"),
         ):
             cr._stealth_fetch("https://example.com", {}, 30, None, "chrome131")
@@ -1664,12 +1662,10 @@ class TestStealthFetch:
 
         fake_fetcher_cls = Mock(return_value=fake_fetcher_instance)
 
-        import web_crawler.app.crawler as cr_mod
+        core._stealth_fetcher = None
+        core._stealth_fetcher_key = ("", None, "")
 
-        cr_mod._stealth_fetcher = None
-        cr_mod._stealth_fetcher_key = ("", None, "")
-
-        with patch.object(cr, "_import_stealth_fetcher", return_value=fake_fetcher_cls):
+        with patch.object(core, "_import_stealth_fetcher", return_value=fake_fetcher_cls):
             _content, ct, _status = cr._stealth_fetch(
                 "https://example.com", {}, 30, None, "chrome131"
             )
@@ -1758,7 +1754,7 @@ class TestStealthFetchRedirects:
         instance = Mock()
         instance.get.side_effect = [hop1, hop2]
         instance.close = Mock()
-        with patch.object(cr, "_get_stealth_fetcher", return_value=instance):
+        with patch.object(core, "_get_stealth_fetcher", return_value=instance):
             content, ct, status = cr._stealth_fetch(
                 "https://example.com/start", {}, 30, None, "chrome131"
             )
@@ -1776,7 +1772,7 @@ class TestStealthFetchRedirects:
         instance.get.return_value = hop1
         instance.close = Mock()
         with (
-            patch.object(cr, "_get_stealth_fetcher", return_value=instance),
+            patch.object(core, "_get_stealth_fetcher", return_value=instance),
             pytest.raises(ValueError, match="unsafe"),
         ):
             cr._stealth_fetch("https://example.com/start", {}, 30, None, "chrome131")
@@ -1789,7 +1785,7 @@ class TestStealthFetchRedirects:
         instance.get.return_value = hop1
         instance.close = Mock()
         with (
-            patch.object(cr, "_get_stealth_fetcher", return_value=instance),
+            patch.object(core, "_get_stealth_fetcher", return_value=instance),
             pytest.raises(ValueError, match="unsafe"),
         ):
             cr._stealth_fetch("https://example.com/start", {}, 30, None, "chrome131")
@@ -1802,7 +1798,7 @@ class TestStealthFetchRedirects:
         instance.get.return_value = hop
         instance.close = Mock()
         with (
-            patch.object(cr, "_get_stealth_fetcher", return_value=instance),
+            patch.object(core, "_get_stealth_fetcher", return_value=instance),
             pytest.raises(ValueError, match="too many redirects"),
         ):
             cr._stealth_fetch("https://example.com/start", {}, 30, None, "chrome131")
@@ -1812,10 +1808,8 @@ class TestStealthFetcherCache:
     """模块级 stealth fetcher 缓存的复用与 key 变更。"""
 
     def _reset_cache(self) -> None:
-        import web_crawler.app.crawler as cr_mod
-
-        cr_mod._stealth_fetcher = None
-        cr_mod._stealth_fetcher_key = ("", None, "")
+        core._stealth_fetcher = None
+        core._stealth_fetcher_key = ("", None, "")
 
     def test_cache_reuse(self) -> None:
         """相同 key 复用缓存实例,不重复创建/关闭。"""
@@ -1823,7 +1817,7 @@ class TestStealthFetcherCache:
         fake = Mock()
         fake.close = Mock()
         fake_cls = Mock(return_value=fake)
-        with patch.object(cr, "_import_stealth_fetcher", return_value=fake_cls):
+        with patch.object(core, "_import_stealth_fetcher", return_value=fake_cls):
             f1 = cr._get_stealth_fetcher("chrome131", 30.0, None)
             f2 = cr._get_stealth_fetcher("chrome131", 30.0, None)
         assert f1 is f2
@@ -1838,7 +1832,7 @@ class TestStealthFetcherCache:
         new = Mock()
         new.close = Mock()
         fake_cls = Mock(side_effect=[old, new])
-        with patch.object(cr, "_import_stealth_fetcher", return_value=fake_cls):
+        with patch.object(core, "_import_stealth_fetcher", return_value=fake_cls):
             f1 = cr._get_stealth_fetcher("chrome131", 30.0, None)
             f2 = cr._get_stealth_fetcher("chrome120", 30.0, None)
         assert f1 is old
@@ -1853,7 +1847,7 @@ class TestStealthFetcherCache:
         new = Mock()
         new.close = Mock()
         fake_cls = Mock(side_effect=[old, new])
-        with patch.object(cr, "_import_stealth_fetcher", return_value=fake_cls):
+        with patch.object(core, "_import_stealth_fetcher", return_value=fake_cls):
             cr._get_stealth_fetcher("chrome131", 30.0, None)
             f2 = cr._get_stealth_fetcher("chrome120", 30.0, None)
         assert f2 is new
@@ -1870,7 +1864,7 @@ class TestStealthFetchMaxBytes:
         instance = Mock()
         instance.get.return_value = resp
         with (
-            patch.object(cr, "_get_stealth_fetcher", return_value=instance),
+            patch.object(core, "_get_stealth_fetcher", return_value=instance),
             pytest.raises(ValueError, match="max-bytes"),
         ):
             cr._stealth_fetch("https://x.com/a", {}, 30, None, "chrome131", max_bytes=1000)
@@ -1883,7 +1877,7 @@ class TestStealthFetchMaxBytes:
         resp.content = b"small"
         instance = Mock()
         instance.get.return_value = resp
-        with patch.object(cr, "_get_stealth_fetcher", return_value=instance):
+        with patch.object(core, "_get_stealth_fetcher", return_value=instance):
             content, ct, status = cr._stealth_fetch(
                 "https://x.com/a", {}, 30, None, "chrome131", max_bytes=1000
             )
@@ -1918,7 +1912,7 @@ class TestFetchAdvanced:
         control_args.impersonate = "chrome131"
         control_args.proxy = None
 
-        with patch.object(cr, "_stealth_fetch", return_value=(b"data", "text/html", 200)):
+        with patch.object(core, "_stealth_fetch", return_value=(b"data", "text/html", 200)):
             data, ct = cr.fetch("https://example.com", 30, {}, 0, None, control_args=control_args)
         assert data == b"data"
         assert ct == "text/html"
@@ -1931,7 +1925,7 @@ class TestFetchAdvanced:
         control_args.proxy = None
 
         with (
-            patch.object(cr, "_stealth_fetch", return_value=(b"x" * 200, "text/html", 200)),
+            patch.object(core, "_stealth_fetch", return_value=(b"x" * 200, "text/html", 200)),
             pytest.raises(ValueError, match="max-bytes"),
         ):
             cr.fetch("https://example.com", 30, {}, 0, 100, control_args=control_args)
@@ -1944,7 +1938,7 @@ class TestFetchAdvanced:
         control_args.proxy = None
 
         rate_limiter = Mock()
-        with patch.object(cr, "_stealth_fetch", return_value=(b"data", "text/html", 200)):
+        with patch.object(core, "_stealth_fetch", return_value=(b"data", "text/html", 200)):
             cr.fetch(
                 "https://example.com",
                 30,
@@ -1971,7 +1965,7 @@ class TestFetchAdvanced:
         mock_opener = MagicMock()
         mock_opener.open.return_value = mock_response
 
-        with patch.object(cr, "_get_opener", return_value=mock_opener):
+        with patch.object(core, "_get_opener", return_value=mock_opener):
             data, ct = cr.fetch(
                 "https://example.com/file.bin",
                 30,
@@ -1998,7 +1992,7 @@ class TestFetchAdvanced:
         mock_opener = MagicMock()
         mock_opener.open.return_value = mock_response
 
-        with patch.object(cr, "_get_opener", return_value=mock_opener):
+        with patch.object(core, "_get_opener", return_value=mock_opener):
             data, _ct = cr.fetch(
                 "https://example.com/file.bin",
                 30,
@@ -2025,7 +2019,7 @@ class TestFetchAdvanced:
 
         rate_limiter = cr.DomainRateLimiter()
         with (
-            patch.object(cr, "_get_opener", return_value=mock_opener),
+            patch.object(core, "_get_opener", return_value=mock_opener),
             patch.object(cr.time, "sleep"),
         ):
             data, _ct = cr.fetch("https://x.com", 30, {}, 1, None, rate_limiter=rate_limiter)
@@ -2045,7 +2039,7 @@ class TestFetchAdvanced:
         )
 
         with (
-            patch.object(cr, "_get_opener", return_value=mock_opener),
+            patch.object(core, "_get_opener", return_value=mock_opener),
             pytest.raises(HTTPError),
         ):
             cr.fetch("https://x.com", 30, {}, 3, None)
@@ -2065,7 +2059,7 @@ class TestFetchAdvanced:
         ]
 
         with (
-            patch.object(cr, "_get_opener", return_value=mock_opener),
+            patch.object(core, "_get_opener", return_value=mock_opener),
             patch.object(cr.time, "sleep"),
         ):
             data, _ct = cr.fetch("https://x.com", 30, {}, 2, None)
@@ -2084,7 +2078,7 @@ class TestFetchAdvanced:
         ]
 
         with (
-            patch.object(cr, "_get_opener", return_value=mock_opener),
+            patch.object(core, "_get_opener", return_value=mock_opener),
             patch.object(cr.time, "sleep"),
             pytest.raises(ValueError, match="file exceeds"),
         ):
@@ -2103,7 +2097,7 @@ class TestFetchAdvanced:
         ]
 
         with (
-            patch.object(cr, "_get_opener", return_value=mock_opener),
+            patch.object(core, "_get_opener", return_value=mock_opener),
             patch.object(cr.time, "sleep"),
         ):
             data, _ct = cr.fetch("https://x.com", 30, {}, 1, None)
@@ -2117,7 +2111,7 @@ class TestFetchAdvanced:
         mock_opener.open.side_effect = URLError("connection refused")
 
         with (
-            patch.object(cr, "_get_opener", return_value=mock_opener),
+            patch.object(core, "_get_opener", return_value=mock_opener),
             patch.object(cr.time, "sleep"),
             pytest.raises(URLError),
         ):
@@ -2141,7 +2135,7 @@ class TestFetchAdvanced:
         mock_file.close.side_effect = [None, OSError("close error")]
 
         with (
-            patch.object(cr, "_get_opener", return_value=mock_opener),
+            patch.object(core, "_get_opener", return_value=mock_opener),
             patch.object(Path, "open", return_value=mock_file),
         ):
             # 不应抛异常（finally 中的 close error 被捕获）
@@ -2162,7 +2156,7 @@ class TestFetchAdvanced:
         control_args.stealth = False  # 走 urllib 路径，不走 stealth
 
         with (
-            patch.object(cr, "_get_opener", return_value=mock_opener),
+            patch.object(core, "_get_opener", return_value=mock_opener),
             pytest.raises(RuntimeError, match="cancelled"),
         ):
             cr.fetch("https://example.com", 30, {}, 0, None, control_args=control_args)
@@ -2182,9 +2176,9 @@ class TestPlaylistEncrypted:
         fake_aes = Mock()
         fake_aes.MODE_CBC = 2
         with (
-            patch.object(cr, "HAS_AES", True),
+            patch.object(core, "HAS_AES", True),
             patch.object(
-                cr, "fetch", return_value=(b"16bytekey1234567", "application/octet-stream")
+                core, "fetch", return_value=(b"16bytekey1234567", "application/octet-stream")
             ),
         ):
             resources, note = cr.discover_playlist_resources(
@@ -2200,9 +2194,9 @@ class TestPlaylistEncrypted:
             "#EXTINF:10,\nhttps://x.com/seg1.ts\n"
         )
         with (
-            patch.object(cr, "HAS_AES", True),
+            patch.object(core, "HAS_AES", True),
             patch.object(
-                cr, "fetch", return_value=(b"16bytekey1234567", "application/octet-stream")
+                core, "fetch", return_value=(b"16bytekey1234567", "application/octet-stream")
             ),
         ):
             resources, note = cr.discover_playlist_resources(
@@ -2218,8 +2212,8 @@ class TestPlaylistEncrypted:
             "#EXTINF:10,\nhttps://x.com/seg1.ts\n"
         )
         with (
-            patch.object(cr, "HAS_AES", True),
-            patch.object(cr, "fetch", side_effect=Exception("network error")),
+            patch.object(core, "HAS_AES", True),
+            patch.object(core, "fetch", side_effect=Exception("network error")),
         ):
             resources, note = cr.discover_playlist_resources(
                 text, "https://x.com/playlist.m3u8", "https://x.com/", decrypt=True
@@ -2234,7 +2228,7 @@ class TestPlaylistEncrypted:
             "#EXTINF:10,\nhttps://x.com/seg1.ts\n"
         )
         with (
-            patch.object(cr, "HAS_AES", False),
+            patch.object(core, "HAS_AES", False),
         ):
             resources, note = cr.discover_playlist_resources(
                 text, "https://x.com/playlist.m3u8", "https://x.com/", decrypt=True
@@ -2309,7 +2303,7 @@ class TestDiscoverSitemapNested:
                 return (sub2.encode(), "application/xml")
             return (sitemap_index.encode(), "application/xml")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             urls = cr.discover_sitemap_urls("https://x.com/sitemap.xml", {}, 10)
         assert "https://x.com/a" in urls
         assert "https://x.com/b" in urls
@@ -2327,7 +2321,7 @@ class TestDiscoverSitemapNested:
                 raise RuntimeError("network error")
             return (sitemap_index.encode(), "application/xml")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             urls = cr.discover_sitemap_urls("https://x.com/sitemap.xml", {}, 10)
         assert urls == []
 
@@ -2656,7 +2650,7 @@ class TestCrawlSitemap:
                 return (sitemap.encode(), "application/xml")
             return (html, "text/html")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -2688,7 +2682,7 @@ class TestCrawlResumeCrawl:
             sha256_set=[],
         )
         html = b"<html><body><p>content</p></body></html>"
-        with patch.object(cr, "fetch", return_value=(html, "text/html")):
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -2707,7 +2701,7 @@ class TestCrawlResumeCrawl:
     def test_resume_crawl_no_saved_state(self, tmp_path: Path) -> None:
         """resume_crawl 无保存状态时从头开始。"""
         html = b"<html><body><p>content</p></body></html>"
-        with patch.object(cr, "fetch", return_value=(html, "text/html")):
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -2729,8 +2723,8 @@ class TestCrawlResumeCrawl:
         # HTML 必须包含资源，否则 crawl 在清理前就 return 0
         html = b'<html><body><img src="https://example.com/logo.png"></body></html>'
         with (
-            patch.object(cr, "fetch", return_value=(html, "text/html")),
-            patch.object(cr, "clear_crawl_state") as mock_clear,
+            patch.object(core, "fetch", return_value=(html, "text/html")),
+            patch.object(ctx_mod, "clear_crawl_state") as mock_clear,
         ):
             args = cr.build_parser().parse_args(
                 [
@@ -2753,7 +2747,7 @@ class TestCrawlBlockedPages:
     def test_blocked_page_skipped(self, tmp_path: Path) -> None:
         """被 block_keyword 匹配的页面被跳过。"""
         html = b"<html><body><p>content</p></body></html>"
-        with patch.object(cr, "fetch", return_value=(html, "text/html")):
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -2773,7 +2767,7 @@ class TestCrawlBlockedPages:
     def test_same_domain_filter(self, tmp_path: Path) -> None:
         """--same-domain 过滤跨域资源。"""
         html = b'<html><body><img src="https://cdn.other.com/img.png"></body></html>'
-        with patch.object(cr, "fetch", return_value=(html, "text/html")):
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -2800,7 +2794,7 @@ class TestCrawlBlockedPages:
                 return (b"User-agent: *\nDisallow: /img", "text/plain")
             return (html, "text/html")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -2828,7 +2822,7 @@ class TestCrawlCrawlPages:
                 return (page2, "text/html")
             return (page1, "text/html")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -2852,7 +2846,7 @@ class TestCrawlUrlPatterns:
     def test_include_pattern(self, tmp_path: Path) -> None:
         """--include-pattern 过滤匹配的资源。"""
         html = b'<html><body><img src="https://example.com/img.png"><img src="https://example.com/logo.jpg"></body></html>'
-        with patch.object(cr, "fetch", return_value=(html, "text/html")):
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -2875,7 +2869,7 @@ class TestCrawlUrlPatterns:
     def test_exclude_pattern(self, tmp_path: Path) -> None:
         """--exclude-pattern 排除匹配的资源。"""
         html = b'<html><body><img src="https://example.com/img.png"><img src="https://example.com/logo.jpg"></body></html>'
-        with patch.object(cr, "fetch", return_value=(html, "text/html")):
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -2907,7 +2901,7 @@ class TestCrawlDedup:
                 return (img_data, "image/png")
             return (html, "text/html")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -2938,7 +2932,7 @@ class TestCrawlCssUrls:
                 return (css.encode(), "text/css")
             return (html, "text/html")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -2966,7 +2960,7 @@ class TestCrawlRewriteHtml:
                 return (img_data, "image/png")
             return (html, "text/html")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -2995,7 +2989,7 @@ class TestCrawlRewriteHtml:
                 return (img_data, "image/png")
             return (html, "text/html")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -3022,7 +3016,7 @@ class TestCrawlSmartExtract:
         </head><body><p>content</p>
         <img src="https://example.com/logo.png"></body></html>"""
 
-        with patch.object(cr, "fetch", return_value=(html, "text/html")):
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -3047,7 +3041,7 @@ class TestCrawlExtractText:
         html = b"""<html><body><article><p>This is a long enough article text to be extracted as readable content</p></article>
         <img src="https://example.com/img.png"></body></html>"""
 
-        with patch.object(cr, "fetch", return_value=(html, "text/html")):
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -3070,7 +3064,7 @@ class TestCrawlVideoMode:
         """--video-mode 生成视频清单。"""
         html = b'<html><body><video src="https://example.com/v.mp4"></video></body></html>'
 
-        with patch.object(cr, "fetch", return_value=(html, "text/html")):
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -3097,7 +3091,7 @@ class TestCrawlDownloadError:
                 raise RuntimeError("404 not found")
             return (html, "text/html")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -3129,8 +3123,8 @@ class TestCrawlDownloadError:
             return (html, "text/html")
 
         with (
-            patch.object(cr, "fetch", side_effect=mock_fetch),
-            patch.object(cr, "should_stop", side_effect=mock_should_stop),
+            patch.object(core, "fetch", side_effect=mock_fetch),
+            patch.object(core, "should_stop", side_effect=mock_should_stop),
         ):
             args = cr.build_parser().parse_args(
                 [
@@ -3159,7 +3153,7 @@ class TestCrawlExpandPlaylists:
                 return (m3u8.encode(), "application/vnd.apple.mpegurl")
             return (html, "text/html")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -3243,7 +3237,7 @@ class TestMainSaveConfigNoUrl:
         )
 
         html = b"<html><body><p>content</p></body></html>"
-        with patch.object(cr, "fetch", return_value=(html, "text/html")):
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
             with pytest.raises(SystemExit) as exc_info:
                 cr.main()
             assert exc_info.value.code == 0
@@ -3342,7 +3336,7 @@ class TestFetchHttpErrorRetry:
         mock_opener.open.side_effect = http_err
 
         with (
-            patch.object(cr, "_get_opener", return_value=mock_opener),
+            patch.object(core, "_get_opener", return_value=mock_opener),
             patch.object(cr.time, "sleep") as mock_sleep,
             pytest.raises(HTTPError),
         ):
@@ -3379,7 +3373,7 @@ class TestCrawlSitemapSameDomain:
                 return (sitemap, "application/xml")
             return (html, "text/html")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -3411,7 +3405,7 @@ class TestCrawlSitemapSameDomain:
                 return (sitemap, "application/xml")
             return (html, "text/html")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -3452,7 +3446,7 @@ class TestCrawlResumeState:
 
         html = b'<html><body><img src="https://example.com/img2.png"></body></html>'
 
-        with patch.object(cr, "fetch", return_value=(html, "text/html")):
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -3473,7 +3467,7 @@ class TestCrawlResumeState:
         """--resume-crawl 成功完成后清除状态文件。"""
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
 
-        with patch.object(cr, "fetch", return_value=(html, "text/html")):
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -3495,8 +3489,8 @@ class TestCrawlResumeState:
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
 
         with (
-            patch.object(cr, "fetch", return_value=(html, "text/html")),
-            patch.object(cr, "save_crawl_state", side_effect=OSError("disk full")),
+            patch.object(core, "fetch", return_value=(html, "text/html")),
+            patch.object(ctx_mod, "save_crawl_state", side_effect=OSError("disk full")),
         ):
             args = cr.build_parser().parse_args(
                 [
@@ -3518,8 +3512,8 @@ class TestCrawlResumeState:
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
 
         with (
-            patch.object(cr, "fetch", return_value=(html, "text/html")),
-            patch.object(cr, "clear_crawl_state", side_effect=OSError("permission")),
+            patch.object(core, "fetch", return_value=(html, "text/html")),
+            patch.object(ctx_mod, "clear_crawl_state", side_effect=OSError("permission")),
         ):
             args = cr.build_parser().parse_args(
                 [
@@ -3542,7 +3536,7 @@ class TestCrawlPageScanningSkips:
         """被 block_keyword 匹配的页面被跳过。"""
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
 
-        with patch.object(cr, "fetch", return_value=(html, "text/html")):
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -3564,7 +3558,7 @@ class TestCrawlPageScanningSkips:
         """跨域页面被 same_domain 过滤。"""
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
 
-        with patch.object(cr, "fetch", return_value=(html, "text/html")):
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -3590,7 +3584,7 @@ class TestCrawlPageScanningSkips:
                 raise RuntimeError("connection refused")
             return (html, "text/html")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -3614,7 +3608,7 @@ class TestCrawlVideoOnlyFilter:
         <video src="https://example.com/v.mp4"></video>
         </body></html>"""
 
-        with patch.object(cr, "fetch", return_value=(html, "text/html")):
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -3642,7 +3636,7 @@ class TestCrawlCssDiscovery:
                 return (css_content, "text/css")
             return (html, "text/html")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -3676,7 +3670,7 @@ https://example.com/seg2.ts
                 return (m3u8, "application/vnd.apple.mpegurl")
             return (html, "text/html")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -3709,8 +3703,8 @@ class TestCrawlShouldStopDownload:
             return (html, "text/html")
 
         with (
-            patch.object(cr, "fetch", side_effect=mock_fetch),
-            patch.object(cr, "should_stop", side_effect=mock_should_stop),
+            patch.object(core, "fetch", side_effect=mock_fetch),
+            patch.object(core, "should_stop", side_effect=mock_should_stop),
         ):
             args = cr.build_parser().parse_args(
                 [
@@ -3736,7 +3730,7 @@ class TestCrawlWorkerCrash:
                 raise MemoryError("out of memory")
             return (html, "text/html")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -3756,7 +3750,7 @@ class TestCrawlWorkerCrash:
 class TestCrawlFinalTargetMove:
     def test_final_target_differs(self, tmp_path: Path) -> None:
         """下载后 final_target 与 target 不同时移动文件。"""
-        with patch.object(cr, "fetch", return_value=(b"png_data", "image/png")):
+        with patch.object(core, "fetch", return_value=(b"png_data", "image/png")):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -3785,7 +3779,7 @@ class TestCrawlJsonlWriteException:
             return original_open(self, *args, **kwargs)
 
         with (
-            patch.object(cr, "fetch", return_value=(html, "text/html")),
+            patch.object(core, "fetch", return_value=(html, "text/html")),
             patch.object(Path, "open", selective_open),
         ):
             args = cr.build_parser().parse_args(
@@ -3827,7 +3821,7 @@ class TestCrawlJsonlWriteException:
             return original_open(self, *args, **kwargs)
 
         with (
-            patch.object(cr, "fetch", return_value=(html, "text/html")),
+            patch.object(core, "fetch", return_value=(html, "text/html")),
             patch.object(Path, "open", selective_open),
         ):
             args = cr.build_parser().parse_args(
@@ -3851,7 +3845,7 @@ class TestCrawlExtractTextEmpty:
         <img src="https://example.com/img.png">
         </body></html>"""
 
-        with patch.object(cr, "fetch", return_value=(html, "text/html")):
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -3888,8 +3882,8 @@ class TestCrawlDownloadLoopCancellation:
             return (html, "text/html")
 
         with (
-            patch.object(cr, "fetch", side_effect=mock_fetch),
-            patch.object(cr, "should_stop", side_effect=mock_should_stop),
+            patch.object(core, "fetch", side_effect=mock_fetch),
+            patch.object(core, "should_stop", side_effect=mock_should_stop),
         ):
             args = cr.build_parser().parse_args(
                 [
@@ -3924,8 +3918,8 @@ class TestCrawlCancelSkipsStages:
             return (html, "text/html")
 
         with (
-            patch.object(cr, "fetch", side_effect=mock_fetch),
-            patch.object(cr, "should_stop", side_effect=mock_should_stop),
+            patch.object(core, "fetch", side_effect=mock_fetch),
+            patch.object(core, "should_stop", side_effect=mock_should_stop),
         ):
             args = cr.build_parser().parse_args(
                 [
@@ -3955,7 +3949,7 @@ class TestStealthFetchRedirectNoLocation:
         instance.get.return_value = hop
         instance.close = Mock()
         with (
-            patch.object(cr, "_get_stealth_fetcher", return_value=instance),
+            patch.object(core, "_get_stealth_fetcher", return_value=instance),
             pytest.raises(ValueError, match="too many redirects"),
         ):
             cr._stealth_fetch("https://example.com/start", {}, 30, None, "chrome131")
@@ -3976,7 +3970,7 @@ class TestCrawlWaitPausedCancel:
         def mock_wait() -> None:
             raise RuntimeError("cancelled by user")
 
-        with patch.object(cr, "fetch", return_value=(b"<html></html>", "text/html")):
+        with patch.object(core, "fetch", return_value=(b"<html></html>", "text/html")):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -4007,7 +4001,7 @@ class TestCrawlWaitPausedCancel:
                 return (b"data", "image/png")
             return (html, "text/html")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -4040,8 +4034,8 @@ class TestCrawlWaitPausedCancel:
             return (html, "text/html")
 
         with (
-            patch.object(cr, "fetch", side_effect=mock_fetch),
-            patch.object(cr, "should_stop", side_effect=mock_should_stop),
+            patch.object(core, "fetch", side_effect=mock_fetch),
+            patch.object(core, "should_stop", side_effect=mock_should_stop),
         ):
             args = cr.build_parser().parse_args(
                 [
@@ -4073,7 +4067,7 @@ class TestCrawlWaitPausedCancel:
                 return (b"data", "image/png")
             return (html, "text/html")
 
-        with patch.object(cr, "fetch", side_effect=mock_fetch):
+        with patch.object(core, "fetch", side_effect=mock_fetch):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
@@ -4106,7 +4100,7 @@ class TestCrawlPostProcessingTolerance:
         """offline HTML 重写抛异常 → 仅记 warning，退出码 0。"""
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
         with (
-            patch.object(cr, "fetch", side_effect=self._fetch_page_with_img(html)),
+            patch.object(core, "fetch", side_effect=self._fetch_page_with_img(html)),
             patch.object(cr, "rewrite_html", side_effect=RuntimeError("rewrite boom")),
         ):
             args = cr.build_parser().parse_args(
@@ -4127,7 +4121,7 @@ class TestCrawlPostProcessingTolerance:
         """写资源清单失败 → 仅记 warning，退出码 0。"""
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
         with (
-            patch.object(cr, "fetch", side_effect=self._fetch_page_with_img(html)),
+            patch.object(core, "fetch", side_effect=self._fetch_page_with_img(html)),
             patch.object(cr, "write_manifests", side_effect=OSError("disk full")),
         ):
             args = cr.build_parser().parse_args(
@@ -4147,7 +4141,7 @@ class TestCrawlPostProcessingTolerance:
         """写失败资源清单失败 → 仅记 warning，退出码 0。"""
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
         with (
-            patch.object(cr, "fetch", side_effect=self._fetch_page_with_img(html)),
+            patch.object(core, "fetch", side_effect=self._fetch_page_with_img(html)),
             patch.object(cr, "write_failed_manifests", side_effect=OSError("disk full")),
         ):
             args = cr.build_parser().parse_args(
@@ -4167,7 +4161,7 @@ class TestCrawlPostProcessingTolerance:
         """智能抽取失败 → 仅记 warning，退出码 0。"""
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
         with (
-            patch.object(cr, "fetch", side_effect=self._fetch_page_with_img(html)),
+            patch.object(core, "fetch", side_effect=self._fetch_page_with_img(html)),
             patch.object(cr, "smart_extract", side_effect=RuntimeError("llm down")),
         ):
             args = cr.build_parser().parse_args(
@@ -4188,7 +4182,7 @@ class TestCrawlPostProcessingTolerance:
         """正文提取失败 → 仅记 warning，退出码 0。"""
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
         with (
-            patch.object(cr, "fetch", side_effect=self._fetch_page_with_img(html)),
+            patch.object(core, "fetch", side_effect=self._fetch_page_with_img(html)),
             patch.object(cr, "extract_readable_text", side_effect=RuntimeError("boom")),
         ):
             args = cr.build_parser().parse_args(
@@ -4209,7 +4203,7 @@ class TestCrawlPostProcessingTolerance:
         """写运行报告失败 → 仅记 warning，退出码 0。"""
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
         with (
-            patch.object(cr, "fetch", side_effect=self._fetch_page_with_img(html)),
+            patch.object(core, "fetch", side_effect=self._fetch_page_with_img(html)),
             patch.object(cr, "write_run_report", side_effect=OSError("disk full")),
         ):
             args = cr.build_parser().parse_args(

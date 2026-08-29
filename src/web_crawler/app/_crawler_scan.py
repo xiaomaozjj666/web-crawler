@@ -19,8 +19,10 @@ from collections import deque
 from dataclasses import asdict
 from urllib.parse import urlparse
 
-from web_crawler.app import crawler as cr
+from web_crawler.app import _crawler_context as ctx_mod
+from web_crawler.app import _crawler_core as cr
 from web_crawler.app._crawler_context import _CrawlContext
+from web_crawler.app._crawler_discovery import discover_sitemap_urls
 from web_crawler.app.crawler_models import Resource
 from web_crawler.app.crawler_net import (
     PageParser,
@@ -48,7 +50,7 @@ def _seed_page_queue(ctx: _CrawlContext) -> None:
         parsed = urlparse(args.url)
         sitemap_url = f"{parsed.scheme}://{parsed.netloc}/sitemap.xml"
         _log.info("discovering pages from %s", sitemap_url)
-        sitemap_urls = cr.discover_sitemap_urls(sitemap_url, ctx.headers, args.timeout)
+        sitemap_urls = discover_sitemap_urls(sitemap_url, ctx.headers, args.timeout)
         for su in sitemap_urls:
             if su not in ctx.seen_pages and su not in ctx.page_queue:
                 if args.same_domain and not same_domain(su, args.url):
@@ -63,7 +65,7 @@ def _restore_state(ctx: _CrawlContext) -> None:
     args = ctx.args
     if not getattr(args, "resume_crawl", False):
         return
-    saved = cr.load_crawl_state(ctx.output_dir)
+    saved = ctx_mod.load_crawl_state(ctx.output_dir)
     if not saved:
         _log.info("no saved state found, starting fresh")
         return
@@ -171,7 +173,7 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
                 len(ctx.seen_pages) % 5 == 0 or not ctx.page_queue
             ):
                 try:
-                    cr.save_crawl_state(
+                    ctx_mod.save_crawl_state(
                         ctx.output_dir,
                         page_queue=list(ctx.page_queue),
                         seen_pages=list(ctx.seen_pages),

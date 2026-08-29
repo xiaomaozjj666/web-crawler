@@ -21,7 +21,8 @@ import logging
 import time
 from urllib.parse import urlparse
 
-from web_crawler.app import crawler as cr
+from web_crawler.app import _crawler_context as ctx_mod
+from web_crawler.app import _crawler_core as cr
 from web_crawler.app._crawler_context import _CrawlContext
 from web_crawler.app.crawler_models import ManifestRow, Resource
 from web_crawler.app.crawler_net import output_path_for_url
@@ -174,7 +175,7 @@ def _post_process(
     # 成功完成后清除续跑状态
     if getattr(args, "resume_crawl", False) and not _post_pause_check(args):
         try:
-            cr.clear_crawl_state(output_dir)
+            ctx_mod.clear_crawl_state(output_dir)
             _log.info("crawl state cleared")
         except Exception as exc:
             _log.warning("failed to clear crawl state: %s", exc)
