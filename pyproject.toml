@@ -117,6 +117,14 @@ ignore = [
     "SIM102", # 嵌套 if 可读性更好
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# facade 薄壳:re-export 段必须位于 sys.dont_write_bytecode / 常量定义之后
+#(导入时序是行为的一部分),E402 为结构性豁免;crawler 的星号转发
+#(F403/F405)是有意的全量 re-export 设计。
+"src/web_crawler/app/crawler.py" = ["E402", "F403", "F405"]
+"src/web_crawler/app/ui.py" = ["E402"]
+"src/web_crawler/mcp/server.py" = ["E402"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
