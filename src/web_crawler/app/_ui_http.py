@@ -299,13 +299,13 @@ class Handler(BaseHTTPRequestHandler):
             if not rstop:
                 self.respond_json({"ok": False, "message": "任务不存在"})
                 return
-            # 仅设置 stop_event：Agent 最终状态会被标记为 cancelled；
-            # 库侧接口不支持中断,运行中的 Agent 循环会继续跑完
+            # stop_event 由库侧 should_stop 回调消费:Agent 在每步循环顶部
+            # 检查该标志,返回 True 立即中断并标记 cancelled
             rstop.stop_event.set()
             self.respond_json(
                 {
                     "ok": True,
-                    "message": "已请求停止：任务结束后将标记为取消；当前版本无法立即中断运行中的 Agent",
+                    "message": "已请求停止:Agent 将在当前动作完成后立即中断",
                 }
             )
             return
