@@ -82,7 +82,7 @@ crypto = [
     "pycryptodome>=3.23.0,<4",
 ]
 mcp = [
-    "mcp>=1.0,<2",
+    "mcp>=2.1.1,<3",
     "camoufox[geoip]>=0.5.5,<1",
     "pydantic>=2.5,<3",
 ]
