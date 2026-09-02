@@ -62,7 +62,7 @@ web-crawler-reverse = "web_crawler.mcp.cli:main"
 
 [project.optional-dependencies]
 visual = [
-    "Pillow>=10.0,<13",
+    "Pillow>=12.3.0,<13",
 ]
 all = [
     "curl_cffi>=0.9,<1",
