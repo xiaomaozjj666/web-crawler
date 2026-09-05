@@ -43,6 +43,25 @@ def _unregister_conn(conn: sqlite3.Connection) -> None:
         _all_conns.discard(conn)
 
 
+def fail_stale_running_tasks() -> int:
+    """将上次进程退出遗留的 running/paused 任务标记为 error（UI 启动时调用）。
+
+    任务状态由内存中的 JobState 驱动，进程退出后内存态丢失，数据库里的
+    running/paused 记录永远无法收敛——启动时统一标记，避免历史列表里
+    积累永远不会结束的"僵尸任务"。
+    """
+    with _write_lock:
+        conn = _get_conn()
+        cur = conn.execute(
+            "UPDATE tasks SET status='error', exit_code=1, "
+            "log = COALESCE(log, '') || ? "
+            "WHERE status IN ('running', 'paused')",
+            ("\n[启动清理] 程序上次退出时任务未完成，已标记为中断",),
+        )
+        conn.commit()
+        return cur.rowcount
+
+
 def _safe_int(value: object, default: int = 0) -> int:
     """把清单字段安全转为 int；非数字/None 回退默认值（防单行脏数据中断导入）。"""
     if isinstance(value, bool):
