@@ -76,6 +76,9 @@ def main() -> None:
     import argparse as _ap
 
     database.init_db()
+    _stale = database.fail_stale_running_tasks()
+    if _stale:
+        _log.info("启动清理: %d 个上次未完成的任务已标记为中断", _stale)
 
     _parser = _ap.ArgumentParser(description="Web Resource Crawler UI")
     _parser.add_argument("--open", action="store_true", help="Automatically open browser")

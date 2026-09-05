@@ -410,3 +410,50 @@ class TestConnectionLifecycle:
         db._all_conns.add(_BadConn())  # type: ignore[arg-type]
         db.close_all_connections()  # 不应抛
         assert db._all_conns == set()
+
+
+class TestFailStaleRunningTasks:
+    """fail_stale_running_tasks:启动时清理上次进程遗留的僵尸任务。"""
+
+    def test_marks_running_and_paused_as_error(self) -> None:
+        conn = db._get_conn()
+        conn.execute(
+            "INSERT INTO tasks (id, url, config, output_dir, status, created_at) VALUES"
+            "('t-running', 'https://a.example', '{}', 'o', 'running', 1)"
+        )
+        conn.execute(
+            "INSERT INTO tasks (id, url, config, output_dir, status, created_at) VALUES"
+            "('t-paused', 'https://b.example', '{}', 'o', 'paused', 2)"
+        )
+        conn.execute(
+            "INSERT INTO tasks (id, url, config, output_dir, status, created_at) VALUES"
+            "('t-done', 'https://c.example', '{}', 'o', 'done', 3)"
+        )
+        conn.commit()
+
+        changed = db.fail_stale_running_tasks()
+
+        assert changed == 2
+        rows = {
+            r["id"]: r["status"] for r in conn.execute("SELECT id, status FROM tasks").fetchall()
+        }
+        assert rows["t-running"] == "error"
+        assert rows["t-paused"] == "error"
+        assert rows["t-done"] == "done"
+
+    def test_appends_reason_to_log(self) -> None:
+        conn = db._get_conn()
+        conn.execute(
+            "INSERT INTO tasks (id, url, config, output_dir, status, log, created_at) VALUES"
+            "('t-log', 'https://a.example', '{}', 'o', 'running', '原有日志', 1)"
+        )
+        conn.commit()
+
+        db.fail_stale_running_tasks()
+
+        log = conn.execute("SELECT log FROM tasks WHERE id='t-log'").fetchone()[0]
+        assert "原有日志" in log
+        assert "启动清理" in log
+
+    def test_noop_when_no_stale_tasks(self) -> None:
+        assert db.fail_stale_running_tasks() == 0
