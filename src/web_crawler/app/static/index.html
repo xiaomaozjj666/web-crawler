@@ -56,6 +56,8 @@
     }
     textarea { min-height: 72px; resize: vertical; font-family: Consolas, monospace; font-size: 13px; }
     .row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .opt-group { margin-bottom: 14px; }
+    .opt-group h4 { margin: 0 0 8px; font-size: 13px; color: var(--text-muted, #888); font-weight: 600; }
     .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 18px; margin-top: 14px; }
     .check { display: flex; align-items: center; gap: 8px; font-weight: 500; color: var(--text); font-size: 14px; cursor: pointer; }
     .check input { width: 16px; height: 16px; cursor: pointer; }
@@ -205,9 +207,9 @@
       <h1>Web Crawler 控制台</h1>
     </div>
     <div class="tabs">
-      <button class="tab active" data-tab="crawler">[采集器] 网页资源采集器</button>
-      <button class="tab" data-tab="reverse">[逆向 Agent] JS 逆向 Agent</button>
-      <button class="tab" data-tab="history">[历史] 任务历史</button>
+      <button class="tab active" data-tab="crawler">网页采集</button>
+      <button class="tab" data-tab="reverse">JS 逆向 Agent</button>
+      <button class="tab" data-tab="history">任务历史</button>
       <button class="theme-toggle" type="button" onclick="toggleTheme()" title="切换主题">主题</button>
     </div>
 
@@ -229,7 +231,7 @@
           <input id="url" name="url" type="text" placeholder="https://example.com" required>
 
           <label for="out">保存目录</label>
-          <input id="out" name="out" type="text" value="">
+          <input id="out" name="out" type="text" value="" placeholder="留空则保存到 程序目录/crawler_output">
 
           <div class="row">
             <div><label for="max_pages">最多扫描页面</label><input id="max_pages" name="max_pages" type="number" min="1" value="1"></div>
@@ -259,30 +261,43 @@
             <div class="hint">URL 含这些关键词则跳过。已内置常见广告和验证服务关键词。</div>
           </div>
 
-          <div class="grid">
-            <label class="check"><input type="checkbox" name="same_domain" checked> 只抓同域名</label>
-            <label class="check"><input type="checkbox" name="include_css_urls" checked> 抓 CSS 内资源</label>
-            <label class="check"><input type="checkbox" name="video_mode"> 生成视频资源清单</label>
-            <label class="check"><input type="checkbox" name="video_only"> 只处理视频相关资源</label>
-            <label class="check"><input type="checkbox" name="list_only" checked> 只生成清单，不下载</label>
-            <label class="check"><input type="checkbox" name="expand_playlists"> 展开播放清单</label>
-            <label class="check"><input type="checkbox" name="crawl_pages"> 扫描站内页面</label>
-            <label class="check"><input type="checkbox" name="respect_robots" checked> 遵守 robots.txt</label>
-            <label class="check"><input type="checkbox" name="resume" checked> 断点续传</label>
-            <label class="check"><input type="checkbox" name="organize" checked> 自动分类重命名</label>
-            <label class="check"><input type="checkbox" name="dedup" checked> 内容去重（SHA256）</label>
-            <label class="check"><input type="checkbox" name="sitemap"> 从 Sitemap 发现页面</label>
-            <label class="check"><input type="checkbox" name="strip_overlays" checked> 移除遮挡层</label>
-            <label class="check"><input type="checkbox" name="rewrite_html"> 离线重写 HTML</label>
-            <label class="check"><input type="checkbox" name="decrypt"> AES 解密</label>
-            <label class="check"><input type="checkbox" name="smart_extract"> 智能数据提取</label>
-            <label class="check"><input type="checkbox" name="resume_crawl"> 断点续爬</label>
-            <label class="check"><input type="checkbox" name="extract_text"> 正文提取</label>
-            <label class="check"><input type="checkbox" name="stealth"> 隐身抓取（TLS 指纹）</label>
+          <div class="opt-group">
+            <h4>抓取范围</h4>
+            <div class="grid">
+              <label class="check"><input type="checkbox" name="same_domain" checked> 只抓同域名</label>
+              <label class="check"><input type="checkbox" name="include_css_urls" checked> 抓 CSS 内资源</label>
+              <label class="check"><input type="checkbox" name="crawl_pages"> 扫描站内页面（跟随链接）</label>
+              <label class="check"><input type="checkbox" name="sitemap"> 从 Sitemap 发现页面</label>
+              <label class="check"><input type="checkbox" name="expand_playlists"> 展开播放清单</label>
+              <label class="check"><input type="checkbox" name="respect_robots" checked> 遵守 robots.txt</label>
+              <label class="check"><input type="checkbox" name="resume_crawl"> 断点续爬（任务中断后恢复）</label>
+            </div>
+          </div>
+          <div class="opt-group">
+            <h4>下载行为</h4>
+            <div class="grid">
+              <label class="check"><input type="checkbox" name="list_only" checked> 只生成清单，不下载</label>
+              <label class="check"><input type="checkbox" name="video_mode"> 生成视频资源清单</label>
+              <label class="check"><input type="checkbox" name="video_only"> 只处理视频相关资源</label>
+              <label class="check"><input type="checkbox" name="resume" checked> 断点续传（大文件分块续下）</label>
+              <label class="check"><input type="checkbox" name="dedup" checked> 内容去重（SHA256）</label>
+              <label class="check"><input type="checkbox" name="stealth"> 隐身抓取（TLS 指纹）</label>
+            </div>
+          </div>
+          <div class="opt-group">
+            <h4>内容处理</h4>
+            <div class="grid">
+              <label class="check"><input type="checkbox" name="organize" checked> 自动分类重命名</label>
+              <label class="check"><input type="checkbox" name="strip_overlays" checked> 移除遮挡层</label>
+              <label class="check"><input type="checkbox" name="rewrite_html"> 离线重写 HTML</label>
+              <label class="check"><input type="checkbox" name="decrypt"> AES 解密</label>
+              <label class="check"><input type="checkbox" name="smart_extract"> 智能数据提取</label>
+              <label class="check"><input type="checkbox" name="extract_text"> 正文提取</label>
+            </div>
           </div>
 
           <div class="buttons">
-            <button id="run-button" type="submit" class="btn-primary">开始整理</button>
+            <button id="run-button" type="submit" class="btn-primary">开始采集</button>
             <button id="pause-button" type="button" class="btn-secondary" disabled>暂停</button>
             <button id="resume-button" type="button" class="btn-secondary" disabled>继续</button>
             <button id="cancel-button" type="button" class="btn-danger" disabled>取消</button>
@@ -759,7 +774,7 @@
           if (reverseSSE) { reverseSSE.close(); reverseSSE = null; }
           var submitBtn = reverseForm.querySelector('button[type=submit]');
           if (submitBtn) { submitBtn.disabled = false; }
-          if (reverseStopBtn) { reverseStopBtn.disabled = true; }
+          /* 任务仍在服务器侧运行,保留停止按钮可用,用户可刷新恢复 */
         } else {
           if (st) { st.textContent = '查询失败（第 ' + REVERSE_POLL_FAIL + ' 次，将重试）'; }
         }
@@ -934,6 +949,8 @@
       var statusBadge = document.getElementById('rev-status');
       statusBadge.textContent = data.status || '--';
       statusBadge.className = 'status-badge ' + (data.status || '');
+      /* 运行中确保停止可用：页面刷新后按钮初始为 disabled,轮询恢复时重新启用 */
+      if (data.status === 'running' && reverseStopBtn) { reverseStopBtn.disabled = false; }
       document.getElementById('rev-stat-steps').textContent = data.current_step || 0;
       document.getElementById('rev-stat-avg-ms').textContent = Math.round(data.avg_step_ms || 0) + ' ms';
       /* 总耗时：终态用 finished_at 固定值，running 才显示动态墙钟值 */
@@ -1222,7 +1239,7 @@
       REVERSE_POLL_FAIL = 0;
       lastRenderedStepCount = -1;  /* 重置，强制首次全量绘制 */
       document.getElementById('rev-result-section').style.display = 'none';
-      document.getElementById('rev-trace').innerHTML = '<div class="trace-empty">正在启动 Agent...</div>';
+      document.getElementById('rev-trace').innerHTML = '<div class="trace-empty">正在启动 Agent…（首次使用会自动下载浏览器组件，可能需要几分钟）</div>';
       try {
         var result = await fetch('/reverse/run', { method: 'POST', body: new FormData(reverseForm) }).then(function(r) { return r.json(); });
         if (result.id) {
@@ -1249,7 +1266,7 @@
       try {
         await fetch('/reverse/stop?id=' + encodeURIComponent(currentReverseJobId), { method: 'POST' });
         var st = document.getElementById('rev-status');
-        if (st) { st.textContent = '已请求停止（任务将标记为取消，当前无法立即中断）'; }
+        if (st) { st.textContent = '已请求停止:Agent 将在当前动作完成后立即中断'; }
         await pollReverse();
       } catch(e) {
         reverseStopBtn.disabled = false;
@@ -1332,6 +1349,7 @@
     function loadHistory(page) {
       if (page) historyPage = page;
       var filter = document.getElementById('history-filter').value;
+      function statusLabel(s) { return {running:'运行中',done:'已完成',error:'出错',cancelled:'已取消',paused:'已暂停'}[s] || s; }
       var list = document.getElementById('history-list');
       list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted,#888)">加载中...</div>';
       fetch('/jobs?page=' + historyPage + '&page_size=15&status=' + encodeURIComponent(filter))
@@ -1356,7 +1374,7 @@
                   fmtTime(t.created_at) + ' · ' + t.processed_resources + '/' + t.total_resources + ' 资源 · ' + t.pages_scanned + ' 页' +
                 '</div>' +
               '</div>' +
-              '<span style="font-size:12px;font-weight:600;color:' + statusColor(t.status) + ';padding:2px 8px;border-radius:4px;background:' + statusColor(t.status) + '15">' + escapeHtml(t.status) + '</span>' +
+              '<span style="font-size:12px;font-weight:600;color:' + statusColor(t.status) + ';padding:2px 8px;border-radius:4px;background:' + statusColor(t.status) + '15">' + escapeHtml(statusLabel(t.status)) + '</span>' +
               '<div style="display:flex;gap:6px">' +
                 (t.status === 'done' ? '<button data-results-id="' + escapeHtml(t.id) + '" data-results-url="' + escapeHtml(t.url || '') + '" class="btn-results" style="padding:4px 10px;border-radius:4px;border:1px solid var(--border,#ddd);background:var(--bg-card,#fff);color:var(--text,#222);cursor:pointer;font-size:12px">查看结果</button>' : '') +
                 '<button data-delete-id="' + escapeHtml(t.id) + '" class="btn-delete" style="padding:4px 10px;border-radius:4px;border:1px solid #ef4444;background:transparent;color:#ef4444;cursor:pointer;font-size:12px">删除</button>' +
@@ -1368,13 +1386,31 @@
           pg.innerHTML = '';
           var totalPages = Math.ceil(data.total / data.page_size);
           if (totalPages > 0) {
-            for (var i = 1; i <= totalPages; i++) {
-              var btn = document.createElement('button');
-              btn.textContent = i;
-              btn.onclick = function(p) { return function() { loadHistory(p); }; }(i);
-              btn.style.cssText = 'padding:4px 12px;border-radius:4px;border:1px solid var(--border,#ddd);background:' + (i === historyPage ? '#3b82f6' : 'var(--bg-card,#fff)') + ';color:' + (i === historyPage ? '#fff' : 'var(--text,#222)') + ';cursor:pointer;font-size:13px';
-              pg.appendChild(btn);
+            var pageNums = [];
+            if (totalPages <= 9) {
+              for (var i = 1; i <= totalPages; i++) pageNums.push(i);
+            } else {
+              pageNums.push(1);
+              var s = Math.max(2, historyPage - 1), e = Math.min(totalPages - 1, historyPage + 1);
+              if (s > 2) pageNums.push('…');
+              for (var i = s; i <= e; i++) pageNums.push(i);
+              if (e < totalPages - 1) pageNums.push('…');
+              pageNums.push(totalPages);
             }
+            pageNums.forEach(function(p) {
+              if (p === '…') {
+                var gap = document.createElement('span');
+                gap.textContent = '…';
+                gap.style.cssText = 'padding:4px 4px;color:var(--text-muted,#888);font-size:13px';
+                pg.appendChild(gap);
+                return;
+              }
+              var btn = document.createElement('button');
+              btn.textContent = p;
+              btn.onclick = function(pp) { return function() { loadHistory(pp); }; }(p);
+              btn.style.cssText = 'padding:4px 12px;border-radius:4px;border:1px solid var(--border,#ddd);background:' + (p === historyPage ? '#3b82f6' : 'var(--bg-card,#fff)') + ';color:' + (p === historyPage ? '#fff' : 'var(--text,#222)') + ';cursor:pointer;font-size:13px';
+              pg.appendChild(btn);
+            });
           }
           document.getElementById('history-total').textContent = '共 ' + data.total + ' 个任务';
         })
@@ -1400,6 +1436,7 @@
       if (btn.classList.contains('btn-results')) {
         showResults(btn.dataset.resultsId, btn.dataset.resultsUrl);
       } else if (btn.classList.contains('btn-delete')) {
+        if (!window.confirm('确定删除该任务记录吗？（已下载的文件不受影响）')) return;
         deleteTask(btn.dataset.deleteId);
       }
     });
