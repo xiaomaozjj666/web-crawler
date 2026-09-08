@@ -42,7 +42,7 @@ classifiers = [
 ]
 dependencies = [
     "httpx[http2]>=0.28.1,<1",
-    "beautifulsoup4>=4.12,<5",
+    "beautifulsoup4>=4.15.0,<5",
     "lxml>=5.2,<7",
     "cssselect>=1.5.0,<2",
 ]
