@@ -69,7 +69,7 @@ all = [
     # 上限保持宽松：camoufox（<1.61）与 all 组合安装时由 pip 自动选兼容版本；
     # 不要把下限提到 >=1.61，否则 all+camoufox 交集为空（Dependabot 提升会被 CI 拒绝）
     "playwright>=1.60.0,<2",
-    "pydantic>=2.5,<3",
+    "pydantic>=2.13.5,<3",
 ]
 camoufox = [
     "camoufox[geoip]>=0.5.5,<1",
@@ -84,7 +84,7 @@ crypto = [
 mcp = [
     "mcp>=2.1.1,<3",
     "camoufox[geoip]>=0.5.5,<1",
-    "pydantic>=2.5,<3",
+    "pydantic>=2.13.5,<3",
 ]
 dev = [
     "pytest>=9.1.1,<10",
@@ -93,7 +93,7 @@ dev = [
     "ruff>=0.16.5,<0.17",
     "mypy>=2.3.1,<3",
     "types-beautifulsoup4>=4.12.0.20250516,<5",
-    "pydantic>=2.5,<3",
+    "pydantic>=2.13.5,<3",
 ]
 docs = [
     "mkdocs>=1.6.1,<2",
