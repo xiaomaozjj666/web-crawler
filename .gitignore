@@ -36,7 +36,6 @@ site/
 # IDE
 .idea/
 .vscode/
-.zcode/
 
 # 内部过程文档（不随仓库分发）
 REVIEW-REPORT.md
