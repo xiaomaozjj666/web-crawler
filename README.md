@@ -40,9 +40,9 @@ flowchart TB
 
 ## 界面预览
 
-本地 Web UI（`python -m web_crawler.app.ui`，默认 http://127.0.0.1:8765）：采集器（图片/JS/视频/文件下载、并发与断点续传）、JS 逆向 Agent、任务历史三个入口，SSE 实时推送进度与日志。
+本地 Web UI（`python -m web_crawler.app.ui`，默认 http://127.0.0.1:8765）：网页采集（图片/JS/视频/文件下载、并发与断点续传）、JS 逆向 Agent、任务历史三个入口，SSE 实时推送进度与日志。
 
-| 采集器控制台 · 本地 Web UI |
+| 网页采集控制台 · 本地 Web UI |
 | :---: |
 | <img src="docs/screenshots/ui-console.png" alt="Web Crawler 控制台" width="820" /> |
 
@@ -221,6 +221,9 @@ pip install -e ".[dev]"
 pip install -e ".[all]"            # + curl_cffi TLS 隐身 + Playwright JS 渲染
 pip install -e ".[camoufox]"       # + Camoufox 抗指纹 Firefox
 pip install -e ".[mcp]"            # + MCP 服务 / CLI（隐含 camoufox）
+pip install -e ".[captcha]"        # + ddddocr 图片验证码识别（文本 OCR / 滑块定位）
+pip install -e ".[crypto]"         # + pycryptodome（AES-128 m3u8 分段解密）
+pip install -e ".[visual]"         # + Pillow（图片解码与预处理；供验证码滑块模板匹配使用）
 playwright install chromium        # 仅 DynamicFetcher / StealthyFetcher 需要
 ```
 
@@ -293,7 +296,7 @@ web-crawler-mcp                    # 通过 stdio 通信
 ### JS 逆向 CLI
 
 ```bash
-web-crawler-reverse https://example.com --target-params anti_content sign
+web-crawler-reverse reverse https://example.com --target-params anti_content sign
 web-crawler-reverse analyze script.js              # 反混淆 JS 片段
 web-crawler-reverse webpack bundle.js              # 提取 webpack 模块
 web-crawler-reverse reimplement algo.js --language python
@@ -344,9 +347,9 @@ docs/ + mkdocs.yml        # MkDocs 文档站点
 
 ```bash
 ruff check .                          # 静态检查
-mypy src/web_crawler app                # 类型检查
+mypy src/web_crawler                    # 类型检查
 python -m pytest -m "not slow"        # 运行测试（跳过慢速集成测试）
-python -m pytest --cov=web_crawler --cov=app   # 带覆盖率
+python -m pytest --cov=web_crawler             # 带覆盖率
 python benchmarks.py --check-regression   # 性能回归检查（CI 模式）
 ```
 
