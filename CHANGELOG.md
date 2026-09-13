@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Web UI 实测体验优化**：采集 Tab 更名「网页采集」（原「网页资源采集器」），
+  主按钮「开始整理」改为「开始采集」，19 个复选框按「抓取范围 / 下载行为 /
+  内容处理」三组归类，并区分「断点续传」（分块续传大文件）与「断点续爬」
+  （任务中断恢复）；任务历史状态徽章中文化（与筛选下拉一致）、分页窗口化
+  （36 个页码按钮 → `1 2 … 48`）、删除二次确认；停止按钮在页面刷新或轮询
+  失败后仍保持可用（任务仍在服务器侧运行）；首次启动提示会下载浏览器组件；
+  进程退出时把遗留的 `running` / `paused` 任务标记为 `error`，不再积累
+  永远无法结束的僵尸任务。
+- **`.gitignore` 移除本机工具目录条目**：该目录改由本机全局忽略规则承担，
+  仓库内不再维护。
+
 ## [0.5.1] - 2026-08-28
 
 ### Changed
