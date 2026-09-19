@@ -50,7 +50,7 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/xiaomaozjj666/web-crawler"
 Repository = "https://github.com/xiaomaozjj666/web-crawler"
-Documentation = "https://github.com/xiaomaozjj666/web-crawler#readme"
+Documentation = "https://xiaomaozjj666.github.io/web-crawler/"
 Changelog = "https://github.com/xiaomaozjj666/web-crawler/blob/master/CHANGELOG.md"
 Issues = "https://github.com/xiaomaozjj666/web-crawler/issues"
 
@@ -160,7 +160,7 @@ branch = false
 
 [tool.coverage.report]
 show_missing = true
-# 门禁值略低于实测（~94%），为平台分支差异留余量；只升不降
+# 门禁值略低于实测（默认依赖档 ~94%；全量依赖档另由 CI 以 97 卡口），为平台分支差异留余量；只升不降
 fail_under = 92
 
 [tool.mypy]

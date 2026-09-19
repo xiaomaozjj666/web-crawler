@@ -6,11 +6,13 @@
   <img src="https://img.shields.io/badge/TLS-impersonation-0F6B9E" alt="TLS 指纹隐身" />
   <img src="https://github.com/xiaomaozjj666/web-crawler/actions/workflows/ci.yml/badge.svg" alt="CI" />
   <img src="https://img.shields.io/badge/coverage-99.95%25%20(full-deps)-brightgreen" alt="覆盖率 99.95%（full-deps）/ 100%（minimal-deps）" />
-  <img src="https://img.shields.io/badge/docs-online-brightgreen" alt="文档站" />
+  <a href="https://xiaomaozjj666.github.io/web-crawler/"><img src="https://img.shields.io/badge/docs-online-brightgreen" alt="文档站" /></a>
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" />
 </p>
 
 Scrapling 风格的隐身网页爬虫库：**自适应选择器**、**TLS 指纹隐身 HTTP**、**JS 渲染**与**回调式 Spider 框架**，另附一套应用层资源下载器与本地 Web UI。
+
+📖 **完整文档**（架构详解 / API 参考 / 逆向 Agent 手册）：[https://xiaomaozjj666.github.io/web-crawler/](https://xiaomaozjj666.github.io/web-crawler/)
 
 ## 分层架构
 
@@ -301,6 +303,12 @@ web-crawler-reverse analyze script.js              # 反混淆 JS 片段
 web-crawler-reverse webpack bundle.js              # 提取 webpack 模块
 web-crawler-reverse reimplement algo.js --language python
 web-crawler-reverse capture https://example.com --wait 8
+web-crawler-reverse scripts https://example.com     # 列出页面加载的 JS 脚本
+web-crawler-reverse hooks https://example.com       # 向页面注入 JS Hook
+web-crawler-reverse deobfuscate script.js           # AI 反混淆 JS 代码
+web-crawler-reverse captcha https://example.com     # 检测并处理页面验证码
+web-crawler-reverse captcha-image --mode slider --bg bg.png --slider s.png
+web-crawler-reverse pentest example.com --authorized   # 轻量渗透侦察（仅限已授权目标）
 web-crawler-reverse interactive                     # REPL，输入 tools 查看命令
 web-crawler-reverse run --url https://example.com --task "提取签名参数" --headless
 ```
