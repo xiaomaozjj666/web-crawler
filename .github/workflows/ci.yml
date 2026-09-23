@@ -9,9 +9,12 @@ on:
 permissions:
   contents: read
 
+# 仅对 PR 取消旧运行（PR 分支会反复推送，取消可避免排队）；
+# 推送默认分支不取消——公开仓库的 Actions 分钟数免费，取消节省不了额度，
+# 反而会让被顶掉的那次运行在提交列表里留下红色的 cancelled 标记。
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:
