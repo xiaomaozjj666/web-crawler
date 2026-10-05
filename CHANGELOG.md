@@ -6,7 +6,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **SSRF：恢复库级 fetcher 的 DNS 解析复查默认开启**：`Fetcher`/`DynamicFetcher`/
+  `StealthyFetcher`/`CamoufoxFetcher` 构造参数 `resolve_hosts` 默认值由 `False`
+  恢复为基类声明的安全默认 `True`（与文档"库层默认开启"一致）——原默认下
+  攻击者把自己的域名解析到 `169.254.169.254` 即可绕过静态检查直连云元数据，
+  无需任何重绑定技巧。可选依赖用户如确需关闭，可显式传 `resolve_hosts=False`。
+- **SSRF：非点分 IPv4 字面量归一化**：`is_private_ip` 现识别 inet_aton 兼容
+  写法（`2130706433`/`127.1`/`0177.0.0.1`/`0x7f000001`）——Linux glibc 与
+  libcurl 会把这些形式解析到对应 IPv4 地址，此前静态检查全部放行。
+- **SSRF：httpx 兜底路径连接层 DNS 钉扎（TOCTOU 根治）**：新增
+  `fetchers/_pin.py`，发送前自行解析并把 URL host 替换为已逐一校验的 IP，
+  配合 httpcore `sni_hostname` 扩展保持 SNI/证书校验仍针对原始主机名——
+  门禁校验的地址即连接的地址，check-then-connect 窗口归零。显式/环境代理
+  路径自动跳过（解析由代理完成）。curl_cffi 主路径因上游未暴露按请求的
+  `CURLOPT_RESOLVE` 暂无法钉扎，维持入口复查 + 短缓存缓解（边界已写入
+  SECURITY.md）。
+- **SSRF：MCP 浏览器捕获出口过滤**：`capture_network_requests` 对捕获记录
+  做二次 host 校验（`_filter_private_egress`，按 host 缓存解析判定）——
+  页面自驱动的请求指向非公网目标时记录整体打码并计数上报，不再回传内网
+  响应内容；门禁只覆盖初始 URL 的边界已在工具文档与 SECURITY.md 声明。
+- **httpx 兜底路径 brotli 解码错误**：仿真默认请求头广告了 `br`，但 httpx
+  未装 brotli 包时收到 brotli body 无法解码（实测复现）；现按运行时实际
+  可解压的编码收缩 `Accept-Encoding`（curl 路径原生支持不受影响）。
+- **种子 URL 被静默丢弃**：`normalize_url` 拒绝不合法/内网种子 URL 时补
+  warning 日志（含 Power Mode 提示）——此前只返回空串，日志仅见
+  "no resources found"，无从排查。
+- **pentest：HeaderChecker 重定向逐跳 SSRF 校验**：安全头检测关闭传输层自动
+  重定向，改为手动逐跳跟随并对每跳重做 host 检查（私网/环回/链路本地拒绝），
+  防止已授权公网目标 302 到内网/云元数据、把内网响应头带回报告；
+  `allow_private_hosts=True` 可显式放行（与 fetcher 同名选项语义一致）。
+- **pentest：目标 scheme 白名单**：`pentest_recon` 的 target 解析层拒绝
+  `file://`/`ftp://` 等非 http(s) scheme（纵深防御，与 fetcher 入口对齐）。
+
 ### Changed
+- **sync/async 镜像代码去重（第一批）**：spider 的 run()/stream() 抽出共享
+  的 `_bootstrap_queue`/`_schedule_retry`/`_retry_backoff`/`_finalize_state`
+  （队列引导、重试入队与退避公式、状态文件收尾双路径同源，消除改一边漏
+  一边的分叉风险）；fetcher 抽出 `_advance_redirect` 重定向状态机、
+  `_curl_session_kwargs` 会话参数与 `_build_httpx_client` h2 降级构建器
+  （重定向循环 sync/async 各 ~30 行镜像收敛为共享推进逻辑）；image_captcha
+  的 OCR/滑块/点选三族 LLM 消息构造与后处理抽为共享助手，5 对方法瘦身。
+- **reverse_agent.py 拆分**：1801 → 1440 行，纯函数层抽出——
+  `ai/_reverse_prompt.py`（think prompt 模板与四类摘要格式化，166 行）、
+  `ai/_reverse_support.py`（Observation/Action/ReverseAgentConfig 数据类与
+  通用纯助手，398 行）；reverse_agent.py 保留薄 re-export/wrapper 兼容层，
+  全部历史导入路径与 patch 目标不变（已逐项核对测试引用）。
+- **测试：reverse_agent 单元测试去样板与漂移修复**：
+  `test_reverse_agent_unit.py` 以模块级 autouse fixture + `_track()` 登记
+  统一关闭 agent，移除 201 处 `try/finally: agent.close()` 样板（3800 →
+  约 3300 行），close 语义不变（测试失败路径同样关闭，close 幂等）；
+  补齐 12 个此前 async 路径缺失、仅 sync 版有的测试场景（click 默认左键/
+  type clear=False 与 focus 失败吞噬/scroll 默认 800/press 默认 Enter/
+  new_tab setup 失败吞噬/switch_tab bring_to_front 失败吞噬/close_tab
+  close 失败吞噬/observe 网络日志清空与 pruner 空文本回退/think plan 子
+  目标与历史摘要注入），sync/async 两路径断言集合对齐。
+- **大爬取性能：页面 HTML 不再全量驻留内存**：扫描阶段每页 HTML 原先整体
+  累积进 `_CrawlContext.page_html` 直到任务结束（万页 × 300KB ≈ 3GB 常驻堆）；
+  现改为记录落盘路径与编码（`page_files`），后处理（离线重写/智能抽取/正文
+  抽取）逐页从磁盘重读，峰值内存从"全部页面"降为"单页"。
+- **大爬取性能：离线 HTML 重写替换表整次构建一次**：新增 `RewriteTable`，
+  原 `rewrite_html` 每页都重建 URL→本地路径映射（每行一次 `Path.resolve()`
+  文件系统调用），500 页 × 3000 资源 ≈ 150 万次 resolve；现在每资源一次、
+  逐页只做字符串替换，后处理从分钟级回到秒级。坏行（saved_path 越界）改为
+  跳过并告警，不再中断整轮重写。`rewrite_html` 保持原签名作为单页便捷入口。
+- **大爬取性能：待扫队列成员检查 O(1)**：`page_queue`（deque）配套
+  `queued_pages` 集合索引，新链接去重不再对队列做线性扫描——万页级爬取
+  "越爬越卡"的主因之一。
+- **大爬取性能：`--resume-crawl` 状态快照去 O(P²) 写放大**：资源 dict 形态
+  增量缓存（`resource_dicts()`，不再每次快照全量 `asdict` 反射深拷贝），
+  并叠加 2 秒最小保存间隔（队列耗尽的最终保存不受限）。
+- **代理路径连接复用**：app 层 `_get_opener` 按代理 URL 缓存 opener（原实现
+  挂代理时每次请求、每次重定向跳都重建）；库级 `Fetcher` 的 httpx 兜底路径
+  同样按 proxy 缓存专用客户端，`close()`/`aclose()` 统一释放。
+- **下载循环增量等待**：线程池调度从 `FIRST_EXCEPTION` + 全量字典每 0.5 秒
+  重挂回调，改为增量 pending 集合 + `FIRST_COMPLETED`（任一完成立即处理，
+  大批量下载时主线程不再空转）。
+- **Spider `stream()` item 缓冲换 `deque`**：批量排空从 `list.pop(0)` 的
+  O(n²) 降为 O(n)。
+- **AI 逆向：webpack 模块正则编译缓存**：按 (模板, 别名) 缓存编译结果，
+  数千模块的 bundle 不再重复编译数千次。
+- **captcha 双模块补日志**：`ai/captcha.py` 与 `ai/image_captcha.py` 的 40 处
+  吞错点全部插桩（探测未命中 debug、求解失败 warning），"验证码解不出"
+  从此可诊断。
+- **LLM：chat/achat 公共逻辑抽纯函数**：`_build_chat_payload` 与
+  `_is_retryable_llm_error` 双路径共用，消除重试分类与请求体构造的镜像
+  重复（防止 sync/async 行为分叉）。
+- **CI 鲁棒性**：全部 9 个 job 加 `timeout-minutes`（默认 6 小时上限改为
+  10-40 分钟）；release 工作流补 concurrency 组（防 tag 重推并行跑两个
+  release run）；bench 回归检测失败时写入 step summary（保持咨询性质）；
+  移除无人消费的 coverage.xml 输出。
+- **测试**：后处理容错类 e2e 测试的 6 处 patch 目标从 facade 修正为实际
+  读取名字的 `_crawler_post` 模块（模块拆分后原 patch 已失效，测试变空转）。
 - **Web UI 实测体验优化**：采集 Tab 更名「网页采集」（原「网页资源采集器」），
   主按钮「开始整理」改为「开始采集」，19 个复选框按「抓取范围 / 下载行为 /
   内容处理」三组归类，并区分「断点续传」（分块续传大文件）与「断点续爬」

@@ -8,9 +8,16 @@ on:
 permissions:
   contents: read
 
+# tag 重推时取消旧运行，避免两个 release run 并行抢 release 创建与 artifact
+# （同 tag 已存在 release 时重推会失败——见 release job 内的探测注释）
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -24,6 +31,7 @@ jobs:
   build:
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - name: Set up Python
@@ -43,6 +51,7 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

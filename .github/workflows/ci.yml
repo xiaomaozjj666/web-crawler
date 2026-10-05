@@ -19,6 +19,7 @@ concurrency:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -32,6 +33,7 @@ jobs:
 
   typecheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -54,6 +56,7 @@ jobs:
           - os: windows-latest
             python-version: '3.12'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -67,13 +70,13 @@ jobs:
           pytest -m "not slow" --tb=short -q
           --cov=web_crawler
           --cov-fail-under=92
-          --cov-report=xml:coverage.xml
           --cov-report=term-missing
 
   test-extras:
     # 安装全部可选依赖（playwright / curl_cffi / camoufox 等），把动态 fetcher
     # 与反检测路径纳入覆盖率测量（标准 test job 只装 dev 依赖，相关测试被 skip）
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -87,11 +90,11 @@ jobs:
           pytest -m "not slow" --tb=short -q
           --cov=web_crawler
           --cov-fail-under=97
-          --cov-report=xml:coverage.xml
           --cov-report=term-missing
 
   bench:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -100,11 +103,18 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - run: pip install -e ".[dev]"
-      - run: python benchmarks.py --check-regression
+      - name: Benchmark regression check (advisory)
+        id: bench
+        run: python benchmarks.py --check-regression
         continue-on-error: true
+      - name: Surface regression in step summary
+        if: always() && steps.bench.outcome == 'failure'
+        run: |
+          echo "⚠️ **Benchmark regression detected** (advisory — see bench step logs for details)." >> "$GITHUB_STEP_SUMMARY"
 
   docs:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
