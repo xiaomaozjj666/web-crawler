@@ -52,15 +52,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ai/_reverse_support.py`（Observation/Action/ReverseAgentConfig 数据类与
   通用纯助手，398 行）；reverse_agent.py 保留薄 re-export/wrapper 兼容层，
   全部历史导入路径与 patch 目标不变（已逐项核对测试引用）。
-- **测试：reverse_agent 单元测试去样板与漂移修复**：
+- **测试：reverse_agent 单元测试去样板与 sync/async 类合并**：
   `test_reverse_agent_unit.py` 以模块级 autouse fixture + `_track()` 登记
-  统一关闭 agent，移除 201 处 `try/finally: agent.close()` 样板（3800 →
-  约 3300 行），close 语义不变（测试失败路径同样关闭，close 幂等）；
-  补齐 12 个此前 async 路径缺失、仅 sync 版有的测试场景（click 默认左键/
-  type clear=False 与 focus 失败吞噬/scroll 默认 800/press 默认 Enter/
-  new_tab setup 失败吞噬/switch_tab bring_to_front 失败吞噬/close_tab
-  close 失败吞噬/observe 网络日志清空与 pruner 空文本回退/think plan 子
-  目标与历史摘要注入），sync/async 两路径断言集合对齐。
+  统一关闭 agent，移除 201 处 `try/finally: agent.close()` 样板；补齐
+  12 个此前 async 路径缺失、仅 sync 版有的测试场景后，将 12 对逐字重复的
+  sync/async 测试类合并为单类（`_AsyncPageMock` 的自动 AsyncMock 已使两套
+  mock 形态行为归一，保留各对断言并集），文件 3800 → 2897 行、净删 49 个
+  冗余测试副本，覆盖率不变。
 - **大爬取性能：页面 HTML 不再全量驻留内存**：扫描阶段每页 HTML 原先整体
   累积进 `_CrawlContext.page_html` 直到任务结束（万页 × 300KB ≈ 3GB 常驻堆）；
   现改为记录落盘路径与编码（`page_files`），后处理（离线重写/智能抽取/正文

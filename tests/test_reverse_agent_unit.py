@@ -507,6 +507,9 @@ class TestSafePageUrl:
 
 
 class TestObserve:
+    """_observe_async（原 sync/async 两类合并，断言取并集）。"""
+
+    @pytest.mark.asyncio
     async def test_observe_collects_all_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """_observe 应聚合 url/hook_data/network/scripts/captcha/dom/截图。"""
         monkeypatch.chdir(Path(__file__).parent)  # 截图写入 tests 目录
@@ -541,16 +544,17 @@ class TestObserve:
         # _hook_data_cache 应被更新
         assert agent._hook_data_cache["count"] == 1
 
+    @pytest.mark.asyncio
     async def test_observe_handles_page_methods_throwing(self) -> None:
         """page.title() / content() 抛异常时不应崩溃。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.url = "https://x.example"
-        page.title.side_effect = RuntimeError("no title")
-        page.content.side_effect = RuntimeError("no content")
-        # evaluate 需返回空列表（collect_hook_data 无 try/except），不能抛异常
-        page.evaluate.return_value = []
-        page.screenshot.return_value = b""
+        page.title = AsyncMock(side_effect=RuntimeError("no title"))
+        page.content = AsyncMock(side_effect=RuntimeError("no content"))
+        # evaluate 不能抛异常：_observe_async 内联 await page.evaluate 无 try/except
+        page.evaluate = AsyncMock(return_value=[])
+        page.screenshot = AsyncMock(return_value=b"")
         # captcha_manager.detector.detect 返回 None
         agent.captcha_manager.detector.detect = MagicMock(return_value=None)  # type: ignore[assignment]
         obs = await agent._observe_async(page, step=1)
@@ -560,6 +564,7 @@ class TestObserve:
         assert obs.captcha_type == CaptchaType.NONE
         assert obs.scripts == []
 
+    @pytest.mark.asyncio
     async def test_observe_clears_network_log_after_read(self) -> None:
         """_observe 每步只取增量请求并清空 _network_log，防止跨步累积。"""
         agent = _make_agent()
@@ -569,6 +574,7 @@ class TestObserve:
         assert len(obs.network_requests) == 1
         assert agent._network_log == []
 
+    @pytest.mark.asyncio
     async def test_observe_uses_dom_pruner_when_enabled(self) -> None:
         """dom_prune_max_chars > 0 时 _observe 应调用 DomPruner.prune。"""
         cfg = ReverseAgentConfig(
@@ -583,9 +589,9 @@ class TestObserve:
         agent = _track(ReverseAgent(config=cfg, provider=StubProvider()))
         page = _AsyncPageMock()
         page.url = "https://x.example"
-        page.title.return_value = "T"
-        page.content.return_value = "x" * 5000
-        page.evaluate.return_value = []
+        page.title = AsyncMock(return_value="T")
+        page.content = AsyncMock(return_value="x" * 5000)
+        page.evaluate = AsyncMock(return_value=[])
         agent.captcha_manager.detector.detect = MagicMock(return_value=None)  # type: ignore[assignment]
         # Mock DomPruner.prune 返回带 text 的 PrunedDom
         pruned = MagicMock()
@@ -595,115 +601,9 @@ class TestObserve:
         assert obs.dom_summary == "PRUNED_TEXT"
         assert agent._last_pruned_dom is pruned
 
+    @pytest.mark.asyncio
     async def test_observe_dom_pruner_falls_back_when_text_empty(self) -> None:
         """DomPruner 返回空 text 时应回退到原始 dom 截断。"""
-        cfg = ReverseAgentConfig(
-            enable_screenshot=False,
-            enable_guard=False,
-            enable_judge=False,
-            enable_recorder=False,
-            planner_interval=None,
-            humanize_input=False,
-            dom_prune_max_chars=1000,
-        )
-        agent = _track(ReverseAgent(config=cfg, provider=StubProvider()))
-        page = _AsyncPageMock()
-        page.url = "https://x.example"
-        page.title.return_value = "T"
-        page.content.return_value = "abcdefghij" * 500
-        page.evaluate.return_value = []
-        agent.captcha_manager.detector.detect = MagicMock(return_value=None)  # type: ignore[assignment]
-        pruned = MagicMock()
-        pruned.text = ""  # 空 text
-        agent.dom_pruner.prune_async = AsyncMock(return_value=pruned)  # type: ignore[assignment]
-        obs = await agent._observe_async(page, step=1)
-        # 应回退到 dom_raw[:2000]
-        assert len(obs.dom_summary) == 2000
-
-
-class TestObserveAsync:
-    @pytest.mark.asyncio
-    async def test_observe_async_collects_all_fields(self) -> None:
-        """异步 _observe_async 应聚合所有字段。"""
-        cfg = ReverseAgentConfig(
-            enable_screenshot=False,
-            enable_guard=False,
-            enable_judge=False,
-            enable_recorder=False,
-            planner_interval=None,
-            humanize_input=False,
-        )
-        agent = _track(ReverseAgent(config=cfg, provider=StubProvider()))
-        page = _AsyncPage(
-            url="https://x.example/async",
-            title="AsyncDemo",
-            hook_records=[{"type": "xhr"}],
-            scripts=["a.js"],
-        )
-        agent._network_log.append({"url": "n"})
-        obs = await agent._observe_async(page, step=1)
-        assert obs.url == "https://x.example/async"
-        assert obs.page_title == "AsyncDemo"
-        assert obs.hook_data["count"] == 1
-        assert len(obs.network_requests) == 1
-        assert len(obs.scripts) == 1
-        assert agent._hook_data_cache["count"] == 1
-
-    @pytest.mark.asyncio
-    async def test_observe_async_handles_throwing_page(self) -> None:
-        """异步路径 page 方法抛异常时不崩溃。"""
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        page.url = "https://x.example"
-        page.title = AsyncMock(side_effect=RuntimeError("title fail"))
-        page.content = AsyncMock(side_effect=RuntimeError("content fail"))
-        # evaluate 不能抛异常：_observe_async 内联 await page.evaluate 无 try/except
-        page.evaluate = AsyncMock(return_value=[])
-        page.screenshot = AsyncMock(return_value=b"")
-        agent.captcha_manager.detector.detect = MagicMock(return_value=None)  # type: ignore[assignment]
-        obs = await agent._observe_async(page, step=1)
-        assert obs.page_title == ""
-        assert obs.dom_summary == ""
-        assert obs.scripts == []
-
-    @pytest.mark.asyncio
-    async def test_observe_async_uses_dom_pruner(self) -> None:
-        """异步路径启用 DomPruner 时调用 prune_async。"""
-        cfg = ReverseAgentConfig(
-            enable_screenshot=False,
-            enable_guard=False,
-            enable_judge=False,
-            enable_recorder=False,
-            planner_interval=None,
-            humanize_input=False,
-            dom_prune_max_chars=500,
-        )
-        agent = _track(ReverseAgent(config=cfg, provider=StubProvider()))
-        page = _AsyncPageMock()
-        page.url = "https://x.example"
-        page.title = AsyncMock(return_value="T")
-        page.content = AsyncMock(return_value="x" * 5000)
-        page.evaluate = AsyncMock(return_value=[])
-        agent.captcha_manager.detector.detect = MagicMock(return_value=None)  # type: ignore[assignment]
-        pruned = MagicMock()
-        pruned.text = "ASYNC_PRUNED"
-        agent.dom_pruner.prune_async = AsyncMock(return_value=pruned)  # type: ignore[assignment]
-        obs = await agent._observe_async(page, step=1)
-        assert obs.dom_summary == "ASYNC_PRUNED"
-
-    @pytest.mark.asyncio
-    async def test_observe_async_clears_network_log_after_read(self) -> None:
-        """与 sync 版 test_observe_clears_network_log_after_read 对齐（此前 async 缺失）。"""
-        agent = _make_agent()
-        page = _AsyncPage(url="https://x.example", content_html="<html></html>")
-        agent._network_log.append({"url": "https://n.example", "method": "GET"})
-        obs = await agent._observe_async(page, step=1)
-        assert len(obs.network_requests) == 1
-        assert agent._network_log == []
-
-    @pytest.mark.asyncio
-    async def test_observe_async_dom_pruner_falls_back_when_text_empty(self) -> None:
-        """与 sync 版 test_observe_dom_pruner_falls_back_when_text_empty 对齐（此前缺失）。"""
         cfg = ReverseAgentConfig(
             enable_screenshot=False,
             enable_guard=False,
@@ -734,6 +634,9 @@ class TestObserveAsync:
 
 
 class TestThink:
+    """_think_async：provider 调度（achat/chat 回退）与 prompt 内容（原两类合并）。"""
+
+    @pytest.mark.asyncio
     async def test_think_calls_provider_and_returns_action(self) -> None:
         agent = _make_agent()
         provider = StubProvider(
@@ -760,47 +663,9 @@ class TestThink:
         assert agent._last_llm_usage == {"tokens": 1}
         assert provider.calls == 1
 
-    async def test_think_with_plan_injects_subgoal_into_prompt(self) -> None:
-        agent = _make_agent()
-        agent.provider = StubProvider(['{"action_type": "wait"}'])
-        from web_crawler.ai.planner import Plan, SubGoal
-
-        plan = Plan(subgoals=[SubGoal(description="my-subgoal", success_criteria="ok")])
-        obs = Observation(
-            url="u",
-            hook_data={},
-            network_requests=[],
-            scripts=[],
-            captcha_type=CaptchaType.NONE,
-            page_title="t",
-            dom_summary="d",
-        )
-        await agent._think_async(obs, "task", [], plan=plan)
-        # prompt 应包含子目标描述
-        assert "my-subgoal" in agent._last_think_prompt
-        assert "当前子目标" in agent._last_think_prompt
-
-    async def test_think_with_cumulative_summary_in_prompt(self) -> None:
-        agent = _make_agent()
-        agent.provider = StubProvider(['{"action_type": "wait"}'])
-        agent.context_compressor._cumulative_summary = "PAST_SUMMARY_CONTENT"
-        obs = Observation(
-            url="u",
-            hook_data={},
-            network_requests=[],
-            scripts=[],
-            captcha_type=CaptchaType.NONE,
-            page_title="t",
-            dom_summary="d",
-        )
-        await agent._think_async(obs, "task", [])
-        assert "PAST_SUMMARY_CONTENT" in agent._last_think_prompt
-        assert "历史摘要" in agent._last_think_prompt
-
-
-class TestThinkAsync:
     @pytest.mark.asyncio
-    async def test_think_async_uses_achat(self) -> None:
+    async def test_think_uses_achat_when_available(self) -> None:
+        """provider 有 achat 时优先走异步接口。"""
         agent = _make_agent()
         provider = MagicMock()
         provider.achat = AsyncMock(
@@ -824,7 +689,7 @@ class TestThinkAsync:
         assert action.action_type == "done"
 
     @pytest.mark.asyncio
-    async def test_think_async_falls_back_to_sync_chat(self) -> None:
+    async def test_think_falls_back_to_sync_chat(self) -> None:
         """provider 无 achat 时回退到同步 chat。"""
         agent = _make_agent()
         provider = MagicMock(spec=["chat"])  # 只暴露 chat
@@ -844,8 +709,7 @@ class TestThinkAsync:
         assert action.action_type == "wait"
 
     @pytest.mark.asyncio
-    async def test_think_async_with_plan_injects_subgoal_into_prompt(self) -> None:
-        """与 sync 版 test_think_with_plan_injects_subgoal_into_prompt 对齐（此前缺失）。"""
+    async def test_think_with_plan_injects_subgoal_into_prompt(self) -> None:
         agent = _make_agent()
         agent.provider = StubProvider(['{"action_type": "wait"}'])
         from web_crawler.ai.planner import Plan, SubGoal
@@ -866,8 +730,7 @@ class TestThinkAsync:
         assert "当前子目标" in agent._last_think_prompt
 
     @pytest.mark.asyncio
-    async def test_think_async_with_cumulative_summary_in_prompt(self) -> None:
-        """与 sync 版 test_think_with_cumulative_summary_in_prompt 对齐（此前缺失）。"""
+    async def test_think_with_cumulative_summary_in_prompt(self) -> None:
         agent = _make_agent()
         agent.provider = StubProvider(['{"action_type": "wait"}'])
         agent.context_compressor._cumulative_summary = "PAST_SUMMARY_CONTENT"
@@ -953,51 +816,62 @@ class TestFallbackAction:
 
 
 class TestActBranches:
+    """_act_async 的各动作分支（原 sync/async 两类合并，sync 版为超集）。"""
+
+    @pytest.mark.asyncio
     async def test_act_navigate_with_url(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
+        page.goto = AsyncMock()
         action = Action(action_type="navigate", params={"url": "https://x.example"})
         result = await agent._act_async(page, action, step=1)
         assert result is None
-        page.goto.assert_called_once_with(
+        page.goto.assert_awaited_once_with(
             "https://x.example", wait_until="domcontentloaded", timeout=30000
         )
 
+    @pytest.mark.asyncio
     async def test_act_navigate_without_url_does_nothing(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
+        page.goto = AsyncMock()
         action = Action(action_type="navigate", params={})
         result = await agent._act_async(page, action, step=1)
         assert result is None
-        page.goto.assert_not_called()
+        page.goto.assert_not_awaited()
 
+    @pytest.mark.asyncio
     async def test_act_inject_hook_returns_true_on_success(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
-        page.evaluate.return_value = None
+        page.evaluate = AsyncMock(return_value=None)
         action = Action(action_type="inject_hook", params={"hooks": ["fetch_hook"]})
         result = await agent._act_async(page, action, step=1)
         assert result is True
 
+    @pytest.mark.asyncio
     async def test_act_inject_hook_returns_false_on_failure(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
-        page.evaluate.side_effect = RuntimeError("injection failed")
+        page.evaluate = AsyncMock(side_effect=RuntimeError("injection failed"))
         action = Action(action_type="inject_hook", params={"hooks": ["unknown"]})
         result = await agent._act_async(page, action, step=1)
         assert result is False
 
+    @pytest.mark.asyncio
     async def test_act_wait_sleeps_seconds(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
         action = Action(action_type="wait", params={"seconds": 0.1})
+        # patch 对 async 函数自动替换为 AsyncMock，await 语义保持
         with patch("web_crawler.ai.reverse_agent.asyncio.sleep") as mock_sleep:
             await agent._act_async(page, action, step=1)
-            mock_sleep.assert_called_once()
+            mock_sleep.assert_awaited_once()
             # 应在 [0.1, 30] 范围
             called_arg = mock_sleep.call_args[0][0]
             assert 0.1 <= called_arg <= 30.0
 
+    @pytest.mark.asyncio
     async def test_act_wait_clamps_seconds_to_range(self) -> None:
         """wait 的 seconds 超出范围应被 clamp 到 [0.1, 30]。"""
         agent = _make_agent()
@@ -1008,6 +882,7 @@ class TestActBranches:
             called_arg = mock_sleep.call_args[0][0]
             assert called_arg == 30.0  # 被 clamp 到上限
 
+    @pytest.mark.asyncio
     async def test_act_wait_default_seconds_when_missing(self) -> None:
         """wait 未传 seconds 时默认 1.0。"""
         agent = _make_agent()
@@ -1018,6 +893,7 @@ class TestActBranches:
             called_arg = mock_sleep.call_args[0][0]
             assert called_arg == 1.0
 
+    @pytest.mark.asyncio
     async def test_act_extract_no_param_name_returns_none(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
@@ -1025,16 +901,18 @@ class TestActBranches:
         result = await agent._act_async(page, action, step=1)
         assert result is None
 
+    @pytest.mark.asyncio
     async def test_act_extract_finds_param_in_records(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
-        page.evaluate.return_value = [
-            {"headers": {"Anti-Content": "abc123"}, "url": "", "body": ""}
-        ]
+        page.evaluate = AsyncMock(
+            return_value=[{"headers": {"Anti-Content": "abc123"}, "url": "", "body": ""}]
+        )
         action = Action(action_type="extract", params={"param_name": "Anti-Content"})
         result = await agent._act_async(page, action, step=1)
         assert result == "abc123"
 
+    @pytest.mark.asyncio
     async def test_act_solve_captcha_delegates_to_manager(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
@@ -1044,6 +922,7 @@ class TestActBranches:
         assert result is True
         agent.captcha_manager.handle.assert_called_once_with(page)
 
+    @pytest.mark.asyncio
     async def test_act_unknown_action_raises(self) -> None:
         """未知动作类型应抛 ValueError（进入 act_error 路径写 history）。"""
         agent = _make_agent()
@@ -1052,6 +931,7 @@ class TestActBranches:
         with pytest.raises(ValueError, match="未知动作类型"):
             await agent._act_async(page, action, step=1)
 
+    @pytest.mark.asyncio
     async def test_act_done_returns_none(self) -> None:
         """done 在 _act 中无专门执行分支，应返回 None（主循环在外层处理 done）。"""
         agent = _make_agent()
@@ -1060,110 +940,9 @@ class TestActBranches:
         result = await agent._act_async(page, action, step=1)
         assert result is None
 
+    @pytest.mark.asyncio
     async def test_act_analyze_js_returns_none_when_no_fragments(self) -> None:
         """analyze_js 在 _analyze_captured_js 返回 None 时应返回 None。"""
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        action = Action(action_type="analyze_js", params={"script_urls": []})
-        result = await agent._act_async(page, action, step=1)
-        assert result is None
-
-
-class TestActAsyncBranches:
-    @pytest.mark.asyncio
-    async def test_act_async_navigate(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        page.goto = AsyncMock()
-        action = Action(action_type="navigate", params={"url": "https://y.example"})
-        result = await agent._act_async(page, action, step=1)
-        assert result is None
-        page.goto.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_act_async_navigate_without_url(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        page.goto = AsyncMock()
-        action = Action(action_type="navigate", params={})
-        result = await agent._act_async(page, action, step=1)
-        assert result is None
-        page.goto.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_act_async_inject_hook_success(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        page.evaluate = AsyncMock()
-        action = Action(action_type="inject_hook", params={"hooks": ["fetch_hook"]})
-        result = await agent._act_async(page, action, step=1)
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_act_async_inject_hook_failure(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        page.evaluate = AsyncMock(side_effect=RuntimeError("inj fail"))
-        action = Action(action_type="inject_hook", params={"hooks": ["bad"]})
-        result = await agent._act_async(page, action, step=1)
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_act_async_wait(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        action = Action(action_type="wait", params={"seconds": 0.1})
-        with patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()) as m:
-            await agent._act_async(page, action, step=1)
-            m.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_act_async_extract_no_param_name(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        action = Action(action_type="extract", params={})
-        result = await agent._act_async(page, action, step=1)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_act_async_extract_with_param(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        page.evaluate = AsyncMock(
-            return_value=[{"headers": {"sign": "value"}, "url": "", "body": ""}]
-        )
-        action = Action(action_type="extract", params={"param_name": "sign"})
-        result = await agent._act_async(page, action, step=1)
-        assert result == "value"
-
-    @pytest.mark.asyncio
-    async def test_act_async_solve_captcha(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        agent.captcha_manager.handle = MagicMock(return_value=True)  # type: ignore[assignment]
-        action = Action(action_type="solve_captcha", params={})
-        result = await agent._act_async(page, action, step=1)
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_act_async_unknown_action(self) -> None:
-        """未知动作类型应抛 ValueError（进入 act_error 路径写 history）。"""
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        action = Action(action_type="totally_unknown", params={})
-        with pytest.raises(ValueError, match="未知动作类型"):
-            await agent._act_async(page, action, step=1)
-
-    @pytest.mark.asyncio
-    async def test_act_async_done_returns_none(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        action = Action(action_type="done", params={"success": True})
-        result = await agent._act_async(page, action, step=1)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_act_async_analyze_js_returns_none(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
         action = Action(action_type="analyze_js", params={"script_urls": []})
@@ -1177,23 +956,35 @@ class TestActAsyncBranches:
 
 
 class TestDoClick:
+    """_do_click_async / _humanize_click_async。
+
+    _AsyncPageMock 对未设置属性自动按 AsyncMock 处理，sync/async 两套
+    mock 形态行为已归一——原两套逐字重复的类合并为单类（断言取并集，
+    双睡眠补丁兼容生产 humanize 路径的任一 sleep 实现）。
+    """
+
+    @pytest.mark.asyncio
     async def test_click_without_humanize_calls_page_click(self) -> None:
-        """humanize_input=False 时直接调用 page.click。"""
+        """humanize_input=False 时直接调用 page.click（显式 button/timeout 透传）。"""
         agent = _make_agent()  # humanize_input=False
         page = _AsyncPageMock()
+        page.click = AsyncMock()
         action = Action(action_type="click", params={"selector": "#btn", "button": "right"})
         await agent._do_click_async(page, action, step=1)
-        page.click.assert_called_once_with(
+        page.click.assert_awaited_once_with(
             "#btn", button="right", timeout=ReverseAgent._INTERACTION_TIMEOUT
         )
 
+    @pytest.mark.asyncio
     async def test_click_default_button_is_left(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
+        page.click = AsyncMock()
         action = Action(action_type="click", params={"selector": "#btn"})
         await agent._do_click_async(page, action, step=1)
         assert page.click.call_args[1]["button"] == "left"
 
+    @pytest.mark.asyncio
     async def test_click_missing_selector_raises(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
@@ -1201,157 +992,54 @@ class TestDoClick:
         with pytest.raises(ValueError, match="selector"):
             await agent._do_click_async(page, action, step=1)
 
+    @pytest.mark.asyncio
     async def test_click_with_humanize_uses_humanize_click(self) -> None:
-        """humanize_input=True 时走 _humanize_click 路径。"""
-        agent = _make_agent(humanize_input=True)
-        page = _AsyncPageMock()
-        action = Action(action_type="click", params={"selector": "#btn"})
-        with patch("web_crawler.ai.reverse_agent.time.sleep"):
-            await agent._do_click_async(page, action, step=1)
-        # humanize 路径会先 hover 再 click
-        page.hover.assert_called_once()
-        page.click.assert_called_once()
-
-    async def test_humanize_click_swallows_hover_failure(self) -> None:
-        """_humanize_click 中 hover 失败不阻断 click。"""
-        agent = _make_agent(humanize_input=True)
-        page = _AsyncPageMock()
-        page.hover.side_effect = RuntimeError("hover fail")
-        with patch("web_crawler.ai.reverse_agent.time.sleep"):
-            await agent._humanize_click_async(page, "#sel")
-        page.click.assert_called_once()
-
-
-class TestDoClickAsync:
-    @pytest.mark.asyncio
-    async def test_click_async_without_humanize(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        page.click = AsyncMock()
-        action = Action(action_type="click", params={"selector": "#btn"})
-        await agent._do_click_async(page, action, step=1)
-        page.click.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_click_async_default_button_is_left(self) -> None:
-        """与 sync 版 test_click_default_button_is_left 对齐（此前 async 缺失）。"""
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        page.click = AsyncMock()
-        action = Action(action_type="click", params={"selector": "#btn"})
-        await agent._do_click_async(page, action, step=1)
-        assert page.click.call_args[1]["button"] == "left"
-
-    @pytest.mark.asyncio
-    async def test_click_async_missing_selector_raises(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        action = Action(action_type="click", params={})
-        with pytest.raises(ValueError, match="selector"):
-            await agent._do_click_async(page, action, step=1)
-
-    @pytest.mark.asyncio
-    async def test_click_async_with_humanize(self) -> None:
+        """humanize_input=True 时走 _humanize_click 路径（先 hover 再 click）。"""
         agent = _make_agent(humanize_input=True)
         page = _AsyncPageMock()
         page.hover = AsyncMock()
         page.click = AsyncMock()
         action = Action(action_type="click", params={"selector": "#btn"})
-        with patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()):
+        with (
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
+        ):
             await agent._do_click_async(page, action, step=1)
         page.hover.assert_awaited_once()
         page.click.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_humanize_click_async_swallows_hover_failure(self) -> None:
+    async def test_humanize_click_swallows_hover_failure(self) -> None:
+        """_humanize_click 中 hover 失败不阻断 click。"""
         agent = _make_agent(humanize_input=True)
         page = _AsyncPageMock()
         page.hover = AsyncMock(side_effect=RuntimeError("hover fail"))
         page.click = AsyncMock()
-        with patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()):
+        with (
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
+        ):
             await agent._humanize_click_async(page, "#sel")
         page.click.assert_awaited_once()
 
 
 class TestDoType:
-    async def test_type_without_humanize_calls_page_type(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        action = Action(action_type="type", params={"selector": "#inp", "text": "hello"})
-        await agent._do_type_async(page, action, step=1)
-        page.fill.assert_called_once()  # clear 默认 True
-        page.type.assert_called_once()
+    """_do_type_async / _humanize_type_async（原 sync/async 两类合并）。"""
 
-    async def test_type_clear_false_skips_fill(self) -> None:
-        """clear=False 时不调用 page.fill。"""
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        action = Action(
-            action_type="type", params={"selector": "#inp", "text": "x", "clear": False}
-        )
-        await agent._do_type_async(page, action, step=1)
-        page.fill.assert_not_called()
-        page.type.assert_called_once()
-
-    async def test_type_missing_selector_raises(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        action = Action(action_type="type", params={"text": "x"})
-        with pytest.raises(ValueError, match="selector"):
-            await agent._do_type_async(page, action, step=1)
-
-    async def test_type_with_humanize_uses_humanize_type(self) -> None:
-        agent = _make_agent(humanize_input=True)
-        page = _AsyncPageMock()
-        action = Action(action_type="type", params={"selector": "#inp", "text": "hi"})
-        with patch("web_crawler.ai.reverse_agent.time.sleep"):
-            await agent._do_type_async(page, action, step=1)
-        page.focus.assert_called_once()
-        page.type.assert_called_once()
-
-    async def test_humanize_type_falls_back_when_delay_unsupported(self) -> None:
-        """page.type 不支持 delay 参数时应退化为不带 delay 的调用。"""
-        agent = _make_agent(humanize_input=True)
-        page = _AsyncPageMock()
-        page.focus = MagicMock()
-        # 第一次带 delay 抛 TypeError，第二次不带 delay 成功
-        page.type.side_effect = [TypeError("no delay"), None]
-        with patch("web_crawler.ai.reverse_agent.time.sleep"):
-            await agent._humanize_type_async(page, "#sel", "txt")
-        assert page.type.call_count == 2
-
-    async def test_humanize_type_swallows_focus_failure(self) -> None:
-        agent = _make_agent(humanize_input=True)
-        page = _AsyncPageMock()
-        page.focus.side_effect = RuntimeError("focus fail")
-        with patch("web_crawler.ai.reverse_agent.time.sleep"):
-            await agent._humanize_type_async(page, "#sel", "txt")
-        page.type.assert_called_once()
-
-
-class TestDoTypeAsync:
     @pytest.mark.asyncio
-    async def test_type_async_without_humanize(self) -> None:
+    async def test_type_without_humanize_calls_page_type(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
         page.fill = AsyncMock()
         page.type = AsyncMock()
-        action = Action(action_type="type", params={"selector": "#inp", "text": "hi"})
+        action = Action(action_type="type", params={"selector": "#inp", "text": "hello"})
         await agent._do_type_async(page, action, step=1)
-        page.fill.assert_awaited_once()
+        page.fill.assert_awaited_once()  # clear 默认 True
         page.type.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_type_async_missing_selector_raises(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        action = Action(action_type="type", params={})
-        with pytest.raises(ValueError, match="selector"):
-            await agent._do_type_async(page, action, step=1)
-
-    @pytest.mark.asyncio
-    async def test_type_async_clear_false_skips_fill(self) -> None:
-        """与 sync 版 test_type_clear_false_skips_fill 对齐（此前 async 缺失）。"""
+    async def test_type_clear_false_skips_fill(self) -> None:
+        """clear=False 时不调用 page.fill。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.fill = AsyncMock()
@@ -1364,91 +1052,85 @@ class TestDoTypeAsync:
         page.type.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_humanize_type_async_swallows_focus_failure(self) -> None:
-        """与 sync 版 test_humanize_type_swallows_focus_failure 对齐（此前 async 缺失）。"""
-        agent = _make_agent(humanize_input=True)
+    async def test_type_missing_selector_raises(self) -> None:
+        agent = _make_agent()
         page = _AsyncPageMock()
-        page.focus = AsyncMock(side_effect=RuntimeError("focus fail"))
-        page.type = AsyncMock()
-        with patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()):
-            await agent._humanize_type_async(page, "#sel", "txt")
-        page.type.assert_awaited_once()
+        action = Action(action_type="type", params={"text": "x"})
+        with pytest.raises(ValueError, match="selector"):
+            await agent._do_type_async(page, action, step=1)
 
     @pytest.mark.asyncio
-    async def test_type_async_with_humanize(self) -> None:
+    async def test_type_with_humanize_uses_humanize_type(self) -> None:
         agent = _make_agent(humanize_input=True)
         page = _AsyncPageMock()
         page.fill = AsyncMock()
         page.focus = AsyncMock()
         page.type = AsyncMock()
         action = Action(action_type="type", params={"selector": "#inp", "text": "hi"})
-        with patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()):
+        with (
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
+        ):
             await agent._do_type_async(page, action, step=1)
         page.focus.assert_awaited_once()
         page.type.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_humanize_type_async_falls_back_when_delay_unsupported(self) -> None:
+    async def test_humanize_type_falls_back_when_delay_unsupported(self) -> None:
+        """page.type 不支持 delay 参数时应退化为不带 delay 的调用。"""
         agent = _make_agent(humanize_input=True)
         page = _AsyncPageMock()
         page.focus = AsyncMock()
+        # 第一次带 delay 抛 TypeError，第二次不带 delay 成功
         page.type = AsyncMock(side_effect=[TypeError("no delay"), None])
-        with patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()):
+        with (
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
+        ):
             await agent._humanize_type_async(page, "#sel", "txt")
         assert page.type.await_count == 2
 
+    @pytest.mark.asyncio
+    async def test_humanize_type_swallows_focus_failure(self) -> None:
+        agent = _make_agent(humanize_input=True)
+        page = _AsyncPageMock()
+        page.focus = AsyncMock(side_effect=RuntimeError("focus fail"))
+        page.type = AsyncMock()
+        with (
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
+        ):
+            await agent._humanize_type_async(page, "#sel", "txt")
+        page.type.assert_awaited_once()
+
 
 class TestDoScroll:
+    """_do_scroll_async（原 sync/async 两类合并）。"""
+
+    @pytest.mark.asyncio
     async def test_scroll_window_when_no_selector(self) -> None:
         """无 selector 时滚动整个窗口。"""
         agent = _make_agent()
         page = _AsyncPageMock()
+        page.evaluate = AsyncMock()
         action = Action(action_type="scroll", params={"x": 0, "y": 500})
         await agent._do_scroll_async(page, action, step=1)
-        page.evaluate.assert_called_once()
+        page.evaluate.assert_awaited_once()
         assert "window.scrollBy" in page.evaluate.call_args[0][0]
 
+    @pytest.mark.asyncio
     async def test_scroll_element_with_selector(self) -> None:
         """有 selector 时滚动到元素内。"""
         agent = _make_agent()
         page = _AsyncPageMock()
+        page.evaluate = AsyncMock()
         action = Action(action_type="scroll", params={"selector": ".list", "y": 300})
         await agent._do_scroll_async(page, action, step=1)
-        page.evaluate.assert_called_once()
+        page.evaluate.assert_awaited_once()
         assert "querySelector" in page.evaluate.call_args[0][0]
 
+    @pytest.mark.asyncio
     async def test_scroll_defaults_x_zero_y_800(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        action = Action(action_type="scroll", params={})
-        await agent._do_scroll_async(page, action, step=1)
-        script = page.evaluate.call_args[0][0]
-        assert "800" in script
-
-
-class TestDoScrollAsync:
-    @pytest.mark.asyncio
-    async def test_scroll_async_window(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        page.evaluate = AsyncMock()
-        action = Action(action_type="scroll", params={"y": 200})
-        await agent._do_scroll_async(page, action, step=1)
-        page.evaluate.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_scroll_async_element(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        page.evaluate = AsyncMock()
-        action = Action(action_type="scroll", params={"selector": "#box"})
-        await agent._do_scroll_async(page, action, step=1)
-        script = page.evaluate.call_args[0][0]
-        assert "querySelector" in script
-
-    @pytest.mark.asyncio
-    async def test_scroll_async_defaults_x_zero_y_800(self) -> None:
-        """与 sync 版 test_scroll_defaults_x_zero_y_800 对齐（此前 async 缺失）。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate = AsyncMock()
@@ -1459,54 +1141,31 @@ class TestDoScrollAsync:
 
 
 class TestDoPress:
+    """_do_press_async（原 sync/async 两类合并）。"""
+
+    @pytest.mark.asyncio
     async def test_press_without_selector(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
+        page.press = AsyncMock()
         action = Action(action_type="press", params={"key": "Enter"})
         await agent._do_press_async(page, action, step=1)
-        page.press.assert_called_once_with("Enter")
+        page.press.assert_awaited_once_with("Enter")
 
+    @pytest.mark.asyncio
     async def test_press_with_selector_focuses_first(self) -> None:
         """有 selector 时先 focus 再 press。"""
         agent = _make_agent()
         page = _AsyncPageMock()
-        action = Action(action_type="press", params={"selector": "#inp", "key": "Tab"})
-        await agent._do_press_async(page, action, step=1)
-        page.focus.assert_called_once()
-        page.press.assert_called_once_with("Tab")
-
-    async def test_press_default_key_is_enter(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        action = Action(action_type="press", params={})
-        await agent._do_press_async(page, action, step=1)
-        page.press.assert_called_once_with("Enter")
-
-
-class TestDoPressAsync:
-    @pytest.mark.asyncio
-    async def test_press_async_without_selector(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        page.press = AsyncMock()
-        action = Action(action_type="press", params={"key": "Escape"})
-        await agent._do_press_async(page, action, step=1)
-        page.press.assert_awaited_once_with("Escape")
-
-    @pytest.mark.asyncio
-    async def test_press_async_with_selector(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
         page.focus = AsyncMock()
         page.press = AsyncMock()
-        action = Action(action_type="press", params={"selector": "#i", "key": "Enter"})
+        action = Action(action_type="press", params={"selector": "#inp", "key": "Tab"})
         await agent._do_press_async(page, action, step=1)
         page.focus.assert_awaited_once()
-        page.press.assert_awaited_once()
+        page.press.assert_awaited_once_with("Tab")
 
     @pytest.mark.asyncio
-    async def test_press_async_default_key_is_enter(self) -> None:
-        """与 sync 版 test_press_default_key_is_enter 对齐（此前 async 缺失）。"""
+    async def test_press_default_key_is_enter(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
         page.press = AsyncMock()
@@ -1516,13 +1175,18 @@ class TestDoPressAsync:
 
 
 class TestDoHover:
+    """_do_hover_async（原 sync/async 两类合并）。"""
+
+    @pytest.mark.asyncio
     async def test_hover_calls_page_hover(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
+        page.hover = AsyncMock()
         action = Action(action_type="hover", params={"selector": ".menu"})
         await agent._do_hover_async(page, action, step=1)
-        page.hover.assert_called_once()
+        page.hover.assert_awaited_once()
 
+    @pytest.mark.asyncio
     async def test_hover_missing_selector_raises(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
@@ -1531,56 +1195,23 @@ class TestDoHover:
             await agent._do_hover_async(page, action, step=1)
 
 
-class TestDoHoverAsync:
-    @pytest.mark.asyncio
-    async def test_hover_async_calls_page_hover(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        page.hover = AsyncMock()
-        action = Action(action_type="hover", params={"selector": ".m"})
-        await agent._do_hover_async(page, action, step=1)
-        page.hover.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_hover_async_missing_selector_raises(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        action = Action(action_type="hover", params={})
-        with pytest.raises(ValueError, match="selector"):
-            await agent._do_hover_async(page, action, step=1)
-
-
 class TestDoSelectOption:
+    """_do_select_option_async（原 sync/async 两类合并）。"""
+
+    @pytest.mark.asyncio
     async def test_select_option_calls_page_select(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
-        action = Action(action_type="select_option", params={"selector": "#country", "value": "CN"})
-        await agent._do_select_option_async(page, action, step=1)
-        page.select_option.assert_called_once()
-
-    async def test_select_option_missing_selector_raises(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        action = Action(action_type="select_option", params={"value": "CN"})
-        with pytest.raises(ValueError, match="selector"):
-            await agent._do_select_option_async(page, action, step=1)
-
-
-class TestDoSelectOptionAsync:
-    @pytest.mark.asyncio
-    async def test_select_option_async(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
         page.select_option = AsyncMock()
-        action = Action(action_type="select_option", params={"selector": "#c", "value": "US"})
+        action = Action(action_type="select_option", params={"selector": "#country", "value": "CN"})
         await agent._do_select_option_async(page, action, step=1)
         page.select_option.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_select_option_async_missing_selector_raises(self) -> None:
+    async def test_select_option_missing_selector_raises(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
-        action = Action(action_type="select_option", params={})
+        action = Action(action_type="select_option", params={"value": "CN"})
         with pytest.raises(ValueError, match="selector"):
             await agent._do_select_option_async(page, action, step=1)
 
@@ -1591,23 +1222,32 @@ class TestDoSelectOptionAsync:
 
 
 class TestDoNewTab:
+    """_do_new_tab_async（原 sync/async 两类合并）。"""
+
+    @pytest.mark.asyncio
     async def test_new_tab_creates_and_navigates(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
         new_page = _AsyncPageMock()
+        new_page.goto = AsyncMock()
         agent._context = MagicMock()
         agent._context.new_page = AsyncMock(return_value=new_page)
         agent.fetcher = MagicMock()
+        agent.fetcher._setup_page_async = AsyncMock()
         action = Action(action_type="new_tab", params={"url": "https://t.example", "name": "tab1"})
-        with patch("web_crawler.ai.reverse_agent.time.sleep"):
+        with (
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
+        ):
             await agent._do_new_tab_async(page, action, step=1)
-        agent._context.new_page.assert_called_once()
-        new_page.goto.assert_called_once()
+        agent._context.new_page.assert_awaited_once()
+        new_page.goto.assert_awaited_once()
         assert agent._page is new_page
         assert agent._tabs["tab1"] is new_page
         # 主页面也应登记
         assert agent._tabs["main"] is page
 
+    @pytest.mark.asyncio
     async def test_new_tab_without_url_skips_goto(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
@@ -1615,10 +1255,12 @@ class TestDoNewTab:
         agent._context = MagicMock()
         agent._context.new_page = AsyncMock(return_value=new_page)
         agent.fetcher = MagicMock()
+        agent.fetcher._setup_page_async = AsyncMock()
         action = Action(action_type="new_tab", params={})
         await agent._do_new_tab_async(page, action, step=1)
-        new_page.goto.assert_not_called()
+        new_page.goto.assert_not_awaited()
 
+    @pytest.mark.asyncio
     async def test_new_tab_setup_page_failure_swallowed(self) -> None:
         """fetcher._setup_page 抛异常时不阻断 new_tab 流程。"""
         agent = _make_agent()
@@ -1634,64 +1276,22 @@ class TestDoNewTab:
         assert agent._page is new_page
 
 
-class TestDoNewTabAsync:
-    @pytest.mark.asyncio
-    async def test_new_tab_async_creates_and_navigates(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        new_page = _AsyncPageMock()
-        new_page.goto = AsyncMock()
-        agent._context = MagicMock()
-        agent._context.new_page = AsyncMock(return_value=new_page)
-        agent.fetcher = MagicMock()
-        agent.fetcher._setup_page_async = AsyncMock()
-        action = Action(action_type="new_tab", params={"url": "https://a.example", "name": "t1"})
-        with patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()):
-            await agent._do_new_tab_async(page, action, step=1)
-        agent._context.new_page.assert_awaited_once()
-        new_page.goto.assert_awaited_once()
-        assert agent._page is new_page
-
-    @pytest.mark.asyncio
-    async def test_new_tab_async_without_url(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        new_page = _AsyncPageMock()
-        agent._context = MagicMock()
-        agent._context.new_page = AsyncMock(return_value=new_page)
-        agent.fetcher = MagicMock()
-        agent.fetcher._setup_page_async = AsyncMock()
-        action = Action(action_type="new_tab", params={})
-        await agent._do_new_tab_async(page, action, step=1)
-        new_page.goto.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_new_tab_async_setup_page_failure_swallowed(self) -> None:
-        """与 sync 版 test_new_tab_setup_page_failure_swallowed 对齐（此前 async 缺失）。"""
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        new_page = _AsyncPageMock()
-        agent._context = MagicMock()
-        agent._context.new_page = AsyncMock(return_value=new_page)
-        agent.fetcher = MagicMock()
-        agent.fetcher._setup_page_async = AsyncMock(side_effect=RuntimeError("setup fail"))
-        action = Action(action_type="new_tab", params={})
-        await agent._do_new_tab_async(page, action, step=1)
-        # 仍应完成标签创建
-        assert agent._page is new_page
-
-
 class TestDoSwitchTab:
+    """_do_switch_tab_async（原 sync/async 两类合并）。"""
+
+    @pytest.mark.asyncio
     async def test_switch_tab_by_name(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
         target = MagicMock()
+        target.bring_to_front = AsyncMock()
         agent._tabs["extra"] = target
         action = Action(action_type="switch_tab", params={"name": "extra"})
         await agent._do_switch_tab_async(page, action, step=1)
         assert agent._page is target
-        target.bring_to_front.assert_called_once()
+        target.bring_to_front.assert_awaited_once()
 
+    @pytest.mark.asyncio
     async def test_switch_tab_not_found_raises(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
@@ -1699,97 +1299,24 @@ class TestDoSwitchTab:
         with pytest.raises(ValueError, match="找不到标签页"):
             await agent._do_switch_tab_async(page, action, step=1)
 
+    @pytest.mark.asyncio
     async def test_switch_tab_bring_to_front_failure_swallowed(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
         target = MagicMock()
-        target.bring_to_front.side_effect = RuntimeError("fail")
+        target.bring_to_front = AsyncMock(side_effect=RuntimeError("front fail"))
         agent._tabs["t"] = target
         action = Action(action_type="switch_tab", params={"name": "t"})
-        await agent._do_switch_tab_async(page, action, step=1)
-        assert agent._page is target
-
-
-class TestDoSwitchTabAsync:
-    @pytest.mark.asyncio
-    async def test_switch_tab_async_by_name(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        target = MagicMock()
-        target.bring_to_front = AsyncMock()
-        agent._tabs["x"] = target
-        action = Action(action_type="switch_tab", params={"name": "x"})
-        await agent._do_switch_tab_async(page, action, step=1)
-        assert agent._page is target
-        target.bring_to_front.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_switch_tab_async_not_found_raises(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        action = Action(action_type="switch_tab", params={"index": 99})
-        with pytest.raises(ValueError, match="找不到标签页"):
-            await agent._do_switch_tab_async(page, action, step=1)
-
-    @pytest.mark.asyncio
-    async def test_switch_tab_async_bring_to_front_failure_swallowed(self) -> None:
-        """与 sync 版 test_switch_tab_bring_to_front_failure_swallowed 对齐（此前 async 缺失）。"""
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        target = MagicMock()
-        target.bring_to_front = AsyncMock(side_effect=RuntimeError("front fail"))
-        agent._tabs["x"] = target
-        action = Action(action_type="switch_tab", params={"name": "x"})
         await agent._do_switch_tab_async(page, action, step=1)
         # bring_to_front 失败不阻断切换结果
         assert agent._page is target
 
 
 class TestDoCloseTab:
-    async def test_close_tab_removes_and_closes(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        target = MagicMock()
-        agent._tabs["t"] = target
-        action = Action(action_type="close_tab", params={"name": "t"})
-        await agent._do_close_tab_async(page, action, step=1)
-        target.close.assert_called_once()
-        assert "t" not in agent._tabs
+    """_do_close_tab_async（原 sync/async 两类合并）。"""
 
-    async def test_close_tab_not_found_raises(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        action = Action(action_type="close_tab", params={"name": "nope"})
-        with pytest.raises(ValueError, match="找不到标签页"):
-            await agent._do_close_tab_async(page, action, step=1)
-
-    async def test_close_current_tab_falls_back_to_main(self) -> None:
-        """关闭当前活跃标签时 self._page 回退到 main。"""
-        agent = _make_agent()
-        main_page = _AsyncPageMock()
-        current = MagicMock()
-        agent._tabs["main"] = main_page
-        agent._tabs["current"] = current
-        agent._page = current
-        action = Action(action_type="close_tab", params={"name": "current"})
-        await agent._do_close_tab_async(current, action, step=1)
-        assert agent._page is main_page
-
-    async def test_close_tab_close_failure_swallowed(self) -> None:
-        agent = _make_agent()
-        page = _AsyncPageMock()
-        target = MagicMock()
-        target.close.side_effect = RuntimeError("close fail")
-        agent._tabs["t"] = target
-        action = Action(action_type="close_tab", params={"name": "t"})
-        await agent._do_close_tab_async(page, action, step=1)
-        # 即使 close 抛异常也不传播
-        assert "t" not in agent._tabs
-
-
-class TestDoCloseTabAsync:
     @pytest.mark.asyncio
-    async def test_close_tab_async_removes_and_closes(self) -> None:
+    async def test_close_tab_removes_and_closes(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
         target = MagicMock()
@@ -1801,7 +1328,7 @@ class TestDoCloseTabAsync:
         assert "t" not in agent._tabs
 
     @pytest.mark.asyncio
-    async def test_close_tab_async_not_found_raises(self) -> None:
+    async def test_close_tab_not_found_raises(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
         action = Action(action_type="close_tab", params={"name": "nope"})
@@ -1809,21 +1336,21 @@ class TestDoCloseTabAsync:
             await agent._do_close_tab_async(page, action, step=1)
 
     @pytest.mark.asyncio
-    async def test_close_tab_async_current_falls_back_to_main(self) -> None:
+    async def test_close_current_tab_falls_back_to_main(self) -> None:
+        """关闭当前活跃标签时 self._page 回退到 main。"""
         agent = _make_agent()
         main_page = _AsyncPageMock()
         current = MagicMock()
         current.close = AsyncMock()
         agent._tabs["main"] = main_page
-        agent._tabs["cur"] = current
+        agent._tabs["current"] = current
         agent._page = current
-        action = Action(action_type="close_tab", params={"name": "cur"})
+        action = Action(action_type="close_tab", params={"name": "current"})
         await agent._do_close_tab_async(current, action, step=1)
         assert agent._page is main_page
 
     @pytest.mark.asyncio
-    async def test_close_tab_async_close_failure_swallowed(self) -> None:
-        """与 sync 版 test_close_tab_close_failure_swallowed 对齐（此前 async 缺失）。"""
+    async def test_close_tab_close_failure_swallowed(self) -> None:
         agent = _make_agent()
         page = _AsyncPageMock()
         target = MagicMock()
