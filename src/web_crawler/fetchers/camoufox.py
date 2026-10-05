@@ -88,7 +88,7 @@ class CamoufoxFetcher(DynamicFetcher):
         window: tuple[int, int] | None = None,
         camoufox_options: dict[str, Any] | None = None,
         allow_private_hosts: bool | None = None,
-        resolve_hosts: bool = False,
+        resolve_hosts: bool = True,
     ) -> None:
         super().__init__(
             headless=headless,

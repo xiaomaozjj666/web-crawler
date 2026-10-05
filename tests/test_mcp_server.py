@@ -1331,7 +1331,10 @@ def _patch_pentest_modules(
     monkeypatch.setattr("web_crawler.pentest.DirBruter", lambda: fake_dir_bruter)
     monkeypatch.setattr("web_crawler.pentest.SubdomainEnumerator", lambda: fake_subdomain)
     monkeypatch.setattr("web_crawler.pentest.VulnScanner", lambda: fake_vuln)
-    monkeypatch.setattr("web_crawler.pentest.HeaderChecker", lambda: fake_header)
+    monkeypatch.setattr(
+        "web_crawler.pentest.HeaderChecker",
+        lambda **_kwargs: fake_header,  # allow_private_hosts 等关键字参数被 mock 忽略
+    )
 
 
 def test_tool_pentest_recon_success(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1371,6 +1374,20 @@ def test_tool_pentest_recon_no_target() -> None:
     assert "target is required" in parsed["error"]
 
 
+@pytest.mark.parametrize(
+    "target",
+    ["file:///etc/passwd", "ftp://example.com/", "gopher://127.0.0.1:70/"],
+)
+def test_tool_pentest_recon_rejects_non_http_scheme(target: str) -> None:
+    """scheme 非 http/https 的目标在解析层被拒绝（纵深防御）。"""
+    srv = _make_server()
+    parsed = json.loads(
+        srv._tool_pentest_recon({"target": target, "authorization_confirmed": True})
+    )
+    assert "error" in parsed
+    assert "unsupported target scheme" in parsed["error"]
+
+
 def test_tool_pentest_recon_unknown_checks() -> None:
     """未知 check 名称返回错误。"""
     srv = _make_server()
@@ -1381,6 +1398,50 @@ def test_tool_pentest_recon_unknown_checks() -> None:
     )
     assert "error" in parsed
     assert "unknown check names" in parsed["error"]
+
+
+def test_filter_private_egress_redacts_non_public_targets() -> None:
+    """捕获记录出口过滤：非公网目标整体打码并计数，公网记录原样保留。"""
+    from web_crawler.mcp._tools_pentest import _filter_private_egress
+
+    records = [
+        {"url": "https://example.com/api", "status": 200},
+        {"url": "http://169.254.169.254/latest/meta-data/", "status": 200, "body": "ami-123"},
+        {"url": "http://127.0.0.1:8080/admin", "status": 200},
+        {"url": "http://8.8.8.8/dns-query", "status": 200},
+        {"not": "a record"},
+    ]
+    out, redacted = _filter_private_egress(records)
+    assert redacted == 2
+    assert out[0] == records[0]
+    assert out[1] == {"url": "[redacted: non-public target]", "redacted": True}
+    assert out[2]["redacted"] is True
+    assert out[3] == records[3]
+    assert out[4] == records[4]  # 非 dict 记录原样透传
+    # 打码后不残留内网响应内容
+    assert "ami-123" not in json.dumps(out[1])
+
+
+def test_filter_private_egress_resolves_hostname_with_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """主机名目标走解析判定且同一 host 只解析一次。"""
+    import web_crawler.mcp._tools_pentest as tp
+
+    calls = {"n": 0}
+
+    def fake_public(host: str) -> bool:
+        calls["n"] += 1
+        return False  # 一律非公网 → 打码
+
+    monkeypatch.setattr("web_crawler.mcp._ssrf_gate._host_is_public", fake_public)
+    records = [
+        {"url": "https://internal.example/x"},
+        {"url": "https://internal.example/y"},
+    ]
+    _out, redacted = tp._filter_private_egress(records)
+    assert redacted == 2
+    assert calls["n"] == 1  # 同 host 判定被缓存
 
 
 def test_tool_pentest_recon_failure(monkeypatch: pytest.MonkeyPatch) -> None:

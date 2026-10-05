@@ -18,6 +18,7 @@ import random
 import time
 import warnings
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlparse
 
@@ -25,6 +26,7 @@ from typing_extensions import Self
 
 from ..compat import HAS_CURL_CFFI, HAS_HTTPX
 from ._base import BaseFetcher
+from ._pin import env_proxy_configured, host_header_for, pin_url
 from .proxy import ProxyPool
 
 if TYPE_CHECKING:
@@ -90,6 +92,18 @@ def _parse_retry_after(value: str | None) -> float | None:
         return None
 
 
+@dataclass(slots=True)
+class _RedirectState:
+    """手动重定向跟随的可变状态（sync/async 两个循环共用同一推进逻辑）。"""
+
+    url: str
+    method: str
+    params: Any
+    data: Any
+    json: Any
+    headers: dict[str, str]
+
+
 class _FetcherCore(BaseFetcher):
     """:class:`Fetcher` 与 :class:`AsyncFetcher` 共享的会话/重试/请求头逻辑。
 
@@ -115,7 +129,7 @@ class _FetcherCore(BaseFetcher):
         ja3_fingerprint: str | None = None,
         ja4_fingerprint: str | None = None,  # 兼容旧参数名（已弃用）
         allow_private_hosts: bool | None = None,
-        resolve_hosts: bool = False,
+        resolve_hosts: bool = True,
     ) -> None:
         super().__init__(
             timeout=timeout,
@@ -170,39 +184,45 @@ class _FetcherCore(BaseFetcher):
         # 惰性创建的会话（同步 / 异步）。首次使用前均为 None。
         self._session: Any = None
         self._async_session: Any = None
+        # 代理路径的专用 httpx 客户端（按 proxy 字符串缓存）。原实现每次
+        # 请求都重建客户端——重定向每一跳、每次重试都全新 TLS 握手，零
+        # 连接复用；缓存后与无代理会话同样复用连接池，close()/aclose() 统一释放。
+        self._proxied_sync_clients: dict[str, Any] = {}
+        self._proxied_async_clients: dict[str, Any] = {}
 
     # -- 会话构建（后端导入延迟） ---------------------------------------------
-    def _build_curl_sync_session(self) -> Any:
-        CurlHttpVersion, CurlSession, _, _ = _load_curl_backend()
+    def _curl_session_kwargs(self) -> dict[str, Any]:
+        """curl_cffi 会话公共参数（sync/async 构建器共用，防双路径分叉）。"""
         kwargs: dict[str, Any] = {
             "impersonate": self.impersonate,
             "verify": self.verify,
             "timeout": self.timeout,
             "allow_redirects": self.follow_redirects,
         }
-        if not self.http2:
-            kwargs["http_version"] = CurlHttpVersion.V1_1
         if self.ja3_fingerprint:
             # curl_cffi 的 ja3 参数接受 JA3 格式的 TLS 扩展字符串，
             # 覆盖 impersonate 预设的默认 TLS 指纹。
             kwargs["ja3"] = self.ja3_fingerprint
+        return kwargs
+
+    def _build_curl_sync_session(self) -> Any:
+        CurlHttpVersion, CurlSession, _, _ = _load_curl_backend()
+        kwargs = self._curl_session_kwargs()
+        if not self.http2:
+            kwargs["http_version"] = CurlHttpVersion.V1_1
         return CurlSession(**kwargs)
 
     def _build_curl_async_session(self) -> Any:
         CurlHttpVersion, _, CurlAsyncSession, _ = _load_curl_backend()
-        kwargs: dict[str, Any] = {
-            "impersonate": self.impersonate,
-            "verify": self.verify,
-            "timeout": self.timeout,
-            "allow_redirects": self.follow_redirects,
-        }
+        kwargs = self._curl_session_kwargs()
         if not self.http2:
             kwargs["http_version"] = CurlHttpVersion.V1_1
-        if self.ja3_fingerprint:
-            kwargs["ja3"] = self.ja3_fingerprint
         return CurlAsyncSession(**kwargs)
 
-    def _build_httpx_sync_client(self, proxy: str | None = None) -> Any:
+    def _httpx_transport_kwargs(
+        self, proxy: str | None, *, is_async: bool
+    ) -> tuple[Any, dict[str, Any]]:
+        """返回 ``(httpx 模块, client kwargs)``，代理挂载策略 sync/async 共用。"""
         httpx = _load_httpx_backend()
         kwargs: dict[str, Any] = {
             "http2": self.http2,
@@ -212,43 +232,19 @@ class _FetcherCore(BaseFetcher):
         }
         if proxy:
             # httpx >= 0.28 弃用 ``proxy=`` 改为 ``mounts=``；
-            # 有 HTTPTransport 就用它，老版本 httpx 走旧参数。
-            if hasattr(httpx, "HTTPTransport"):
-                kwargs["mounts"] = {"all://": httpx.HTTPTransport(proxy=proxy)}
-            else:
-                kwargs["proxy"] = proxy
-        try:
-            return httpx.Client(**kwargs)
-        except ImportError:
-            # httpx 的 http2=True 需要可选依赖 h2；缺失时降级为 HTTP/1.1
-            if not self._http2_fallback_warned:
-                warnings.warn(
-                    "httpx HTTP/2 support requires the optional 'h2' package; "
-                    "falling back to HTTP/1.1.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-                self._http2_fallback_warned = True
-            kwargs["http2"] = False
-            return httpx.Client(**kwargs)
-
-    def _build_httpx_async_client(self, proxy: str | None = None) -> Any:
-        httpx = _load_httpx_backend()
-        kwargs: dict[str, Any] = {
-            "http2": self.http2,
-            "follow_redirects": self.follow_redirects,
-            "verify": self.verify,
-            "timeout": self.timeout,
-        }
-        if proxy:
-            if hasattr(httpx, "AsyncHTTPTransport"):
+            # 有对应 Transport 就用它，老版本 httpx 走旧参数。
+            if is_async and hasattr(httpx, "AsyncHTTPTransport"):
                 kwargs["mounts"] = {"all://": httpx.AsyncHTTPTransport(proxy=proxy)}
             elif hasattr(httpx, "HTTPTransport"):
                 kwargs["mounts"] = {"all://": httpx.HTTPTransport(proxy=proxy)}
             else:
                 kwargs["proxy"] = proxy
+        return httpx, kwargs
+
+    def _build_httpx_client(self, factory: Any, kwargs: dict[str, Any]) -> Any:
+        """按 kwargs 构建客户端；http2=True 缺 h2 时降级 HTTP/1.1（仅告警一次）。"""
         try:
-            return httpx.AsyncClient(**kwargs)
+            return factory(**kwargs)
         except ImportError:
             if not self._http2_fallback_warned:
                 warnings.warn(
@@ -259,7 +255,15 @@ class _FetcherCore(BaseFetcher):
                 )
                 self._http2_fallback_warned = True
             kwargs["http2"] = False
-            return httpx.AsyncClient(**kwargs)
+            return factory(**kwargs)
+
+    def _build_httpx_sync_client(self, proxy: str | None = None) -> Any:
+        httpx, kwargs = self._httpx_transport_kwargs(proxy, is_async=False)
+        return self._build_httpx_client(httpx.Client, kwargs)
+
+    def _build_httpx_async_client(self, proxy: str | None = None) -> Any:
+        httpx, kwargs = self._httpx_transport_kwargs(proxy, is_async=True)
+        return self._build_httpx_client(httpx.AsyncClient, kwargs)
 
     def _ensure_sync_session(self) -> Any:
         if self._session is None:
@@ -279,6 +283,22 @@ class _FetcherCore(BaseFetcher):
             )
         return self._async_session
 
+    def _ensure_proxied_sync_client(self, proxy: str) -> Any:
+        """代理路径的 httpx 同步客户端（按 proxy 缓存复用）。"""
+        client = self._proxied_sync_clients.get(proxy)
+        if client is None:
+            client = self._build_httpx_sync_client(proxy)
+            self._proxied_sync_clients[proxy] = client
+        return client
+
+    def _ensure_proxied_async_client(self, proxy: str) -> Any:
+        """代理路径的 httpx 异步客户端（按 proxy 缓存复用）。"""
+        client = self._proxied_async_clients.get(proxy)
+        if client is None:
+            client = self._build_httpx_async_client(proxy)
+            self._proxied_async_clients[proxy] = client
+        return client
+
     # -- 请求头合并 -----------------------------------------------------------
     def _merge_headers(self, per_request: dict[str, str] | None) -> dict[str, str]:
         """合并请求头且不破坏 curl_cffi 伪装指纹。
@@ -292,9 +312,40 @@ class _FetcherCore(BaseFetcher):
         else:
             merged = self._default_headers()
             merged.update(self.extra_headers)
+            self._narrow_accept_encoding(merged)
         if per_request:
             merged.update(per_request)
         return merged
+
+    @staticmethod
+    def _narrow_accept_encoding(headers: dict[str, str]) -> None:
+        """按 httpx 运行时实际可解压的编码收缩 ``Accept-Encoding``。
+
+        仿真默认头广告了 ``br``/``zstd``；curl 原生支持这些编码，但 httpx 的
+        brotli/zstd 解码依赖可选包——不装包却广告 ``br``，服务器就会返回
+        httpx 解不开的 brotli body（实测复现）。广告能力必须以解码能力为准。
+        """
+        value = headers.get("Accept-Encoding")
+        if not value:
+            return
+        decodable = {"gzip", "deflate", "identity"}
+        try:
+            import brotli  # type: ignore[import-not-found]  # noqa: F401
+        except ImportError:
+            pass
+        else:
+            decodable.add("br")
+        try:
+            import zstandard  # type: ignore[import-not-found]  # noqa: F401
+        except ImportError:
+            pass
+        else:
+            decodable.add("zstd")
+        kept = [e.strip() for e in value.split(",") if e.strip().lower() in decodable]
+        if kept:
+            headers["Accept-Encoding"] = ", ".join(kept)
+        else:
+            headers.pop("Accept-Encoding", None)
 
     def _retry_errors(self) -> tuple[type[BaseException], ...]:
         if self._use_curl:
@@ -319,6 +370,34 @@ class _FetcherCore(BaseFetcher):
             storage=self.storage,
             adaptive=self.adaptive,
         )
+
+    # -- TOCTOU 钉扎（httpx 路径；sync/async 发送共用） -----------------------
+    def _pin_target(
+        self, url: str, proxy: str | None
+    ) -> tuple[str, dict[str, str], dict[str, Any]]:
+        """返回 ``(请求 URL, 附加头, 扩展)``；不可钉时原样返回。
+
+        仅在"直连 + DNS 复查开启"时生效（显式/环境代理由代理解析、IP 字面量
+        无解析步骤、allow_private_hosts 下钉扎无意义）。钉扎成功时用显式
+        ``Host`` 头与 ``sni_hostname`` 扩展保持原始主机名的路由与证书校验
+        语义（见 fetchers/_pin.py 模块文档）。
+        """
+        if (
+            proxy is not None
+            or env_proxy_configured()
+            or not self.resolve_hosts
+            or self.allow_private_hosts
+        ):
+            return url, {}, {}
+        parsed = urlparse(url)
+        pinned = pin_url(url)
+        if pinned == url:
+            return url, {}, {}
+        extra_headers = {"Host": host_header_for(url)}
+        extensions: dict[str, Any] = {}
+        if parsed.hostname:
+            extensions = {"sni_hostname": parsed.hostname}
+        return pinned, extra_headers, extensions
 
     # -- 共享异步传输（Fetcher 与 AsyncFetcher 共用） -------------------------
     async def _send_once_async(
@@ -348,29 +427,28 @@ class _FetcherCore(BaseFetcher):
                 allow_redirects=allow_redirects,
                 verify=verify,
             )
-        # httpx 异步兜底
-        if proxy is None:
-            client = self._ensure_async_session()
-            close_after = False
-        else:
-            client = self._build_httpx_async_client(proxy)
-            close_after = True
-        try:
-            content, data_arg = _httpx_body(data)
-            return await client.request(
-                method=method,
-                url=url,
-                params=params,
-                content=content,
-                data=data_arg,
-                json=json,
-                headers=headers,
-                timeout=timeout,
-                follow_redirects=allow_redirects,
-            )
-        finally:
-            if close_after:
-                await client.aclose()
+        # httpx 异步兜底：无代理复用共享会话；代理客户端按 proxy 缓存复用
+        client = (
+            self._ensure_async_session()
+            if proxy is None
+            else self._ensure_proxied_async_client(proxy)
+        )
+        request_url, extra_headers, extensions = self._pin_target(url, proxy)
+        if extra_headers:
+            headers = {**headers, **extra_headers}
+        content, data_arg = _httpx_body(data)
+        return await client.request(
+            method=method,
+            url=request_url,
+            params=params,
+            content=content,
+            data=data_arg,
+            json=json,
+            headers=headers,
+            timeout=timeout,
+            follow_redirects=allow_redirects,
+            extensions=extensions,
+        )
 
     # -- 重定向跟随（逐跳 SSRF scheme 校验） ----------------------------------
     def _next_redirect(
@@ -399,6 +477,26 @@ class _FetcherCore(BaseFetcher):
             new_method = "GET"
         return next_url, new_method, next_headers
 
+    def _advance_redirect(self, state: _RedirectState, raw: Any) -> bool:
+        """按 ``raw`` 的重定向响应推进状态机；非重定向返回 False。
+
+        与历史行为逐字一致：params 在任意跳转后清空；303 恒转 GET、
+        301/302 的 POST 转 GET 时清空 body；跨源跳转由 :meth:`_next_redirect`
+        剥离 Authorization（headers 以返回的新引用为准，不原位修改）。
+        """
+        next_hop = self._next_redirect(raw, state.url, state.method, state.headers)
+        if next_hop is None:
+            return False
+        next_url, new_method, next_headers = next_hop
+        state.url = next_url
+        state.params = None
+        state.headers = next_headers
+        if new_method is not None:
+            state.method = new_method
+            state.data = None
+            state.json = None
+        return True
+
     async def _send_with_redirects_async(
         self,
         method: str,
@@ -417,34 +515,22 @@ class _FetcherCore(BaseFetcher):
             return await self._send_once_async(
                 method, url, params, data, json, headers, proxy, timeout, False, verify
             )
-        current_url = url
-        current_method = method
-        current_params = params
-        current_data = data
-        current_json = json
+        state = _RedirectState(url, method, params, data, json, headers)
         for _ in range(self.max_redirects + 1):
             raw = await self._send_once_async(
-                current_method,
-                current_url,
-                current_params,
-                current_data,
-                current_json,
-                headers,
+                state.method,
+                state.url,
+                state.params,
+                state.data,
+                state.json,
+                state.headers,
                 proxy,
                 timeout,
                 False,
                 verify,
             )
-            next_hop = self._next_redirect(raw, current_url, current_method, headers)
-            if next_hop is None:
+            if not self._advance_redirect(state, raw):
                 return raw
-            next_url, new_method, headers = next_hop
-            current_url = next_url
-            current_params = None
-            if new_method is not None:
-                current_method = new_method
-                current_data = None
-                current_json = None
         raise RuntimeError(f"too many redirects (max {self.max_redirects}) for {url}")
 
     async def _send_async(
@@ -569,29 +655,28 @@ class Fetcher(_FetcherCore):
                 allow_redirects=allow_redirects,
                 verify=verify,
             )
-        # httpx 兜底：代理需要专用 client；无代理时复用连接池
-        if proxy is None:
-            client = self._ensure_sync_session()
-            close_after = False
-        else:
-            client = self._build_httpx_sync_client(proxy)
-            close_after = True
-        try:
-            content, data_arg = _httpx_body(data)
-            return client.request(
-                method=method,
-                url=url,
-                params=params,
-                content=content,
-                data=data_arg,
-                json=json,
-                headers=headers,
-                timeout=timeout,
-                follow_redirects=allow_redirects,
-            )
-        finally:
-            if close_after:
-                client.close()
+        # httpx 兜底：无代理复用共享会话；代理客户端按 proxy 缓存复用
+        client = (
+            self._ensure_sync_session()
+            if proxy is None
+            else self._ensure_proxied_sync_client(proxy)
+        )
+        request_url, extra_headers, extensions = self._pin_target(url, proxy)
+        if extra_headers:
+            headers = {**headers, **extra_headers}
+        content, data_arg = _httpx_body(data)
+        return client.request(
+            method=method,
+            url=request_url,
+            params=params,
+            content=content,
+            data=data_arg,
+            json=json,
+            headers=headers,
+            timeout=timeout,
+            follow_redirects=allow_redirects,
+            extensions=extensions,
+        )
 
     def _send_with_redirects_sync(
         self,
@@ -611,34 +696,22 @@ class Fetcher(_FetcherCore):
             return self._send_once_sync(
                 method, url, params, data, json, headers, proxy, timeout, False, verify
             )
-        current_url = url
-        current_method = method
-        current_params = params
-        current_data = data
-        current_json = json
+        state = _RedirectState(url, method, params, data, json, headers)
         for _ in range(self.max_redirects + 1):
             raw = self._send_once_sync(
-                current_method,
-                current_url,
-                current_params,
-                current_data,
-                current_json,
-                headers,
+                state.method,
+                state.url,
+                state.params,
+                state.data,
+                state.json,
+                state.headers,
                 proxy,
                 timeout,
                 False,
                 verify,
             )
-            next_hop = self._next_redirect(raw, current_url, current_method, headers)
-            if next_hop is None:
+            if not self._advance_redirect(state, raw):
                 return raw
-            next_url, new_method, headers = next_hop
-            current_url = next_url
-            current_params = None
-            if new_method is not None:
-                current_method = new_method
-                current_data = None
-                current_json = None
         raise RuntimeError(f"too many redirects (max {self.max_redirects}) for {url}")
 
     def _send_sync(
@@ -773,6 +846,12 @@ class Fetcher(_FetcherCore):
             except Exception:
                 pass
             self._session = None
+        for client in self._proxied_sync_clients.values():
+            try:
+                client.close()
+            except Exception:
+                pass
+        self._proxied_sync_clients.clear()
         # 异步 session 不在这里强行关闭，避免在无事件循环时抛 RuntimeError；
         # 保留引用（不置 None），之后仍可 aclose()，由 GC 兜底释放连接池
         if self._async_session is not None:
@@ -797,6 +876,18 @@ class Fetcher(_FetcherCore):
             except Exception:
                 pass
             self._async_session = None
+        for client in self._proxied_sync_clients.values():
+            try:
+                client.close()
+            except Exception:
+                pass
+        self._proxied_sync_clients.clear()
+        for client in self._proxied_async_clients.values():
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+        self._proxied_async_clients.clear()
 
     def __enter__(self) -> Self:
         return self
@@ -875,6 +966,12 @@ class AsyncFetcher(_FetcherCore):
             except Exception:
                 pass
             self._async_session = None
+        for client in self._proxied_async_clients.values():
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+        self._proxied_async_clients.clear()
 
     async def __aenter__(self) -> Self:
         return self

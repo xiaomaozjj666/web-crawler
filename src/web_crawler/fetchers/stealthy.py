@@ -80,7 +80,7 @@ class StealthyFetcher(DynamicFetcher):
         solve_cloudflare: bool = True,
         verify: bool = True,
         allow_private_hosts: bool | None = None,
-        resolve_hosts: bool = False,
+        resolve_hosts: bool = True,
     ) -> None:
         super().__init__(
             headless=headless,

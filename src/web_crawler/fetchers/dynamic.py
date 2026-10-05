@@ -84,7 +84,7 @@ class DynamicFetcher(BaseFetcher):
         google_search: bool = False,
         verify: bool = True,
         allow_private_hosts: bool | None = None,
-        resolve_hosts: bool = False,
+        resolve_hosts: bool = True,
     ) -> None:
         super().__init__(
             timeout=timeout,

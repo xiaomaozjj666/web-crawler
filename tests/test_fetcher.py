@@ -6,14 +6,19 @@ path including TLS-fingerprint impersonation against localhost.
 
 from __future__ import annotations
 
+import socket
 import threading
+import warnings
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from unittest.mock import MagicMock
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 
 from web_crawler import AsyncFetcher, Fetcher, ProxyPool, Response, compat
+from web_crawler.fetchers import _pin as _pin_mod
+from web_crawler.fetchers._pin import pin_url
 
 
 class _RedirectHandler(BaseHTTPRequestHandler):
@@ -540,7 +545,7 @@ def test_fetcher_send_once_sync_httpx_no_proxy(monkeypatch) -> None:
 
 
 def test_fetcher_send_once_sync_httpx_with_proxy(monkeypatch) -> None:
-    """httpx 回退、有代理时应创建临时 client 并在用后关闭。"""
+    """httpx 回退、有代理时按 proxy 缓存客户端复用，close() 统一释放。"""
     from web_crawler.fetchers import fetcher as fetcher_mod
 
     monkeypatch.setattr(fetcher_mod, "HAS_CURL_CFFI", False)
@@ -574,8 +579,14 @@ def test_fetcher_send_once_sync_httpx_with_proxy(monkeypatch) -> None:
         "GET", "https://x.example/", None, None, None, {}, "http://proxy:8080", 5.0, True, True
     )
     assert result is raw_resp
-    assert closed["flag"] is True  # 临时 client 被关闭
+    assert closed["flag"] is False  # 请求后不关闭：缓存的客户端要在后续请求复用
+    second = f._send_once_sync(
+        "GET", "https://x.example/", None, None, None, {}, "http://proxy:8080", 5.0, True, True
+    )
+    assert second is raw_resp
+    assert len(f._proxied_sync_clients) == 1  # 同一代理只建一次客户端
     f.close()
+    assert closed["flag"] is True  # close() 统一释放缓存的代理客户端
 
 
 def test_fetcher_send_once_async_httpx_no_proxy(monkeypatch) -> None:
@@ -656,7 +667,7 @@ def test_fetcher_send_once_async_httpx_with_proxy(monkeypatch) -> None:
         with pytest.warns(RuntimeWarning):
             f = Fetcher(timeout=5.0)
         try:
-            return await f._send_once_async(
+            first = await f._send_once_async(
                 "GET",
                 "https://x.example/",
                 None,
@@ -668,14 +679,33 @@ def test_fetcher_send_once_async_httpx_with_proxy(monkeypatch) -> None:
                 True,
                 True,
             )
-        finally:
+            # 同一代理的第二次请求复用缓存的客户端（不新建）
+            await f._send_once_async(
+                "GET",
+                "https://x.example/",
+                None,
+                None,
+                None,
+                {},
+                "http://proxy:8080",
+                5.0,
+                True,
+                True,
+            )
+            assert len(f._proxied_async_clients) == 1
+            # 同步 close() 只清同步客户端，异步缓存保持可用（共享异步会话
+            # 未创建时 close() 不会发 ResourceWarning）
             f.close()
+            assert closed["flag"] is False
+            return first
+        finally:
+            await f.aclose()
 
     import asyncio
 
     result = asyncio.run(go())
     assert result is raw_resp
-    assert closed["flag"] is True
+    assert closed["flag"] is True  # aclose() 释放缓存的异步代理客户端
 
 
 # ---------------------------------------------------------------------------
@@ -2655,3 +2685,128 @@ def test_default_allow_private_hosts_power_mode(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.delenv("WEB_CRAWLER_ALLOW_PRIVATE_HOSTS", raising=False)
     monkeypatch.setenv("WEB_CRAWLER_POWER_MODE", "1")
     assert _default_allow_private_hosts() is True
+
+
+# ---------------------------------------------------------------------------
+# 连接层 DNS 钉扎（TOCTOU 根治，httpx 兜底路径）
+# ---------------------------------------------------------------------------
+
+
+def _fake_resolve(ip: str):
+    def _getaddrinfo(host: str, port: object, **kw: object) -> list[tuple]:
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port))]
+
+    return _getaddrinfo
+
+
+def test_pin_url_keeps_ip_literal_unchanged() -> None:
+    """IP 字面量无解析步骤，钉扎原样返回。"""
+    assert pin_url("http://1.2.3.4/x?q=1#f") == "http://1.2.3.4/x?q=1#f"
+
+
+def test_pin_url_rewrites_hostname_preserving_parts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """域名钉到已校验 IP：userinfo/端口/路径/查询/fragment 全保留。"""
+    monkeypatch.setattr(_pin_mod.socket, "getaddrinfo", _fake_resolve("93.184.216.34"))
+    pinned = pin_url("https://user:pw@example.com:8443/a/b?x=1#frag")
+    assert pinned == "https://user:pw@93.184.216.34:8443/a/b?x=1#frag"
+
+
+def test_pin_url_ipv6_is_bracketed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        _pin_mod.socket,
+        "getaddrinfo",
+        lambda h, p, **kw: [(socket.AF_INET6, 1, 6, "", ("2606:2800:220:1::1946", p, 0, 0))],
+    )
+    assert pin_url("https://example.com/a") == "https://[2606:2800:220:1::1946]/a"
+
+
+def test_pin_url_blocks_private_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """门禁后 DNS 翻转到云元数据地址 → 即时拒绝（TOCTOU 拦截）。"""
+    monkeypatch.setattr(_pin_mod.socket, "getaddrinfo", _fake_resolve("169.254.169.254"))
+    with pytest.raises(ValueError, match="TOCTOU"):
+        pin_url("https://example.com/")
+
+
+def test_pin_target_gates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """代理路径/环境代理/关闭解析复查/显式放行私网时均不钉扎。"""
+    # CI 默认依赖档未装 curl_cffi，构造 Fetcher 会发 RuntimeWarning；
+    # 测试会话的 filterwarnings=error 会把它判失败，这里按环境屏蔽。
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        f = Fetcher(timeout=5.0)
+    url = "https://example.com/"
+    assert f._pin_target(url, "http://proxy:1") == (url, {}, {})
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    assert f._pin_target(url, None) == (url, {}, {})
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    f.allow_private_hosts = True
+    assert f._pin_target(url, None) == (url, {}, {})
+    f.allow_private_hosts = False
+    f.resolve_hosts = False
+    assert f._pin_target(url, None) == (url, {}, {})
+
+
+def test_send_once_sync_httpx_pinned_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """httpx 兜底路径钉扎生效：URL 换 IP、Host 头与 sni_hostname 扩展齐全。"""
+    from web_crawler.fetchers import fetcher as fetcher_mod
+
+    monkeypatch.setattr(fetcher_mod, "HAS_CURL_CFFI", False)
+    monkeypatch.setattr(fetcher_mod, "HAS_HTTPX", True)
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+
+    raw_resp = MagicMock()
+    raw_resp.url = "https://93.184.216.34/"
+    raw_resp.status_code = 200
+    raw_resp.content = b"ok"
+    raw_resp.headers = {}
+
+    captured: dict[str, Any] = {}
+
+    class _FakeClient:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def request(self, **kwargs: object) -> MagicMock:
+            captured.update(kwargs)
+            return raw_resp
+
+        def close(self) -> None:
+            pass
+
+    fake_httpx = MagicMock()
+    fake_httpx.Client = _FakeClient
+    monkeypatch.setattr(fetcher_mod, "_load_httpx_backend", lambda: fake_httpx)
+
+    def fake_resolve(host: str, port: object, **kw: object) -> list[tuple]:
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+    with pytest.warns(RuntimeWarning):
+        f = Fetcher(timeout=5.0)
+    # conftest 为本地服务器全局放行私网 host；本测试要验证钉扎，改回安全默认
+    f.allow_private_hosts = False
+    with patch("web_crawler.fetchers._pin.socket.getaddrinfo", fake_resolve):
+        f._send_once_sync(
+            "GET", "https://example.com/", None, None, None, {}, None, 5.0, True, True
+        )
+    assert captured["url"] == "https://93.184.216.34/"
+    assert captured["headers"]["Host"] == "example.com"
+    assert captured["extensions"] == {"sni_hostname": "example.com"}
+
+
+def test_narrow_accept_encoding_matches_runtime_decoders() -> None:
+    """httpx 路径按运行时可解压编码收缩 Accept-Encoding（br 需 brotli 包）。"""
+
+    def _importable(name: str) -> bool:
+        try:
+            __import__(name)
+            return True
+        except ImportError:
+            return False
+
+    headers = {"Accept-Encoding": "gzip, deflate, br, zstd"}
+    Fetcher._narrow_accept_encoding(headers)
+    kept = {e.strip() for e in headers["Accept-Encoding"].split(",")}
+    assert "gzip" in kept and "deflate" in kept
+    assert ("br" in kept) == _importable("brotli")
+    assert ("zstd" in kept) == _importable("zstandard")

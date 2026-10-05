@@ -11,7 +11,9 @@ HTTP 抓取路径已对 URL scheme 做白名单（仅 http/https）。本模块�
   （链路本地，含云元数据）、``172.16.0.0/12``、``192.168.0.0/16``、``::1``、
   ``fc00::/7``（IPv6 ULA）与 ``fe80::/10``（IPv6 链路本地），另加组播与
   未指定地址。IPv4-mapped IPv6 字面量（``::ffff:127.0.0.1``）会先解包再按
-  IPv4 复查。
+  IPv4 复查。inet_aton 兼容的非点分 IPv4 写法（``2130706433``/``127.1``/
+  ``0177.0.0.1``/``0x7f000001``）先归一化再比对——glibc 与 libcurl 的解析器
+  接受这些形式，不归一化即可绕过静态检查直连环回。
 * 含 ``localhost`` 的主机名（如 ``localhost``、``*.localhost``、
   ``localhost.localdomain``）、以 ``.local`` 结尾的 mDNS 名称，以及知名的
   云元数据主机名会被静态拒绝。
@@ -133,15 +135,71 @@ def _is_blocked_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return any(addr in net for net in _PRIVATE_NETWORKS) or addr.is_multicast or addr.is_unspecified
 
 
+# 非点分 IPv4 字面量允许出现的字符（十进制/八进制/0x 十六进制段与分隔点）；
+# 含其他字符的一律按普通主机名处理，不做归一化尝试。
+_IPV4_LITERAL_CHARS = frozenset("0123456789abcdefABCDEFxX.")
+
+
+def _ipv4_from_noncanonical(host: str) -> ipaddress.IPv4Address | None:
+    """把 inet_aton 兼容的非点分 IPv4 写法归一化为 :class:`IPv4Address`。
+
+    glibc 与 libcurl 的解析器接受 ``2130706433``（单段十进制）、``127.1``
+    （短形式）、``0177.0.0.1``（八进制段）与 ``0x7f000001``（0x 十六进制）
+    等写法，而标准库 :func:`ipaddress.ip_address` 一律拒绝——这些形式在
+    Linux 上会真的解析到对应 IPv4 地址，若不归一化，``http://2130706433/``
+    就能绕过静态检查直连环回/私网。Windows 的 getaddrinfo 拒绝这些形式，
+    但 curl_cffi 的 libcurl 走自己的解析器，不能依赖平台行为。
+
+    与 inet_aton 一致：十六进制段必须带 ``0x`` 前缀（裸 ``abc`` 不是合法
+    数字写法，按主机名处理）；段超界或段数超 4 返回 ``None``。
+    """
+    parts = host.split(".")
+    if not 1 <= len(parts) <= 4:
+        return None
+    values: list[int] = []
+    for part in parts:
+        if not part:
+            return None
+        try:
+            if part[:2] in {"0x", "0X"}:
+                if len(part) == 2:
+                    return None
+                values.append(int(part, 16))
+            elif part.startswith("0") and len(part) > 1:
+                values.append(int(part, 8))
+            else:
+                values.append(int(part, 10))
+        except ValueError:
+            return None
+    if any(v > 0xFF for v in values[:-1]) or values[-1] > (0xFFFFFFFF >> (8 * (len(values) - 1))):
+        return None
+    # inet_aton 语义：前 n-1 段各占一个字节（自 bit24 起顺次下移），最后一段
+    # 直接填充剩余的全部低位（n=2 时 ``127.1`` → 127.0.0.1，n=1 时为完整 32 位）。
+    head = 0
+    for v in values[:-1]:
+        head = (head << 8) | v
+    value = (head << (8 * (5 - len(values)))) | values[-1]
+    return ipaddress.IPv4Address(value)
+
+
 def is_private_ip(host: str) -> bool:
-    """``host`` 是 IP 字面量且落在被拒绝范围时返回 True，否则 False。"""
+    """``host`` 是 IP 字面量且落在被拒绝范围时返回 True，否则 False。
+
+    除标准点分写法外，也识别 inet_aton 兼容的非点分 IPv4 字面量
+    （``2130706433``/``127.1``/``0177.0.0.1``/``0x7f000001``）。
+    """
     candidate = host.strip().lower()
     # IPv6 zone id（如 fe80::1%eth0）无法被 ipaddress 解析，先剥离
     if "%" in candidate and ":" in candidate:
         candidate = candidate.split("%", 1)[0]
     try:
-        addr = ipaddress.ip_address(candidate)
+        addr: ipaddress.IPv4Address | ipaddress.IPv6Address = ipaddress.ip_address(candidate)
     except ValueError:
+        if candidate and set(candidate) <= _IPV4_LITERAL_CHARS:
+            normalized = _ipv4_from_noncanonical(candidate)
+            if normalized is None:
+                return False
+            return _is_blocked_ip(normalized)
         return False
     return _is_blocked_ip(addr)
 

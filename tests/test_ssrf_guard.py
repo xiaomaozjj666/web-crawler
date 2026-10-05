@@ -88,6 +88,50 @@ def test_rejects_loopback_with_port() -> None:
 @pytest.mark.parametrize(
     "host",
     [
+        "2130706433",  # 单段十进制 → 127.0.0.1（glibc/libcurl 可解析）
+        "127.1",  # 短形式，末段填充 24 位
+        "127.0.1",  # 三段形式，末段填充 16 位
+        "0177.0.0.1",  # 八进制段
+        "0x7f000001",  # 0x 十六进制
+        "0x7f.0.0.1",  # 混合十六进制段
+        "0",  # 未指定地址（0.0.0.0）
+        "0x1",  # 0.0.0.1
+        "10.1",  # → 10.0.0.1（私网短形式）
+    ],
+)
+def test_rejects_noncanonical_ipv4_literals(host: str) -> None:
+    """inet_aton 兼容的非点分 IPv4 写法同样必须命中拒绝段。
+
+    Windows 的 getaddrinfo 拒绝这些形式，但 Linux glibc 与 libcurl 会把
+    ``http://2130706433/`` 解析到 127.0.0.1——不归一化即静态检查绕过。
+    """
+    with pytest.raises(ValueError, match="unsafe host"):
+        validate_url_host(_url_for_host(host))
+    assert host_is_unsafe(host)
+    assert is_private_ip(host)
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "example.com",
+        "abc",  # 裸字母不是合法数字写法，按主机名处理
+        "cafe.1",  # 裸十六进制段（无 0x 前缀）不归一化
+        "256.1.1.1",  # 段超界，非法 IPv4
+        "1.2.3.4.5",  # 段数超 4
+        "1.2.3.4",
+        "8.8.8.8",
+    ],
+)
+def test_public_and_hostname_forms_are_not_blocked(host: str) -> None:
+    """公网 IP 与普通主机名不受归一化误伤。"""
+    assert not is_private_ip(host)
+    assert not host_is_unsafe(host)
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
         "10.0.0.1",
         "172.16.0.1",
         "172.31.255.254",
