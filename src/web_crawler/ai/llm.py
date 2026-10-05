@@ -64,6 +64,42 @@ def _is_httpx_transport_error(exc: BaseException) -> bool:
         return False
 
 
+def _is_retryable_llm_error(exc: Exception) -> bool:
+    """chat 调用错误是否可重试：带 HTTP 响应时看状态码（429/5xx），否则只认传输层错误。
+
+    sync/async 双路径共用，避免重试分类逻辑在两条路径上各自演化后分叉。
+    """
+    resp_obj = getattr(exc, "response", None)
+    if resp_obj is not None:
+        status = getattr(resp_obj, "status_code", None)
+        if status is not None:
+            return status in _RETRYABLE_STATUS
+    return _is_httpx_transport_error(exc)
+
+
+def _build_chat_payload(
+    messages: Sequence[str | LLMMessage | dict[str, str]] | str,
+    *,
+    model: str,
+    temperature: float,
+    max_tokens: int | None,
+    response_format: dict[str, Any] | None,
+    extra: dict[str, Any],
+) -> dict[str, Any]:
+    """构造 chat-completions 请求体（sync/async 双路径共用）。"""
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": _normalize_messages(messages),
+        "temperature": temperature,
+    }
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+    if response_format is not None:
+        payload["response_format"] = response_format
+    payload.update(extra)
+    return payload
+
+
 def _load_dotenv_once() -> None:
     """尽力而为、零依赖的 ``.env`` 加载器。
 
@@ -283,6 +319,14 @@ class OpenAICompatibleProvider:
     def _endpoint(self) -> str:
         return f"{self.base_url}/chat/completions"
 
+    def _ensure_api_key(self) -> None:
+        """未配置 API key 时抛出统一格式的 RuntimeError。"""
+        if not self.api_key:
+            raise RuntimeError(
+                f"no API key for provider {self.name!r}; pass api_key= or set "
+                f"the {self.api_key_env} environment variable"
+            )
+
     @staticmethod
     def _parse(data: dict[str, Any], fallback_model: str) -> LLMResponse:
         choice = (data.get("choices") or [{}])[0]
@@ -313,26 +357,20 @@ class OpenAICompatibleProvider:
         **kwargs: Any,
     ) -> LLMResponse:
         """调用 chat-completions 端点并返回 :class:`LLMResponse`。"""
-        if not self.api_key:
-            raise RuntimeError(
-                f"no API key for provider {self.name!r}; pass api_key= or set "
-                f"the {self.api_key_env} environment variable"
-            )
+        self._ensure_api_key()
         import httpx  # 延迟导入：模块级 import 会拖慢 web_crawler 首包
 
         if self._client is None:
             self._client = httpx.Client(timeout=self.timeout)
 
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": _normalize_messages(messages),
-            "temperature": temperature,
-        }
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
-        if response_format is not None:
-            payload["response_format"] = response_format
-        payload.update(kwargs)
+        payload = _build_chat_payload(
+            messages,
+            model=self.model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
+            extra=kwargs,
+        )
 
         # 429/5xx/网络错误指数退避重试；其他状态码与不可重试错误直接抛出
         attempt = 0
@@ -346,14 +384,7 @@ class OpenAICompatibleProvider:
                 resp.raise_for_status()
                 return self._parse(resp.json(), self.model)
             except Exception as exc:
-                resp_obj = getattr(exc, "response", None)
-                status = getattr(resp_obj, "status_code", None) if resp_obj is not None else None
-                if status is not None:
-                    retryable = status in _RETRYABLE_STATUS
-                else:
-                    # 无 HTTP 响应上下文：仅 httpx 传输层错误（连接/超时等）可重试
-                    retryable = _is_httpx_transport_error(exc)
-                if not retryable or attempt >= _MAX_LLM_RETRIES:
+                if not _is_retryable_llm_error(exc) or attempt >= _MAX_LLM_RETRIES:
                     raise
                 attempt += 1
                 time.sleep(min(2.0**attempt, _MAX_BACKOFF_SECONDS))
@@ -368,26 +399,20 @@ class OpenAICompatibleProvider:
         **kwargs: Any,
     ) -> LLMResponse:
         """:meth:`chat` 的异步版本。"""
-        if not self.api_key:
-            raise RuntimeError(
-                f"no API key for provider {self.name!r}; pass api_key= or set "
-                f"the {self.api_key_env} environment variable"
-            )
+        self._ensure_api_key()
         import httpx  # 延迟导入：模块级 import 会拖慢 web_crawler 首包
 
         if self._async_client is None:
             self._async_client = httpx.AsyncClient(timeout=self.timeout)
 
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": _normalize_messages(messages),
-            "temperature": temperature,
-        }
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
-        if response_format is not None:
-            payload["response_format"] = response_format
-        payload.update(kwargs)
+        payload = _build_chat_payload(
+            messages,
+            model=self.model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
+            extra=kwargs,
+        )
 
         # 429/5xx/网络错误指数退避重试；其他状态码与不可重试错误直接抛出
         attempt = 0
@@ -399,14 +424,7 @@ class OpenAICompatibleProvider:
                 resp.raise_for_status()
                 return self._parse(resp.json(), self.model)
             except Exception as exc:
-                resp_obj = getattr(exc, "response", None)
-                status = getattr(resp_obj, "status_code", None) if resp_obj is not None else None
-                if status is not None:
-                    retryable = status in _RETRYABLE_STATUS
-                else:
-                    # 无 HTTP 响应上下文：仅 httpx 传输层错误（连接/超时等）可重试
-                    retryable = _is_httpx_transport_error(exc)
-                if not retryable or attempt >= _MAX_LLM_RETRIES:
+                if not _is_retryable_llm_error(exc) or attempt >= _MAX_LLM_RETRIES:
                     raise
                 attempt += 1
                 await asyncio.sleep(min(2.0**attempt, _MAX_BACKOFF_SECONDS))

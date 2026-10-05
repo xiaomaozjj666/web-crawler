@@ -31,11 +31,14 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 from ._jsonutil import extract_json as _extract_json
 from .llm import LLMMessage, LLMProvider
+
+logger = logging.getLogger(__name__)
 
 # 送 LLM 前的图片体积/尺寸/像素上限（防超大截图撑爆请求体或 OOM）
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -117,7 +120,8 @@ def _prepare_vision_image(
     """
     try:
         raw = _b64_to_bytes(image)
-    except Exception:
+    except Exception as exc:
+        logger.warning("failed to decode base64 image data: %s", exc)
         return None
     if len(raw) > _MAX_IMAGE_BYTES:
         return None
@@ -125,12 +129,14 @@ def _prepare_vision_image(
         from PIL import Image
     except ImportError:
         # 无 Pillow：不做尺寸检查/降采样，原样送（体积上限已检查）
+        logger.debug("Pillow not installed; skipping image size check and downscale")
         return _to_b64(raw), mime, 1.0
     try:
         img: Image.Image = Image.open(io.BytesIO(raw))
         w, h = img.size
-    except Exception:
+    except Exception as exc:
         # 无法解码的图片：原样透传
+        logger.debug("image decode failed; passing through unchanged: %s", exc)
         return _to_b64(raw), mime, 1.0
     if w * h > _MAX_IMAGE_PIXELS:
         return None
@@ -201,6 +207,82 @@ class ImageCaptchaSolver:
         caps = getattr(self.provider, "capabilities", None)
         return caps is not None and getattr(caps, "vision", False)
 
+    # -- LLM 消息构造与后处理（sync/async 双路径共用，防镜像分叉） ------------
+
+    def _ocr_message(self, image: bytes | str, mime: str) -> LLMMessage | None:
+        """构造 OCR 视觉消息；图片预处理失败返回 None。"""
+        prepared = _prepare_vision_image(image, mime)
+        if prepared is None:
+            return None
+        b64, mime_out, _ = prepared
+        return LLMMessage.vision(
+            "user",
+            "请识别这张验证码图片中的字符。",
+            b64,
+            mime=mime_out,
+            detail=self.config.detail,
+        )
+
+    @staticmethod
+    def _postprocess_ocr(content: str, max_length: int) -> str:
+        """剥离空白并截断到允许长度。"""
+        text = "".join(content.split())
+        return text[:max_length]
+
+    def _slider_message(
+        self, bg: bytes | str, slider: bytes | str
+    ) -> tuple[LLMMessage, float] | None:
+        """构造滑块双图消息，附带背景图缩放系数；预处理失败返回 None。"""
+        bg_prepared = _prepare_vision_image(bg)
+        slider_prepared = _prepare_vision_image(slider)
+        if bg_prepared is None or slider_prepared is None:
+            return None
+        bg_b64, _, bg_scale = bg_prepared
+        slider_b64, _, _ = slider_prepared
+        msg = LLMMessage(
+            role="user",
+            content=[
+                {"type": "text", "text": "请识别这张滑块验证码背景图中的缺口位置。"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{bg_b64}",
+                        "detail": self.config.detail,
+                    },
+                },
+                {"type": "text", "text": "这是滑块图（参考形状）："},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{slider_b64}",
+                        "detail": "low",
+                    },
+                },
+            ],
+        )
+        return msg, bg_scale
+
+    @staticmethod
+    def _scale_slider_x(sol: SliderSolution | None, bg_scale: float) -> SliderSolution | None:
+        """背景图被降采样时，把 LLM 返回的 x 还原回原始像素坐标系。"""
+        if sol is not None and bg_scale != 1.0:
+            sol.x = round(sol.x * bg_scale)
+        return sol
+
+    def _click_message(self, image: bytes | str, prompt: str, mime: str) -> LLMMessage | None:
+        """构造点选题视觉消息；图片预处理失败返回 None。"""
+        prepared = _prepare_vision_image(image, mime)
+        if prepared is None:
+            return None
+        b64, mime_out, _ = prepared
+        return LLMMessage.vision(
+            "user",
+            f"提示：{prompt}\n请识别这张点选验证码图片中需要按顺序点击的元素坐标。",
+            b64,
+            mime=mime_out,
+            detail=self.config.detail,
+        )
+
     # ------------------------------------------------------------------
     # 文本字符 OCR
     # ------------------------------------------------------------------
@@ -242,7 +324,8 @@ class ImageCaptchaSolver:
             if 0 < len(text) <= self.config.ocr_max_length:
                 return text
             return ""
-        except Exception:
+        except Exception as exc:
+            logger.warning("local OCR (ddddocr) failed: %s", exc)
             return ""
 
     def _get_ddddocr(self) -> Any:
@@ -252,55 +335,39 @@ class ImageCaptchaSolver:
         try:
             import ddddocr  # type: ignore[import-untyped]
         except ImportError:
+            logger.debug("ddddocr not installed; local OCR unavailable")
             return None
         try:
             # show_ad=False 关闭作者广告输出
             self._ddddocr_instance = ddddocr.DdddOcr(show_ad=False)
-        except Exception:
+        except Exception as exc:
+            logger.warning("failed to initialize ddddocr: %s", exc)
             self._ddddocr_instance = None
         return self._ddddocr_instance
 
     def _llm_ocr(self, image: bytes | str, mime: str) -> str:
         assert self.provider is not None
-        prepared = _prepare_vision_image(image, mime)
-        if prepared is None:
+        msg = self._ocr_message(image, mime)
+        if msg is None:
             return ""
-        b64, mime_out, _ = prepared
-        msg = LLMMessage.vision(
-            "user",
-            "请识别这张验证码图片中的字符。",
-            b64,
-            mime=mime_out,
-            detail=self.config.detail,
-        )
         resp = self.provider.chat(
             [LLMMessage("system", _OCR_SYSTEM_PROMPT), msg],
             temperature=self.config.temperature,
         )
-        text = "".join((resp.content or "").split())
-        return text[: self.config.ocr_max_length]
+        return self._postprocess_ocr(resp.content or "", self.config.ocr_max_length)
 
     async def _llm_ocr_async(self, image: bytes | str, mime: str) -> str:
         assert self.provider is not None
         if not hasattr(self.provider, "achat"):
             return self._llm_ocr(image, mime)
-        prepared = _prepare_vision_image(image, mime)
-        if prepared is None:
+        msg = self._ocr_message(image, mime)
+        if msg is None:
             return ""
-        b64, mime_out, _ = prepared
-        msg = LLMMessage.vision(
-            "user",
-            "请识别这张验证码图片中的字符。",
-            b64,
-            mime=mime_out,
-            detail=self.config.detail,
-        )
         resp = await self.provider.achat(
             [LLMMessage("system", _OCR_SYSTEM_PROMPT), msg],
             temperature=self.config.temperature,
         )
-        text = "".join((resp.content or "").split())
-        return text[: self.config.ocr_max_length]
+        return self._postprocess_ocr(resp.content or "", self.config.ocr_max_length)
 
     # ------------------------------------------------------------------
     # 滑块缺口定位
@@ -345,13 +412,15 @@ class ImageCaptchaSolver:
         try:
             bg_data = _b64_to_bytes(bg)
             slider_data = _b64_to_bytes(slider)
-        except Exception:
+        except Exception as exc:
+            logger.warning("failed to decode slider captcha image data: %s", exc)
             return None
         # 优先 numpy 加速路径
         try:
             import numpy as np  # type: ignore[import-untyped]
             from PIL import Image
         except ImportError:
+            logger.debug("numpy not installed; falling back to pure-Pillow slider matching")
             return self._pillow_only_slider(bg_data, slider_data)
 
         try:
@@ -359,7 +428,8 @@ class ImageCaptchaSolver:
             slider_img = np.asarray(
                 Image.open(io.BytesIO(slider_data)).convert("L"), dtype=np.float32
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("failed to decode slider/background images: %s", exc)
             return None
 
         if bg_img.ndim != 2 or slider_img.ndim != 2:  # pragma: no cover - .convert("L") 保证 2D
@@ -394,11 +464,13 @@ class ImageCaptchaSolver:
         try:
             from PIL import Image
         except ImportError:
+            logger.debug("Pillow not installed; slider matching unavailable")
             return None
         try:
             bg_img = Image.open(io.BytesIO(bg_data)).convert("L")
             slider_img = Image.open(io.BytesIO(slider_data)).convert("L")
-        except Exception:
+        except Exception as exc:
+            logger.warning("failed to decode slider/background images: %s", exc)
             return None
 
         bw, bh = bg_img.size
@@ -435,42 +507,15 @@ class ImageCaptchaSolver:
         slider: bytes | str,
     ) -> SliderSolution | None:
         assert self.provider is not None
-        bg_prepared = _prepare_vision_image(bg)
-        slider_prepared = _prepare_vision_image(slider)
-        if bg_prepared is None or slider_prepared is None:
+        built = self._slider_message(bg, slider)
+        if built is None:
             return None
-        bg_b64, _, bg_scale = bg_prepared
-        slider_b64, _, _ = slider_prepared
-        msg = LLMMessage(
-            role="user",
-            content=[
-                {"type": "text", "text": "请识别这张滑块验证码背景图中的缺口位置。"},
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/png;base64,{bg_b64}",
-                        "detail": self.config.detail,
-                    },
-                },
-                {"type": "text", "text": "这是滑块图（参考形状）："},
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/png;base64,{slider_b64}",
-                        "detail": "low",
-                    },
-                },
-            ],
-        )
+        msg, bg_scale = built
         resp = self.provider.chat(
             [LLMMessage("system", _SLIDER_SYSTEM_PROMPT), msg],
             temperature=self.config.temperature,
         )
-        sol = self._parse_slider_response(resp.content or "")
-        if sol is not None and bg_scale != 1.0:
-            # 背景图被降采样后，把 LLM 返回的 x 还原回原始像素坐标系
-            sol.x = round(sol.x * bg_scale)
-        return sol
+        return self._scale_slider_x(self._parse_slider_response(resp.content or ""), bg_scale)
 
     async def _llm_slider_async(
         self,
@@ -480,55 +525,30 @@ class ImageCaptchaSolver:
         assert self.provider is not None
         if not hasattr(self.provider, "achat"):
             return self._llm_slider(bg, slider)
-        bg_prepared = _prepare_vision_image(bg)
-        slider_prepared = _prepare_vision_image(slider)
-        if bg_prepared is None or slider_prepared is None:
+        built = self._slider_message(bg, slider)
+        if built is None:
             return None
-        bg_b64, _, bg_scale = bg_prepared
-        slider_b64, _, _ = slider_prepared
-        msg = LLMMessage(
-            role="user",
-            content=[
-                {"type": "text", "text": "请识别这张滑块验证码背景图中的缺口位置。"},
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/png;base64,{bg_b64}",
-                        "detail": self.config.detail,
-                    },
-                },
-                {"type": "text", "text": "这是滑块图（参考形状）："},
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/png;base64,{slider_b64}",
-                        "detail": "low",
-                    },
-                },
-            ],
-        )
+        msg, bg_scale = built
         resp = await self.provider.achat(
             [LLMMessage("system", _SLIDER_SYSTEM_PROMPT), msg],
             temperature=self.config.temperature,
         )
-        sol = self._parse_slider_response(resp.content or "")
-        if sol is not None and bg_scale != 1.0:
-            # 背景图被降采样后，把 LLM 返回的 x 还原回原始像素坐标系
-            sol.x = round(sol.x * bg_scale)
-        return sol
+        return self._scale_slider_x(self._parse_slider_response(resp.content or ""), bg_scale)
 
     @staticmethod
     def _parse_slider_response(text: str) -> SliderSolution | None:
         parsed = _extract_json(text)
         try:
             x = int(parsed.get("x", -1))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            logger.warning("failed to parse slider x from LLM response: %s", exc)
             return None
         if x < 0:
             return None
         try:
             conf = float(parsed.get("confidence", 0.5))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            logger.debug("invalid confidence in slider response, using default: %s", exc)
             conf = 0.5
         return SliderSolution(x=x, method="llm", confidence=conf)
 
@@ -547,17 +567,9 @@ class ImageCaptchaSolver:
         if not self.llm_vision_available:
             return None
         assert self.provider is not None
-        prepared = _prepare_vision_image(image, mime)
-        if prepared is None:
+        msg = self._click_message(image, prompt, mime)
+        if msg is None:
             return None
-        b64, mime_out, _ = prepared
-        msg = LLMMessage.vision(
-            "user",
-            f"提示：{prompt}\n请识别这张点选验证码图片中需要按顺序点击的元素坐标。",
-            b64,
-            mime=mime_out,
-            detail=self.config.detail,
-        )
         resp = self.provider.chat(
             [LLMMessage("system", _CLICK_SYSTEM_PROMPT), msg],
             temperature=self.config.temperature,
@@ -574,17 +586,9 @@ class ImageCaptchaSolver:
         if not self.llm_vision_available:
             return None
         assert self.provider is not None
-        prepared = _prepare_vision_image(image, mime)
-        if prepared is None:
+        msg = self._click_message(image, prompt, mime)
+        if msg is None:
             return None
-        b64, mime_out, _ = prepared
-        msg = LLMMessage.vision(
-            "user",
-            f"提示：{prompt}\n请识别这张点选验证码图片中需要按顺序点击的元素坐标。",
-            b64,
-            mime=mime_out,
-            detail=self.config.detail,
-        )
         if not hasattr(self.provider, "achat"):
             resp = self.provider.chat(
                 [LLMMessage("system", _CLICK_SYSTEM_PROMPT), msg],
@@ -611,7 +615,8 @@ class ImageCaptchaSolver:
             try:
                 x = int(p.get("x", -1))
                 y = int(p.get("y", -1))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as exc:
+                logger.debug("skipping invalid click point in LLM response: %s", exc)
                 continue
             if x < 0 or y < 0:
                 continue

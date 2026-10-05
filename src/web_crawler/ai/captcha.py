@@ -24,6 +24,7 @@ page 对象约定为 Playwright 的 sync_api.Page，但为了避免强依赖 pla
 
 from __future__ import annotations
 
+import logging
 import math
 import random
 import time
@@ -36,6 +37,8 @@ if TYPE_CHECKING:
     from typing import Any
 
     from .image_captcha import ImageCaptchaSolver
+
+logger = logging.getLogger(__name__)
 
 
 class CaptchaType(Enum):
@@ -97,7 +100,8 @@ def _first_query(page: Any, selectors: tuple[str, ...]) -> Any | None:
     for sel in selectors:
         try:
             el = page.query_selector(sel)
-        except Exception:
+        except Exception as exc:
+            logger.debug("selector probe failed for %r: %s", sel, exc)
             el = None
         if el is not None:
             return el
@@ -136,7 +140,8 @@ class CaptchaDetector:
     def _detect_hcaptcha(self, page: Any) -> CaptchaInfo | None:
         try:
             iframe = page.query_selector(_HCAPTCHA_IFRAME)
-        except Exception:
+        except Exception as exc:
+            logger.debug("hcaptcha iframe probe failed: %s", exc)
             iframe = None
         if iframe is None:
             return None
@@ -155,7 +160,8 @@ class CaptchaDetector:
         for sel in _TURNSTILE_IFRAMES:
             try:
                 iframe = page.query_selector(sel)
-            except Exception:
+            except Exception as exc:
+                logger.debug("turnstile iframe probe failed for %r: %s", sel, exc)
                 iframe = None
             if iframe is not None:
                 matched_sel = sel
@@ -174,7 +180,8 @@ class CaptchaDetector:
     def _detect_recaptcha(self, page: Any) -> CaptchaInfo | None:
         try:
             iframe = page.query_selector(_RECAPTCHA_IFRAME)
-        except Exception:
+        except Exception as exc:
+            logger.debug("recaptcha iframe probe failed: %s", exc)
             iframe = None
         if iframe is None:
             return None
@@ -201,7 +208,8 @@ class CaptchaDetector:
         for sel in _GEETEST_SELECTORS:
             try:
                 el = page.query_selector(sel)
-            except Exception:
+            except Exception as exc:
+                logger.debug("geetest container probe failed for %r: %s", sel, exc)
                 el = None
             if el is not None:
                 return CaptchaInfo(
@@ -215,7 +223,8 @@ class CaptchaDetector:
         """从页面上任意带 data-sitekey 的元素读取 sitekey。"""
         try:
             el = page.query_selector("[data-sitekey]")
-        except Exception:
+        except Exception as exc:
+            logger.debug("data-sitekey element probe failed: %s", exc)
             return None
         if el is None:
             return None
@@ -257,7 +266,8 @@ class CaptchaSolver:
             return False
         try:
             return handler(page, info)
-        except Exception:
+        except Exception as exc:
+            logger.warning("captcha solver failed for %s: %s", info.type.value, exc)
             return False
 
     # -- 各类型策略 --------------------------------------------------------
@@ -323,7 +333,8 @@ class CaptchaSolver:
             return False
         try:
             box = slider.bounding_box()
-        except Exception:
+        except Exception as exc:
+            logger.warning("geetest slider bounding_box failed: %s", exc)
             box = None
         if box is None:
             return False
@@ -347,7 +358,8 @@ class CaptchaSolver:
             return None
         try:
             bg_bytes = panel.screenshot()
-        except Exception:
+        except Exception as exc:
+            logger.warning("failed to screenshot geetest panel: %s", exc)
             return None
         slider_el = _first_query(
             page,
@@ -357,11 +369,13 @@ class CaptchaSolver:
             return None
         try:
             slider_bytes = slider_el.screenshot()
-        except Exception:
+        except Exception as exc:
+            logger.warning("failed to screenshot geetest slider button: %s", exc)
             return None
         try:
             sol = self.image_solver.solve_slider(bg_bytes, slider_bytes)
-        except Exception:
+        except Exception as exc:
+            logger.warning("slider gap recognition failed: %s", exc)
             return None
         if sol is None:
             return None
@@ -381,7 +395,8 @@ class CaptchaSolver:
             return False
         try:
             box = frame_handle.bounding_box()
-        except Exception:
+        except Exception as exc:
+            logger.warning("challenge iframe bounding_box failed: %s", exc)
             box = None
         if box is None:
             return False
@@ -389,12 +404,14 @@ class CaptchaSolver:
         offset_y = float(box.get("y", 0.0))
         try:
             img_bytes = frame_handle.screenshot()
-        except Exception:
+        except Exception as exc:
+            logger.warning("failed to screenshot challenge iframe: %s", exc)
             return False
         prompt = self._read_challenge_prompt(page, info) or "请按提示点击对应元素"
         try:
             sol = self.image_solver.solve_click(img_bytes, prompt)
-        except Exception:
+        except Exception as exc:
+            logger.warning("click captcha recognition failed: %s", exc)
             return False
         if sol is None or not sol.points:
             return False
@@ -406,7 +423,13 @@ class CaptchaSolver:
             py = int(min(max(float(py), 0.0), box_h - 1)) if box_h > 0 else int(py)
             try:
                 page.mouse.click(offset_x + px, offset_y + py)
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "challenge point click failed at (%s, %s): %s",
+                    offset_x + px,
+                    offset_y + py,
+                    exc,
+                )
                 return False
             if self.humanize:
                 time.sleep(random.uniform(0.3, 0.8))
@@ -422,7 +445,10 @@ class CaptchaSolver:
             return None
         try:
             return page.query_selector(info.container_selector)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "challenge iframe lookup failed for %r: %s", info.container_selector, exc
+            )
             return None
 
     @staticmethod
@@ -450,11 +476,13 @@ class CaptchaSolver:
                 try:
                     loc = frame.locator(sel).first
                     text = loc.text_content(timeout=1500)
-                except Exception:
+                except Exception as exc:
+                    logger.debug("challenge prompt text probe failed for %r: %s", sel, exc)
                     text = None
                 if text:
                     return str(text).strip()
-        except Exception:
+        except Exception as exc:
+            logger.warning("challenge frame access failed while reading prompt: %s", exc)
             return ""
         return ""
 
@@ -482,9 +510,11 @@ class CaptchaSolver:
                     btn = frame.locator(sel).first
                     btn.click(timeout=2000)
                     return
-                except Exception:
+                except Exception as exc:
+                    logger.debug("submit button probe failed for %r: %s", sel, exc)
                     continue
-        except Exception:
+        except Exception as exc:
+            logger.warning("challenge frame access failed while clicking submit: %s", exc)
             return
 
     def _solve_unknown(self, page: Any, info: CaptchaInfo) -> bool:
@@ -497,7 +527,8 @@ class CaptchaSolver:
         try:
             frame = page.frame_locator(_HCAPTCHA_IFRAME)
             return frame.locator("#checkbox").element_handle(timeout=2000)
-        except Exception:
+        except Exception as exc:
+            logger.warning("failed to locate hcaptcha checkbox in iframe: %s", exc)
             return None
 
     @staticmethod
@@ -505,7 +536,8 @@ class CaptchaSolver:
         try:
             frame = page.frame_locator(_RECAPTCHA_IFRAME)
             return frame.locator("#recaptcha-anchor").element_handle(timeout=2000)
-        except Exception:
+        except Exception as exc:
+            logger.warning("failed to locate recaptcha anchor in iframe: %s", exc)
             return None
 
     # -- 人类化操作 --------------------------------------------------------
@@ -513,13 +545,15 @@ class CaptchaSolver:
         """人类化点击：贝塞尔曲线移动 + 随机偏移(±5px) + 随机延迟(0.5~2s)。"""
         try:
             box = selector.bounding_box()
-        except Exception:
+        except Exception as exc:
+            logger.debug("bounding_box unavailable, falling back to native click: %s", exc)
             box = None
         if box is None:
             # 取不到坐标时退化为元素原生点击
             try:
                 selector.click()
-            except Exception:
+            except Exception as exc:
+                logger.warning("native element click failed: %s", exc)
                 return
             if self.humanize:
                 time.sleep(random.uniform(0.5, 2.0))
@@ -636,13 +670,17 @@ class CaptchaSolver:
                 for tag in ("textarea", "input"):
                     try:
                         el = page.query_selector(f'{tag}[name="{name}"]')
-                    except Exception:
+                    except Exception as exc:
+                        logger.debug("token field probe failed for %s[name=%s]: %s", tag, name, exc)
                         el = None
                     if el is None:
                         continue
                     try:
                         val = el.evaluate("el => el && el.value || ''")
-                    except Exception:
+                    except Exception as exc:
+                        logger.debug(
+                            "token value evaluate failed; falling back to attribute: %s", exc
+                        )
                         val = el.get_attribute("value") or ""
                     if val:
                         return True

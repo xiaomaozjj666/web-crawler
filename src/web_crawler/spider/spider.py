@@ -17,6 +17,7 @@ import heapq
 import json
 import logging
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -438,6 +439,70 @@ class Spider:
         self.stats.requests_failed = stats.get("requests_failed", 0)
         return queue, True
 
+    # -- run()/stream() 共享的调度基元 ----------------------------------------
+    # 两条执行路径（sync 循环 / async 流式 worker）的队列引导、重试与状态
+    # 收尾必须逐字同源——此前各自维护，退避公式与日志格式双份，改一边漏
+    # 一边即行为分叉。
+
+    def _bootstrap_queue(self, path: Path, resume: bool) -> list[tuple[int, int, Request]]:
+        """构建初始优先队列：resume 从状态恢复，否则消费 start_requests 并播种去重指纹。"""
+        queue: list[tuple[int, int, Request]] = []
+        if resume:
+            loaded, restored = self._load_state(path)
+            if restored:
+                logger.info("resumed spider %s with %d queued requests", self.name, len(loaded))
+                for r in loaded:
+                    self._heap_counter += 1
+                    heapq.heappush(queue, (-r.priority, self._heap_counter, r))
+        else:
+            for r in self.start_requests():
+                self._heap_counter += 1
+                heapq.heappush(queue, (-r.priority, self._heap_counter, r))
+            for _, _, r in queue:
+                self.dupefilter.seen.add(self.dupefilter.fingerprint(r))
+        return queue
+
+    def _retry_backoff(self, retries: int) -> float:
+        """第 ``retries`` 次重试前的指数退避秒数（0.5s 起步，封顶 8s）。"""
+        return min(0.5 * 2 ** (retries - 1), 8.0)
+
+    def _schedule_retry(
+        self, request: Request, queue: list[tuple[int, int, Request]], exc: Exception
+    ) -> bool:
+        """决定是否重试：是则递增计数、重新入队并记日志，返回 True。
+
+        退避睡眠由调用方按 sync/async 各自的 sleep 实现时长取自
+        :meth:`_retry_backoff`——入队与计数必须先于睡眠（与历史顺序一致）。
+        """
+        if request.retries >= self.max_retries:
+            self.stats.requests_failed += 1
+            logger.warning("request failed: %s (%s)", request.url, exc)
+            return False
+        request.retries += 1
+        self._heap_counter += 1
+        heapq.heappush(queue, (-request.priority, self._heap_counter, request))
+        logger.info(
+            "retrying %s (attempt %d/%d)",
+            request.url,
+            request.retries,
+            self.max_retries,
+        )
+        return True
+
+    def _finalize_state(
+        self,
+        queue: list[tuple[int, int, Request]],
+        path: Path,
+        manage_state: bool,
+        owns_state: bool,
+    ) -> None:
+        """运行结束的状态文件收尾：暂停/显式管理时持久化，resume 消费后清除。"""
+        if self._paused or (manage_state and queue):
+            self._dump_state([r for _, _, r in queue], path)
+            logger.info("state saved to %s (%d requests remaining)", path, len(queue))
+        elif manage_state and owns_state and path.exists():
+            path.unlink()
+
     # -- public API --------------------------------------------------------
     def pause(self) -> None:
         """通知运行中的循环持久化状态并在当前批次后停止。"""
@@ -473,20 +538,7 @@ class Spider:
         owns_state = resume  # resume 从该文件恢复，视为本次运行消费该文件
         # queue 是 ``(-priority, counter, Request)`` 的最小堆 —— heapq
         # 先弹出最小元组，priority 取负即得到高优先级先出的顺序。
-        queue: list[tuple[int, int, Request]] = []
-        if resume:
-            loaded, restored = self._load_state(path)
-            if restored:
-                logger.info("resumed spider %s with %d queued requests", self.name, len(loaded))
-                for r in loaded:
-                    self._heap_counter += 1
-                    heapq.heappush(queue, (-r.priority, self._heap_counter, r))
-        else:
-            for r in self.start_requests():
-                self._heap_counter += 1
-                heapq.heappush(queue, (-r.priority, self._heap_counter, r))
-            for _, _, r in queue:
-                self.dupefilter.seen.add(self.dupefilter.fingerprint(r))
+        queue = self._bootstrap_queue(path, resume)
 
         items: list[Any] = []
         self.stats.start_time = time.monotonic()
@@ -516,22 +568,10 @@ class Spider:
                         logger.info("request ignored by middleware: %s", request.url)
                         continue
                     except Exception as exc:
-                        if request.retries < self.max_retries:
-                            request.retries += 1
-                            delay = min(0.5 * 2 ** (request.retries - 1), 8.0)
+                        if self._schedule_retry(request, queue, exc):
+                            delay = self._retry_backoff(request.retries)
                             if delay:
                                 time.sleep(delay)
-                            self._heap_counter += 1
-                            heapq.heappush(queue, (-request.priority, self._heap_counter, request))
-                            logger.info(
-                                "retrying %s (attempt %d/%d)",
-                                request.url,
-                                request.retries,
-                                self.max_retries,
-                            )
-                        else:
-                            self.stats.requests_failed += 1
-                            logger.warning("request failed: %s (%s)", request.url, exc)
                         continue
                 response = self._apply_response_middlewares(response, request)
 
@@ -558,11 +598,7 @@ class Spider:
                     self.stats.items_scraped += 1
         finally:
             self.stats.end_time = time.monotonic()
-            if self._paused or (manage_state and queue):
-                self._dump_state([r for _, _, r in queue], path)
-                logger.info("state saved to %s (%d requests remaining)", path, len(queue))
-            elif manage_state and owns_state and path.exists():
-                path.unlink()
+            self._finalize_state(queue, path, manage_state, owns_state)
         return items
 
     async def async_run(
@@ -614,25 +650,12 @@ class Spider:
         # 与 run() 相同的状态文件生命周期：仅暂停或显式管理时读写
         manage_state = state_file is not None or resume
         owns_state = resume
-        queue: list[tuple[int, int, Request]] = []
-        if resume:
-            loaded, restored = self._load_state(path)
-            if restored:
-                logger.info("resumed spider %s with %d queued requests", self.name, len(loaded))
-                for r in loaded:
-                    self._heap_counter += 1
-                    heapq.heappush(queue, (-r.priority, self._heap_counter, r))
-        else:
-            for r in self.start_requests():
-                self._heap_counter += 1
-                heapq.heappush(queue, (-r.priority, self._heap_counter, r))
-            for _, _, r in queue:
-                self.dupefilter.seen.add(self.dupefilter.fingerprint(r))
+        queue = self._bootstrap_queue(path, resume)
 
         self.stats.start_time = time.monotonic()
         self._paused = False
 
-        async def worker(request: Request, buf: list[Any]) -> None:
+        async def worker(request: Request, buf: deque[Any]) -> None:
             """下载单个请求并处理产出：新 Request 入队，item 写入 buf。"""
             # process_request 可短路下载或丢弃请求
             try:
@@ -658,22 +681,10 @@ class Spider:
                 except Exception as exc:
                     # 与 run() 一致的重试语义：push 回队列而非在 worker 内自旋，
                     # 让主循环统一控制调度与暂停检查
-                    if request.retries < self.max_retries:
-                        request.retries += 1
-                        delay = min(0.5 * 2 ** (request.retries - 1), 8.0)
+                    if self._schedule_retry(request, queue, exc):
+                        delay = self._retry_backoff(request.retries)
                         if delay:
                             await asyncio.sleep(delay)
-                        self._heap_counter += 1
-                        heapq.heappush(queue, (-request.priority, self._heap_counter, request))
-                        logger.info(
-                            "retrying %s (attempt %d/%d)",
-                            request.url,
-                            request.retries,
-                            self.max_retries,
-                        )
-                    else:
-                        self.stats.requests_failed += 1
-                        logger.warning("request failed: %s (%s)", request.url, exc)
                     return
             response = self._apply_response_middlewares(response, request)
             self.stats.pages_crawled += 1
@@ -700,7 +711,7 @@ class Spider:
         # try/finally：消费方提前 break（aclose）、回调异常或暂停时
         # 都要完成状态持久化，不丢已排队的请求。
         pending: set[asyncio.Task[None]] = set()
-        items_buf: list[Any] = []
+        items_buf: deque[Any] = deque()
         try:
             while True:
                 # 补并发槽位：max_requests 以"已完成 + in-flight"为下限计数，
@@ -727,18 +738,14 @@ class Spider:
                         raise exc
                 # drain 完成的 item（完成顺序，非调度顺序）
                 while items_buf:
-                    item = items_buf.pop(0)
+                    item = items_buf.popleft()
                     self.stats.items_scraped += 1
                     yield item
         finally:
             for leftover in pending:
                 leftover.cancel()
             self.stats.end_time = time.monotonic()
-            if self._paused or (manage_state and queue):
-                self._dump_state([r for _, _, r in queue], path)
-                logger.info("state saved to %s (%d requests remaining)", path, len(queue))
-            elif manage_state and owns_state and path.exists():
-                path.unlink()
+            self._finalize_state(queue, path, manage_state, owns_state)
 
 
 __all__ = [
