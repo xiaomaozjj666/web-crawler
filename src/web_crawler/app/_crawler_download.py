@@ -20,7 +20,12 @@ import json
 import logging
 import re
 import shutil
-from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    Future,
+    ThreadPoolExecutor,
+    wait,
+)
 from dataclasses import asdict
 
 from web_crawler.app import _crawler_core as cr
@@ -252,10 +257,14 @@ def _run_downloads(ctx: _CrawlContext, manifest_rows: list[ManifestRow]) -> bool
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = {executor.submit(_process_resource, ctx, r): r for r in ctx.queue[:]}
+        # 增量等待集：只随完成收缩，wait() 不再每 0.5 秒对全部在途 future
+        # 重挂一遍回调；FIRST_COMPLETED 让任一完成立即醒来（原实现
+        # FIRST_EXCEPTION 语义下无异常时要等满 timeout 才处理完成项）
+        pending: set[Future[ManifestRow | None]] = set(futures)
         index = 0
         download_queue_size = len(ctx.queue)
 
-        while futures and not cancelled:
+        while pending and not cancelled:
             try:
                 cr.wait_if_paused(args)
             except RuntimeError:
@@ -264,13 +273,13 @@ def _run_downloads(ctx: _CrawlContext, manifest_rows: list[ManifestRow]) -> bool
                 cancelled = True
                 break
             if cr.should_stop(args):
-                for f in futures:
+                for f in pending:
                     f.cancel()
                 _log.info("cancelled by user")
                 cancelled = True
                 break
 
-            done, _pending = wait(futures.keys(), timeout=0.5, return_when=FIRST_EXCEPTION)
+            done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
             for future in done:
                 resource_for_future = futures.pop(future)
                 index += 1
@@ -312,5 +321,6 @@ def _run_downloads(ctx: _CrawlContext, manifest_rows: list[ManifestRow]) -> bool
                         r = ctx.new_discoveries.pop(0)
                         fut = executor.submit(_process_resource, ctx, r)
                         futures[fut] = r
+                        pending.add(fut)
                         download_queue_size += 1
     return cancelled

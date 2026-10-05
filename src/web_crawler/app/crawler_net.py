@@ -337,12 +337,23 @@ def parse_srcset(value: str) -> Iterable[str]:
 
 
 def normalize_url(url: str) -> str:
+    """规范化种子 URL；不合法或目标 host 不安全时返回空串并记 warning。
+
+    返回空串曾导致"种子被静默丢弃、日志只见 no resources found"的排查
+    困难——拒绝时必须留下可诊断的日志（Power Mode 下 host 校验放行）。
+    """
     url, _fragment = urldefrag(url.strip())
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
+        _log.warning("seed URL rejected: scheme %r is not allowed (only http/https)", parsed.scheme)
         return ""
     # 防止 SSRF：检查是否为内网/回环地址
     if not _is_safe_hostname(parsed.hostname):
+        _log.warning(
+            "seed URL rejected: host %r is private/loopback/link-local "
+            "(可信环境访问内网目标请设 WEB_CRAWLER_POWER_MODE=1)",
+            parsed.hostname,
+        )
         return ""
     return url
 

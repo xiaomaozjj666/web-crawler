@@ -26,21 +26,42 @@ from web_crawler.app.crawler_net import extract_title, same_domain
 _log = logging.getLogger("crawler")
 
 
+class RewriteTable:
+    """预构建的 URL→本地路径替换表（整次爬取构建一次，逐页复用）。
+
+    原实现每页都重建整表：每行一次 ``Path.resolve()``（Windows 上是一次
+    真实的文件系统调用），总代价 O(页数 × 资源数)，大爬取下后处理从秒级
+    退化到分钟级。构建一次后逐页只剩纯字符串替换。
+    """
+
+    def __init__(self, resources: list[ManifestRow], output_dir: Path) -> None:
+        # dict 去重保持"后写覆盖"语义（与原集合推导式一致）；构建期跳过
+        # saved_path 越界的坏行，而不是让整轮重写以异常告终
+        by_url: dict[str, tuple[str, str]] = {}  # url -> (path, local)
+        for row in resources:
+            if row.status != "ok" or not row.saved_path:
+                continue
+            try:
+                local = Path(row.saved_path).resolve().relative_to(output_dir).as_posix()
+            except ValueError:
+                _log.warning("rewrite: saved_path outside output_dir, skipped: %s", row.saved_path)
+                continue
+            by_url[row.url] = (urlparse(row.url).path, local)
+        # 长替换源优先：避免短 URL 先命中、截断长 URL 的前缀（保持原排序语义）
+        self._pairs = sorted(by_url.items(), key=lambda kv: len(kv[0]), reverse=True)
+
+    def apply(self, html: str, page_url: str) -> str:
+        rewritten = html
+        for original_url, (path, local) in self._pairs:
+            rewritten = rewritten.replace(original_url, local)
+            if same_domain(original_url, page_url):
+                rewritten = rewritten.replace(path, local)
+        return rewritten
+
+
 def rewrite_html(html: str, resources: list[ManifestRow], page_url: str, output_dir: Path) -> str:
-    replacements = {
-        row.url: Path(row.saved_path).resolve().relative_to(output_dir).as_posix()
-        for row in resources
-        if row.status == "ok" and row.saved_path
-    }
-    rewritten = html
-    for original_url, local_path in sorted(
-        replacements.items(), key=lambda item: len(item[0]), reverse=True
-    ):
-        rewritten = rewritten.replace(original_url, local_path)
-        parsed = urlparse(original_url)
-        if same_domain(original_url, page_url):
-            rewritten = rewritten.replace(parsed.path, local_path)
-    return rewritten
+    """单页重写便捷入口（保持既有签名）；整次爬取请构建 :class:`RewriteTable` 复用。"""
+    return RewriteTable(resources, output_dir).apply(html, page_url)
 
 
 # ── 遮罩层/弹窗/模态框剥离 ────────────────────────────────────────

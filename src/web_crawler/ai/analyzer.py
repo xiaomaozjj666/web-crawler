@@ -185,10 +185,32 @@ def _third_param_name(value: str) -> str | None:
     return params[2] if len(params) >= 3 else None
 
 
+# alias 相关正则的编译缓存：别名因模块而异，f-string 现拼 pattern 无法命中
+# re 模块的内部编译缓存，数千模块的 webpack bundle 会重复编译数千次。
+_alias_pattern_cache: dict[tuple[str, str], re.Pattern[str]] = {}
+_ALIAS_PATTERN_CACHE_MAX = 1024
+
+
+def _alias_pattern(template: str, alias: str) -> re.Pattern[str]:
+    """按 (模板, 别名) 缓存编译正则；模板用 ``{alias}`` 作别名占位符。"""
+    key = (template, alias)
+    cached = _alias_pattern_cache.get(key)
+    if cached is None:
+        cached = re.compile(template.format(alias=re.escape(alias)))
+        if len(_alias_pattern_cache) >= _ALIAS_PATTERN_CACHE_MAX:
+            _alias_pattern_cache.clear()
+        _alias_pattern_cache[key] = cached
+    return cached
+
+
+_DEPS_RE_TEMPLATE = r"\b{alias}\s*\(\s*(\d+)\s*\)"
+_EXPORT_D_RE_TEMPLATE = r"\b{alias}\.d\s*\("
+
+
 def _extract_deps(src: str, alias: str) -> list[int]:
     """在 ``src`` 中查找 ``alias(数字)`` 形态的模块依赖调用。"""
     deps: list[int] = []
-    for m in re.finditer(rf"\b{re.escape(alias)}\s*\(\s*(\d+)\s*\)", src):
+    for m in _alias_pattern(_DEPS_RE_TEMPLATE, alias).finditer(src):
         deps.append(int(m.group(1)))
     return deps
 
@@ -196,7 +218,7 @@ def _extract_deps(src: str, alias: str) -> list[int]:
 def _extract_export_keys(src: str, alias: str) -> list[str]:
     """提取 ``alias.d(exports, { "k": ..., "k2": ... })`` 中定义的导出名。"""
     keys: list[str] = []
-    for m in re.finditer(rf"\b{re.escape(alias)}\.d\s*\(", src):
+    for m in _alias_pattern(_EXPORT_D_RE_TEMPLATE, alias).finditer(src):
         open_paren = src.find("(", m.start())
         if open_paren == -1:  # pragma: no cover - 正则已保证 ( 存在
             continue

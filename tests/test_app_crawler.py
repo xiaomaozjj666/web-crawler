@@ -20,6 +20,7 @@ import pytest
 
 from web_crawler.app import _crawler_context as ctx_mod
 from web_crawler.app import _crawler_core as core
+from web_crawler.app import _crawler_post as post
 from web_crawler.app import crawler as cr
 
 # ========== 数据类 ==========
@@ -4101,7 +4102,7 @@ class TestCrawlPostProcessingTolerance:
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
         with (
             patch.object(core, "fetch", side_effect=self._fetch_page_with_img(html)),
-            patch.object(cr, "rewrite_html", side_effect=RuntimeError("rewrite boom")),
+            patch.object(post, "RewriteTable", side_effect=RuntimeError("rewrite boom")),
         ):
             args = cr.build_parser().parse_args(
                 [
@@ -4122,7 +4123,7 @@ class TestCrawlPostProcessingTolerance:
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
         with (
             patch.object(core, "fetch", side_effect=self._fetch_page_with_img(html)),
-            patch.object(cr, "write_manifests", side_effect=OSError("disk full")),
+            patch.object(post, "write_manifests", side_effect=OSError("disk full")),
         ):
             args = cr.build_parser().parse_args(
                 [
@@ -4142,7 +4143,7 @@ class TestCrawlPostProcessingTolerance:
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
         with (
             patch.object(core, "fetch", side_effect=self._fetch_page_with_img(html)),
-            patch.object(cr, "write_failed_manifests", side_effect=OSError("disk full")),
+            patch.object(post, "write_failed_manifests", side_effect=OSError("disk full")),
         ):
             args = cr.build_parser().parse_args(
                 [
@@ -4162,7 +4163,7 @@ class TestCrawlPostProcessingTolerance:
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
         with (
             patch.object(core, "fetch", side_effect=self._fetch_page_with_img(html)),
-            patch.object(cr, "smart_extract", side_effect=RuntimeError("llm down")),
+            patch.object(post, "smart_extract", side_effect=RuntimeError("llm down")),
         ):
             args = cr.build_parser().parse_args(
                 [
@@ -4183,7 +4184,7 @@ class TestCrawlPostProcessingTolerance:
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
         with (
             patch.object(core, "fetch", side_effect=self._fetch_page_with_img(html)),
-            patch.object(cr, "extract_readable_text", side_effect=RuntimeError("boom")),
+            patch.object(post, "extract_readable_text", side_effect=RuntimeError("boom")),
         ):
             args = cr.build_parser().parse_args(
                 [
@@ -4204,7 +4205,7 @@ class TestCrawlPostProcessingTolerance:
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
         with (
             patch.object(core, "fetch", side_effect=self._fetch_page_with_img(html)),
-            patch.object(cr, "write_run_report", side_effect=OSError("disk full")),
+            patch.object(post, "write_run_report", side_effect=OSError("disk full")),
         ):
             args = cr.build_parser().parse_args(
                 [
@@ -4322,14 +4323,16 @@ class TestPostProcessErrorPaths:
             dedup=None,
         )
         ctx.output_dir.mkdir(parents=True, exist_ok=True)
-        ctx.page_html["https://example.com/"] = "<html><body>x</body></html>"
+        page_file = ctx.output_dir / "page.html"
+        page_file.write_text("<html><body>x</body></html>", encoding="utf-8")
+        ctx.page_files["https://example.com/"] = (page_file, "utf-8")
         ctx.seen_pages.add("https://example.com/")
         return _crawler_post, ctx
 
     @pytest.mark.parametrize(
         "flags,patch_target,patch_name",
         [
-            ({"rewrite_html": True}, "rewrite_html", "rewrite_html"),
+            ({"rewrite_html": True}, "RewriteTable", "rewrite_html"),
             ({"rewrite_html": True, "strip_overlays": True}, "strip_page_overlays", "rewrite_html"),
             ({}, "write_manifests", "manifests"),
             ({"video_mode": True}, "write_video_manifests", "video_manifests"),

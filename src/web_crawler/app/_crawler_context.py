@@ -22,7 +22,7 @@ import logging
 import sys
 import threading
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.robotparser import RobotFileParser
@@ -58,17 +58,54 @@ class _CrawlContext:
     dedup: ContentDedup | None
     page_queue: deque[str] = field(default_factory=deque)
     seen_pages: set[str] = field(default_factory=set)
-    page_html: dict[str, str] = field(default_factory=dict)
+    # page_queue 的成员索引（enqueue_page / popleft 处同步维护），
+    # 避免对 deque 做线性 ``in`` 检查（大爬取下越扫越慢）
+    queued_pages: set[str] = field(default_factory=set)
+    # 本轮扫描已落盘的页面：page_url -> (页面文件路径, 解码用编码)。
+    # 页面 HTML 不再整体驻留内存（万页 × 数百 KB 会把堆撑爆），后处理
+    # 阶段按需从磁盘逐页重读（见 _crawler_post._iter_page_html）。
+    page_files: dict[str, tuple[Path, str]] = field(default_factory=dict)
     page_titles: dict[str, str] = field(default_factory=dict)
     all_resources: list[Resource] = field(default_factory=list)
+    # all_resources 的 dict 形态缓存（只增不减；resource_dicts() 按长度差增量补齐）
+    _resource_dicts: list[dict[str, str]] = field(default_factory=list, repr=False)
     # 下载阶段状态
     queue: list[Resource] = field(default_factory=list)
     queued_urls: set[str] = field(default_factory=set)
     new_discoveries: list[Resource] = field(default_factory=list)
     processed_count: list[int] = field(default_factory=lambda: [0])
+    # 上次 --resume-crawl 状态快照的保存时刻（monotonic 秒；单元素列表模仿
+    # processed_count 的可变持有模式，避免把 dataclass 改成非 Equatable）
+    last_state_save: list[float] = field(default_factory=lambda: [0.0])
     discovery_lock: threading.Lock = field(default_factory=threading.Lock)
     manifest_lock: threading.Lock = field(default_factory=threading.Lock)
     jsonl_file: Any = None
+
+    def enqueue_page(self, url: str) -> None:
+        """URL 入待扫队列并同步成员索引。"""
+        self.page_queue.append(url)
+        self.queued_pages.add(url)
+
+    def pop_page(self) -> str:
+        """待扫队列出队并同步成员索引。"""
+        url = self.page_queue.popleft()
+        self.queued_pages.discard(url)
+        return url
+
+    def resource_dicts(self) -> list[dict[str, str]]:
+        """all_resources 的 dict 形态（增量缓存，供状态快照复用）。
+
+        ``dataclasses.asdict`` 带反射与递归拷贝，每次快照对全部资源重算是
+        --resume-crawl 写放大的主要常数。列表只追加、元素不原地修改（唯一
+        写点是页面扫描的 extend），按长度差增量补齐即与逐次全量转换等价。
+        """
+        resources = self.all_resources
+        if len(self._resource_dicts) > len(resources):
+            # 防御性：列表被异常收缩时重算，保证缓存不脏
+            self._resource_dicts.clear()
+        if len(self._resource_dicts) < len(resources):
+            self._resource_dicts.extend(asdict(r) for r in resources[len(self._resource_dicts) :])
+        return self._resource_dicts
 
 
 # ── 配置保存/加载 ──────────────────────────────────────────────────────

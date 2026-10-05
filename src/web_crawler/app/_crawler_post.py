@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+from collections.abc import Iterator
 from urllib.parse import urlparse
 
 from web_crawler.app import _crawler_context as ctx_mod
@@ -27,10 +28,10 @@ from web_crawler.app._crawler_context import _CrawlContext
 from web_crawler.app.crawler_models import ManifestRow, Resource
 from web_crawler.app.crawler_net import output_path_for_url
 from web_crawler.app.crawler_report import (
+    RewriteTable,
     _format_bytes,
     extract_readable_text,
     format_duration,
-    rewrite_html,
     smart_extract,
     strip_page_overlays,
     write_extracted_data,
@@ -70,6 +71,21 @@ def _close_jsonl(ctx: _CrawlContext) -> None:
             _log.warning("failed to finalize JSONL manifest: %s", _jsonl_err)
 
 
+def _iter_page_html(ctx: _CrawlContext) -> Iterator[tuple[str, str]]:
+    """逐页从磁盘重读扫描阶段落盘的 HTML（page_url, html）。
+
+    页面 HTML 不再全量驻留内存（万页 × 数百 KB 会把堆撑爆），此处按需
+    逐页读取，峰值内存为一页；编码用扫描时从 Content-Type/--encoding
+    解析出的同款，保证重读结果与扫描期解码一致。落盘文件丢失时跳过并
+    记 warning（后处理不因单页 IO 失败整体中断）。
+    """
+    for page_url, (page_path, encoding) in ctx.page_files.items():
+        try:
+            yield page_url, page_path.read_text(encoding=encoding, errors="replace")
+        except OSError as exc:
+            _log.warning("failed to re-read saved page %s: %s", page_url, exc)
+
+
 def _post_process(
     ctx: _CrawlContext,
     manifest_rows: list[ManifestRow],
@@ -94,8 +110,11 @@ def _post_process(
     # 每个后处理阶段独立 try/except：单步失败仅记 warning，保证清单与报告尽量生成
     if args.rewrite_html and not _post_pause_check(args):
         try:
-            for page_url, html in ctx.page_html.items():
-                rewritten = rewrite_html(html, manifest_rows, page_url, output_dir)
+            # URL→本地路径替换表整次爬取只构建一次（每行一次 Path.resolve 的
+            # 文件系统调用只发生在这里），页面 HTML 逐页从磁盘重读
+            table = RewriteTable(manifest_rows, output_dir)
+            for page_url, html in _iter_page_html(ctx):
+                rewritten = table.apply(html, page_url)
                 if getattr(args, "strip_overlays", False):
                     rewritten = strip_page_overlays(rewritten)
                 rewritten_path = output_path_for_url(
@@ -124,7 +143,7 @@ def _post_process(
     if getattr(args, "smart_extract", False) and not _post_pause_check(args):
         try:
             extracted_data: list[dict[str, object]] = []
-            for page_url, html in ctx.page_html.items():
+            for page_url, html in _iter_page_html(ctx):
                 extracted_data.append(smart_extract(html, page_url))
             if extracted_data:
                 write_extracted_data(output_dir, extracted_data)
@@ -137,7 +156,7 @@ def _post_process(
             text_dir = output_dir / "extracted_text"
             text_dir.mkdir(parents=True, exist_ok=True)
             count = 0
-            for page_url, html in ctx.page_html.items():
+            for page_url, html in _iter_page_html(ctx):
                 text = extract_readable_text(html)
                 if not text:
                     continue

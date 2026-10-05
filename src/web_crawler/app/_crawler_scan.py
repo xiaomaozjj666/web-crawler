@@ -15,8 +15,8 @@ patch 的模块全局名（``cr.fetch`` / ``cr.should_stop`` /
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
-from dataclasses import asdict
 from urllib.parse import urlparse
 
 from web_crawler.app import _crawler_context as ctx_mod
@@ -38,13 +38,30 @@ from web_crawler.app.crawler_net import (
 # "crawler" logger 的 handler 对所有模块日志生效，行为与拆分前一致。
 _log = logging.getLogger("crawler")
 
+# --resume-crawl 状态快照的最小保存间隔（秒）。状态体随爬取规模线性增长，
+# 固定"每 5 页全量重写一次"会造成 O(P²) 写放大——大爬取后期每 5 页卡顿数秒。
+# 除队列耗尽的最终保存外，两次保存至少间隔该时长，成本占比保持有界。
+_STATE_SAVE_MIN_INTERVAL_SECONDS = 2.0
+
+
+def _resolved_encoding(fallback: str | None, content_type: str) -> str:
+    """复现 :func:`decode_text` 的编码选择，供后处理从磁盘重读时使用。"""
+    if fallback:
+        return fallback
+    lowered = content_type.lower()
+    if "charset=" in lowered:
+        charset = lowered.split("charset=", 1)[1].split(";", 1)[0].strip()
+        if charset:
+            return charset
+    return "utf-8"
+
 
 def _seed_page_queue(ctx: _CrawlContext) -> None:
     """种子 URL 入队并按 --sitemap 做站点地图页面发现。"""
     args = ctx.args
     root_url = normalize_url(args.url)
     if root_url:
-        ctx.page_queue.append(root_url)
+        ctx.enqueue_page(root_url)
 
     if args.sitemap:
         parsed = urlparse(args.url)
@@ -52,12 +69,12 @@ def _seed_page_queue(ctx: _CrawlContext) -> None:
         _log.info("discovering pages from %s", sitemap_url)
         sitemap_urls = discover_sitemap_urls(sitemap_url, ctx.headers, args.timeout)
         for su in sitemap_urls:
-            if su not in ctx.seen_pages and su not in ctx.page_queue:
+            if su not in ctx.seen_pages and su not in ctx.queued_pages:
                 if args.same_domain and not same_domain(su, args.url):
                     continue
                 if is_blocked_url(su, ctx.block_keywords):
                     continue
-                ctx.page_queue.append(su)
+                ctx.enqueue_page(su)
 
 
 def _restore_state(ctx: _CrawlContext) -> None:
@@ -70,6 +87,7 @@ def _restore_state(ctx: _CrawlContext) -> None:
         _log.info("no saved state found, starting fresh")
         return
     ctx.page_queue = deque(saved.get("page_queue", []))
+    ctx.queued_pages = set(ctx.page_queue)
     ctx.seen_pages = set(saved.get("seen_pages", []))
     ctx.page_titles = {k: str(v) for k, v in saved.get("page_titles", {}).items()}
     for rdict in saved.get("resources", []):
@@ -105,7 +123,7 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
             _log.info("cancelled before scanning next page")
             cancelled = True
             break
-        page_url = ctx.page_queue.popleft()
+        page_url = ctx.pop_page()
         if not page_url or page_url in ctx.seen_pages:  # pragma: no cover - 防御性：队列已预过滤
             continue
         if is_blocked_url(page_url, ctx.block_keywords):
@@ -152,7 +170,7 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
         page_path.write_bytes(data)
 
         html = decode_text(data, content_type, args.encoding)
-        ctx.page_html[page_url] = html
+        ctx.page_files[page_url] = (page_path, _resolved_encoding(args.encoding, content_type))
         ctx.page_titles[page_url] = extract_title(html)
         parser = PageParser(page_url)
         parser.feed(html)
@@ -160,27 +178,33 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
 
         if args.crawl_pages:
             for link in parser.page_links:
-                if link not in ctx.seen_pages and link not in ctx.page_queue:
+                if link not in ctx.seen_pages and link not in ctx.queued_pages:
                     if is_blocked_url(
                         link, ctx.block_keywords
                     ):  # pragma: no cover - 防御性：资源级 block 检查已在更上层处理
                         continue
                     if not args.same_domain or same_domain(link, args.url):
-                        ctx.page_queue.append(link)
+                        ctx.enqueue_page(link)
 
-            # 状态保存节流：每 5 页或队列耗尽时保存一次,避免每页全量重写
+            # 状态保存节流：每 5 页或队列耗尽时尝试保存；状态体大时再叠加
+            # 最小时间间隔（见 _STATE_SAVE_MIN_INTERVAL_SECONDS），防止 O(P²) 写放大
             if getattr(args, "resume_crawl", False) and (
                 len(ctx.seen_pages) % 5 == 0 or not ctx.page_queue
             ):
-                try:
-                    ctx_mod.save_crawl_state(
-                        ctx.output_dir,
-                        page_queue=list(ctx.page_queue),
-                        seen_pages=list(ctx.seen_pages),
-                        page_titles=ctx.page_titles,
-                        resources=[asdict(r) for r in ctx.all_resources],
-                        sha256_set=ctx.dedup.seen_hashes() if ctx.dedup else [],
-                    )
-                except Exception as exc:  # pragma: no cover - 防御性：状态保存异常吞掉
-                    _log.warning("failed to save crawl state: %s", exc)
+                now = time.monotonic()
+                if not ctx.page_queue or (
+                    now - ctx.last_state_save[0] >= _STATE_SAVE_MIN_INTERVAL_SECONDS
+                ):
+                    ctx.last_state_save[0] = now
+                    try:
+                        ctx_mod.save_crawl_state(
+                            ctx.output_dir,
+                            page_queue=list(ctx.page_queue),
+                            seen_pages=list(ctx.seen_pages),
+                            page_titles=ctx.page_titles,
+                            resources=ctx.resource_dicts(),
+                            sha256_set=ctx.dedup.seen_hashes() if ctx.dedup else [],
+                        )
+                    except Exception as exc:  # pragma: no cover - 防御性：状态保存异常吞掉
+                        _log.warning("failed to save crawl state: %s", exc)
     return cancelled

@@ -95,24 +95,29 @@ def get_segment_key(url: str) -> tuple[bytes, bytes] | None:
 
 # ── HTTP opener（连接复用）──────────────────────────────────────────
 
-_opener: OpenerDirector | None = None
-_opener_lock = threading.Lock()
+# opener 按代理 URL 缓存（"" 表示直连）：同一代理的请求复用连接池与
+# TLS 会话。原实现代理路径每次调用都 build_opener——重定向的每一跳、
+# 每次重试都全新握手，挂代理抓取的吞吐显著下降。进程内代理数量很少，
+# dict 无界增长的风险可忽略。
+_openers: dict[str, OpenerDirector] = {}
+_openers_lock = threading.Lock()
 
 # 重定向最大跳数（与 urllib 默认一致），防止无限跳转
 _MAX_REDIRECTS = 10
 
 
 def _get_opener(proxy: str | None = None) -> OpenerDirector:
-    global _opener
-    if _opener is None or proxy:
+    key = proxy or ""
+    with _openers_lock:
+        cached = _openers.get(key)
+        if cached is not None:
+            return cached
         handlers: list[Any] = [SafeRedirectHandler(), HTTPSHandler(), HTTPHandler()]
         if proxy:
             handlers.append(ProxyHandler({"http": proxy, "https": proxy}))
         opener = build_opener(*handlers)
-        if not proxy:
-            _opener = opener
+        _openers[key] = opener
         return opener
-    return _opener
 
 
 # ── 隐身 fetcher 桥接（复用 src/web_crawler 库）─────────────────────────

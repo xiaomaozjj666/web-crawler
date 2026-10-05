@@ -34,6 +34,7 @@ __all__ = [
     "_ERROR_CLASSES",
     "_ERROR_LABELS",
     "_HTML_CSS",
+    "RewriteTable",
     "_format_bytes",
     "_tag_class",
     "_write_html_report",
@@ -67,6 +68,7 @@ from web_crawler.app._report_context import (  # noqa: F401
 from web_crawler.app._report_extract import (
     EXTRACTED_DATA_FIELDS,
     OVERLAY_PATTERNS,
+    RewriteTable,
     extract_readable_text,
     rewrite_html,
     smart_extract,
