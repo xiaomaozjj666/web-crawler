@@ -500,13 +500,31 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _ensure_utf8_stdio() -> None:
+    """把 stdout/stderr 钉成 UTF-8（``errors="replace"`` 兜底）。
+
+    默认编码跟随系统代码页：在非 UTF-8 代码页的机器上（如 en-US 的 cp1252），
+    打印中文（``--help`` 的帮助文本、启动时的 DEEPSEEK_API_KEY 告警）会抛
+    ``UnicodeEncodeError`` 直接退出 1；MCP 协议本身也要求 UTF-8。
+    写法与 ``web_crawler.app._crawler_core`` 保持一致。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main() -> None:
     """独立入口：解析参数、读取环境变量，创建服务器并启动。
 
     用 ``parse_known_args`` 解析：``-h/--help`` 与 ``-V/--version`` 立即退出，
     其余参数一律忽略 —— MCP 客户端按配置启动本服务器时可能带额外参数，
     不能因此让它启动失败。
+
+    入口先调 :func:`_ensure_utf8_stdio`：否则非 UTF-8 代码页下打印中文帮助会崩
+    （2026-10-16 CI 的 windows-latest 实测）。
     """
+    _ensure_utf8_stdio()
     _build_parser().parse_known_args()
     if not os.environ.get("DEEPSEEK_API_KEY"):
         sys.stderr.write("warning: DEEPSEEK_API_KEY 环境变量未设置，LLM 相关工具将不可用。\n")

@@ -662,6 +662,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     """CLI 入口。"""
+    # 控制台先切 UTF-8：非 UTF-8 代码页（如 en-US 的 cp1252）下打印中文帮助会
+    # UnicodeEncodeError 直接退出 1（与 app/_crawler_core.py、mcp/server.py 同款做法）。
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     parser = build_parser()
     args = parser.parse_args()
     if not args.command:

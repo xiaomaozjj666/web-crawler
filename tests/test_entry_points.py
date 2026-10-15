@@ -8,6 +8,7 @@ import 入口模块(如 ``from web_crawler.app import crawler``),会形成双身
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
@@ -39,13 +40,22 @@ def test_ui_module_importable() -> None:
 
 
 def test_mcp_server_module_entry_runs() -> None:
-    """``python -m web_crawler.mcp.server --help`` 正常退出(无循环导入)。"""
+    """``python -m web_crawler.mcp.server --help`` 正常退出(无循环导入)。
+
+    子进程显式钉 ``PYTHONIOENCODING=cp1252``:入口若不自行切到 UTF-8,打印中文
+    帮助会 ``UnicodeEncodeError`` 退出 1(2026-10-16 CI 的 windows-latest 实测,
+    本机 ACP=65001 看不见这类缺陷)。
+    """
+    env = {**os.environ, "PYTHONIOENCODING": "cp1252"}
     r = subprocess.run(
         [sys.executable, "-m", "web_crawler.mcp.server", "--help"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
         check=True,
+        env=env,
     )
     assert r.returncode == 0, f"stdout={r.stdout!r}\nstderr={r.stderr!r}"
     assert "--version" in r.stdout

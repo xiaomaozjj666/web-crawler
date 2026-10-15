@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -1013,6 +1014,42 @@ def test_main_no_command_prints_help_and_exits(
     assert exc_info.value.code == 2
     captured = capsys.readouterr()
     assert "子命令" in captured.out or "usage" in captured.out.lower()
+
+
+class _LegacyConsole:
+    """模拟非 UTF-8 代码页的控制台：写不出该编码的字符时抛 UnicodeEncodeError。"""
+
+    def __init__(self, encoding: str = "cp1252") -> None:
+        self.encoding = encoding
+        self.errors = "strict"
+        self.written: list[str] = []
+
+    def write(self, text: str) -> int:
+        text.encode(self.encoding, self.errors)  # 与真实控制台一致：编不出来就抛
+        self.written.append(text)
+        return len(text)
+
+    def flush(self) -> None:
+        """真实控制台有 flush，这里无缓冲。"""
+
+    def reconfigure(self, *, encoding: str | None = None, errors: str | None = None) -> None:
+        if encoding is not None:
+            self.encoding = encoding
+        if errors is not None:
+            self.errors = errors
+
+
+def test_main_reconfigures_legacy_codepage_console(monkeypatch: pytest.MonkeyPatch) -> None:
+    """入口先切 UTF-8：cp1252 等老式代码页下打印中文帮助不再崩（2026-10-16 CI 实测）。"""
+    out, err = _LegacyConsole(), _LegacyConsole()
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", err)
+    monkeypatch.setattr("sys.argv", ["web-crawler-reverse"])
+    with pytest.raises(SystemExit) as exc_info:
+        cli_module.main()
+    assert exc_info.value.code == 2
+    assert (out.encoding, out.errors) == ("utf-8", "replace")
+    assert "usage" in "".join(out.written).lower()
 
 
 def test_main_with_command_executes_func(
