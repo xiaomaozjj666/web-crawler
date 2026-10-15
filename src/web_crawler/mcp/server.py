@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 import threading
@@ -27,6 +28,7 @@ import traceback
 from collections.abc import Callable
 from typing import Any
 
+from .. import __version__
 from ..ai.analyzer import JSAnalyzer
 from ..ai.captcha import CaptchaManager
 from ..ai.hooks import HookLibrary, generate_combined_script
@@ -482,8 +484,30 @@ class ReverseMCPServer(ReverseToolsMixin, PentestToolsMixin, StdioTransportMixin
 # -- 入口函数 ----------------------------------------------------------------
 
 
+def _build_parser() -> argparse.ArgumentParser:
+    """构建命令行解析器（只处理 --help / --version，便于手工自检与脚本探测）。"""
+    parser = argparse.ArgumentParser(
+        prog="web-crawler-mcp",
+        description="MCP 服务器（stdio 传输）— 供 MCP 客户端以子进程方式调用",
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"web-crawler-mcp {__version__}",
+        help="显示版本并退出",
+    )
+    return parser
+
+
 def main() -> None:
-    """独立入口：读取环境变量，创建服务器并启动。"""
+    """独立入口：解析参数、读取环境变量，创建服务器并启动。
+
+    用 ``parse_known_args`` 解析：``-h/--help`` 与 ``-V/--version`` 立即退出，
+    其余参数一律忽略 —— MCP 客户端按配置启动本服务器时可能带额外参数，
+    不能因此让它启动失败。
+    """
+    _build_parser().parse_known_args()
     if not os.environ.get("DEEPSEEK_API_KEY"):
         sys.stderr.write("warning: DEEPSEEK_API_KEY 环境变量未设置，LLM 相关工具将不可用。\n")
         sys.stderr.flush()

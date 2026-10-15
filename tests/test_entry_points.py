@@ -48,3 +48,4 @@ def test_mcp_server_module_entry_runs() -> None:
         check=True,
     )
     assert r.returncode == 0, f"stdout={r.stdout!r}\nstderr={r.stderr!r}"
+    assert "--version" in r.stdout
