@@ -425,7 +425,7 @@ def test_analyzer_default_provider_is_deepseek() -> None:
 
     analyzer = JSAnalyzer()
     assert isinstance(analyzer.provider, DeepSeekProvider)
-    assert analyzer.model == "deepseek-v4-pro"
+    assert analyzer.model == "deepseek-flash"
 
 
 def test_analyzer_model_fallback_when_provider_model_empty() -> None:
@@ -437,7 +437,7 @@ def test_analyzer_model_fallback_when_provider_model_empty() -> None:
         def chat(self, *a: Any, **k: Any) -> LLMResponse: ...
 
     analyzer = JSAnalyzer(provider=_EmptyModel())  # type: ignore[arg-type]
-    assert analyzer.model == "deepseek-v4-pro"
+    assert analyzer.model == "deepseek-flash"
 
 
 def test_call_llm_finish_reason_length_appends_marker() -> None:

@@ -120,7 +120,7 @@ from ._transport import (
 class ReverseMCPServer(ReverseToolsMixin, PentestToolsMixin, StdioTransportMixin):
     """通过 MCP 协议暴露 JS 逆向 Agent 能力的服务器。"""
 
-    def __init__(self, provider_name: str = "deepseek", model: str = "deepseek-v4-pro") -> None:
+    def __init__(self, provider_name: str = "deepseek", model: str = "deepseek-flash") -> None:
         self.provider_name = provider_name
         self.model = model
 

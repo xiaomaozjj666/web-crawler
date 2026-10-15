@@ -13,7 +13,7 @@
 示例
 ----
 >>> from web_crawler import AIScrapeAgent
->>> agent = AIScrapeAgent(render=True)          # DeepSeek-V4-Pro + Playwright
+>>> agent = AIScrapeAgent(render=True)          # DeepSeek-V4.1-Flash + Playwright
 >>> result = agent.scrape("https://example.com", {"title": "page heading"})
 >>> result.data
 {'title': 'Example Domain'}
@@ -128,7 +128,7 @@ class AIScrapeAgent:
     render:
         对 JS 密集页面使用 Playwright 后端的 :class:`DynamicFetcher`。
     provider:
-        用于抽取的 LLM 供应商（默认 DeepSeek / ``DeepSeek-V4-Pro``）。
+        用于抽取的 LLM 供应商（默认 DeepSeek / ``DeepSeek-V4.1-Flash``）。
     min_delay:
         相邻请求之间的最小间隔秒数（限速）。
     respect_robots:

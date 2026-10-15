@@ -41,7 +41,7 @@ def _print_result(result: str) -> int:
     return 1 if isinstance(data, dict) and "error" in data else 0
 
 
-def _make_server(model: str = "deepseek-v4-pro") -> Any:
+def _make_server(model: str = "deepseek-flash") -> Any:
     """创建 MCP server 实例（复用其内部所有工具）。"""
     from .server import ReverseMCPServer
 
@@ -478,12 +478,12 @@ def build_parser() -> argparse.ArgumentParser:
     """构建命令行参数解析器。"""
     parser = argparse.ArgumentParser(
         prog="web-crawler-reverse",
-        description="JS 逆向 Agent 命令行工具 — Camoufox + DeepSeek V4 Pro 驱动",
+        description="JS 逆向 Agent 命令行工具 — Camoufox + DeepSeek 驱动",
     )
     parser.add_argument(
         "--model",
-        default="deepseek-v4-pro",
-        help="DeepSeek 模型名（默认 deepseek-v4-pro）",
+        default="deepseek-flash",
+        help="DeepSeek 模型名（默认 deepseek-flash）",
     )
     sub = parser.add_subparsers(dest="command", help="子命令")
 

@@ -14,7 +14,7 @@
 ----
 >>> from web_crawler import Fetcher, AIExtractor
 >>> resp = Fetcher().get("https://example.com")
->>> extractor = AIExtractor()  # 默认 DeepSeek-V4-Pro
+>>> extractor = AIExtractor()  # 默认 DeepSeek-V4.1-Flash
 >>> data = extractor.extract(resp, {
 ...     "title": "the main page heading",
 ...     "links": "all anchor hrefs in the nav",
@@ -73,7 +73,7 @@ class AIExtractor:
     ----------
     provider:
         任意满足 :class:`~web_crawler.ai.llm.LLMProvider` 的对象。缺省时
-        创建 DeepSeek 供应商（模型 ``DeepSeek-V4-Pro``）。
+        创建 DeepSeek 供应商（模型 ``DeepSeek-V4.1-Flash``）。
     model:
         便捷参数：透传给默认供应商的模型名。
     max_html_chars:

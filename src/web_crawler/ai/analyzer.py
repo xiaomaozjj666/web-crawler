@@ -1,6 +1,6 @@
 """面向 webpack 打包、混淆 JavaScript 的 AI 辅助分析器。
 
-把已抓取到的 JS 代码片段交给 DeepSeek-V4-Pro 做离线分析：自动识别 webpack
+把已抓取到的 JS 代码片段交给 DeepSeek-V4.1-Flash 做离线分析：自动识别 webpack
 模块结构、反混淆代码、还原加密/签名算法。本模块不直接对目标站点发起请求，
 仅对已落地的代码文本做正则+字符串解析与 LLM 推理。
 
@@ -16,7 +16,7 @@
 示例
 ----
 >>> from web_crawler.ai.analyzer import JSAnalyzer, JSFragment
->>> analyzer = JSAnalyzer()  # 默认 DeepSeek-V4-Pro
+>>> analyzer = JSAnalyzer()  # 默认 DeepSeek-V4.1-Flash
 >>> modules = analyzer.extract_webpack_modules(bundle_source)
 >>> entry = analyzer.identify_entry_point(modules)
 """
@@ -293,14 +293,14 @@ class WebpackModule:
 class JSAnalyzer:
     """基于 LLM 的 webpack 混淆 JS 分析引擎。
 
-    provider 为 None 时默认创建 DeepSeekProvider（model=deepseek-v4-pro）。
+    provider 为 None 时默认创建 DeepSeekProvider（model=deepseek-flash）。
     所有走 LLM 的方法都会先把超过 ``max_chars`` 的代码做前后截断处理。
     """
 
     def __init__(
         self,
         provider: LLMProvider | None = None,
-        model: str = "deepseek-v4-pro",
+        model: str = "deepseek-flash",
         max_chars: int = 50000,
     ) -> None:
         if provider is None:

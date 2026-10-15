@@ -9,7 +9,7 @@
 2. 创建新的浏览器上下文，在导航前通过 `add_init_script` 注入 Hook 脚本
 3. 进入循环：
    - **观察**：收集 Hook 捕获数据、网络请求、页面脚本、验证码检测、DOM 摘要
-   - **思考**：把观察结果交给 DeepSeek-V4-Pro 决定下一步动作
+   - **思考**：把观察结果交给 DeepSeek-V4.1-Flash 决定下一步动作
    - **行动**：执行 AI 决定的动作（注入 Hook / 分析 JS / 等待 /
      提取参数 / 处理验证码 / 浏览器交互 / 多标签页 / 完成）
 4. 达到 `max_steps` 或 AI 返回 `done` 时停止
@@ -88,7 +88,7 @@ config = ReverseAgentConfig(
     enable_screenshot=True,
     enable_checkpoint=True,
 )
-provider = DeepSeekProvider(model="deepseek-v4-pro")
+provider = DeepSeekProvider(model="deepseek-flash")
 agent = ReverseAgent(config=config, provider=provider)
 try:
     result = agent.run("https://target.example.com", task="提取签名参数")
@@ -184,5 +184,5 @@ Agent 仅识别验证码挑战并模拟正常用户交互（OCR / 滑块 / 点�
 ## 单模型策略
 
 `ReverseAgent` 与所有子组件（Planner / Actor / Judge / DomPruner /
-ConfidenceScorer / JSAnalyzer）共享同一个 `DeepSeekProvider(model="deepseek-v4-pro")` 实例。
+ConfidenceScorer / JSAnalyzer）共享同一个 `DeepSeekProvider(model="deepseek-flash")` 实例。
 不存在按组件路由模型、不存在 LLM-as-judge 重排、不存在能力协商切换 provider。

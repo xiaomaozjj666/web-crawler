@@ -461,10 +461,10 @@ def test_qwen_provider_default(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_get_provider_defaults_to_deepseek_v4_pro() -> None:
+def test_get_provider_defaults_to_deepseek_flash() -> None:
     provider = get_provider(api_key="dummy")
     assert isinstance(provider, DeepSeekProvider)
-    assert provider.model == "deepseek-v4-pro"
+    assert provider.model == "deepseek-flash"
     assert "deepseek" in available_providers()
 
 
