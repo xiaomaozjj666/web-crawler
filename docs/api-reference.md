@@ -39,7 +39,7 @@ HTTP/2 帧序；`curl_cffi` 缺失时自动降级到 `httpx`（带 warning，无
 ## LLM Provider
 
 LLM provider 抽象层，OpenAI 兼容 chat-completions 接口。默认 `DeepSeekProvider`
-指向 DeepSeek-V4-Pro。
+指向 DeepSeek-V4.1-Flash。
 
 ::: web_crawler.ai.llm.LLMProvider
 

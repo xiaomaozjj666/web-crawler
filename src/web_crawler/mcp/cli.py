@@ -41,7 +41,7 @@ def _print_result(result: str) -> int:
     return 1 if isinstance(data, dict) and "error" in data else 0
 
 
-def _make_server(model: str = "deepseek-v4-pro") -> Any:
+def _make_server(model: str = "deepseek-flash") -> Any:
     """创建 MCP server 实例（复用其内部所有工具）。"""
     from .server import ReverseMCPServer
 
@@ -478,12 +478,12 @@ def build_parser() -> argparse.ArgumentParser:
     """构建命令行参数解析器。"""
     parser = argparse.ArgumentParser(
         prog="web-crawler-reverse",
-        description="JS 逆向 Agent 命令行工具 — Camoufox + DeepSeek V4 Pro 驱动",
+        description="JS 逆向 Agent 命令行工具 — Camoufox + DeepSeek 驱动",
     )
     parser.add_argument(
         "--model",
-        default="deepseek-v4-pro",
-        help="DeepSeek 模型名（默认 deepseek-v4-pro）",
+        default="deepseek-flash",
+        help="DeepSeek 模型名（默认 deepseek-flash）",
     )
     sub = parser.add_subparsers(dest="command", help="子命令")
 
@@ -662,6 +662,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     """CLI 入口。"""
+    # 控制台先切 UTF-8：非 UTF-8 代码页（如 en-US 的 cp1252）下打印中文帮助会
+    # UnicodeEncodeError 直接退出 1（与 app/_crawler_core.py、mcp/server.py 同款做法）。
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     parser = build_parser()
     args = parser.parse_args()
     if not args.command:

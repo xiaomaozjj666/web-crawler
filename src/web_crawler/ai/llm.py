@@ -3,7 +3,7 @@
 一个轻量、低依赖的抽象，覆盖 OpenAI 兼容的 chat-completions 端点，
 使库的其余部分无需硬编码某个厂商即可与模型对话。默认供应商通过
 DeepSeek 的 OpenAI 兼容 ``/chat/completions`` API 指向
-**DeepSeek-V4-Pro**。
+**DeepSeek-V4.1-Flash**。
 
 设计说明
 --------
@@ -33,8 +33,8 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 # 默认模型与端点：DeepSeek 的 OpenAI 兼容接口。
-# 注意：模型 ID 大小写敏感，DeepSeek API 的合法值为小写 "deepseek-v4-pro"。
-DEFAULT_MODEL = "deepseek-v4-pro"
+# 注意：模型 ID 大小写敏感，DeepSeek API 的合法值为小写 "deepseek-flash" 或 "deepseek-v4-pro"。
+DEFAULT_MODEL = "deepseek-flash"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 
 # .env 只加载一次（进程级）
@@ -459,12 +459,12 @@ class OpenAICompatibleProvider:
 
 
 class DeepSeekProvider(OpenAICompatibleProvider):
-    """DeepSeek 预置。默认 ``DeepSeek-V4-Pro``，未传密钥时从环境变量
+    """DeepSeek 预置。默认 ``DeepSeek-V4.1-Flash``，未传密钥时从环境变量
     ``DEEPSEEK_API_KEY`` 读取。"""
 
     name = "deepseek"
 
-    # DeepSeek-V4-Pro 支持 JSON 模式与流式输出；vision 由调用方按模型名
+    # DeepSeek-V4.1-Flash 支持 JSON 模式与流式输出；vision 由调用方按模型名
     # 通过 capabilities 覆盖（DeepSeek-Vision 系列）。
     capabilities = ProviderCapabilities(
         vision=False,
@@ -472,7 +472,7 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         tools=False,
         streaming=True,
         max_output_tokens=8192,
-        known_models=("deepseek-v4-pro", "deepseek-vision"),
+        known_models=("deepseek-flash", "deepseek-v4-pro", "deepseek-vision"),
     )
 
     def __init__(
@@ -688,7 +688,7 @@ def select_provider(
 
 
 def get_provider(name: str = "deepseek", **kwargs: Any) -> LLMProvider:
-    """实例化一个已注册的供应商（默认：DeepSeek / DeepSeek-V4-Pro）。
+    """实例化一个已注册的供应商（默认：DeepSeek / DeepSeek-V4.1-Flash）。
 
     其余关键字参数（``model``、``api_key``、``base_url`` 等）会透传给
     供应商构造器。

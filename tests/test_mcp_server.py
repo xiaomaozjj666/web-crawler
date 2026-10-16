@@ -2991,3 +2991,300 @@ def test_tool_get_page_scripts_rejects_private_target() -> None:
     srv = _make_server()
     parsed = json.loads(srv._tool_get_page_scripts({"url": "http://127.0.0.1/"}))
     assert "target host not allowed" in parsed["error"]
+
+
+# ===========================================================================
+# 回归：mcp 2.x（回调式 Server）兼容路径 —— 上游 2.x 移除了装饰器 API
+# ===========================================================================
+
+
+def _make_v2_fake_server(captured: dict[str, Any]) -> type:
+    """构造 mcp 2.x 形态的 fake Server：handler 由构造参数传入，**没有**装饰器方法。"""
+
+    class _FakeServerV2:
+        def __init__(self, name: str, **kwargs: Any) -> None:
+            captured["name"] = name
+            captured["kwargs"] = kwargs
+
+        def create_initialization_options(self) -> Any:
+            return MagicMock()
+
+        async def run(self, *args: Any, **kwargs: Any) -> None:
+            await asyncio.Event().wait()  # 保持事件循环存活
+
+    return _FakeServerV2
+
+
+def _make_v2_fake_types() -> MagicMock:
+    """假 types 模块：结果类按关键字原样回显，便于断言 2.x 路径究竟传了什么。"""
+    fake = MagicMock()
+    for cls in (
+        "Tool",
+        "Prompt",
+        "PromptArgument",
+        "Resource",
+        "ListToolsResult",
+        "ListPromptsResult",
+        "GetPromptResult",
+        "PromptMessage",
+        "ListResourcesResult",
+        "ReadResourceResult",
+        "TextResourceContents",
+    ):
+        setattr(fake, cls, MagicMock(side_effect=lambda **kw: dict(kw)))
+    fake.TextContent = MagicMock(side_effect=lambda **kw: {"type": "text", **kw})
+    fake.CallToolResult = MagicMock(
+        side_effect=lambda **kw: {"content": kw["content"], "isError": kw.get("isError", False)}
+    )
+    return fake
+
+
+def _with_v2_handlers(
+    monkeypatch: pytest.MonkeyPatch,
+    srv: Any,
+    captured: dict[str, Any],
+    body: Any,
+) -> Any:
+    """在事件循环里跑 _run_mcp（2.x 分支），把注册的回调交给 body 使用。"""
+    monkeypatch.setattr(_transport, "_HAS_MCP", True)
+    monkeypatch.setattr(_transport, "types", _make_v2_fake_types())
+    monkeypatch.setattr(_transport, "Server", _make_v2_fake_server(captured))
+
+    @asynccontextmanager
+    async def _fake_stdio_server() -> Any:
+        yield (MagicMock(), MagicMock())
+
+    monkeypatch.setattr(_transport, "stdio_server", _fake_stdio_server)
+
+    loop = asyncio.new_event_loop()
+    try:
+        task = loop.create_task(srv._run_mcp())
+        loop.run_until_complete(asyncio.sleep(0.05))
+        return loop.run_until_complete(body(captured["kwargs"]))
+    finally:
+        task.cancel()
+        loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+        loop.close()
+
+
+class _V2Params:
+    """2.x 回调第二个参数（params）的替身：属性式 name / arguments / uri。"""
+
+    def __init__(self, **kw: Any) -> None:
+        self.__dict__.update(kw)
+
+
+class _V2Session:
+    """记录 send_progress_notification 调用的假 session。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, int, int]] = []
+
+    async def send_progress_notification(self, token: Any, current: int, total: int) -> None:
+        self.calls.append((token, current, total))
+
+
+def test_run_mcp_v2_registers_callback_handlers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """无装饰器 API 的 Server（mcp 2.x）改走构造回调，名称与版本与 1.x 一致。"""
+    srv = _make_server()
+    captured: dict[str, Any] = {}
+    expected = (
+        "on_list_tools",
+        "on_call_tool",
+        "on_list_prompts",
+        "on_get_prompt",
+        "on_list_resources",
+        "on_read_resource",
+    )
+
+    async def _body(handlers: dict[str, Any]) -> dict[str, Any]:
+        return handlers
+
+    handlers = _with_v2_handlers(monkeypatch, srv, captured, _body)
+
+    assert captured["name"] == _transport._SERVER_NAME
+    assert captured["kwargs"]["version"] == _transport._SERVER_VERSION
+    assert all(k in handlers and callable(handlers[k]) for k in expected)
+
+
+def test_run_mcp_v2_tools_roundtrip_and_iserror(monkeypatch: pytest.MonkeyPatch) -> None:
+    """2.x 回调：tools/list 与 1.x 同源；tools/call 成功置 isError=False、错误置 True。"""
+    srv = _make_server()
+    captured: dict[str, Any] = {}
+    srv.handle_tool = lambda name, args: json.dumps({"ok": name})  # type: ignore[method-assign]
+
+    ctx = MagicMock(meta=None, session=None)
+    params = _V2Params(name="deobfuscate_js", arguments={"code": "x"})
+
+    async def _body(handlers: dict[str, Any]) -> tuple[Any, Any, Any]:
+        listed = await handlers["on_list_tools"](ctx, None)
+        ok = await handlers["on_call_tool"](ctx, params)
+        srv.handle_tool = lambda name, args: json.dumps(  # type: ignore[method-assign]
+            {"error": "boom"}
+        )
+        bad = await handlers["on_call_tool"](ctx, params)
+        return listed, ok, bad
+
+    listed, ok, bad = _with_v2_handlers(monkeypatch, srv, captured, _body)
+
+    assert [t["name"] for t in listed["tools"]] == [t["name"] for t in srv.get_tools()]
+    assert ok["isError"] is False
+    assert json.loads(ok["content"][0]["text"]) == {"ok": "deobfuscate_js"}
+    assert bad["isError"] is True
+    assert "error" in bad["content"][0]["text"]
+
+
+def test_run_mcp_v2_prompts_and_resources_roundtrip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2.x 回调：prompts/get、resources/read 必须返回完整结果对象。
+
+    1.x 里「回调返回裸字符串」的写法在 2.x 会被 SDK 判为非法结果，这里按结果对象断言。
+    """
+    srv = _make_server()
+    captured: dict[str, Any] = {}
+    prompt = srv.get_prompts()[0]
+    resource = srv.get_resources()[0]
+    ctx = MagicMock(meta=None, session=None)
+
+    async def _body(handlers: dict[str, Any]) -> tuple[Any, Any, Any, Any]:
+        prompts = await handlers["on_list_prompts"](ctx, None)
+        got = await handlers["on_get_prompt"](ctx, _V2Params(name=prompt["name"], arguments={}))
+        resources = await handlers["on_list_resources"](ctx, None)
+        read = await handlers["on_read_resource"](ctx, _V2Params(uri=resource["uri"]))
+        return prompts, got, resources, read
+
+    prompts, got, resources, read = _with_v2_handlers(monkeypatch, srv, captured, _body)
+
+    assert [p["name"] for p in prompts["prompts"]] == [p["name"] for p in srv.get_prompts()]
+    assert got["messages"][0]["content"]["text"] == srv.render_prompt(prompt["name"], {})
+    assert [r["uri"] for r in resources["resources"]] == [r["uri"] for r in srv.get_resources()]
+    assert read["contents"][0]["text"] == srv.read_resource(resource["uri"])
+    assert read["contents"][0]["uri"] == resource["uri"]
+
+
+def test_run_mcp_v2_call_tool_registers_progress_sender(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2.x 的 meta 是 dict（TypedDict）—— 进度订阅照样注册，并在调用后注销。"""
+    srv = _make_server()
+    captured: dict[str, Any] = {}
+    session = _V2Session()
+    ctx = MagicMock(meta={"progressToken": "pt-2"}, session=session)
+    observed: dict[str, Any] = {}
+
+    def _handle(name: str, args: dict) -> str:
+        with srv._progress_lock:
+            observed["sender_registered"] = srv._progress_sender is not None
+        return json.dumps({"ok": True})
+
+    srv.handle_tool = _handle  # type: ignore[method-assign]
+
+    async def _body(handlers: dict[str, Any]) -> Any:
+        return await handlers["on_call_tool"](
+            ctx, _V2Params(name="deobfuscate_js", arguments={"code": "x"})
+        )
+
+    out = _with_v2_handlers(monkeypatch, srv, captured, _body)
+
+    with srv._progress_lock:
+        observed["sender_cleared"] = srv._progress_sender is None
+    assert observed["sender_registered"] is True
+    assert observed["sender_cleared"] is True
+    assert out["isError"] is False
+
+
+def test_make_progress_sender_meta_shape_variants() -> None:
+    """1.x 属性式 meta 与 2.x 字典式 meta 都能取到 token；缺 token / session 时为 None。"""
+    srv = _make_server()
+    session = _V2Session()
+    metas = [
+        {"progressToken": "pt-dict"},
+        {"progress_token": "pt-snake"},
+        _V2Params(progressToken="pt-obj"),
+        _V2Params(progress_token="pt-obj-snake"),
+    ]
+
+    async def _subscribe() -> None:
+        for meta in metas:
+            sender = srv._make_progress_sender(MagicMock(meta=meta, session=session))
+            assert sender is not None
+            sender(1, 2, "half")
+        await asyncio.sleep(0.05)  # 让 run_coroutine_threadsafe 排入的任务真正执行
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_subscribe())
+    finally:
+        loop.close()
+
+    assert [token for token, _, _ in session.calls] == [
+        "pt-dict",
+        "pt-snake",
+        "pt-obj",
+        "pt-obj-snake",
+    ]
+    assert session.calls[0] == ("pt-dict", 1, 2)
+
+    no_sender = [
+        MagicMock(meta=None, session=session),
+        MagicMock(meta={}, session=session),
+        MagicMock(meta={"progressToken": "pt"}, session=None),
+        MagicMock(meta={"progressToken": "pt"}, session=object()),
+    ]
+    for ctx in no_sender:
+        assert srv._make_progress_sender(ctx) is None
+
+
+def test_make_progress_sender_swallows_push_errors() -> None:
+    """进度推送失败不许外泄：工具调用不能被进度推送拖垮。"""
+    srv = _make_server()
+
+    class _SyncBoom:
+        """同步抛错的替身（run_coroutine_threadsafe 包装协程时就炸）。"""
+
+        def send_progress_notification(self, *args: Any) -> Any:
+            raise RuntimeError("boom-sync")
+
+    class _AsyncBoom:
+        """异步抛错的替身（异常挂在 future 上，由 done 回调取走）。"""
+
+        async def send_progress_notification(self, *args: Any) -> None:
+            raise RuntimeError("boom-async")
+
+    async def _body() -> None:
+        for session in (_SyncBoom(), _AsyncBoom()):
+            sender = srv._make_progress_sender(
+                MagicMock(meta={"progressToken": "pt"}, session=session)
+            )
+            assert sender is not None
+            sender(1, 2, "half")  # 不得抛异常
+        await asyncio.sleep(0.05)  # 让异步异常落到 future 上并被回调取走
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_body())
+    finally:
+        loop.close()
+
+
+def test_run_mcp_v2_call_tool_plain_text_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    """2.x 回调：handle_tool 返回非 JSON（纯文本 / 非字符串）时不抛错，isError 仍为 False。"""
+    srv = _make_server()
+    captured: dict[str, Any] = {}
+    ctx = MagicMock(meta=None, session=None)
+    params = _V2Params(name="deobfuscate_js", arguments={})
+
+    async def _body(handlers: dict[str, Any]) -> tuple[Any, Any]:
+        srv.handle_tool = lambda name, args: "plain text"  # type: ignore[method-assign]
+        text = await handlers["on_call_tool"](ctx, params)
+        srv.handle_tool = lambda name, args: None  # type: ignore[method-assign]
+        none = await handlers["on_call_tool"](ctx, params)
+        return text, none
+
+    text, none = _with_v2_handlers(monkeypatch, srv, captured, _body)
+
+    assert text["isError"] is False
+    assert text["content"][0]["text"] == "plain text"
+    assert none["isError"] is False
+    assert none["content"][0]["text"] is None

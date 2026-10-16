@@ -75,6 +75,9 @@ jobs:
   test-extras:
     # 安装全部可选依赖（playwright / curl_cffi / camoufox 等），把动态 fetcher
     # 与反检测路径纳入覆盖率测量（标准 test job 只装 dev 依赖，相关测试被 skip）
+    # mcp extra 必装：MCP 传输层按 SDK 大版本分支（1.x 装饰器 / 2.x 构造回调），
+    # 不装就只剩「SDK 未安装」的降级路径被测——2026-10-16 的 2.x 兼容缺陷正是这样
+    # 在 CI 里隐形、只在装了 SDK 的本机才炸；这条 extra 让真实 SDK 路径进 CI。
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -84,7 +87,7 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: pyproject.toml
-      - run: pip install -e ".[all,dev,camoufox,captcha]"
+      - run: pip install -e ".[all,dev,camoufox,captcha,mcp]"
       - name: Run tests with coverage
         run: >
           pytest -m "not slow" --tb=short -q

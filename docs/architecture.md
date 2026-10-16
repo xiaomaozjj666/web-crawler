@@ -109,7 +109,7 @@ mkdocs.yml                # API 文档站点配置
 ##### LLM 基础
 
 - **`LLMProvider`** Protocol，OpenAI 兼容 chat-completions 接口
-- **`DeepSeekProvider`** 默认 provider，指向 DeepSeek-V4-Pro
+- **`DeepSeekProvider`** 默认 provider，指向 DeepSeek-V4.1-Flash
 - **`OpenAIProvider`** OpenAI 官方预置
 - 仅依赖 `httpx`，无额外 SDK
 
@@ -160,7 +160,7 @@ mkdocs.yml                # API 文档站点配置
 
 ## 单模型策略
 
-`ReverseAgent` 与所有子组件共享同一个 `DeepSeekProvider(model="deepseek-v4-pro")` 实例。
+`ReverseAgent` 与所有子组件共享同一个 `DeepSeekProvider(model="deepseek-flash")` 实例。
 不存在按组件路由模型、不存在 LLM-as-judge 重排、不存在能力协商切换 provider。
 
 ## 数据流
