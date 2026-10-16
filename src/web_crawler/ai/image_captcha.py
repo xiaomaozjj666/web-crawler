@@ -20,7 +20,7 @@
 --------
 - 不强制任何依赖：未安装 ddddocr / numpy 时自动降级，方法返回 None / 空串
 - 单一模型策略兼容：默认走本地路径，LLM Vision 仅在 provider 支持 vision
-  能力时启用；与项目"统一 DeepSeek-V4-Pro"策略不冲突（用户可额外配置
+  能力时启用；与项目"统一 DeepSeek-V4.1-Flash"策略不冲突（用户可额外配置
   vision-capable provider 仅供图片识别）
 - 失败兜底：所有方法返回 None / 空字符串表示识别失败，调用方决定是否
   交人工

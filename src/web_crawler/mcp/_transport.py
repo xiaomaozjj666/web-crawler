@@ -51,6 +51,51 @@ class StdioTransportMixin(HostContract):
 
     async def _run_mcp(self) -> None:  # pragma: no cover - 需真实 MCP 客户端连接，属集成测试范畴
         """基于 mcp SDK 的 stdio 服务器实现。"""
+        # 1.x 有装饰器 API（list_tools / call_tool …）；2.x 改成构造回调 + add_request_handler。
+        # 判据优先认 1.x：MagicMock 之类「什么属性都有」的替身会同时满足两条判据，认 1.x 能保持
+        # 既有测试与旧 SDK 的行为不变；真 SDK 的两种形态互斥，判据不会有歧义。
+        if hasattr(Server, "list_tools"):
+            await self._run_mcp_v1()
+        else:
+            await self._run_mcp_v2()
+
+    def _make_progress_sender(self, ctx: Any) -> Any:
+        """从 mcp 请求上下文取 progressToken / session，返回进度回调（无订阅时返回 None）。
+
+        1.x 的 meta 是模型对象（属性 ``progressToken``），2.x 的 meta 是 TypedDict（键同名），
+        两种形态都兼容；缺 session 或客户端没带 progressToken 时返回 None，调用方按
+        「本次没有进度推送」处理。
+        """
+        meta = getattr(ctx, "meta", None)
+        if isinstance(meta, dict):
+            progress_token = meta.get("progressToken") or meta.get("progress_token")
+        else:
+            progress_token = getattr(meta, "progressToken", None) or getattr(
+                meta, "progress_token", None
+            )
+        session = getattr(ctx, "session", None)
+        if (
+            not progress_token
+            or session is None
+            or not hasattr(session, "send_progress_notification")
+        ):
+            return None
+        loop = asyncio.get_running_loop()
+
+        def _push(current: int, total: int, message: str = "") -> None:
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    session.send_progress_notification(progress_token, current, total),
+                    loop,
+                )
+                fut.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
+            except Exception:
+                pass
+
+        return _push
+
+    async def _run_mcp_v1(self) -> None:  # pragma: no cover - 需真实 MCP 客户端连接，属集成测试范畴
+        """mcp 1.x 实现：handler 用装饰器注册（``@server.list_tools()`` 等）。"""
         server: Any = Server(_SERVER_NAME)
 
         @server.list_tools()
@@ -153,6 +198,121 @@ class StdioTransportMixin(HostContract):
         @server.read_resource()
         async def _read_resource(uri: str) -> str:
             return self.read_resource(uri)
+
+        async with stdio_server() as (read_stream, write_stream):
+            await server.run(
+                read_stream,
+                write_stream,
+                server.create_initialization_options(),
+            )
+
+    async def _run_mcp_v2(self) -> None:
+        """mcp 2.x 实现：handler 交给 Server 构造函数，请求上下文从回调第一个参数取。
+
+        2.x 去掉了 ``@server.list_tools()`` 这类装饰器与 ``server.request_context()``，改为
+        ``Server(name, on_list_tools=…, on_call_tool=…)`` 注册回调；回调签名是 ``(ctx, params)``，
+        ctx 自带 ``session`` 与 ``meta``；协议版本由 SDK 自己协商。
+        本函数由 SDK 替身驱动做单元测试（``tests/test_mcp_server.py`` 的 ``test_run_mcp_v2_*``），
+        不依赖真实 MCP 客户端，故不加 ``pragma: no cover``（1.x 那条仍保持集成测试范畴）。
+        """
+        # 工具/提示/资源定义只构造一次，回调里直接复用（与 1.x 路径语义一致）
+        tools = [types.Tool(**tool) for tool in self.get_tools()]
+        prompts = [
+            types.Prompt(
+                name=p["name"],
+                description=p.get("description", ""),
+                arguments=[
+                    types.PromptArgument(
+                        name=a["name"],
+                        description=a.get("description", ""),
+                        required=a.get("required", False),
+                    )
+                    for a in p.get("arguments", [])
+                ],
+            )
+            for p in self.get_prompts()
+        ]
+        resources = [
+            types.Resource(
+                uri=r["uri"],
+                name=r["name"],
+                description=r.get("description", ""),
+                mimeType=r.get("mimeType", "application/json"),
+            )
+            for r in self.get_resources()
+        ]
+
+        async def _list_tools(ctx: Any, params: Any) -> Any:
+            return types.ListToolsResult(tools=tools)
+
+        async def _call_tool(ctx: Any, params: Any) -> Any:
+            # 与 1.x 同款语义：同步的 handle_tool 放线程池执行（不阻塞事件循环），
+            # 从 ctx 取 progressToken 注册进度推送，并按结果置 isError。
+            sender = self._make_progress_sender(ctx)
+            if sender is not None:
+                with self._progress_lock:
+                    self._progress_sender = sender
+            try:
+                result = await asyncio.to_thread(
+                    self.handle_tool, params.name, params.arguments or {}
+                )
+            finally:
+                if sender is not None:
+                    with self._progress_lock:
+                        self._progress_sender = None
+            is_error = False
+            try:
+                parsed = json.loads(result)
+                if isinstance(parsed, dict) and "error" in parsed:
+                    is_error = True
+            except (json.JSONDecodeError, TypeError):
+                pass
+            # 2.x 的 on_call_tool 必须返回 CallToolResult（不再接受裸 content 列表）
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=result)],
+                isError=is_error,
+            )
+
+        async def _list_prompts(ctx: Any, params: Any) -> Any:
+            return types.ListPromptsResult(prompts=prompts)
+
+        async def _get_prompt(ctx: Any, params: Any) -> Any:
+            rendered = self.render_prompt(params.name, params.arguments or {})
+            return types.GetPromptResult(
+                description=f"prompt {params.name}",
+                messages=[
+                    types.PromptMessage(
+                        role="user",
+                        content=types.TextContent(type="text", text=rendered),
+                    )
+                ],
+            )
+
+        async def _list_resources(ctx: Any, params: Any) -> Any:
+            return types.ListResourcesResult(resources=resources)
+
+        async def _read_resource(ctx: Any, params: Any) -> Any:
+            # 2.x 要完整的结果对象；1.x 里「回调返回裸字符串」的写法在 2.x 不成立
+            return types.ReadResourceResult(
+                contents=[
+                    types.TextResourceContents(
+                        uri=params.uri,
+                        mimeType="application/json",
+                        text=self.read_resource(params.uri),
+                    )
+                ]
+            )
+
+        server: Any = Server(
+            _SERVER_NAME,
+            version=_SERVER_VERSION,
+            on_list_tools=_list_tools,
+            on_call_tool=_call_tool,
+            on_list_prompts=_list_prompts,
+            on_get_prompt=_get_prompt,
+            on_list_resources=_list_resources,
+            on_read_resource=_read_resource,
+        )
 
         async with stdio_server() as (read_stream, write_stream):
             await server.run(

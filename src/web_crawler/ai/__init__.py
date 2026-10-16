@@ -3,7 +3,7 @@
 本子包在核心库之上纯增量扩展：
 
 - :mod:`~web_crawler.ai.llm` — 可插拔 LLM 供应商层（默认模型
-  ``DeepSeek-V4-Pro``，经 DeepSeek 的 OpenAI 兼容 API）。
+  ``DeepSeek-V4.1-Flash``，经 DeepSeek 的 OpenAI 兼容 API）。
 - :mod:`~web_crawler.ai.extractor` — LLM 生成 CSS 选择器，并用项目自身的
   :class:`~web_crawler.parser.selector.Selector` 校验，支持自愈。
 - :mod:`~web_crawler.ai.agent` — 组合 fetcher 与抽取器的礼貌 agent

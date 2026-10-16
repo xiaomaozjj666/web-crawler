@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 import threading
@@ -27,6 +28,7 @@ import traceback
 from collections.abc import Callable
 from typing import Any
 
+from .. import __version__
 from ..ai.analyzer import JSAnalyzer
 from ..ai.captcha import CaptchaManager
 from ..ai.hooks import HookLibrary, generate_combined_script
@@ -120,7 +122,7 @@ from ._transport import (
 class ReverseMCPServer(ReverseToolsMixin, PentestToolsMixin, StdioTransportMixin):
     """通过 MCP 协议暴露 JS 逆向 Agent 能力的服务器。"""
 
-    def __init__(self, provider_name: str = "deepseek", model: str = "deepseek-v4-pro") -> None:
+    def __init__(self, provider_name: str = "deepseek", model: str = "deepseek-flash") -> None:
         self.provider_name = provider_name
         self.model = model
 
@@ -482,8 +484,48 @@ class ReverseMCPServer(ReverseToolsMixin, PentestToolsMixin, StdioTransportMixin
 # -- 入口函数 ----------------------------------------------------------------
 
 
+def _build_parser() -> argparse.ArgumentParser:
+    """构建命令行解析器（只处理 --help / --version，便于手工自检与脚本探测）。"""
+    parser = argparse.ArgumentParser(
+        prog="web-crawler-mcp",
+        description="MCP 服务器（stdio 传输）— 供 MCP 客户端以子进程方式调用",
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"web-crawler-mcp {__version__}",
+        help="显示版本并退出",
+    )
+    return parser
+
+
+def _ensure_utf8_stdio() -> None:
+    """把 stdout/stderr 钉成 UTF-8（``errors="replace"`` 兜底）。
+
+    默认编码跟随系统代码页：在非 UTF-8 代码页的机器上（如 en-US 的 cp1252），
+    打印中文（``--help`` 的帮助文本、启动时的 DEEPSEEK_API_KEY 告警）会抛
+    ``UnicodeEncodeError`` 直接退出 1；MCP 协议本身也要求 UTF-8。
+    写法与 ``web_crawler.app._crawler_core`` 保持一致。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main() -> None:
-    """独立入口：读取环境变量，创建服务器并启动。"""
+    """独立入口：解析参数、读取环境变量，创建服务器并启动。
+
+    用 ``parse_known_args`` 解析：``-h/--help`` 与 ``-V/--version`` 立即退出，
+    其余参数一律忽略 —— MCP 客户端按配置启动本服务器时可能带额外参数，
+    不能因此让它启动失败。
+
+    入口先调 :func:`_ensure_utf8_stdio`：否则非 UTF-8 代码页下打印中文帮助会崩
+    （2026-10-16 CI 的 windows-latest 实测）。
+    """
+    _ensure_utf8_stdio()
+    _build_parser().parse_known_args()
     if not os.environ.get("DEEPSEEK_API_KEY"):
         sys.stderr.write("warning: DEEPSEEK_API_KEY 环境变量未设置，LLM 相关工具将不可用。\n")
         sys.stderr.flush()

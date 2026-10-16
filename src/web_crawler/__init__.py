@@ -66,7 +66,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "Spider": ("web_crawler.spider.spider", "Spider"),
     "SpiderError": ("web_crawler.spider.spider", "SpiderError"),
     "SpiderStats": ("web_crawler.spider.spider", "SpiderStats"),
-    # ai（可插拔 LLM 层 + AI 辅助提取；默认 DeepSeek-V4-Pro）
+    # ai（可插拔 LLM 层 + AI 辅助提取；默认 DeepSeek-V4.1-Flash）
     "get_provider": ("web_crawler.ai.llm", "get_provider"),
     "register_provider": ("web_crawler.ai.llm", "register_provider"),
     "available_providers": ("web_crawler.ai.llm", "available_providers"),

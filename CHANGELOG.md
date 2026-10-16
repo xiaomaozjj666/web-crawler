@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **默认模型改为 `deepseek-flash`（DeepSeek-V4.1-Flash）**：`ai/llm.py` 的
+  `DEFAULT_MODEL` 由 `deepseek-v4-pro` 改为 `deepseek-flash`，并同步全部默认值
+  （`JSAnalyzer.model`、`ReverseMCPServer.__init__`、`mcp/cli.py` 的
+  `_make_server` 与 `--model` 默认值）、`DeepSeekProvider.known_models`
+  （改为 `("deepseek-flash", "deepseek-v4-pro", "deepseek-vision")`），以及
+  README / docs / 文档字符串中的模型名。**模型 ID 大小写敏感**，合法值为小写
+  `deepseek-flash` 或 `deepseek-v4-pro`（2026-10-15 真实调用实测返回
+  `model = deepseek-flash`）。需要旧行为的用户可显式传
+  `model="deepseek-v4-pro"`。
+
 ### Fixed
 - **SSRF：恢复库级 fetcher 的 DNS 解析复查默认开启**：`Fetcher`/`DynamicFetcher`/
   `StealthyFetcher`/`CamoufoxFetcher` 构造参数 `resolve_hosts` 默认值由 `False`
