@@ -7,9 +7,12 @@ on:
 permissions:
   contents: write
 
+# 推送 master 会触发 gh-pages 发布，两次部署互相打断只会留下中断的站点，
+# 故这里只排队、不取消；也与 CI 保持一致——默认分支的推送不取消旧运行
+# （公开仓库的 Actions 分钟数免费，取消只是让提交列表多一个红叉）。
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
