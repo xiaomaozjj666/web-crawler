@@ -196,19 +196,25 @@ class CurlResolvePinner:
         """
         parsed = urlparse(url)
         host = parsed.hostname
+        pin_host: str | None = None
+        host_entries: list[str] = []
         if host and not _is_ip_literal(host):
             # DNS 解析与校验在锁外：网络操作可能阻塞，绝不能进临界区
             ips = _resolve_validated_ips(host, parsed.port)
             port = parsed.port if parsed.port is not None else _default_port(parsed.scheme)
+            pin_host = host
             host_entries = [f"{host}:{port}:{ip}" for ip in ips]
-            with self._lock:
+        # LRU 维护与快照构造必须在**同一个**临界区内完成。拆成两次加锁时，
+        # 中间的空隙足以让并发线程把本次 host 淘汰出去，快照就会缺少调用方
+        # 自己的条目（该请求静默失去 CURLOPT_RESOLVE，TOCTOU 窗口重新打开）。
+        with self._lock:
+            if pin_host is not None:
                 # LRU 触碰：最近使用的 host 移到末尾，超限淘汰最旧条目
-                self._entries.pop(host, None)
-                self._entries[host] = host_entries
+                self._entries.pop(pin_host, None)
+                self._entries[pin_host] = host_entries
                 while len(self._entries) > self._max_hosts:
                     self._entries.pop(next(iter(self._entries)))
-        with self._lock:
-            # 快照构造同样须持锁：迭代期间其他线程修改 dict 会抛 RuntimeError
+            # 快照也在锁内：迭代期间其他线程修改 dict 会抛 RuntimeError
             snapshot = [entry for entries in self._entries.values() for entry in entries]
         logger.debug("curl resolve pin entries: %s", snapshot)
         return snapshot
