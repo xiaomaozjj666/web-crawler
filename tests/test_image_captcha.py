@@ -78,6 +78,7 @@ class _FakeNoVisionProvider:
 
 
 def test_image_solver_config_defaults() -> None:
+    """ImageSolverConfig 默认开启 LLM 与本地 OCR。"""
     cfg = ImageSolverConfig()
     assert cfg.use_llm is True
     assert cfg.use_local_ocr is True
@@ -88,6 +89,7 @@ def test_image_solver_config_defaults() -> None:
 
 
 def test_slider_solution_defaults() -> None:
+    """SliderSolution 默认 y 为 0。"""
     s = SliderSolution(x=120)
     assert s.x == 120
     assert s.y == 0
@@ -96,6 +98,7 @@ def test_slider_solution_defaults() -> None:
 
 
 def test_click_solution_defaults() -> None:
+    """ClickSolution 默认点位与标签为空。"""
     c = ClickSolution()
     assert c.points == []
     assert c.labels == []
@@ -108,34 +111,40 @@ def test_click_solution_defaults() -> None:
 
 
 def test_to_b64_from_bytes() -> None:
+    """_to_b64 将原始字节编码为 base64。"""
     raw = b"hello"
     assert _to_b64(raw) == base64.b64encode(b"hello").decode("ascii")
 
 
 def test_to_b64_from_plain_string() -> None:
+    """_to_b64 对已编码字符串原样返回。"""
     b64_str = base64.b64encode(b"abc").decode("ascii")
     assert _to_b64(b64_str) == b64_str
 
 
 def test_to_b64_from_data_uri() -> None:
+    """_to_b64 从 data URI 提取 base64 部分。"""
     b64_str = base64.b64encode(b"abc").decode("ascii")
     data_uri = f"data:image/png;base64,{b64_str}"
     assert _to_b64(data_uri) == b64_str
 
 
 def test_b64_to_bytes_roundtrip() -> None:
+    """_b64_to_bytes 将 base64 还原为原始字节。"""
     raw = b"binary data"
     encoded = base64.b64encode(raw).decode("ascii")
     assert _b64_to_bytes(encoded) == raw
 
 
 def test_b64_to_bytes_from_data_uri() -> None:
+    """_b64_to_bytes 从 data URI 还原为原始字节。"""
     raw = b"binary"
     encoded = base64.b64encode(raw).decode("ascii")
     assert _b64_to_bytes(f"data:image/jpeg;base64,{encoded}") == raw
 
 
 def test_b64_to_bytes_passthrough_bytes() -> None:
+    """_b64_to_bytes 对字节输入原样返回。"""
     raw = b"already bytes"
     assert _b64_to_bytes(raw) == raw
 
@@ -146,28 +155,33 @@ def test_b64_to_bytes_passthrough_bytes() -> None:
 
 
 def test_extract_json_pure_object() -> None:
+    """_extract_json 解析纯 JSON 对象。"""
     text = '{"x": 100, "confidence": 0.9}'
     parsed = _extract_json(text)
     assert parsed == {"x": 100, "confidence": 0.9}
 
 
 def test_extract_json_with_code_fence() -> None:
+    """_extract_json 解析代码围栏包裹的 JSON。"""
     text = '```json\n{"x": 50, "confidence": 0.7}\n```'
     parsed = _extract_json(text)
     assert parsed == {"x": 50, "confidence": 0.7}
 
 
 def test_extract_json_with_surrounding_text() -> None:
+    """_extract_json 从周围文本中提取 JSON。"""
     text = '识别结果：{"points": [{"x": 1, "y": 2}]} 完成'
     parsed = _extract_json(text)
     assert parsed == {"points": [{"x": 1, "y": 2}]}
 
 
 def test_extract_json_invalid_returns_empty() -> None:
+    """_extract_json 对非法文本返回空字典。"""
     assert _extract_json("not json at all") == {}
 
 
 def test_extract_json_empty_string() -> None:
+    """_extract_json 对空串返回空字典。"""
     assert _extract_json("") == {}
 
 
@@ -190,21 +204,25 @@ def test_extract_json_balanced_scan_unterminated_returns_empty() -> None:
 
 
 def test_llm_vision_available_none_provider() -> None:
+    """无 provider 时 LLM 视觉不可用。"""
     solver = ImageCaptchaSolver(provider=None)
     assert solver.llm_vision_available is False
 
 
 def test_llm_vision_available_no_vision_provider() -> None:
+    """provider 无视觉能力时 LLM 视觉不可用。"""
     solver = ImageCaptchaSolver(provider=_FakeNoVisionProvider())  # type: ignore[arg-type]
     assert solver.llm_vision_available is False
 
 
 def test_llm_vision_available_vision_provider() -> None:
+    """provider 有视觉能力时 LLM 视觉可用。"""
     solver = ImageCaptchaSolver(provider=_FakeVisionProvider())  # type: ignore[arg-type]
     assert solver.llm_vision_available is True
 
 
 def test_llm_vision_available_disabled_in_config() -> None:
+    """配置禁用 LLM 时视觉不可用。"""
     cfg = ImageSolverConfig(use_llm=False)
     solver = ImageCaptchaSolver(provider=_FakeVisionProvider(), config=cfg)  # type: ignore[arg-type]
     assert solver.llm_vision_available is False
@@ -217,6 +235,7 @@ def test_llm_vision_available_disabled_in_config() -> None:
 
 def test_solve_text_no_provider_no_local_returns_empty() -> None:
     # 默认环境没装 ddddocr，本地 OCR 返回空；无 provider 也无 LLM 路径
+    """solve_text 无 provider 与本地 OCR 时返回空。"""
     cfg = ImageSolverConfig(use_pillow_slider=False)  # 不影响 OCR
     solver = ImageCaptchaSolver(provider=None, config=cfg)
     assert solver.solve_text(b"fake-png-bytes") == ""
@@ -224,6 +243,7 @@ def test_solve_text_no_provider_no_local_returns_empty() -> None:
 
 def test_solve_text_local_ocr_returns_text() -> None:
     # mock ddddocr 模块，让 _local_ocr 返回 "abc123"
+    """solve_text 本地 OCR 返回识别文本。"""
     fake_ddddocr = MagicMock()
     fake_instance = MagicMock()
     fake_instance.classification.return_value = "abc123"
@@ -238,6 +258,7 @@ def test_solve_text_local_ocr_returns_text() -> None:
 
 
 def test_solve_text_local_ocr_filters_invalid_chars() -> None:
+    """solve_text 本地 OCR 过滤非法字符。"""
     fake_ddddocr = MagicMock()
     fake_instance = MagicMock()
     # 含特殊字符，应被过滤
@@ -252,6 +273,7 @@ def test_solve_text_local_ocr_filters_invalid_chars() -> None:
 
 
 def test_solve_text_llm_path() -> None:
+    """solve_text 走 LLM 路径返回识别文本。"""
     provider = _FakeVisionProvider(chat_response="XYZ789")
     cfg = ImageSolverConfig(use_local_ocr=False)
     solver = ImageCaptchaSolver(provider=provider, config=cfg)  # type: ignore[arg-type]
@@ -261,6 +283,7 @@ def test_solve_text_llm_path() -> None:
 
 
 def test_solve_text_llm_truncates_to_max_length() -> None:
+    """solve_text 将 LLM 结果截断到最大长度。"""
     provider = _FakeVisionProvider(chat_response="abcdefghijklmnop" * 5)
     cfg = ImageSolverConfig(use_local_ocr=False, ocr_max_length=6)
     solver = ImageCaptchaSolver(provider=provider, config=cfg)  # type: ignore[arg-type]
@@ -270,6 +293,7 @@ def test_solve_text_llm_truncates_to_max_length() -> None:
 
 def test_solve_text_local_then_llm_fallback() -> None:
     # ddddocr 返回空（识别失败），降级到 LLM
+    """solve_text 本地 OCR 空时回退到 LLM。"""
     fake_ddddocr = MagicMock()
     fake_instance = MagicMock()
     fake_instance.classification.return_value = ""
@@ -283,6 +307,7 @@ def test_solve_text_local_then_llm_fallback() -> None:
 
 
 def test_solve_text_async_llm_path() -> None:
+    """solve_text 异步走 LLM 路径返回识别文本。"""
     provider = _FakeVisionProvider(achat_response="ASY456")
     cfg = ImageSolverConfig(use_local_ocr=False)
     solver = ImageCaptchaSolver(provider=provider, config=cfg)  # type: ignore[arg-type]
@@ -292,6 +317,8 @@ def test_solve_text_async_llm_path() -> None:
 
 
 def test_solve_text_async_falls_back_to_sync_when_no_achat() -> None:
+    """solve_text 异步无 achat 时回退到同步。"""
+
     @dataclass
     class _SyncOnlyProvider:
         name: str = "sync-only"
@@ -317,12 +344,14 @@ def test_solve_text_async_falls_back_to_sync_when_no_achat() -> None:
 
 def test_solve_slider_no_provider_no_pillow_returns_none() -> None:
     # 关闭 Pillow 路径 + 无 provider → 返回 None
+    """solve_slider 无 provider 与 pillow 时返回 None。"""
     cfg = ImageSolverConfig(use_pillow_slider=False)
     solver = ImageCaptchaSolver(provider=None, config=cfg)
     assert solver.solve_slider(b"bg", b"slider") is None
 
 
 def test_solve_slider_llm_path() -> None:
+    """solve_slider 走 LLM 路径返回偏移解。"""
     provider = _FakeVisionProvider(chat_response='{"x": 180, "confidence": 0.85}')
     cfg = ImageSolverConfig(use_pillow_slider=False)
     solver = ImageCaptchaSolver(provider=provider, config=cfg)  # type: ignore[arg-type]
@@ -334,6 +363,7 @@ def test_solve_slider_llm_path() -> None:
 
 
 def test_solve_slider_llm_invalid_json_returns_none() -> None:
+    """solve_slider 对 LLM 非法 JSON 返回 None。"""
     provider = _FakeVisionProvider(chat_response="not json")
     cfg = ImageSolverConfig(use_pillow_slider=False)
     solver = ImageCaptchaSolver(provider=provider, config=cfg)  # type: ignore[arg-type]
@@ -341,6 +371,7 @@ def test_solve_slider_llm_invalid_json_returns_none() -> None:
 
 
 def test_solve_slider_llm_negative_x_returns_none() -> None:
+    """solve_slider 对 LLM 负 x 返回 None。"""
     provider = _FakeVisionProvider(chat_response='{"x": -1}')
     cfg = ImageSolverConfig(use_pillow_slider=False)
     solver = ImageCaptchaSolver(provider=provider, config=cfg)  # type: ignore[arg-type]
@@ -348,6 +379,7 @@ def test_solve_slider_llm_negative_x_returns_none() -> None:
 
 
 def test_solve_slider_async_llm_path() -> None:
+    """solve_slider 异步走 LLM 路径返回偏移解。"""
     provider = _FakeVisionProvider(achat_response='{"x": 220, "confidence": 0.6}')
     cfg = ImageSolverConfig(use_pillow_slider=False)
     solver = ImageCaptchaSolver(provider=provider, config=cfg)  # type: ignore[arg-type]
@@ -357,6 +389,7 @@ def test_solve_slider_async_llm_path() -> None:
 
 
 def test_parse_slider_response_with_confidence() -> None:
+    """_parse_slider_response 解析含置信度的响应。"""
     sol = ImageCaptchaSolver._parse_slider_response('{"x": 100, "confidence": 0.9}')
     assert sol is not None
     assert sol.x == 100
@@ -364,6 +397,7 @@ def test_parse_slider_response_with_confidence() -> None:
 
 
 def test_parse_slider_response_missing_confidence_defaults() -> None:
+    """_parse_slider_response 缺置信度时用默认值。"""
     sol = ImageCaptchaSolver._parse_slider_response('{"x": 50}')
     assert sol is not None
     assert sol.x == 50
@@ -371,6 +405,7 @@ def test_parse_slider_response_missing_confidence_defaults() -> None:
 
 
 def test_parse_slider_response_invalid_returns_none() -> None:
+    """_parse_slider_response 对非法响应返回 None。"""
     assert ImageCaptchaSolver._parse_slider_response("garbage") is None
     assert ImageCaptchaSolver._parse_slider_response('{"x": "abc"}') is None
 
@@ -381,11 +416,13 @@ def test_parse_slider_response_invalid_returns_none() -> None:
 
 
 def test_solve_click_no_vision_returns_none() -> None:
+    """solve_click 无视觉能力时返回 None。"""
     solver = ImageCaptchaSolver(provider=None)
     assert solver.solve_click(b"img", "请点击") is None
 
 
 def test_solve_click_llm_path() -> None:
+    """solve_click 走 LLM 路径返回点击解。"""
     provider = _FakeVisionProvider(
         chat_response='{"points": [{"x": 10, "y": 20, "label": "A"}, {"x": 30, "y": 40}]}'
     )
@@ -398,18 +435,21 @@ def test_solve_click_llm_path() -> None:
 
 
 def test_solve_click_empty_points_returns_none() -> None:
+    """solve_click 对空点位返回 None。"""
     provider = _FakeVisionProvider(chat_response='{"points": []}')
     solver = ImageCaptchaSolver(provider=provider)  # type: ignore[arg-type]
     assert solver.solve_click(b"img", "请点击") is None
 
 
 def test_solve_click_invalid_json_returns_none() -> None:
+    """solve_click 对 LLM 非法 JSON 返回 None。"""
     provider = _FakeVisionProvider(chat_response="no json")
     solver = ImageCaptchaSolver(provider=provider)  # type: ignore[arg-type]
     assert solver.solve_click(b"img", "请点击") is None
 
 
 def test_solve_click_filters_negative_coords() -> None:
+    """solve_click 过滤负坐标点位。"""
     provider = _FakeVisionProvider(
         chat_response='{"points": [{"x": -1, "y": 10}, {"x": 5, "y": 5}]}'
     )
@@ -420,6 +460,7 @@ def test_solve_click_filters_negative_coords() -> None:
 
 
 def test_solve_click_async_llm_path() -> None:
+    """solve_click 异步走 LLM 路径返回点击解。"""
     provider = _FakeVisionProvider(achat_response='{"points": [{"x": 100, "y": 200}]}')
     solver = ImageCaptchaSolver(provider=provider)  # type: ignore[arg-type]
     result = asyncio.run(solver.solve_click_async(b"img", "请点击"))
@@ -428,6 +469,8 @@ def test_solve_click_async_llm_path() -> None:
 
 
 def test_solve_click_async_falls_back_to_sync() -> None:
+    """solve_click 异步无 achat 时回退到同步。"""
+
     @dataclass
     class _SyncOnlyProvider:
         name: str = "sync-only"
@@ -447,6 +490,7 @@ def test_solve_click_async_falls_back_to_sync() -> None:
 
 
 def test_parse_click_response_with_labels() -> None:
+    """_parse_click_response 解析含标签的点位。"""
     text = '{"points": [{"x": 1, "y": 2, "label": "车"}, {"x": 3, "y": 4, "label": "狗"}]}'
     sol = ImageCaptchaSolver._parse_click_response(text)
     assert sol is not None
@@ -455,6 +499,7 @@ def test_parse_click_response_with_labels() -> None:
 
 
 def test_parse_click_response_skips_non_dict_entries() -> None:
+    """_parse_click_response 跳过非字典条目。"""
     text = '{"points": ["invalid", {"x": 5, "y": 6}, null]}'
     sol = ImageCaptchaSolver._parse_click_response(text)
     assert sol is not None
@@ -462,6 +507,7 @@ def test_parse_click_response_skips_non_dict_entries() -> None:
 
 
 def test_parse_click_response_invalid_returns_none() -> None:
+    """_parse_click_response 对非法响应返回 None。"""
     assert ImageCaptchaSolver._parse_click_response("garbage") is None
     assert ImageCaptchaSolver._parse_click_response('{"wrong_key": []}') is None
 
@@ -472,6 +518,7 @@ def test_parse_click_response_invalid_returns_none() -> None:
 
 
 def test_local_slider_returns_none_when_pillow_unavailable() -> None:
+    """本地滑块在 pillow 不可用时返回 None。"""
     cfg = ImageSolverConfig(use_pillow_slider=True, use_llm=False)
     solver = ImageCaptchaSolver(provider=None, config=cfg)
     # 同时禁用 numpy 和 PIL 导入，模拟两者都没装
@@ -481,6 +528,7 @@ def test_local_slider_returns_none_when_pillow_unavailable() -> None:
 
 
 def test_pillow_only_slider_returns_none_when_pillow_unavailable() -> None:
+    """仅 pillow 滑块在 pillow 不可用时返回 None。"""
     cfg = ImageSolverConfig(use_pillow_slider=True, use_llm=False)
     solver = ImageCaptchaSolver(provider=None, config=cfg)
     with patch.dict("sys.modules", {"PIL": None}):

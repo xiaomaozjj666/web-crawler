@@ -1,0 +1,43 @@
+19	 	test_css_returns_matching_elements	page = Selector(HTML, url="https://shop.example.com") | products = page.css(".product") | assert len(products) == 2
+26	 	test_css_first_returns_first_match	page = Selector(HTML) | assert str(page.css_first(".product").text) == "Product 1"
+31	 	test_css_first_missing_returns_default	page = Selector(HTML) | assert page.css_first(".nonexistent") is None | sentinel = Selector("<div/>")
+38	 	test_xpath_selects_elements	page = Selector(HTML) | anchors = page.xpath("//a") | assert len(anchors) == 3
+44	 	test_xpath_first	page = Selector(HTML) | assert str(page.xpath_first("//a").text) == "Product 1"
+49	 	test_tag_and_attrib	page = Selector(HTML) | el = page.css_first("#p1") | assert el.tag == "a"
+59	 	test_text_and_html	page = Selector(HTML) | el = page.css_first("#p1") | assert str(el.text) == "Product 1"
+66	 	test_parent_and_children	page = Selector(HTML) | main = page.css_first("#main") | children = main.children
+77	 	test_find_by_text_substring	page = Selector(HTML) | matches = page.find_by_text("Product") | assert len(matches) == 2
+83	 	test_find_by_text_exact_case_insensitive	page = Selector(HTML) | matches = page.find_by_text("product 1", exact=True) | assert len(matches) == 1
+90	 	test_find_similar_returns_structural_neighbors	page = Selector(HTML) | ref = page.css_first("#p1") | similar = page.find_similar(ref, threshold=0.3)
+108	 	test_repr_contains_tag_and_text	page = Selector(HTML) | el = page.css_first("#p1") | assert "Selector" in repr(el)
+115	 	test_iter_yields_children	page = Selector(HTML) | main = page.css_first("#main") | tags = [c.tag for c in main]
+122	 	test_adaptive_save_and_relocate	page1 = Selector( '<div><a id="p1" class="product">Product 1</a></div>', url="https://shop.example.com", adaptive=True, storage=tmp_storage, ) | saved = page1.c
+146	 	test_adaptive_lookup_without_storage_returns_none	page = Selector("<div><a>just a</a></div>", url="https://x.example", adaptive=True) | assert page.css_first("#missing", adaptive=True) is None
+152	 	test_adaptive_disabled_does_not_relocate	page = Selector('<div><a id="p1">x</a></div>', adaptive=False) | assert page.css_first("#p1") is not None | assert page.css_first("#missing", adaptive=True) is 
+158	 	test_bytes_input_is_parsed	page = Selector(b"<div><p>bytes</p></div>") | assert str(page.css_first("p").text) == "bytes"
+163	 	test_xml_parser_mode	page = Selector(b"<root><item>1</item></root>", parser="xml") | assert page.tag == "root" | assert str(page.css_first("item").text) == "1"
+169	 	test_result_list_text_property_on_css_result	page = Selector(HTML) | products = page.css(".product") | assert "Product 1" in str(products.text)
+176	 	test_xpath_with_auto_save	page = Selector( '<div><a id="x1" class="c">Hi</a></div>', url="https://shop.example.com", adaptive=True, storage=tmp_storage, ) | el = page.xpath_first("//a", 
+188	 	test_find_similar_threshold_filters	page = Selector(HTML) | ref = page.css_first("#p1") | similar = page.find_similar(ref, threshold=0.99)
+196	 	test_css_id_selector	page = Selector(HTML) | assert page.css_first("#ext") is not None | assert str(page.css_first("#ext").text) == "External"
+205	 	test_find_by_regex_matches_direct_text	page = Selector(HTML) | matches = page.find_by_regex(r"Product \d") | assert len(matches) == 2
+213	 	test_find_by_regex_case_insensitive	page = Selector(HTML) | matches = page.find_by_regex("product 1", case_sensitive=False) | assert len(matches) == 1
+220	 	test_find_by_regex_no_match_returns_empty	page = Selector(HTML) | assert len(page.find_by_regex(r"zzz\d+")) == 0
+225	 	test_find_by_regex_accepts_compiled_pattern	import re | page = Selector(HTML) | matches = page.find_by_regex(re.compile(r"Product"))
+233	 	test_re_returns_all_matches	page = Selector('<div id="x">price: 10 and 20</div>') | el = page.css_first("#x") | assert el.re(r"\d+") == ["10", "20"]
+239	 	test_re_with_capturing_groups	page = Selector('<div id="x">a=1 b=2</div>') | el = page.css_first("#x") | assert el.re(r"(\w)=(\d)") == ["a", "1", "b", "2"]
+245	 	test_re_first_returns_first_or_default	page = Selector('<div id="x">val 42</div>') | el = page.css_first("#x") | assert el.re_first(r"\d+") == "42"
+252	 	test_re_clean_match_collapses_whitespace	page = Selector('<div id="x">  hello   world  123</div>') | el = page.css_first("#x") | assert el.re(r"\d+", clean_match=True) == ["123"]
+259	 	test_get_all_text_joins_descendants	page = Selector("<div><p>hello</p><p>world</p></div>") | text = str(page.css_first("div").get_all_text()) | assert "hello" in text
+266	 	test_get_all_text_ignores_script_style_by_default	page = Selector("<div><p>keep</p><script>drop1</script><style>drop2</style></div>") | text = str(page.css_first("div").get_all_text()) | assert "keep" in text
+274	 	test_get_all_text_custom_separator_and_strip	page = Selector("<div><p> a </p><p> b </p></div>") | text = str(page.css_first("div").get_all_text(separator="|", strip=True)) | assert text == "a|b"
+280	 	test_prettify_returns_pretty_html	page = Selector("<div><span>x</span></div>") | pretty = page.css_first("div").prettify() | assert "<div>" in pretty
+289	 	test_result_list_get_and_getall	page = Selector(HTML) | products = page.css(".product") | assert str(products.get()) == "Product 1"
+298	 	test_result_list_get_default_when_empty	page = Selector(HTML) | empty = page.css(".nonexistent") | assert empty.get("none") == "none"
+305	 	test_result_list_first_last_are_properties	page = Selector(HTML) | products = page.css(".product") | assert str(products.first.text) == "Product 1"
+315	 	test_result_list_length_property	page = Selector(HTML) | products = page.css(".product") | assert products.length == 2
+321	 	test_result_list_slice_preserves_type	page = Selector(HTML) | products = page.css(".product") | sliced = products[0:1]
+329	 	test_result_list_css_batch_operation	page = Selector(HTML) | items = page.css("#main") | anchors = items.css("a")
+337	 	test_result_list_xpath_batch_operation	page = Selector(HTML) | items = page.css("#main") | anchors = items.xpath(".//a")
+372	 	test_css_attr_pseudo_no_match_returns_empty_list	page = Selector(HTML) | assert list(page.css(".nonexistent::attr(id)")) == []
+377	 	test_css_attr_pseudo_first_no_match_returns_default	page = Selector(HTML) | assert page.css_first(".nonexistent::attr(id)") is None | assert page.css_first(".nonexistent::attr(id)", "fallback") == "fallback"

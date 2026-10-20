@@ -773,7 +773,9 @@ class ReverseAgent(ActionExecutor):
         network_requests = list(self._network_log)
         self._network_log.clear()
         scripts = await self._collect_scripts_async(page)
-        captcha_info = self.captcha_manager.detector.detect(page)
+        # 异步 page 必须走 await 版探测器：同步版拿到的是协程，
+        # el.get_attribute(...) 会抛 AttributeError 让整步 observe 失败。
+        captcha_info = await self.captcha_manager.detector.detect_async(page)
         captcha_type = captcha_info.type if captcha_info else CaptchaType.NONE
         try:
             page_title = await page.title()

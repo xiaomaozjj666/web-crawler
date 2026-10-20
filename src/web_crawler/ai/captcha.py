@@ -230,6 +230,102 @@ class CaptchaDetector:
             return None
         return el.get_attribute("data-sitekey")
 
+    # -- 异步页面版本（Playwright async API） --------------------------------
+    # 两套 API 只差一个 await，但无法共用同一份实现：把同步分支喂给异步 page
+    # 时 page.query_selector() 返回的是协程，随后 el.get_attribute(...) 必然抛
+    # AttributeError（Nightly e2e 实测每步 observe 都以 "'coroutine' object has
+    # no attribute 'get_attribute'" 失败）。故并列一份全程 await 的实现，
+    # 语义与同步版逐条对应。
+
+    async def detect_async(self, page: Any) -> CaptchaInfo | None:
+        """异步页面版 :meth:`detect`：判定顺序与返回语义完全一致。"""
+        for fn in (
+            self._detect_hcaptcha_async,
+            self._detect_turnstile_async,
+            self._detect_recaptcha_async,
+            self._detect_geetest_async,
+        ):
+            info = await fn(page)
+            if info is not None:
+                return info
+        return None
+
+    @staticmethod
+    async def _query_async(page: Any, selector: str, *, what: str) -> Any | None:
+        """``page.query_selector`` 的 await 版；探测失败按未命中处理。"""
+        try:
+            return await page.query_selector(selector)
+        except Exception as exc:
+            logger.debug("%s probe failed for %r: %s", what, selector, exc)
+            return None
+
+    async def _read_data_sitekey_async(self, page: Any) -> str | None:
+        el = await self._query_async(page, "[data-sitekey]", what="data-sitekey element")
+        if el is None:
+            return None
+        value: str | None = await el.get_attribute("data-sitekey")
+        return value
+
+    async def _detect_hcaptcha_async(self, page: Any) -> CaptchaInfo | None:
+        iframe = await self._query_async(page, _HCAPTCHA_IFRAME, what="hcaptcha iframe")
+        if iframe is None:
+            return None
+        src: str = await iframe.get_attribute("src") or ""
+        site_key = await self._read_data_sitekey_async(page) or _sitekey_from_url(src, "sitekey")
+        return CaptchaInfo(
+            type=CaptchaType.HCAPTCHA,
+            iframe_url=src or None,
+            site_key=site_key,
+            container_selector=_HCAPTCHA_IFRAME,
+        )
+
+    async def _detect_turnstile_async(self, page: Any) -> CaptchaInfo | None:
+        iframe = None
+        matched_sel: str | None = None
+        for sel in _TURNSTILE_IFRAMES:
+            iframe = await self._query_async(page, sel, what="turnstile iframe")
+            if iframe is not None:
+                matched_sel = sel
+                break
+        if iframe is None:
+            return None
+        src: str = await iframe.get_attribute("src") or ""
+        site_key = await self._read_data_sitekey_async(page) or _sitekey_from_url(src, "sitekey")
+        return CaptchaInfo(
+            type=CaptchaType.TURNSTILE,
+            iframe_url=src or None,
+            site_key=site_key,
+            container_selector=matched_sel,
+        )
+
+    async def _detect_recaptcha_async(self, page: Any) -> CaptchaInfo | None:
+        iframe = await self._query_async(page, _RECAPTCHA_IFRAME, what="recaptcha iframe")
+        if iframe is None:
+            return None
+        src: str = await iframe.get_attribute("src") or ""
+        is_v3 = ("/enterprise/" in src and "/anchor" not in src) or (
+            "render=" in src and "render=explicit" not in src
+        )
+        if is_v3:
+            site_key = _sitekey_from_url(src, "render", "k")
+            captcha_type = CaptchaType.RECAPTCHA_V3
+        else:
+            site_key = await self._read_data_sitekey_async(page) or _sitekey_from_url(src, "k")
+            captcha_type = CaptchaType.RECAPTCHA_V2
+        return CaptchaInfo(
+            type=captcha_type,
+            iframe_url=src or None,
+            site_key=site_key,
+            container_selector=_RECAPTCHA_IFRAME,
+        )
+
+    async def _detect_geetest_async(self, page: Any) -> CaptchaInfo | None:
+        for sel in _GEETEST_SELECTORS:
+            el = await self._query_async(page, sel, what="geetest container")
+            if el is not None:
+                return CaptchaInfo(type=CaptchaType.GEETEST, container_selector=sel)
+        return None
+
 
 class CaptchaSolver:
     """验证码处理策略：入口点击 / 自动通过等待 / 滑块模拟 + 可选图片识别。

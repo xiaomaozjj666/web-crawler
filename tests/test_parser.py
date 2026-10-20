@@ -17,6 +17,7 @@ HTML = """
 
 
 def test_css_returns_matching_elements() -> None:
+    """css 选择器返回全部匹配元素。"""
     page = Selector(HTML, url="https://shop.example.com")
     products = page.css(".product")
     assert len(products) == 2
@@ -24,11 +25,13 @@ def test_css_returns_matching_elements() -> None:
 
 
 def test_css_first_returns_first_match() -> None:
+    """css_first 返回首个匹配。"""
     page = Selector(HTML)
     assert str(page.css_first(".product").text) == "Product 1"
 
 
 def test_css_first_missing_returns_default() -> None:
+    """css_first 未命中时返回默认值。"""
     page = Selector(HTML)
     assert page.css_first(".nonexistent") is None
     sentinel = Selector("<div/>")
@@ -36,17 +39,20 @@ def test_css_first_missing_returns_default() -> None:
 
 
 def test_xpath_selects_elements() -> None:
+    """xpath 选择器返回全部匹配元素。"""
     page = Selector(HTML)
     anchors = page.xpath("//a")
     assert len(anchors) == 3
 
 
 def test_xpath_first() -> None:
+    """xpath_first 返回首个匹配。"""
     page = Selector(HTML)
     assert str(page.xpath_first("//a").text) == "Product 1"
 
 
 def test_tag_and_attrib() -> None:
+    """元素 tag 与属性正确读取。"""
     page = Selector(HTML)
     el = page.css_first("#p1")
     assert el.tag == "a"
@@ -57,6 +63,7 @@ def test_tag_and_attrib() -> None:
 
 
 def test_text_and_html() -> None:
+    """元素 text 与 html 正确读取。"""
     page = Selector(HTML)
     el = page.css_first("#p1")
     assert str(el.text) == "Product 1"
@@ -64,6 +71,7 @@ def test_text_and_html() -> None:
 
 
 def test_parent_and_children() -> None:
+    """元素 parent 与 children 正确导航。"""
     page = Selector(HTML)
     main = page.css_first("#main")
     children = main.children
@@ -75,12 +83,14 @@ def test_parent_and_children() -> None:
 
 
 def test_find_by_text_substring() -> None:
+    """find_by_text 按子串匹配元素。"""
     page = Selector(HTML)
     matches = page.find_by_text("Product")
     assert len(matches) == 2
 
 
 def test_find_by_text_exact_case_insensitive() -> None:
+    """find_by_text 精确匹配忽略大小写。"""
     page = Selector(HTML)
     matches = page.find_by_text("product 1", exact=True)
     assert len(matches) == 1
@@ -88,6 +98,7 @@ def test_find_by_text_exact_case_insensitive() -> None:
 
 
 def test_find_similar_returns_structural_neighbors() -> None:
+    """find_similar 返回结构相近的邻居。"""
     page = Selector(HTML)
     ref = page.css_first("#p1")
     similar = page.find_similar(ref, threshold=0.3)
@@ -106,6 +117,7 @@ def test_selector_is_truthy_for_leaf_element() -> None:
 
 
 def test_repr_contains_tag_and_text() -> None:
+    """元素 repr 含 tag 与文本。"""
     page = Selector(HTML)
     el = page.css_first("#p1")
     assert "Selector" in repr(el)
@@ -113,6 +125,7 @@ def test_repr_contains_tag_and_text() -> None:
 
 
 def test_iter_yields_children() -> None:
+    """迭代元素时产出其子元素。"""
     page = Selector(HTML)
     main = page.css_first("#main")
     tags = [c.tag for c in main]
@@ -120,6 +133,7 @@ def test_iter_yields_children() -> None:
 
 
 def test_adaptive_save_and_relocate(tmp_storage: AdaptiveStorage) -> None:
+    """自适应选择器保存并重定位元素。"""
     page1 = Selector(
         '<div><a id="p1" class="product">Product 1</a></div>',
         url="https://shop.example.com",
@@ -145,28 +159,33 @@ def test_adaptive_save_and_relocate(tmp_storage: AdaptiveStorage) -> None:
 
 def test_adaptive_lookup_without_storage_returns_none() -> None:
     # adaptive=True but no prior save -> returns empty ResultList, no crash.
+    """自适应无存储时查找返回 None。"""
     page = Selector("<div><a>just a</a></div>", url="https://x.example", adaptive=True)
     assert page.css_first("#missing", adaptive=True) is None
 
 
 def test_adaptive_disabled_does_not_relocate() -> None:
+    """自适应禁用时不会重定位。"""
     page = Selector('<div><a id="p1">x</a></div>', adaptive=False)
     assert page.css_first("#p1") is not None
     assert page.css_first("#missing", adaptive=True) is None
 
 
 def test_bytes_input_is_parsed() -> None:
+    """Selector 接受字节输入并解析。"""
     page = Selector(b"<div><p>bytes</p></div>")
     assert str(page.css_first("p").text) == "bytes"
 
 
 def test_xml_parser_mode() -> None:
+    """Selector 在 xml 模式下解析 XML。"""
     page = Selector(b"<root><item>1</item></root>", parser="xml")
     assert page.tag == "root"
     assert str(page.css_first("item").text) == "1"
 
 
 def test_result_list_text_property_on_css_result() -> None:
+    """结果列表 text 属性拼接匹配文本。"""
     page = Selector(HTML)
     products = page.css(".product")
     assert "Product 1" in str(products.text)
@@ -174,6 +193,7 @@ def test_result_list_text_property_on_css_result() -> None:
 
 
 def test_xpath_with_auto_save(tmp_storage: AdaptiveStorage) -> None:
+    """xpath 命中后自动保存以支持重定位。"""
     page = Selector(
         '<div><a id="x1" class="c">Hi</a></div>',
         url="https://shop.example.com",
@@ -186,6 +206,7 @@ def test_xpath_with_auto_save(tmp_storage: AdaptiveStorage) -> None:
 
 
 def test_find_similar_threshold_filters() -> None:
+    """find_similar 按阈值过滤邻居。"""
     page = Selector(HTML)
     ref = page.css_first("#p1")
     # Very high threshold excludes everything (no perfect structural twin)
@@ -194,6 +215,7 @@ def test_find_similar_threshold_filters() -> None:
 
 
 def test_css_id_selector() -> None:
+    """css id 选择器正确命中。"""
     page = Selector(HTML)
     assert page.css_first("#ext") is not None
     assert str(page.css_first("#ext").text) == "External"
@@ -203,6 +225,7 @@ def test_css_id_selector() -> None:
 
 
 def test_find_by_regex_matches_direct_text() -> None:
+    """find_by_regex 匹配直接文本。"""
     page = Selector(HTML)
     matches = page.find_by_regex(r"Product \d")
     assert len(matches) == 2
@@ -211,6 +234,7 @@ def test_find_by_regex_matches_direct_text() -> None:
 
 
 def test_find_by_regex_case_insensitive() -> None:
+    """find_by_regex 忽略大小写匹配。"""
     page = Selector(HTML)
     matches = page.find_by_regex("product 1", case_sensitive=False)
     assert len(matches) == 1
@@ -218,11 +242,13 @@ def test_find_by_regex_case_insensitive() -> None:
 
 
 def test_find_by_regex_no_match_returns_empty() -> None:
+    """find_by_regex 无匹配返回空。"""
     page = Selector(HTML)
     assert len(page.find_by_regex(r"zzz\d+")) == 0
 
 
 def test_find_by_regex_accepts_compiled_pattern() -> None:
+    """find_by_regex 接受已编译正则。"""
     import re
 
     page = Selector(HTML)
@@ -231,18 +257,21 @@ def test_find_by_regex_accepts_compiled_pattern() -> None:
 
 
 def test_re_returns_all_matches() -> None:
+    """re 返回全部正则匹配。"""
     page = Selector('<div id="x">price: 10 and 20</div>')
     el = page.css_first("#x")
     assert el.re(r"\d+") == ["10", "20"]
 
 
 def test_re_with_capturing_groups() -> None:
+    """re 展开捕获组匹配。"""
     page = Selector('<div id="x">a=1 b=2</div>')
     el = page.css_first("#x")
     assert el.re(r"(\w)=(\d)") == ["a", "1", "b", "2"]
 
 
 def test_re_first_returns_first_or_default() -> None:
+    """re_first 返回首个匹配或默认值。"""
     page = Selector('<div id="x">val 42</div>')
     el = page.css_first("#x")
     assert el.re_first(r"\d+") == "42"
@@ -250,6 +279,7 @@ def test_re_first_returns_first_or_default() -> None:
 
 
 def test_re_clean_match_collapses_whitespace() -> None:
+    """re 在 clean_match 时折叠空白。"""
     page = Selector('<div id="x">  hello   world  123</div>')
     el = page.css_first("#x")
     # clean_match collapses internal whitespace before matching
@@ -257,6 +287,7 @@ def test_re_clean_match_collapses_whitespace() -> None:
 
 
 def test_get_all_text_joins_descendants() -> None:
+    """get_all_text 拼接全部后代文本。"""
     page = Selector("<div><p>hello</p><p>world</p></div>")
     text = str(page.css_first("div").get_all_text())
     assert "hello" in text
@@ -264,6 +295,7 @@ def test_get_all_text_joins_descendants() -> None:
 
 
 def test_get_all_text_ignores_script_style_by_default() -> None:
+    """get_all_text 默认忽略 script 与 style。"""
     page = Selector("<div><p>keep</p><script>drop1</script><style>drop2</style></div>")
     text = str(page.css_first("div").get_all_text())
     assert "keep" in text
@@ -272,12 +304,14 @@ def test_get_all_text_ignores_script_style_by_default() -> None:
 
 
 def test_get_all_text_custom_separator_and_strip() -> None:
+    """get_all_text 支持自定义分隔符与去空白。"""
     page = Selector("<div><p> a </p><p> b </p></div>")
     text = str(page.css_first("div").get_all_text(separator="|", strip=True))
     assert text == "a|b"
 
 
 def test_prettify_returns_pretty_html() -> None:
+    """prettify 返回格式化 HTML。"""
     page = Selector("<div><span>x</span></div>")
     pretty = page.css_first("div").prettify()
     assert "<div>" in pretty
@@ -287,6 +321,7 @@ def test_prettify_returns_pretty_html() -> None:
 
 
 def test_result_list_get_and_getall() -> None:
+    """结果列表 get 与 getall 取首条与全部。"""
     page = Selector(HTML)
     products = page.css(".product")
     # get() returns text of first element
@@ -296,6 +331,7 @@ def test_result_list_get_and_getall() -> None:
 
 
 def test_result_list_get_default_when_empty() -> None:
+    """结果列表为空时 get 返回默认值。"""
     page = Selector(HTML)
     empty = page.css(".nonexistent")
     assert empty.get("none") == "none"
@@ -303,6 +339,7 @@ def test_result_list_get_default_when_empty() -> None:
 
 
 def test_result_list_first_last_are_properties() -> None:
+    """结果列表 first 与 last 为属性。"""
     page = Selector(HTML)
     products = page.css(".product")
     # Scrapling-style property access (no parens)
@@ -313,12 +350,14 @@ def test_result_list_first_last_are_properties() -> None:
 
 
 def test_result_list_length_property() -> None:
+    """结果列表 length 属性返回数量。"""
     page = Selector(HTML)
     products = page.css(".product")
     assert products.length == 2
 
 
 def test_result_list_slice_preserves_type() -> None:
+    """结果列表切片保留同类型。"""
     page = Selector(HTML)
     products = page.css(".product")
     sliced = products[0:1]
@@ -327,6 +366,7 @@ def test_result_list_slice_preserves_type() -> None:
 
 
 def test_result_list_css_batch_operation() -> None:
+    """结果列表 css 批量查询子元素。"""
     page = Selector(HTML)
     items = page.css("#main")
     # batch css over the container finds the nested anchors
@@ -335,6 +375,7 @@ def test_result_list_css_batch_operation() -> None:
 
 
 def test_result_list_xpath_batch_operation() -> None:
+    """结果列表 xpath 批量查询子元素。"""
     page = Selector(HTML)
     items = page.css("#main")
     anchors = items.xpath(".//a")
@@ -370,11 +411,13 @@ def test_css_attr_pseudo_missing_attribute_returns_empty_string() -> None:
 
 
 def test_css_attr_pseudo_no_match_returns_empty_list() -> None:
+    """css 属性伪类未命中返回空列表。"""
     page = Selector(HTML)
     assert list(page.css(".nonexistent::attr(id)")) == []
 
 
 def test_css_attr_pseudo_first_no_match_returns_default() -> None:
+    """css 属性伪类首个未命中返回默认值。"""
     page = Selector(HTML)
     assert page.css_first(".nonexistent::attr(id)") is None
     assert page.css_first(".nonexistent::attr(id)", "fallback") == "fallback"

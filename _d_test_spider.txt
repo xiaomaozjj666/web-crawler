@@ -1,0 +1,18 @@
+73	 	test_request_validates_url	with pytest.raises(ValueError): Request(url="")
+78	 	test_request_defaults	r = Request("https://x") | assert r.method == "GET" | assert r.callback == "parse"
+86	 	test_spider_collects_items_and_follows_links	spider = ItemSpider(fetcher=FakeFetcher(PAGES)) | items = spider.run() | names = [it["name"] for it in items]
+96	 	test_spider_respects_allowed_domains	pages = { "https://shop.example.com/": b'<a href="https://other.example/x">ext</a>', "https://other.example/x": b"<p>should not be fetched</p>", } | class S(Spi
+116	 	test_spider_deduplicates_requests	pages = { "https://shop.example.com/": b'<a href="/">loop</a><a href="/page2">p2</a>', "https://shop.example.com/page2": b'<a href="/">home</a>', } | class S(Sp
+137	 	test_spider_max_requests_cap	spider = ItemSpider(fetcher=FakeFetcher(PAGES)) | spider.run(max_requests=1) | assert spider.stats.pages_crawled == 1
+143	 	test_spider_requires_fetcher	spider = ItemSpider() | with pytest.raises(SpiderError, match="fetcher"): spider.run()
+149	 	test_spider_failed_request_does_not_abort_run	fetcher = FakeFetcher({})  # all URLs 404 but still returns a Response | spider = ItemSpider(fetcher=fetcher) | items = spider.run()
+158	 	test_spider_callback_error_raises_spider_error	class Bad(Spider): start_urls = ["https://shop.example.com/"] def parse(self, response: Response) -> Any: raise RuntimeError("boom") | spider = Bad(fetcher=Fake
+170	 	test_spider_missing_callback_raises	class S(Spider): start_urls = ["https://shop.example.com/"] | spider = S(fetcher=FakeFetcher(PAGES)) | req = Request("https://shop.example.com/", callback="nope
+181	 	test_spider_pause_and_resume	state_file = tmp_path / "state.json" | class PausingSpider(Spider): name = "pausing" start_urls = ["https://shop.example.com/"] def parse(self, response: Respon
+227	 	test_spider_priority_ordering	class S(Spider): start_urls = ["https://shop.example.com/"] def parse(self, response: Response) -> Any: yield Request("https://shop.example.com/low", priority=1
+251	 	test_spider_async_run	spider = ItemSpider(fetcher=FakeFetcher(PAGES)) | items = asyncio.run(spider.async_run()) | names = [it["name"] for it in items]
+307	 	test_spider_meta_passes_between_requests	class S(Spider): start_urls = ["https://shop.example.com/"] def parse(self, response: Response) -> Any: yield Request( "https://shop.example.com/page2", meta={"
+326	 	test_spider_stats_as_dict	spider = ItemSpider(fetcher=FakeFetcher(PAGES)) | spider.run() | d = spider.stats.as_dict()
+335	 	test_spider_stream_yields_items	spider = ItemSpider(fetcher=FakeFetcher(PAGES)) | async def collect() -> list[Any]: items = [] async for item in spider.stream(): items.append(item) return item
+351	 	test_spider_stream_requires_fetcher	spider = ItemSpider() | async def go() -> None: async for _ in spider.stream(): pass | with pytest.raises(SpiderError, match="fetcher"): asyncio.run(go())
+362	 	test_spider_stream_respects_max_requests	spider = ItemSpider(fetcher=FakeFetcher(PAGES)) | async def collect() -> list[Any]: items = [] async for item in spider.stream(max_requests=1): items.append(ite

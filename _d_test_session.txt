@@ -1,0 +1,27 @@
+191	P	test_constructor_rejects_bad_arguments	with pytest.raises(ValueError): SessionPool(**kwargs)
+196	 	test_constructor_rejects_empty_fingerprints	with pytest.raises(ValueError, match="non-empty"): SessionPool([])
+201	 	test_acquire_release_roundtrip	factory = _RecordingFactory() | pool = SessionPool(session_factory=factory) | handle = pool.acquire()
+216	 	test_acquire_reuses_released_session	factory = _RecordingFactory() | pool = SessionPool(session_factory=factory) | first = pool.acquire()
+296	 	test_fingerprint_rotation_round_robin	monkeypatch.setattr(session_mod, "HAS_CURL_CFFI", True) | factory = _RecordingFactory() | pool = SessionPool(["fp-a", "fp-b", "fp-c"], max_size=8, session_facto
+307	 	test_fingerprint_rotation_random	monkeypatch.setattr(session_mod, "HAS_CURL_CFFI", True) | factory = _RecordingFactory() | pool = SessionPool(["fp-a", "fp-b"], strategy="random", max_size=8, se
+317	 	test_stats_fingerprint_distribution	monkeypatch.setattr(session_mod, "HAS_CURL_CFFI", True) | factory = _RecordingFactory() | pool = SessionPool(["fp-a", "fp-a", "fp-b"], max_size=8, session_facto
+353	 	test_default_factory_builds_curl_session	pool = SessionPool(["chrome131"]) | handle = pool.acquire() | try: from curl_cffi.requests import Session as CurlSession assert isinstance(handle.session, CurlS
+366	 	test_default_factory_falls_back_to_httpx	monkeypatch.setattr(session_mod, "HAS_CURL_CFFI", False) | pool = SessionPool() | handle = pool.acquire()
+383	 	test_idle_reaping_after_max_idle	clock = _FakeClock() | factory = _RecordingFactory() | pool = SessionPool(session_factory=factory, max_idle=60.0, clock=clock)
+435	 	test_release_success_resets_failure_streak	factory = _RecordingFactory() | pool = SessionPool(session_factory=factory, max_failures=2) | handle = pool.acquire()
+449	 	test_mark_failed_marks_stale_then_evicts_on_release	factory = _RecordingFactory() | pool = SessionPool(session_factory=factory, max_failures=2) | handle = pool.acquire()
+474	 	test_mark_success_rescues_marked_session	factory = _RecordingFactory() | pool = SessionPool(session_factory=factory, max_failures=2) | handle = pool.acquire()
+491	 	test_prewarm_builds_sync_sessions_upfront	monkeypatch.setattr(session_mod, "HAS_CURL_CFFI", True) | factory = _RecordingFactory() | pool = SessionPool(["fp-a", "fp-b", "fp-c"], prewarm=2, session_factor
+506	 	test_stats_structure	pool = SessionPool(["fp-a"], max_size=3, max_idle=10.0) | stats = pool.stats() | assert set(stats) == { "strategy", "max_size", "max_idle", "active", "idle", "t
+532	 	test_len_counts_pooled_sessions	factory = _RecordingFactory() | pool = SessionPool(session_factory=factory, max_size=4) | assert len(pool) == 0
+544	 	test_repr_contains_strategy	pool = SessionPool(strategy="round_robin") | assert "round_robin" in repr(pool) | pool.close()
+550	 	test_bind_factories_is_first_wins	factory = _RecordingFactory() | pool = SessionPool() | pool.bind_factories(session_factory=factory, async_session_factory=factory)
+566	 	test_close_closes_all_sessions_and_is_idempotent	factory = _RecordingFactory() | pool = SessionPool(session_factory=factory, max_size=4) | h1, _ = pool.acquire(), pool.acquire()
+581	 	test_sync_context_manager_closes	factory = _RecordingFactory() | with SessionPool(session_factory=factory, prewarm=1) as pool: assert pool.stats()["idle"] == 1 | assert factory.sessions[0].clos
+588	 	test_async_context_manager_closes	factory = _RecordingFactory(_FakeAsyncSession) | async with SessionPool(async_session_factory=factory) as pool: await pool.prewarm_async(1) assert pool.stats()[
+599	 	test_async_acquire_release_roundtrip	factory = _RecordingFactory(_FakeAsyncSession) | pool = SessionPool(async_session_factory=factory) | handle = await pool.acquire_async()
+615	 	test_async_overflow_ephemeral	factory = _RecordingFactory(_FakeAsyncSession) | pool = SessionPool(async_session_factory=factory, max_size=1) | h1 = await pool.acquire_async()
+628	 	test_async_failure_eviction	factory = _RecordingFactory(_FakeAsyncSession) | pool = SessionPool(async_session_factory=factory, max_failures=2) | handle = await pool.acquire_async()
+640	 	test_async_idle_reaping_with_fake_clock	clock = _FakeClock() | factory = _RecordingFactory(_FakeAsyncSession) | pool = SessionPool(async_session_factory=factory, max_idle=60.0, clock=clock)
+668	 	test_async_aclose_prefers_aclose_method	factory = _RecordingFactory(_FakeAsyncSessionWithAclose) | pool = SessionPool(async_session_factory=factory) | handle = await pool.acquire_async()
+697	 	test_prewarm_async_in_event_loop	factory = _RecordingFactory(_FakeAsyncSession) | pool = SessionPool(["fp-a", "fp-b"], async_session_factory=factory) | await pool.prewarm_async(2)

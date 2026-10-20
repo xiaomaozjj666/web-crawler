@@ -28,6 +28,7 @@ from web_crawler.app import crawler as cr
 
 class TestResource:
     def test_creation(self) -> None:
+        """Resource 创建后保留传入字段。"""
         r = cr.Resource(
             url="https://x.com/a.js",
             found_in="script[src]",
@@ -38,6 +39,7 @@ class TestResource:
         assert r.kind == "script"
 
     def test_frozen(self) -> None:
+        """Resource 冻结后属性不可修改。"""
         r = cr.Resource(url="u", found_in="f", kind="k", page_url="p")
         with pytest.raises(AttributeError):
             r.url = "changed"  # type: ignore[misc]
@@ -45,6 +47,7 @@ class TestResource:
 
 class TestManifestRow:
     def test_defaults(self) -> None:
+        """ManifestRow 默认字段值正确。"""
         row = cr.ManifestRow(
             status="ok",
             url="u",
@@ -84,12 +87,14 @@ class TestAES:
 
 class TestSegmentKeys:
     def test_register_and_get(self) -> None:
+        """注册并获取 segment key 能原样返回。"""
         cr.register_segment_key("https://x.com/seg", b"k" * 16, b"iv" * 8)
         result = cr.get_segment_key("https://x.com/seg")
         assert result is not None
         assert result[0] == b"k" * 16
 
     def test_get_missing(self) -> None:
+        """查询未注册的 segment key 返回 None。"""
         assert cr.get_segment_key("https://nonexistent.com/seg") is None
 
 
@@ -103,6 +108,7 @@ class TestDomainRateLimiter:
         limiter.wait_if_needed("https://example.com/page")  # 不应阻塞
 
     def test_record_request(self) -> None:
+        """记录请求后域名进入最近请求时间表。"""
         limiter = cr.DomainRateLimiter(default_delay=0.0)
         limiter.record_request("https://example.com/a")
         assert "example.com" in limiter._last_times
@@ -131,12 +137,14 @@ class TestDomainRateLimiter:
 
 class TestContentDedup:
     def test_new_content(self) -> None:
+        """新内容首次判重返回非重复。"""
         dedup = cr.ContentDedup()
         is_dup, sha = dedup.is_duplicate(b"data1", "https://a.com/1")
         assert is_dup is False
         assert len(sha) == 64
 
     def test_duplicate_content(self) -> None:
+        """相同内容再次判重返回重复。"""
         dedup = cr.ContentDedup()
         dedup.is_duplicate(b"same", "https://a.com/1")
         is_dup, _ = dedup.is_duplicate(b"same", "https://b.com/2")
@@ -162,12 +170,14 @@ class TestContentDedup:
         assert dedup.seen_count() == 1
 
     def test_seen_hashes(self) -> None:
+        """判重后已见哈希被记录。"""
         dedup = cr.ContentDedup()
         dedup.is_duplicate(b"a", "https://a.com/1")
         dedup.is_duplicate(b"b", "https://a.com/2")
         assert len(dedup.seen_hashes()) == 2
 
     def test_seen_count(self) -> None:
+        """seen_count 返回已判重条目数。"""
         dedup = cr.ContentDedup()
         dedup.is_duplicate(b"a", "https://a.com/1")
         assert dedup.seen_count() == 1
@@ -178,101 +188,129 @@ class TestContentDedup:
 
 class TestParseHeaders:
     def test_valid(self) -> None:
+        """parse_headers 解析合法头部键值对。"""
         result = cr.parse_headers(["Cookie: name=val", "Auth: Bearer token"])
         assert result["Cookie"] == "name=val"
         assert result["Auth"] == "Bearer token"
 
     def test_invalid_no_colon(self) -> None:
+        """parse_headers 对无冒号头部抛 ValueError。"""
         with pytest.raises(ValueError, match="Invalid header format"):
             cr.parse_headers(["no colon here"])
 
 
 class TestParseSrcset:
     def test_basic(self) -> None:
+        """parse_srcset 解析多候选 srcset。"""
         result = list(cr.parse_srcset("img1.jpg 1x, img2.jpg 2x"))
         assert result == ["img1.jpg", "img2.jpg"]
 
     def test_single(self) -> None:
+        """parse_srcset 解析单项 srcset。"""
         assert list(cr.parse_srcset("only.jpg")) == ["only.jpg"]
 
 
 class TestNormalizeUrl:
     def test_http(self) -> None:
+        """normalize_url 保留普通 HTTP URL。"""
         assert cr.normalize_url("https://example.com/page") == "https://example.com/page"
 
     def test_fragment_removed(self) -> None:
+        """normalize_url 移除 URL 片段。"""
         assert cr.normalize_url("https://example.com/page#section") == "https://example.com/page"
 
     def test_data_uri(self) -> None:
+        """normalize_url 将 data URI 规范化为空。"""
         assert cr.normalize_url("data:text/html,base64") == ""
 
     def test_javascript(self) -> None:
+        """normalize_url 将 javascript: 规范化为空。"""
         assert cr.normalize_url("javascript:void(0)") == ""
 
     def test_ssrf_localhost(self) -> None:
+        """normalize_url 拒绝 localhost 目标。"""
         assert cr.normalize_url("http://localhost/admin") == ""
 
     def test_ssrf_private_ip(self) -> None:
+        """normalize_url 拒绝私网 IP 目标。"""
         assert cr.normalize_url("http://192.168.1.1/admin") == ""
 
     def test_ssrf_loopback_ip(self) -> None:
+        """normalize_url 拒绝回环 IP 目标。"""
         assert cr.normalize_url("http://127.0.0.1/admin") == ""
 
     def test_ssrf_metadata(self) -> None:
+        """normalize_url 拒绝云元数据地址。"""
         assert cr.normalize_url("http://169.254.169.254/latest") == ""
 
     def test_non_http_scheme(self) -> None:
+        """normalize_url 拒绝非 HTTP 协议。"""
         assert cr.normalize_url("ftp://example.com/file") == ""
 
 
 class TestLooksLikeUrl:
     def test_http(self) -> None:
+        """looks_like_url 识别普通 HTTP URL。"""
         assert cr.looks_like_url("https://example.com") is True
 
     def test_protocol_relative(self) -> None:
+        """looks_like_url 识别协议相对 URL。"""
         assert cr.looks_like_url("//cdn.example.com/lib.js") is True
 
     def test_absolute_path(self) -> None:
+        """looks_like_url 识别绝对路径。"""
         assert cr.looks_like_url("/assets/img.png") is True
 
     def test_other(self) -> None:
+        """looks_like_url 拒绝非 URL 文本。"""
         assert cr.looks_like_url("not a url") is False
 
 
 class TestLooksLikeDownloadable:
     def test_normal_url(self) -> None:
+        """looks_like_downloadable 识别可下载 URL。"""
         assert cr.looks_like_downloadable("https://example.com/img.png") is True
 
     def test_data_uri(self) -> None:
+        """looks_like_downloadable 拒绝 data URI。"""
         assert cr.looks_like_downloadable("data:image/png;base64,abc") is False
 
     def test_javascript(self) -> None:
+        """looks_like_downloadable 拒绝 javascript:。"""
         assert cr.looks_like_downloadable("javascript:void(0)") is False
 
     def test_mailto(self) -> None:
+        """looks_like_downloadable 拒绝 mailto:。"""
         assert cr.looks_like_downloadable("mailto:test@test.com") is False
 
     def test_empty(self) -> None:
+        """looks_like_downloadable 拒绝空字符串。"""
         assert cr.looks_like_downloadable("") is False
 
     def test_hash(self) -> None:
+        """looks_like_downloadable 拒绝纯锚点。"""
         assert cr.looks_like_downloadable("#anchor") is False
 
 
 class TestLooksLikeResourceUrl:
     def test_image(self) -> None:
+        """looks_like_resource_url 识别图片 URL。"""
         assert cr.looks_like_resource_url("https://x.com/logo.png") is True
 
     def test_css(self) -> None:
+        """looks_like_resource_url 识别 CSS URL。"""
         assert cr.looks_like_resource_url("https://x.com/style.css") is True
 
     def test_js(self) -> None:
+        """looks_like_resource_url 识别 JS URL。"""
         assert cr.looks_like_resource_url("https://x.com/app.js") is True
 
     def test_html_not_resource(self) -> None:
+        """looks_like_resource_url 拒绝 HTML 页面。"""
         assert cr.looks_like_resource_url("https://x.com/page.html") is False
 
     def test_no_extension(self) -> None:
+        """looks_like_resource_url 拒绝无扩展名 URL。"""
         assert cr.looks_like_resource_url("https://x.com/page") is False
 
 
@@ -295,115 +333,146 @@ class TestIsVideoResource:
         )
 
     def test_by_suffix(self) -> None:
+        """is_video_resource 按后缀识别视频。"""
         assert cr.is_video_resource(self._row(url="https://x.com/v.mp4")) is True
 
     def test_by_content_type(self) -> None:
+        """is_video_resource 按内容类型识别视频。"""
         assert cr.is_video_resource(self._row(ct="video/mp4")) is True
 
     def test_by_kind(self) -> None:
+        """is_video_resource 按 kind 识别视频。"""
         assert cr.is_video_resource(self._row(kind="video")) is True
 
     def test_by_found_in(self) -> None:
+        """is_video_resource 按 found_in 识别视频。"""
         assert cr.is_video_resource(self._row(found_in="video[src]")) is True
 
     def test_not_video(self) -> None:
+        """is_video_resource 拒绝非视频资源。"""
         assert cr.is_video_resource(self._row(url="https://x.com/img.png", ct="image/png")) is False
 
 
 class TestCategoryFor:
     def test_playlist(self) -> None:
+        """category_for 将 m3u8 归类为 playlist。"""
         assert cr.category_for("https://x.com/v.m3u8", "", "", "") == "playlist"
 
     def test_subtitle(self) -> None:
+        """category_for 将 vtt 归类为 subtitle。"""
         assert cr.category_for("https://x.com/sub.vtt", "", "", "") == "subtitle"
 
     def test_video(self) -> None:
+        """category_for 将 mp4 归类为 video。"""
         assert cr.category_for("https://x.com/v.mp4", "", "", "") == "video"
 
     def test_audio(self) -> None:
+        """category_for 将 mp3 归类为 audio。"""
         assert cr.category_for("https://x.com/a.mp3", "audio/mpeg", "", "") == "audio"
 
     def test_image(self) -> None:
+        """category_for 将 png 归类为 image。"""
         assert cr.category_for("https://x.com/i.png", "image/png", "", "") == "image"
 
     def test_css(self) -> None:
+        """category_for 将 css 归类为 css。"""
         assert cr.category_for("https://x.com/s.css", "text/css", "", "") == "css"
 
     def test_script(self) -> None:
+        """category_for 将 js 归类为 script。"""
         assert cr.category_for("https://x.com/a.js", "application/javascript", "", "") == "script"
 
     def test_font(self) -> None:
+        """category_for 将 woff2 归类为 font。"""
         assert cr.category_for("https://x.com/f.woff2", "font/woff2", "", "") == "font"
 
     def test_other(self) -> None:
+        """category_for 将未知类型归类为 other。"""
         assert cr.category_for("https://x.com/data", "application/json", "", "") == "other"
 
     def test_poster(self) -> None:
+        """category_for 按 found_in 识别 poster。"""
         assert cr.category_for("https://x.com/p.jpg", "", "", "video[poster]") == "poster"
 
 
 class TestSameDomain:
     def test_same(self) -> None:
+        """same_domain 判定同域 URL 为真。"""
         assert cr.same_domain("https://a.com/x", "https://a.com/y") is True
 
     def test_different(self) -> None:
+        """same_domain 判定异域 URL 为假。"""
         assert cr.same_domain("https://a.com/x", "https://b.com/y") is False
 
 
 class TestBlockKeywords:
     def test_parse(self) -> None:
+        """parse_block_keywords 解析逗号分隔关键词。"""
         result = cr.parse_block_keywords(["ad, tracker", "popup"])
         assert result == ["ad", "tracker", "popup"]
 
     def test_parse_newlines(self) -> None:
+        """parse_block_keywords 解析换行分隔关键词。"""
         result = cr.parse_block_keywords(["ad\ntracker\npopup"])
         assert result == ["ad", "tracker", "popup"]
 
     def test_is_blocked(self) -> None:
+        """is_blocked_url 命中关键词返回真。"""
         assert cr.is_blocked_url("https://ad.example.com/track", ["ad", "track"]) is True
 
     def test_not_blocked(self) -> None:
+        """is_blocked_url 未命中关键词返回假。"""
         assert cr.is_blocked_url("https://example.com/page", ["ad"]) is False
 
 
 class TestDecodeText:
     def test_utf8(self) -> None:
+        """decode_text 按字符集解码 UTF-8。"""
         assert cr.decode_text(b"hello", "text/html; charset=utf-8", None) == "hello"
 
     def test_fallback(self) -> None:
+        """decode_text 回退到显式字符集。"""
         assert cr.decode_text(b"hello", "", "utf-8") == "hello"
 
     def test_default_utf8(self) -> None:
+        """decode_text 无字符集时默认 UTF-8。"""
         assert cr.decode_text(b"hello", "", None) == "hello"
 
 
 class TestExtractTitle:
     def test_normal(self) -> None:
+        """extract_title 提取页面标题。"""
         html = "<html><head><title>My Page</title></head></html>"
         assert cr.extract_title(html) == "My Page"
 
     def test_no_title(self) -> None:
+        """extract_title 无标题时返回空。"""
         assert cr.extract_title("<html></html>") == ""
 
     def test_multiline(self) -> None:
+        """extract_title 提取多行标题首行。"""
         html = "<title>Line 1\n  Line 2</title>"
         assert "Line 1" in cr.extract_title(html)
 
 
 class TestCallbacks:
     def test_should_stop(self) -> None:
+        """should_stop 在回调返回真时停止。"""
         args = Mock()
         args.should_stop = lambda: True
         assert cr.should_stop(args) is True
 
     def test_should_stop_none(self) -> None:
+        """should_stop 对 None 参数返回假。"""
         assert cr.should_stop(None) is False
 
     def test_should_stop_no_callback(self) -> None:
+        """should_stop 无回调属性时返回假。"""
         args = Mock(spec=[])
         assert cr.should_stop(args) is False
 
     def test_wait_if_paused(self) -> None:
+        """wait_if_paused 在暂停时调用回调。"""
         called = [0]
 
         def cb() -> None:
@@ -415,9 +484,11 @@ class TestCallbacks:
         assert called[0] == 1
 
     def test_wait_if_paused_none(self) -> None:
+        """wait_if_paused 对 None 参数不抛异常。"""
         cr.wait_if_paused(None)  # 不应抛异常
 
     def test_report_progress(self) -> None:
+        """report_progress 向回调推送进度载荷。"""
         received: list[dict] = []
 
         def cb(payload: dict) -> None:
@@ -431,11 +502,13 @@ class TestCallbacks:
 
 class TestOutputPathForUrl:
     def test_basic(self, tmp_path: Path) -> None:
+        """output_path_for_url 按域名和后缀生成路径。"""
         result = cr.output_path_for_url("https://example.com/img/logo.png", tmp_path, "image/png")
         assert "example.com" in str(result)
         assert result.suffix == ".png"
 
     def test_with_query(self, tmp_path: Path) -> None:
+        """output_path_for_url 将查询参数哈希进文件名。"""
         result = cr.output_path_for_url("https://example.com/img?w=100", tmp_path, "image/png")
         assert "_" in result.name  # query 被哈希附加到文件名
 
@@ -457,30 +530,37 @@ class TestOutputPathForUrl:
 
 class TestSafeSegment:
     def test_basic(self) -> None:
+        """safe_segment 保留普通文本段。"""
         assert cr.safe_segment("hello") == "hello"
 
     def test_empty(self) -> None:
+        """safe_segment 空字符串回退为 unnamed。"""
         assert cr.safe_segment("") == "unnamed"
 
     def test_path_traversal(self) -> None:
+        """safe_segment 移除路径穿越片段。"""
         assert ".." not in cr.safe_segment("../../etc/passwd")
 
     def test_special_chars(self) -> None:
+        """safe_segment 移除文件系统特殊字符。"""
         result = cr.safe_segment('file<>:"/\\|?*')
         assert "<" not in result
         assert ">" not in result
 
     def test_truncation(self) -> None:
+        """safe_segment 过长段被截断到上限。"""
         assert len(cr.safe_segment("x" * 200)) <= 120
 
 
 class TestOutputPrefixForResource:
     def test_no_organize(self) -> None:
+        """output_prefix_for_resource 未开启整理时返回 assets。"""
         args = Mock()
         args.organize = False
         assert cr.output_prefix_for_resource(args, Mock(), "", {}) == "assets"
 
     def test_with_organize(self) -> None:
+        """output_prefix_for_resource 开启整理时按类型分目录。"""
         args = Mock()
         args.organize = True
         resource = cr.Resource(
@@ -498,17 +578,20 @@ class TestOutputPrefixForResource:
 
 class TestDiscoverCssResources:
     def test_url_function(self) -> None:
+        """discover_css_resources 提取 url() 引用。"""
         css = 'background: url("img/bg.png");'
         result = cr.discover_css_resources(css, "https://x.com/style.css", "https://x.com/")
         assert len(result) == 1
         assert "bg.png" in result[0].url
 
     def test_import(self) -> None:
+        """discover_css_resources 提取 @import 引用。"""
         css = '@import "sub.css";'
         result = cr.discover_css_resources(css, "https://x.com/style.css", "https://x.com/")
         assert len(result) == 1
 
     def test_data_uri_skipped(self) -> None:
+        """discover_css_resources 跳过 data URI。"""
         css = 'background: url("data:image/png;base64,abc");'
         result = cr.discover_css_resources(css, "https://x.com/style.css", "https://x.com/")
         assert len(result) == 0
@@ -516,6 +599,7 @@ class TestDiscoverCssResources:
 
 class TestDiscoverPlaylistResources:
     def test_m3u8_plain(self) -> None:
+        """discover_playlist_resources 解析明文 m3u8 分片。"""
         text = "#EXTM3U\n#EXTINF:10,\nhttps://x.com/seg1.ts\n#EXTINF:10,\nhttps://x.com/seg2.ts\n"
         resources, note = cr.discover_playlist_resources(
             text, "https://x.com/playlist.m3u8", "https://x.com/"
@@ -524,6 +608,7 @@ class TestDiscoverPlaylistResources:
         assert note == ""
 
     def test_m3u8_encrypted(self) -> None:
+        """discover_playlist_resources 解析加密 m3u8 并标注密钥。"""
         text = (
             '#EXT-X-KEY:METHOD=AES-128,URI="https://x.com/key",IV=0xabcdef\n'
             "#EXTINF:10,\nhttps://x.com/seg1.ts\n"
@@ -535,6 +620,7 @@ class TestDiscoverPlaylistResources:
         assert "encrypted" in note
 
     def test_mpd(self) -> None:
+        """discover_playlist_resources 解析 MPD 清单。"""
         text = "<MPD><BaseURL>seg1.mp4</BaseURL></MPD>"
         resources, note = cr.discover_playlist_resources(
             text, "https://x.com/playlist.mpd", "https://x.com/"
@@ -543,6 +629,7 @@ class TestDiscoverPlaylistResources:
         assert note == ""
 
     def test_non_playlist(self) -> None:
+        """discover_playlist_resources 对非清单文本返回空。"""
         resources, note = cr.discover_playlist_resources(
             "just text", "https://x.com/page.html", "https://x.com/"
         )
@@ -552,6 +639,7 @@ class TestDiscoverPlaylistResources:
 
 class TestUniqueResources:
     def test_dedup(self) -> None:
+        """discover_playlist_resources 对重复资源去重。"""
         resources = [
             cr.Resource("https://x.com/a.js", "f", "k", "p"),
             cr.Resource("https://x.com/a.js", "f2", "k2", "p2"),
@@ -563,15 +651,19 @@ class TestUniqueResources:
 
 class TestIsHtml:
     def test_html_content_type(self) -> None:
+        """is_html 按内容类型识别 HTML。"""
         assert cr.is_html("text/html", "https://x.com/page") is True
 
     def test_html_extension(self) -> None:
+        """is_html 按扩展名识别 HTML。"""
         assert cr.is_html("", "https://x.com/page.html") is True
 
     def test_no_suffix(self) -> None:
+        """is_html 无后缀时默认视为 HTML。"""
         assert cr.is_html("", "https://x.com/page") is True
 
     def test_json(self) -> None:
+        """is_html 拒绝 JSON 内容。"""
         assert cr.is_html("application/json", "https://x.com/data.json") is False
 
 
@@ -580,17 +672,20 @@ class TestIsHtml:
 
 class TestPageParser:
     def test_img_src(self) -> None:
+        """PageParser 提取 img[src] 资源。"""
         parser = cr.PageParser("https://x.com/")
         parser.feed('<img src="logo.png">')
         assert len(parser.resources) == 1
         assert parser.resources[0].url == "https://x.com/logo.png"
 
     def test_script_src(self) -> None:
+        """PageParser 提取 script[src] 资源。"""
         parser = cr.PageParser("https://x.com/")
         parser.feed('<script src="app.js"></script>')
         assert len(parser.resources) == 1
 
     def test_link_stylesheet(self) -> None:
+        """PageParser 提取 link 样式表资源。"""
         parser = cr.PageParser("https://x.com/")
         parser.feed('<link rel="stylesheet" href="style.css">')
         assert len(parser.resources) == 1
@@ -602,27 +697,32 @@ class TestPageParser:
         assert len(parser.resources) == 0
 
     def test_srcset(self) -> None:
+        """PageParser 提取 srcset 多候选资源。"""
         parser = cr.PageParser("https://x.com/")
         parser.feed('<img srcset="img1.jpg 1x, img2.jpg 2x">')
         assert len(parser.resources) == 2
 
     def test_base_tag(self) -> None:
+        """PageParser 按 base 标签修正相对资源。"""
         parser = cr.PageParser("https://x.com/")
         parser.feed('<base href="/sub/">')
         parser.feed('<img src="img.png">')
         assert parser.resources[0].url == "https://x.com/sub/img.png"
 
     def test_page_links(self) -> None:
+        """PageParser 收集页面内链接。"""
         parser = cr.PageParser("https://x.com/")
         parser.feed('<a href="/about">About</a>')
         assert "https://x.com/about" in parser.page_links
 
     def test_meta_og_image(self) -> None:
+        """PageParser 提取 og:image 元数据资源。"""
         parser = cr.PageParser("https://x.com/")
         parser.feed('<meta property="og:image" content="https://cdn.x.com/og.png">')
         assert len(parser.resources) == 1
 
     def test_data_uri_skipped(self) -> None:
+        """PageParser 跳过 data URI 资源。"""
         parser = cr.PageParser("https://x.com/")
         parser.feed('<img src="data:image/png;base64,abc">')
         assert len(parser.resources) == 0
@@ -633,6 +733,7 @@ class TestPageParser:
 
 class TestMakeRobotsParser:
     def test_with_fetch_mock(self) -> None:
+        """make_robots_parser 抓取并解析 robots.txt。"""
         with patch.object(
             core, "fetch", return_value=(b"User-agent: *\nDisallow: /private", "text/plain")
         ):
@@ -649,6 +750,7 @@ class TestMakeRobotsParser:
 
 class TestRewriteHtml:
     def test_basic(self, tmp_path: Path) -> None:
+        """核对页面引用资源与已下载清单的匹配。"""
         html = '<img src="https://x.com/logo.png">'
         rows = [
             cr.ManifestRow(
@@ -673,16 +775,19 @@ class TestRewriteHtml:
 
 class TestStripPageOverlays:
     def test_removes_modal(self) -> None:
+        """strip_page_overlays 移除 modal 覆盖层。"""
         html = '<div class="modal">overlay content</div><p>real content</p>'
         result = cr.strip_page_overlays(html)
         assert "modal" not in result or "overlay content" not in result
 
     def test_removes_by_id(self) -> None:
+        """strip_page_overlays 按 id 移除弹窗。"""
         html = '<div id="popup">spam</div><p>content</p>'
         result = cr.strip_page_overlays(html)
         assert "spam" not in result
 
     def test_preserves_content(self) -> None:
+        """strip_page_overlays 保留正文内容。"""
         html = "<p>main content</p>"
         result = cr.strip_page_overlays(html)
         assert "main content" in result
@@ -693,6 +798,7 @@ class TestStripPageOverlays:
 
 class TestSmartExtract:
     def test_basic(self) -> None:
+        """extract_readable_text 提取页面可读文本与元数据。"""
         html = """
         <html><head>
         <title>Test Page</title>
@@ -725,16 +831,19 @@ class TestSmartExtract:
 
 class TestExtractReadableText:
     def test_article_tag(self) -> None:
+        """extract_readable_text 优先提取 article 正文。"""
         html = "<article><p>Main article text that is long enough to be kept</p></article>"
         result = cr.extract_readable_text(html)
         assert "Main article text" in result
 
     def test_body_fallback(self) -> None:
+        """extract_readable_text 回退到 body 文本。"""
         html = "<body><p>Body text that is long enough to be kept here</p></body>"
         result = cr.extract_readable_text(html)
         assert "Body text" in result
 
     def test_strips_scripts(self) -> None:
+        """extract_readable_text 剥离 script 标签内容。"""
         html = (
             "<article><script>var x = 1;</script><p>Visible text here is long enough</p></article>"
         )
@@ -745,6 +854,7 @@ class TestExtractReadableText:
 
 class TestWriteExtractedData:
     def test_writes_json_and_csv(self, tmp_path: Path) -> None:
+        """write_extracted_data 同时写出 JSON 与 CSV。"""
         data = [{"page_url": "https://x.com", "title": "X"}]
         cr.write_extracted_data(tmp_path, data)
         assert (tmp_path / "extracted_data.json").exists()
@@ -762,12 +872,14 @@ class TestWriteExtractedData:
 
 class TestDiscoverSitemapUrls:
     def test_basic(self) -> None:
+        """discover_sitemap_urls 抓取并解析 sitemap URL。"""
         sitemap = '<?xml version="1.0"?><urlset><url><loc>https://x.com/a</loc></url><url><loc>https://x.com/b</loc></url></urlset>'
         with patch.object(core, "fetch", return_value=(sitemap.encode(), "application/xml")):
             urls = cr.discover_sitemap_urls("https://x.com/sitemap.xml", {}, 10)
         assert len(urls) == 2
 
     def test_fetch_error(self) -> None:
+        """discover_sitemap_urls 抓取失败时返回空列表。"""
         with patch.object(core, "fetch", side_effect=Exception("err")):
             urls = cr.discover_sitemap_urls("https://x.com/sitemap.xml", {}, 10)
         assert urls == []
@@ -778,6 +890,7 @@ class TestDiscoverSitemapUrls:
 
 class TestConfigSaveLoad:
     def test_save_and_load(self, tmp_path: Path) -> None:
+        """save_config_to_file 保存后可重新加载。"""
         args = cr.build_parser().parse_args(["--url", "https://x.com", "--out", str(tmp_path)])
         config_path = tmp_path / "config.json"
         cr.save_config_to_file(args, str(config_path))
@@ -789,18 +902,22 @@ class TestConfigSaveLoad:
 
 class TestCrawlState:
     def test_save_and_load(self, tmp_path: Path) -> None:
+        """crawl_state 保存后可原样加载。"""
         cr.save_crawl_state(tmp_path, page_queue=["https://x.com/a"], seen_pages=[])
         loaded = cr.load_crawl_state(tmp_path)
         assert loaded["page_queue"] == ["https://x.com/a"]
 
     def test_load_missing(self, tmp_path: Path) -> None:
+        """load_crawl_state 状态文件缺失时返回空。"""
         assert cr.load_crawl_state(tmp_path) == {}
 
     def test_load_invalid(self, tmp_path: Path) -> None:
+        """load_crawl_state 状态文件非法时返回空。"""
         (tmp_path / cr.CRAWL_STATE_FILE).write_text("invalid json")
         assert cr.load_crawl_state(tmp_path) == {}
 
     def test_clear(self, tmp_path: Path) -> None:
+        """clear_crawl_state 删除状态文件。"""
         cr.save_crawl_state(tmp_path, key="val")
         cr.clear_crawl_state(tmp_path)
         assert not (tmp_path / cr.CRAWL_STATE_FILE).exists()
@@ -842,6 +959,7 @@ class TestManifests:
         ]
 
     def test_write_manifests(self, tmp_path: Path) -> None:
+        """write_manifests 写出 CSV 与 JSON 清单。"""
         cr.write_manifests(tmp_path, self._rows())
         assert (tmp_path / "resources_manifest.csv").exists()
         assert (tmp_path / "resources_manifest.json").exists()
@@ -849,6 +967,7 @@ class TestManifests:
         assert len(data) == 2
 
     def test_write_video_manifests(self, tmp_path: Path) -> None:
+        """write_video_manifests 单独写出视频清单。"""
         rows = self._rows() + [
             cr.ManifestRow(
                 status="ok",
@@ -869,15 +988,18 @@ class TestManifests:
         assert (tmp_path / "video_manifest.csv").exists()
 
     def test_write_video_manifests_empty(self, tmp_path: Path) -> None:
+        """write_video_manifests 无视频时写出零条。"""
         count = cr.write_video_manifests(tmp_path, self._rows())
         assert count == 0
 
     def test_write_failed_manifests(self, tmp_path: Path) -> None:
+        """write_failed_manifests 写出失败资源清单。"""
         count = cr.write_failed_manifests(tmp_path, self._rows())
         assert count == 1
         assert (tmp_path / "failed_resources.csv").exists()
 
     def test_is_failed_row(self) -> None:
+        """is_failed_row 按状态判定失败与跳过行。"""
         ok = cr.ManifestRow("ok", "u", "", "", 0, "", "", "", "", "", "")
         err = cr.ManifestRow("error: x", "u", "", "", 0, "", "", "", "", "", "")
         skipped = cr.ManifestRow("skipped: dedup", "u", "", "", 0, "", "", "", "", "", "")
@@ -891,6 +1013,7 @@ class TestManifests:
 
 class TestFormatBytes:
     def test_bytes(self) -> None:
+        """_format_bytes 格式化字节数。"""
         assert cr._format_bytes(500) == "500 B"
 
     def test_kb(self) -> None:
@@ -912,18 +1035,23 @@ class TestFormatBytes:
 
 class TestFormatDuration:
     def test_milliseconds(self) -> None:
+        """format_duration 毫秒级时长含毫秒单位。"""
         assert "毫秒" in cr.format_duration(0.5)
 
     def test_seconds(self) -> None:
+        """format_duration 秒级时长含秒单位。"""
         assert "秒" in cr.format_duration(5.0)
 
     def test_minutes(self) -> None:
+        """format_duration 分钟级时长含分单位。"""
         assert "分" in cr.format_duration(125.0)
 
     def test_hours(self) -> None:
+        """format_duration 小时级时长含时单位。"""
         assert "时" in cr.format_duration(3725.0)
 
     def test_negative(self) -> None:
+        """format_duration 负值返回未知。"""
         assert cr.format_duration(-1) == "未知"
 
 
@@ -932,42 +1060,55 @@ class TestFormatDuration:
 
 class TestClassifyError:
     def test_auth(self) -> None:
+        """classify_error 将 401 归类为 auth。"""
         assert cr.classify_error("error: HTTP Error 401") == "auth"
 
     def test_not_found(self) -> None:
+        """classify_error 将 404 归类为 not_found。"""
         assert cr.classify_error("error: HTTP Error 404") == "not_found"
 
     def test_rate_limit(self) -> None:
+        """classify_error 将 429 归类为 rate_limit。"""
         assert cr.classify_error("error: HTTP Error 429") == "rate_limit"
 
     def test_timeout(self) -> None:
+        """classify_error 将超时归类为 timeout。"""
         assert cr.classify_error("error: timed out") == "timeout"
 
     def test_size_limit(self) -> None:
+        """classify_error 将超限归类为 size_limit。"""
         assert cr.classify_error("error: file exceeds max-bytes") == "size_limit"
 
     def test_robots(self) -> None:
+        """classify_error 将 robots 跳过归类为 robots。"""
         assert cr.classify_error("skipped by robots.txt") == "robots"
 
     def test_dedup(self) -> None:
+        """classify_error 将去重跳过归类为 dedup。"""
         assert cr.classify_error("skipped by dedup") == "dedup"
 
     def test_encrypted(self) -> None:
+        """classify_error 将加密清单归类为 encrypted。"""
         assert cr.classify_error("encrypted playlist detected") == "encrypted"
 
     def test_network(self) -> None:
+        """classify_error 将连接错误归类为 network。"""
         assert cr.classify_error("error: URLError connection refused") == "network"
 
     def test_cancelled(self) -> None:
+        """classify_error 将取消归类为 cancelled。"""
         assert cr.classify_error("cancelled by user") == "cancelled"
 
     def test_other_error(self) -> None:
+        """classify_error 将未知错误归类为 other_error。"""
         assert cr.classify_error("error: unknown") == "other_error"
 
     def test_skipped_other(self) -> None:
+        """classify_error 将未知跳过归类为 skipped_other。"""
         assert cr.classify_error("skipped: unknown reason") == "skipped_other"
 
     def test_other(self) -> None:
+        """classify_error 将正常状态归类为 other。"""
         assert cr.classify_error("ok") == "other"
 
 
@@ -1021,6 +1162,7 @@ class TestBuildReportContext:
         ]
 
     def test_basic(self) -> None:
+        """build_report_context 构建报告上下文含统计字段。"""
         ctx = cr.build_report_context(self._rows(), 2, 1000.0, 1005.0)
         assert ctx["schema"] == 2
         assert ctx["pages_scanned"] == 2
@@ -1033,27 +1175,32 @@ class TestBuildReportContext:
         assert res["success_rate_percent"] > 0
 
     def test_empty_rows(self) -> None:
+        """build_report_context 空清单时成功率记为百分百。"""
         ctx = cr.build_report_context([], 0, 0.0, 0.0)
         assert ctx["resources"]["total"] == 0
         assert ctx["resources"]["success_rate_percent"] == 100.0
 
     def test_with_config(self) -> None:
+        """build_report_context 带配置时纳入 config 字段。"""
         ctx = cr.build_report_context([], 0, 0.0, 0.0, config={"url": "https://x.com"})
         assert ctx["config"]["url"] == "https://x.com"
 
     def test_failures_by_class(self) -> None:
+        """build_report_context 按错误类别汇总失败。"""
         ctx = cr.build_report_context(self._rows(), 1, 0.0, 1.0)
         assert "not_found" in ctx["failures_by_class"]
 
 
 class TestBuildRecommendations:
     def test_no_resources(self) -> None:
+        """build_recommendations 无资源时仍给出建议。"""
         ctx = cr.build_report_context([], 0, 0.0, 0.0)
         recs = cr.build_recommendations(ctx)
         assert len(recs) >= 1
         assert any("未发现" in r["title"] for r in recs)
 
     def test_auth_error(self) -> None:
+        """build_recommendations 针对鉴权失败给出建议。"""
         rows = [
             cr.ManifestRow(
                 "error: HTTP Error 401", "https://x.com/private", "", "", 0, "", "", "", "", "", ""
@@ -1064,6 +1211,7 @@ class TestBuildRecommendations:
         assert any("401/403" in r["title"] for r in recs)
 
     def test_normal(self) -> None:
+        """按正常资源清单生成报告内容。"""
         rows = [
             cr.ManifestRow(
                 "ok",
@@ -1086,6 +1234,7 @@ class TestBuildRecommendations:
 
 class TestWriteSummary:
     def test_writes_file(self, tmp_path: Path) -> None:
+        """报告生成写出报告文件。"""
         rows = [
             cr.ManifestRow(
                 "ok",
@@ -1111,6 +1260,7 @@ class TestWriteSummary:
 
 class TestWriteRunReport:
     def test_writes_all_formats(self, tmp_path: Path) -> None:
+        """报告生成写出全部格式文件。"""
         rows = [
             cr.ManifestRow(
                 "ok",
@@ -1143,35 +1293,45 @@ class TestWriteRunReport:
 
 class TestDiagnosticForStatus:
     def test_401(self) -> None:
+        """diagnostic_for_status 对 401 含状态码提示。"""
         assert "401" in cr.diagnostic_for_status("error: HTTP Error 401")
 
     def test_403(self) -> None:
+        """diagnostic_for_status 对 403 含状态码提示。"""
         assert "403" in cr.diagnostic_for_status("error: HTTP Error 403")
 
     def test_404(self) -> None:
+        """diagnostic_for_status 对 404 含状态码提示。"""
         assert "404" in cr.diagnostic_for_status("error: HTTP Error 404")
 
     def test_timeout(self) -> None:
+        """diagnostic_for_status 对超时含提示。"""
         assert "Timeout" in cr.diagnostic_for_status("error: timed out")
 
     def test_size_limit(self) -> None:
+        """diagnostic_for_status 对超限含提示。"""
         assert "max-bytes" in cr.diagnostic_for_status("error: file exceeds")
 
     def test_robots(self) -> None:
+        """diagnostic_for_status 对 robots 跳过含提示。"""
         assert "robots" in cr.diagnostic_for_status("skipped by robots.txt")
 
     def test_dedup(self) -> None:
+        """diagnostic_for_status 对去重跳过含哈希提示。"""
         assert "SHA256" in cr.diagnostic_for_status("skipped by dedup")
 
     def test_generic_error(self) -> None:
+        """diagnostic_for_status 对未知错误含通用提示。"""
         assert "Request failed" in cr.diagnostic_for_status("error: unknown")
 
     def test_ok(self) -> None:
+        """diagnostic_for_status 对正常状态返回空。"""
         assert cr.diagnostic_for_status("ok") == ""
 
 
 class TestRowFor:
     def test_basic(self) -> None:
+        """row_for 按资源与结果构建清单行。"""
         resource = cr.Resource("https://x.com/a.js", "script[src]", "script", "https://x.com/")
         row = cr.row_for(
             "ok",
@@ -1361,6 +1521,7 @@ class TestCrawl:
 
 class TestBuildParser:
     def test_basic_args(self) -> None:
+        """build_parser 解析基本 url 参数。"""
         parser = cr.build_parser()
         args = parser.parse_args(["--url", "https://x.com"])
         assert args.url == "https://x.com"
@@ -1368,6 +1529,7 @@ class TestBuildParser:
         assert args.timeout == 20
 
     def test_all_args(self) -> None:
+        """build_parser 解析全部命令行参数。"""
         parser = cr.build_parser()
         args = parser.parse_args(
             [
@@ -1687,6 +1849,7 @@ class TestSafeRedirectHandler:
         return Request("https://example.com/start")
 
     def test_blocks_metadata_redirect(self) -> None:
+        """重定向处理器拒绝元数据地址跳转。"""
         from email.message import Message
 
         with pytest.raises(ValueError, match="unsafe"):
@@ -1700,6 +1863,7 @@ class TestSafeRedirectHandler:
             )
 
     def test_blocks_loopback_redirect(self) -> None:
+        """重定向处理器拒绝回环地址跳转。"""
         from email.message import Message
 
         with pytest.raises(ValueError, match="unsafe"):
@@ -1713,6 +1877,7 @@ class TestSafeRedirectHandler:
             )
 
     def test_blocks_non_http_scheme_redirect(self) -> None:
+        """重定向处理器拒绝非 HTTP 协议跳转。"""
         from email.message import Message
 
         with pytest.raises(ValueError, match="non-http"):
@@ -1726,6 +1891,7 @@ class TestSafeRedirectHandler:
             )
 
     def test_allows_safe_redirect(self) -> None:
+        """重定向处理器允许安全跨域跳转。"""
         from email.message import Message
 
         result = self._handler().redirect_request(
@@ -1744,6 +1910,7 @@ class TestStealthFetchRedirects:
     """stealth 路径手动跟随重定向并逐跳校验。"""
 
     def test_follows_safe_redirect(self) -> None:
+        """抓取流程跟随安全重定向。"""
         hop1 = Mock()
         hop1.status = 302
         hop1.headers = {"location": "https://cdn.example.com/lib.js"}
@@ -1766,6 +1933,7 @@ class TestStealthFetchRedirects:
         assert instance.get.call_count == 2
 
     def test_blocks_unsafe_redirect(self) -> None:
+        """抓取流程拒绝不安全重定向。"""
         hop1 = Mock()
         hop1.status = 302
         hop1.headers = {"location": "http://169.254.169.254/latest"}
@@ -1779,6 +1947,7 @@ class TestStealthFetchRedirects:
             cr._stealth_fetch("https://example.com/start", {}, 30, None, "chrome131")
 
     def test_blocks_relative_to_non_http_redirect(self) -> None:
+        """抓取流程拒绝相对跳转到非 HTTP 协议。"""
         hop1 = Mock()
         hop1.status = 302
         hop1.headers = {"location": "file:///etc/passwd"}
@@ -1792,6 +1961,7 @@ class TestStealthFetchRedirects:
             cr._stealth_fetch("https://example.com/start", {}, 30, None, "chrome131")
 
     def test_too_many_redirects(self) -> None:
+        """抓取流程在重定向超限时终止。"""
         hop = Mock()
         hop.status = 302
         hop.headers = {"location": "https://example.com/again"}
@@ -1858,6 +2028,7 @@ class TestStealthFetchMaxBytes:
     """stealth 路径 Content-Length 预检。"""
 
     def test_content_length_over_limit_rejected(self) -> None:
+        """响应 Content-Length 超限时被拒绝。"""
         resp = Mock()
         resp.status = 200
         resp.headers = {"content-length": "2000", "content-type": "image/png"}
@@ -2346,24 +2517,31 @@ class TestIsVideoCandidate:
         return cr.Resource(url=url, found_in=found_in, kind=kind, page_url="")
 
     def test_by_suffix(self) -> None:
+        """is_video_candidate 按后缀识别视频。"""
         assert cr.is_video_candidate(self._resource(url="https://x.com/v.mp4")) is True
 
     def test_by_kind_video(self) -> None:
+        """is_video_candidate 按 kind 识别视频。"""
         assert cr.is_video_candidate(self._resource(kind="video")) is True
 
     def test_by_kind_audio(self) -> None:
+        """is_video_candidate 按 kind 识别音频。"""
         assert cr.is_video_candidate(self._resource(kind="audio")) is True
 
     def test_by_kind_source(self) -> None:
+        """is_video_candidate 按 kind 识别 source。"""
         assert cr.is_video_candidate(self._resource(kind="source")) is True
 
     def test_by_found_in_video(self) -> None:
+        """is_video_candidate 按 found_in 识别视频。"""
         assert cr.is_video_candidate(self._resource(found_in="video[src]")) is True
 
     def test_by_found_in_poster(self) -> None:
+        """is_video_candidate 按 found_in 识别 poster。"""
         assert cr.is_video_candidate(self._resource(found_in="video[poster]")) is True
 
     def test_not_video(self) -> None:
+        """is_video_candidate 拒绝非视频资源。"""
         assert cr.is_video_candidate(self._resource(url="https://x.com/img.png")) is False
 
 
@@ -2629,6 +2807,7 @@ class TestWriteRunReportWithFailures:
 
 class TestDiagnosticEncrypted:
     def test_encrypted_playlist(self) -> None:
+        """diagnostic_for_status 对加密清单含提示。"""
         assert "Encrypted playlist" in cr.diagnostic_for_status("encrypted playlist detected")
 
 
@@ -3260,30 +3439,39 @@ class TestIsSafeHostname:
         assert cr._is_safe_hostname("") is False
 
     def test_none_hostname(self) -> None:
+        """_is_safe_hostname 拒绝 None 主机名。"""
         assert cr._is_safe_hostname(None) is False
 
     def test_valid_domain(self) -> None:
+        """_is_safe_hostname 接受普通域名。"""
         assert cr._is_safe_hostname("example.com") is True
 
     def test_public_ip(self) -> None:
+        """_is_safe_hostname 接受公网 IP。"""
         assert cr._is_safe_hostname("8.8.8.8") is True
 
     def test_private_ip(self) -> None:
+        """_is_safe_hostname 拒绝私网 IP。"""
         assert cr._is_safe_hostname("10.0.0.1") is False
 
     def test_loopback_ip(self) -> None:
+        """_is_safe_hostname 拒绝回环 IP。"""
         assert cr._is_safe_hostname("127.0.0.1") is False
 
     def test_link_local_ip(self) -> None:
+        """_is_safe_hostname 拒绝链路本地 IP。"""
         assert cr._is_safe_hostname("169.254.1.1") is False
 
     def test_multicast_ip(self) -> None:
+        """_is_safe_hostname 拒绝多播 IP。"""
         assert cr._is_safe_hostname("224.0.0.1") is False
 
     def test_localhost_domain(self) -> None:
+        """_is_safe_hostname 拒绝 localhost。"""
         assert cr._is_safe_hostname("localhost") is False
 
     def test_metadata_domain(self) -> None:
+        """_is_safe_hostname 拒绝云元数据主机名。"""
         assert cr._is_safe_hostname("metadata.google.internal") is False
 
 

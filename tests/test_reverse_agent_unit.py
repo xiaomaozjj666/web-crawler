@@ -249,15 +249,18 @@ def _make_agent(**config_kwargs: Any) -> ReverseAgent:
 
 class TestJsStr:
     def test_escapes_backslash_and_quotes(self) -> None:
+        """_js_str 转义反斜杠与双引号。"""
         assert _js_str('a"b\\c') == '"a\\"b\\\\c"'
 
     def test_escapes_newlines_and_backticks(self) -> None:
+        """_js_str 转义换行与反引号。"""
         result = _js_str("line1\nline2\r\n`code`")
         assert "\\n" in result
         assert "\\r" in result
         assert "\\`" in result
 
     def test_wraps_in_double_quotes(self) -> None:
+        """_js_str 用双引号包裹字符串。"""
         assert _js_str("hello").startswith('"')
         assert _js_str("hello").endswith('"')
 
@@ -269,21 +272,26 @@ class TestJsStr:
 
 class TestExtractJson:
     def test_parses_plain_json(self) -> None:
+        """_extract_json 解析纯 JSON 文本。"""
         assert _extract_json('{"a": 1}') == {"a": 1}
 
     def test_parses_code_fence_json(self) -> None:
+        """_extract_json 解析 json 代码围栏。"""
         text = "```json\n" + '{"a": 1}' + "\n```"
         assert _extract_json(text) == {"a": 1}
 
     def test_parses_code_fence_without_lang(self) -> None:
+        """_extract_json 解析无语言标注的代码围栏。"""
         text = "```\n" + '{"a": 1}' + "\n```"
         assert _extract_json(text) == {"a": 1}
 
     def test_extracts_embedded_json_from_text(self) -> None:
+        """_extract_json 从自然文本中提取嵌入 JSON。"""
         text = '好的，结果是 {"a": 1, "b": 2} 请查阅'
         assert _extract_json(text) == {"a": 1, "b": 2}
 
     def test_returns_empty_dict_on_invalid_json(self) -> None:
+        """_extract_json 对非法文本返回空字典。"""
         assert _extract_json("not json at all") == {}
 
     def test_returns_empty_dict_on_invalid_embedded_json(self) -> None:
@@ -291,6 +299,7 @@ class TestExtractJson:
         assert _extract_json("{not valid json}") == {}
 
     def test_strips_whitespace(self) -> None:
+        """_extract_json 容忍首尾空白。"""
         assert _extract_json('  {"a": 1}  ') == {"a": 1}
 
 
@@ -301,12 +310,14 @@ class TestExtractJson:
 
 class TestActionDataclass:
     def test_default_action_is_wait(self) -> None:
+        """Action 默认动作类型为 wait。"""
         a = Action(action_type="wait")
         assert a.action_type == "wait"
         assert a.params == {}
         assert a.reasoning == ""
 
     def test_from_dict_with_full_data(self) -> None:
+        """Action.from_dict 解析完整字段。"""
         a = Action.from_dict(
             {"action_type": "click", "params": {"selector": "x"}, "reasoning": "r"}
         )
@@ -315,22 +326,26 @@ class TestActionDataclass:
         assert a.reasoning == "r"
 
     def test_from_dict_with_missing_fields_uses_defaults(self) -> None:
+        """Action.from_dict 缺失字段时用默认值。"""
         a = Action.from_dict({})
         assert a.action_type == "wait"  # 默认
         assert a.params == {}
         assert a.reasoning == ""
 
     def test_from_dict_with_none_params(self) -> None:
+        """Action.from_dict 对 None params 返回空字典。"""
         a = Action.from_dict({"action_type": "wait", "params": None})
         assert a.params == {}
 
     def test_from_dict_with_none_reasoning(self) -> None:
+        """Action.from_dict 对 None reasoning 返回空串。"""
         a = Action.from_dict({"action_type": "wait", "reasoning": None})
         assert a.reasoning == ""
 
 
 class TestObservationDataclass:
     def test_default_screenshot_path_is_empty(self) -> None:
+        """Observation 默认截图路径为空。"""
         obs = Observation(
             url="u",
             hook_data={},
@@ -350,6 +365,7 @@ class TestObservationDataclass:
 
 class TestReverseAgentConfig:
     def test_all_defaults_are_reasonable(self) -> None:
+        """ReverseAgentConfig 默认值合理。"""
         cfg = ReverseAgentConfig()
         assert cfg.max_steps == 20
         assert cfg.headless is False
@@ -385,6 +401,7 @@ class TestReverseAgentConfig:
 
 class TestReverseAgentInit:
     def test_default_init_creates_all_components(self) -> None:
+        """ReverseAgent 默认初始化创建全部组件。"""
         agent = _track(ReverseAgent())
         # 关键组件都应被实例化
         assert agent.captcha_manager is not None
@@ -416,32 +433,38 @@ class TestReverseAgentInit:
         assert agent._last_error_screenshot == ""
 
     def test_init_with_planner_disabled_when_interval_none(self) -> None:
+        """planner_interval 为 None 时禁用规划器。"""
         cfg = ReverseAgentConfig(planner_interval=None)
         agent = _track(ReverseAgent(config=cfg))
         assert agent.planner is None
 
     def test_init_with_judge_disabled(self) -> None:
+        """enable_judge 为 False 时禁用裁判。"""
         cfg = ReverseAgentConfig(enable_judge=False)
         agent = _track(ReverseAgent(config=cfg))
         assert agent.judge is None
 
     def test_init_with_recorder_disabled(self) -> None:
+        """enable_recorder 为 False 时禁用记录器。"""
         cfg = ReverseAgentConfig(enable_recorder=False)
         agent = _track(ReverseAgent(config=cfg))
         assert agent.recorder is None
 
     def test_init_with_guard_disabled(self) -> None:
+        """enable_guard 为 False 时禁用门禁。"""
         cfg = ReverseAgentConfig(enable_guard=False)
         agent = _track(ReverseAgent(config=cfg))
         assert agent.guard is None
 
     def test_init_with_dom_pruner_enabled(self) -> None:
+        """dom_prune_max_chars 设定时启用 DOM 修剪器。"""
         cfg = ReverseAgentConfig(dom_prune_max_chars=5000)
         agent = _track(ReverseAgent(config=cfg))
         assert agent.dom_pruner is not None
         assert agent.dom_pruner.max_chars == 5000
 
     def test_init_with_image_captcha_disabled(self) -> None:
+        """禁用图像验证码仍保留验证码管理器。"""
         cfg = ReverseAgentConfig(enable_image_captcha=False)
         agent = _track(ReverseAgent(config=cfg))
         # image_solver 应为 None（通过 captcha_manager 内部状态判断）
@@ -449,6 +472,7 @@ class TestReverseAgentInit:
         assert agent.captcha_manager is not None
 
     def test_init_with_custom_event_bus(self) -> None:
+        """ReverseAgent 接受自定义事件总线。"""
         from web_crawler.ai.watchdog import EventBus
 
         bus = EventBus()
@@ -463,6 +487,7 @@ class TestReverseAgentInit:
 
 class TestEmitAndStall:
     def test_emit_publishes_event_to_bus(self) -> None:
+        """emit 向事件总线发布事件。"""
         agent = _make_agent()
         events: list[Any] = []
         agent.event_bus.subscribe(lambda e: events.append(e))
@@ -473,6 +498,7 @@ class TestEmitAndStall:
         assert events[0].payload["foo"] == "bar"
 
     def test_on_stall_emits_stall_event(self) -> None:
+        """on_stall 发出停滞事件。"""
         agent = _make_agent()
         events: list[Any] = []
         agent.event_bus.subscribe(lambda e: events.append(e))
@@ -491,11 +517,13 @@ class TestEmitAndStall:
 
 class TestSafePageUrl:
     def test_returns_url_attribute(self) -> None:
+        """_safe_page_url 返回页面 url 属性。"""
         page = _AsyncPageMock()
         page.url = "https://x.example"
         assert ReverseAgent._safe_page_url(page) == "https://x.example"
 
     def test_returns_empty_string_on_exception(self) -> None:
+        """_safe_page_url 取 url 异常时返回空串。"""
         page = _AsyncPageMock()
         type(page).url = property(lambda self: (_ for _ in ()).throw(RuntimeError("no url")))
         assert ReverseAgent._safe_page_url(page) == ""
@@ -638,6 +666,7 @@ class TestThink:
 
     @pytest.mark.asyncio
     async def test_think_calls_provider_and_returns_action(self) -> None:
+        """think 调用 provider 并返回动作。"""
         agent = _make_agent()
         provider = StubProvider(
             ['{"action_type": "click", "params": {"selector": "x"}, "reasoning": "r"}']
@@ -710,6 +739,7 @@ class TestThink:
 
     @pytest.mark.asyncio
     async def test_think_with_plan_injects_subgoal_into_prompt(self) -> None:
+        """think 将当前子目标注入提示。"""
         agent = _make_agent()
         agent.provider = StubProvider(['{"action_type": "wait"}'])
         from web_crawler.ai.planner import Plan, SubGoal
@@ -731,6 +761,7 @@ class TestThink:
 
     @pytest.mark.asyncio
     async def test_think_with_cumulative_summary_in_prompt(self) -> None:
+        """think 将累计摘要注入提示。"""
         agent = _make_agent()
         agent.provider = StubProvider(['{"action_type": "wait"}'])
         agent.context_compressor._cumulative_summary = "PAST_SUMMARY_CONTENT"
@@ -750,12 +781,14 @@ class TestThink:
 
 class TestParseAction:
     def test_parses_valid_json(self) -> None:
+        """_parse_action 解析合法 JSON 动作。"""
         agent = _make_agent()
         action = agent._parse_action('{"action_type": "done", "params": {"success": true}}')
         assert action.action_type == "done"
         assert action.params == {"success": True}
 
     def test_returns_wait_on_invalid_json(self) -> None:
+        """_parse_action 对非法 JSON 回退为 wait。"""
         agent = _make_agent()
         action = agent._parse_action("not json")
         assert action.action_type == "wait"
@@ -763,6 +796,7 @@ class TestParseAction:
         assert "无法解析" in action.reasoning
 
     def test_returns_wait_on_empty_string(self) -> None:
+        """_parse_action 对空串回退为 wait。"""
         agent = _make_agent()
         action = agent._parse_action("")
         assert action.action_type == "wait"
@@ -770,6 +804,7 @@ class TestParseAction:
 
 class TestFallbackAction:
     def test_fallback_returns_extract_action_with_first_target(self) -> None:
+        """无目标参数时回退为 extract 首个目标。"""
         cfg = ReverseAgentConfig(
             enable_screenshot=False,
             enable_guard=False,
@@ -820,6 +855,7 @@ class TestActBranches:
 
     @pytest.mark.asyncio
     async def test_act_navigate_with_url(self) -> None:
+        """navigate 动作带 url 时跳转页面。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.goto = AsyncMock()
@@ -832,6 +868,7 @@ class TestActBranches:
 
     @pytest.mark.asyncio
     async def test_act_navigate_without_url_does_nothing(self) -> None:
+        """navigate 动作无 url 时不跳转。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.goto = AsyncMock()
@@ -842,6 +879,7 @@ class TestActBranches:
 
     @pytest.mark.asyncio
     async def test_act_inject_hook_returns_true_on_success(self) -> None:
+        """inject_hook 注入成功返回真。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate = AsyncMock(return_value=None)
@@ -851,6 +889,7 @@ class TestActBranches:
 
     @pytest.mark.asyncio
     async def test_act_inject_hook_returns_false_on_failure(self) -> None:
+        """inject_hook 注入失败返回假。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate = AsyncMock(side_effect=RuntimeError("injection failed"))
@@ -860,6 +899,7 @@ class TestActBranches:
 
     @pytest.mark.asyncio
     async def test_act_wait_sleeps_seconds(self) -> None:
+        """wait 动作按秒数睡眠。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         action = Action(action_type="wait", params={"seconds": 0.1})
@@ -895,6 +935,7 @@ class TestActBranches:
 
     @pytest.mark.asyncio
     async def test_act_extract_no_param_name_returns_none(self) -> None:
+        """extract 动作无 param_name 时返回 None。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         action = Action(action_type="extract", params={})  # 无 param_name
@@ -903,6 +944,7 @@ class TestActBranches:
 
     @pytest.mark.asyncio
     async def test_act_extract_finds_param_in_records(self) -> None:
+        """extract 动作从记录中找到目标参数。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate = AsyncMock(
@@ -914,6 +956,7 @@ class TestActBranches:
 
     @pytest.mark.asyncio
     async def test_act_solve_captcha_delegates_to_manager(self) -> None:
+        """solve_captcha 动作委托给验证码管理器。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         agent.captcha_manager.handle = MagicMock(return_value=True)  # type: ignore[assignment]
@@ -977,6 +1020,7 @@ class TestDoClick:
 
     @pytest.mark.asyncio
     async def test_click_default_button_is_left(self) -> None:
+        """click 动作默认鼠标左键。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.click = AsyncMock()
@@ -986,6 +1030,7 @@ class TestDoClick:
 
     @pytest.mark.asyncio
     async def test_click_missing_selector_raises(self) -> None:
+        """click 动作缺选择器时抛异常。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         action = Action(action_type="click", params={})
@@ -1028,6 +1073,7 @@ class TestDoType:
 
     @pytest.mark.asyncio
     async def test_type_without_humanize_calls_page_type(self) -> None:
+        """type 动作未开启人性化时直接调用 page.fill。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.fill = AsyncMock()
@@ -1053,6 +1099,7 @@ class TestDoType:
 
     @pytest.mark.asyncio
     async def test_type_missing_selector_raises(self) -> None:
+        """type 动作缺选择器时抛异常。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         action = Action(action_type="type", params={"text": "x"})
@@ -1061,6 +1108,7 @@ class TestDoType:
 
     @pytest.mark.asyncio
     async def test_type_with_humanize_uses_humanize_type(self) -> None:
+        """type 动作开启人性化时走 humanize_type。"""
         agent = _make_agent(humanize_input=True)
         page = _AsyncPageMock()
         page.fill = AsyncMock()
@@ -1092,6 +1140,7 @@ class TestDoType:
 
     @pytest.mark.asyncio
     async def test_humanize_type_swallows_focus_failure(self) -> None:
+        """humanize_type 吞掉 focus 失败。"""
         agent = _make_agent(humanize_input=True)
         page = _AsyncPageMock()
         page.focus = AsyncMock(side_effect=RuntimeError("focus fail"))
@@ -1131,6 +1180,7 @@ class TestDoScroll:
 
     @pytest.mark.asyncio
     async def test_scroll_defaults_x_zero_y_800(self) -> None:
+        """scroll 动作默认 x=0、y=800。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate = AsyncMock()
@@ -1145,6 +1195,7 @@ class TestDoPress:
 
     @pytest.mark.asyncio
     async def test_press_without_selector(self) -> None:
+        """press 动作无选择器时按键。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.press = AsyncMock()
@@ -1166,6 +1217,7 @@ class TestDoPress:
 
     @pytest.mark.asyncio
     async def test_press_default_key_is_enter(self) -> None:
+        """press 动作默认按键为 Enter。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.press = AsyncMock()
@@ -1179,6 +1231,7 @@ class TestDoHover:
 
     @pytest.mark.asyncio
     async def test_hover_calls_page_hover(self) -> None:
+        """hover 动作调用 page.hover。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.hover = AsyncMock()
@@ -1188,6 +1241,7 @@ class TestDoHover:
 
     @pytest.mark.asyncio
     async def test_hover_missing_selector_raises(self) -> None:
+        """hover 动作缺选择器时抛异常。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         action = Action(action_type="hover", params={})
@@ -1200,6 +1254,7 @@ class TestDoSelectOption:
 
     @pytest.mark.asyncio
     async def test_select_option_calls_page_select(self) -> None:
+        """select_option 动作调用 page.select_option。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.select_option = AsyncMock()
@@ -1209,6 +1264,7 @@ class TestDoSelectOption:
 
     @pytest.mark.asyncio
     async def test_select_option_missing_selector_raises(self) -> None:
+        """select_option 动作缺选择器时抛异常。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         action = Action(action_type="select_option", params={"value": "CN"})
@@ -1226,6 +1282,7 @@ class TestDoNewTab:
 
     @pytest.mark.asyncio
     async def test_new_tab_creates_and_navigates(self) -> None:
+        """new_tab 动作创建新页面并跳转。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         new_page = _AsyncPageMock()
@@ -1249,6 +1306,7 @@ class TestDoNewTab:
 
     @pytest.mark.asyncio
     async def test_new_tab_without_url_skips_goto(self) -> None:
+        """new_tab 动作无 url 时跳过跳转。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         new_page = _AsyncPageMock()
@@ -1281,6 +1339,7 @@ class TestDoSwitchTab:
 
     @pytest.mark.asyncio
     async def test_switch_tab_by_name(self) -> None:
+        """switch_tab 动作按名称切换标签页。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         target = MagicMock()
@@ -1293,6 +1352,7 @@ class TestDoSwitchTab:
 
     @pytest.mark.asyncio
     async def test_switch_tab_not_found_raises(self) -> None:
+        """switch_tab 动作找不到标签页时抛异常。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         action = Action(action_type="switch_tab", params={"name": "nope"})
@@ -1301,6 +1361,7 @@ class TestDoSwitchTab:
 
     @pytest.mark.asyncio
     async def test_switch_tab_bring_to_front_failure_swallowed(self) -> None:
+        """switch_tab 动作吞掉 bring_to_front 失败。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         target = MagicMock()
@@ -1317,6 +1378,7 @@ class TestDoCloseTab:
 
     @pytest.mark.asyncio
     async def test_close_tab_removes_and_closes(self) -> None:
+        """close_tab 动作移除并关闭标签页。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         target = MagicMock()
@@ -1329,6 +1391,7 @@ class TestDoCloseTab:
 
     @pytest.mark.asyncio
     async def test_close_tab_not_found_raises(self) -> None:
+        """close_tab 动作找不到标签页时抛异常。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         action = Action(action_type="close_tab", params={"name": "nope"})
@@ -1351,6 +1414,7 @@ class TestDoCloseTab:
 
     @pytest.mark.asyncio
     async def test_close_tab_close_failure_swallowed(self) -> None:
+        """close_tab 动作吞掉关闭失败。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         target = MagicMock()
@@ -1366,6 +1430,7 @@ class TestActBrowserActionsDispatch:
     """验证 _act / _act_async 能正确分发到各 _do_* 方法。"""
 
     async def test_act_click_dispatches(self) -> None:
+        """act 将 click 动作分发到处理方法。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         action = Action(action_type="click", params={"selector": "#b"})
@@ -1373,6 +1438,7 @@ class TestActBrowserActionsDispatch:
         page.click.assert_called_once()
 
     async def test_act_type_dispatches(self) -> None:
+        """act 将 type 动作分发到处理方法。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         action = Action(action_type="type", params={"selector": "#i", "text": "x"})
@@ -1380,6 +1446,7 @@ class TestActBrowserActionsDispatch:
         page.type.assert_called_once()
 
     async def test_act_scroll_dispatches(self) -> None:
+        """act 将 scroll 动作分发到处理方法。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         action = Action(action_type="scroll", params={"y": 100})
@@ -1387,6 +1454,7 @@ class TestActBrowserActionsDispatch:
         page.evaluate.assert_called_once()
 
     async def test_act_press_dispatches(self) -> None:
+        """act 将 press 动作分发到处理方法。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         action = Action(action_type="press", params={"key": "Enter"})
@@ -1394,6 +1462,7 @@ class TestActBrowserActionsDispatch:
         page.press.assert_called_once()
 
     async def test_act_hover_dispatches(self) -> None:
+        """act 将 hover 动作分发到处理方法。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         action = Action(action_type="hover", params={"selector": ".m"})
@@ -1401,6 +1470,7 @@ class TestActBrowserActionsDispatch:
         page.hover.assert_called_once()
 
     async def test_act_select_option_dispatches(self) -> None:
+        """act 将 select_option 动作分发到处理方法。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         action = Action(action_type="select_option", params={"selector": "#s", "value": "v"})
@@ -1408,6 +1478,7 @@ class TestActBrowserActionsDispatch:
         page.select_option.assert_called_once()
 
     async def test_act_new_tab_dispatches(self) -> None:
+        """act 将 new_tab 动作分发到处理方法。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         new_page = _AsyncPageMock()
@@ -1419,6 +1490,7 @@ class TestActBrowserActionsDispatch:
         agent._context.new_page.assert_called_once()
 
     async def test_act_switch_tab_dispatches(self) -> None:
+        """act 将 switch_tab 动作分发到处理方法。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         target = MagicMock()
@@ -1428,6 +1500,7 @@ class TestActBrowserActionsDispatch:
         assert agent._page is target
 
     async def test_act_close_tab_dispatches(self) -> None:
+        """act 将 close_tab 动作分发到处理方法。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         target = MagicMock()
@@ -1442,6 +1515,7 @@ class TestActAsyncBrowserActionsDispatch:
 
     @pytest.mark.asyncio
     async def test_act_async_click_dispatches(self) -> None:
+        """act 异步将 click 动作分发到处理方法。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.click = AsyncMock()
@@ -1451,6 +1525,7 @@ class TestActAsyncBrowserActionsDispatch:
 
     @pytest.mark.asyncio
     async def test_act_async_type_dispatches(self) -> None:
+        """act 异步将 type 动作分发到处理方法。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.fill = AsyncMock()
@@ -1461,6 +1536,7 @@ class TestActAsyncBrowserActionsDispatch:
 
     @pytest.mark.asyncio
     async def test_act_async_scroll_dispatches(self) -> None:
+        """act 异步将 scroll 动作分发到处理方法。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate = AsyncMock()
@@ -1470,6 +1546,7 @@ class TestActAsyncBrowserActionsDispatch:
 
     @pytest.mark.asyncio
     async def test_act_async_press_dispatches(self) -> None:
+        """act 异步将 press 动作分发到处理方法。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.press = AsyncMock()
@@ -1479,6 +1556,7 @@ class TestActAsyncBrowserActionsDispatch:
 
     @pytest.mark.asyncio
     async def test_act_async_hover_dispatches(self) -> None:
+        """act 异步将 hover 动作分发到处理方法。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.hover = AsyncMock()
@@ -1488,6 +1566,7 @@ class TestActAsyncBrowserActionsDispatch:
 
     @pytest.mark.asyncio
     async def test_act_async_select_option_dispatches(self) -> None:
+        """act 异步将 select_option 动作分发到处理方法。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.select_option = AsyncMock()
@@ -1497,6 +1576,7 @@ class TestActAsyncBrowserActionsDispatch:
 
     @pytest.mark.asyncio
     async def test_act_async_new_tab_dispatches(self) -> None:
+        """act 异步将 new_tab 动作分发到处理方法。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         new_page = _AsyncPageMock()
@@ -1510,6 +1590,7 @@ class TestActAsyncBrowserActionsDispatch:
 
     @pytest.mark.asyncio
     async def test_act_async_switch_tab_dispatches(self) -> None:
+        """act 异步将 switch_tab 动作分发到处理方法。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         target = MagicMock()
@@ -1521,6 +1602,7 @@ class TestActAsyncBrowserActionsDispatch:
 
     @pytest.mark.asyncio
     async def test_act_async_close_tab_dispatches(self) -> None:
+        """act 异步将 close_tab 动作分发到处理方法。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         target = MagicMock()
@@ -1538,6 +1620,7 @@ class TestActAsyncBrowserActionsDispatch:
 
 class TestInjectHooks:
     async def test_inject_hooks_success(self) -> None:
+        """inject_hooks 注入成功。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate.return_value = None
@@ -1545,6 +1628,7 @@ class TestInjectHooks:
         page.evaluate.assert_called_once()
 
     async def test_inject_hooks_failure(self) -> None:
+        """inject_hooks 注入失败时抛异常。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate.side_effect = RuntimeError("eval fail")
@@ -1552,6 +1636,7 @@ class TestInjectHooks:
 
     @pytest.mark.asyncio
     async def test_inject_hooks_async_success(self) -> None:
+        """inject_hooks 异步注入成功。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate = AsyncMock()
@@ -1559,6 +1644,7 @@ class TestInjectHooks:
 
     @pytest.mark.asyncio
     async def test_inject_hooks_async_failure(self) -> None:
+        """inject_hooks 异步注入失败时抛异常。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate = AsyncMock(side_effect=RuntimeError("eval fail"))
@@ -1572,6 +1658,7 @@ class TestInjectHooks:
 
 class TestCollectScripts:
     async def test_collect_scripts_returns_list(self) -> None:
+        """collect_scripts 返回脚本列表。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate.return_value = ["a.js", "b.js"]
@@ -1579,6 +1666,7 @@ class TestCollectScripts:
         assert result == ["a.js", "b.js"]
 
     async def test_collect_scripts_handles_exception(self) -> None:
+        """collect_scripts 异常时返回空列表。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate.side_effect = RuntimeError("fail")
@@ -1586,6 +1674,7 @@ class TestCollectScripts:
         assert result == []
 
     async def test_collect_scripts_handles_none_return(self) -> None:
+        """collect_scripts 对 None 返回空列表。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate.return_value = None
@@ -1594,6 +1683,7 @@ class TestCollectScripts:
 
     @pytest.mark.asyncio
     async def test_collect_scripts_async_returns_list(self) -> None:
+        """collect_scripts 异步返回脚本列表。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate = AsyncMock(return_value=["x.js"])
@@ -1602,6 +1692,7 @@ class TestCollectScripts:
 
     @pytest.mark.asyncio
     async def test_collect_scripts_async_handles_exception(self) -> None:
+        """collect_scripts 异步异常时返回空列表。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate = AsyncMock(side_effect=RuntimeError("fail"))
@@ -1610,6 +1701,7 @@ class TestCollectScripts:
 
     @pytest.mark.asyncio
     async def test_collect_scripts_async_handles_none_return(self) -> None:
+        """collect_scripts 异步对 None 返回空列表。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate = AsyncMock(return_value=None)
@@ -1624,39 +1716,48 @@ class TestCollectScripts:
 
 class TestSearchParamInRecords:
     def test_empty_records_returns_none(self) -> None:
+        """_search_param_in_records 空记录返回 None。"""
         assert ReverseAgent._search_param_in_records([], "x") is None
 
     def test_finds_param_in_headers(self) -> None:
+        """_search_param_in_records 从头部找到参数。"""
         records = [{"headers": {"Anti-Content": "abc"}, "url": "", "body": ""}]
         assert ReverseAgent._search_param_in_records(records, "Anti-Content") == "abc"
 
     def test_finds_param_in_headers_case_insensitive(self) -> None:
+        """_search_param_in_records 头部匹配忽略大小写。"""
         records = [{"headers": {"anti-content": "v1"}, "url": "", "body": ""}]
         assert ReverseAgent._search_param_in_records(records, "Anti-Content") == "v1"
 
     def test_finds_param_in_url_query(self) -> None:
+        """_search_param_in_records 从 URL 查询串找到参数。"""
         records = [
             {"headers": {}, "url": "https://x.example/api?sign=hello&other=world", "body": ""}
         ]
         assert ReverseAgent._search_param_in_records(records, "sign") == "hello"
 
     def test_finds_param_in_url_query_case_insensitive(self) -> None:
+        """_search_param_in_records URL 查询匹配忽略大小写。"""
         records = [{"headers": {}, "url": "https://x.example/api?SIGN=hello", "body": ""}]
         assert ReverseAgent._search_param_in_records(records, "sign") == "hello"
 
     def test_finds_param_in_json_body(self) -> None:
+        """_search_param_in_records 从 JSON body 找到参数。"""
         records = [{"headers": {}, "url": "", "body": json.dumps({"Anti-Content": "json-value"})}]
         assert ReverseAgent._search_param_in_records(records, "Anti-Content") == "json-value"
 
     def test_finds_param_in_form_body(self) -> None:
+        """_search_param_in_records 从表单 body 找到参数。"""
         records = [{"headers": {}, "url": "", "body": "sign=form-value&other=x"}]
         assert ReverseAgent._search_param_in_records(records, "sign") == "form-value"
 
     def test_returns_none_when_param_not_found(self) -> None:
+        """_search_param_in_records 未找到参数返回 None。"""
         records = [{"headers": {"X-Other": "v"}, "url": "https://x.example", "body": ""}]
         assert ReverseAgent._search_param_in_records(records, "sign") is None
 
     def test_handles_records_with_none_fields(self) -> None:
+        """_search_param_in_records 容忍 None 字段记录。"""
         records = [{"headers": None, "url": None, "body": None}]
         # 不应崩溃
         assert ReverseAgent._search_param_in_records(records, "x") is None
@@ -1681,6 +1782,7 @@ class TestSearchParamInRecords:
 
 class TestTryExtractParam:
     async def test_try_extract_param_merges_fresh_and_cached(self) -> None:
+        """try_extract_param 合并新抓取与缓存记录。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate.return_value = [{"headers": {"sign": "fresh"}}]
@@ -1690,6 +1792,7 @@ class TestTryExtractParam:
         assert result == "fresh"
 
     async def test_try_extract_param_falls_back_to_cache(self) -> None:
+        """try_extract_param 抓取失败时回退到缓存。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate.side_effect = RuntimeError("eval fail")
@@ -1699,6 +1802,7 @@ class TestTryExtractParam:
 
     @pytest.mark.asyncio
     async def test_try_extract_param_async_merges(self) -> None:
+        """try_extract_param 异步合并新抓取与缓存记录。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate = AsyncMock(return_value=[{"headers": {"sign": "fresh-async"}}])
@@ -1708,6 +1812,7 @@ class TestTryExtractParam:
 
     @pytest.mark.asyncio
     async def test_try_extract_param_async_falls_back_to_cache(self) -> None:
+        """try_extract_param 异步抓取失败时回退到缓存。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate = AsyncMock(side_effect=RuntimeError("fail"))
@@ -1718,6 +1823,7 @@ class TestTryExtractParam:
 
 class TestReadHookData:
     async def test_read_hook_data_returns_records_and_count(self) -> None:
+        """read_hook_data 返回记录列表与计数。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate.return_value = [{"a": 1}, {"b": 2}]
@@ -1726,6 +1832,7 @@ class TestReadHookData:
         assert len(result["records"]) == 2
 
     async def test_read_hook_data_handles_exception(self) -> None:
+        """read_hook_data 异常时返回空。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate.side_effect = RuntimeError("fail")
@@ -1733,6 +1840,7 @@ class TestReadHookData:
         assert result == {"records": [], "count": 0}
 
     async def test_read_hook_data_handles_none(self) -> None:
+        """read_hook_data 对 None 返回空。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate.return_value = None
@@ -1741,6 +1849,7 @@ class TestReadHookData:
 
     @pytest.mark.asyncio
     async def test_read_hook_data_async_success(self) -> None:
+        """read_hook_data 异步返回记录列表与计数。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate = AsyncMock(return_value=[{"x": 1}])
@@ -1749,6 +1858,7 @@ class TestReadHookData:
 
     @pytest.mark.asyncio
     async def test_read_hook_data_async_handles_exception(self) -> None:
+        """read_hook_data 异步异常时返回空。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate = AsyncMock(side_effect=RuntimeError("fail"))
@@ -1756,6 +1866,7 @@ class TestReadHookData:
         assert result == {"records": [], "count": 0}
 
     async def test_read_hook_records_merges_fresh_and_cached(self) -> None:
+        """read_hook_records 合并新抓取与缓存记录。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate.return_value = [{"fresh": 1}]
@@ -1766,6 +1877,7 @@ class TestReadHookData:
         assert len(records) == 2
 
     async def test_read_hook_records_handles_exception(self) -> None:
+        """read_hook_records 异常时返回空。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate.side_effect = RuntimeError("fail")
@@ -1775,6 +1887,7 @@ class TestReadHookData:
 
     @pytest.mark.asyncio
     async def test_read_hook_records_async_merges(self) -> None:
+        """read_hook_records 异步合并新抓取与缓存记录。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate = AsyncMock(return_value=[{"fresh": 1}])
@@ -1784,6 +1897,7 @@ class TestReadHookData:
 
     @pytest.mark.asyncio
     async def test_read_hook_records_async_handles_exception(self) -> None:
+        """read_hook_records 异步异常时返回空。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.evaluate = AsyncMock(side_effect=RuntimeError("fail"))
@@ -1799,6 +1913,7 @@ class TestReadHookData:
 
 class TestBuildThinkPrompt:
     def test_prompt_contains_all_sections(self) -> None:
+        """构建的提示包含全部上下文段落。"""
         agent = _make_agent(target_params=["sign"])
         obs = Observation(
             url="https://x.example",
@@ -1821,6 +1936,7 @@ class TestBuildThinkPrompt:
         assert "step 1: click" in prompt
 
     def test_prompt_uses_unspecified_when_no_target_params(self) -> None:
+        """无目标参数时提示标注为未指定。"""
         agent = _make_agent()
         obs = Observation(
             url="u",
@@ -1838,12 +1954,15 @@ class TestBuildThinkPrompt:
 
 class TestFormatHookSummary:
     def test_empty_records_returns_no(self) -> None:
+        """_format_hook_summary 空记录返回无。"""
         assert ReverseAgent._format_hook_summary({"records": []}) == "(无)"
 
     def test_empty_dict_returns_no(self) -> None:
+        """_format_hook_summary 空字典返回无。"""
         assert ReverseAgent._format_hook_summary({}) == "(无)"
 
     def test_formats_records_with_type_method_url(self) -> None:
+        """_format_hook_summary 格式化记录的类型方法 URL。"""
         result = ReverseAgent._format_hook_summary(
             {
                 "records": [
@@ -1856,6 +1975,7 @@ class TestFormatHookSummary:
         assert "[xhr] POST https://y.example" in result
 
     def test_includes_headers_and_body_when_present(self) -> None:
+        """_format_hook_summary 在场时包含头部与 body。"""
         result = ReverseAgent._format_hook_summary(
             {
                 "records": [
@@ -1892,6 +2012,7 @@ class TestFormatHookSummary:
         assert "x" * 201 not in result
 
     def test_limits_to_last_20_records(self) -> None:
+        """_format_hook_summary 仅保留最近 20 条记录。"""
         records = [{"type": "fetch", "method": "GET", "url": f"u-{i}"} for i in range(30)]
         result = ReverseAgent._format_hook_summary({"records": records})
         # 只保留最后 20 条（u-10 ~ u-29）
@@ -1909,9 +2030,11 @@ class TestFormatHookSummary:
 
 class TestFormatNetworkSummary:
     def test_empty_returns_no(self) -> None:
+        """_format_network_summary 空列表返回无。"""
         assert ReverseAgent._format_network_summary([]) == "(无)"
 
     def test_formats_requests(self) -> None:
+        """_format_network_summary 格式化网络请求。"""
         result = ReverseAgent._format_network_summary(
             [
                 {"method": "GET", "url": "https://a.example", "resource_type": "xhr"},
@@ -1922,6 +2045,7 @@ class TestFormatNetworkSummary:
         assert "[fetch] POST https://b.example" in result
 
     def test_handles_missing_fields(self) -> None:
+        """_format_network_summary 容忍缺失字段。"""
         result = ReverseAgent._format_network_summary([{}])
         # 缺字段时用 "?" 占位
         assert "[?]" in result
@@ -1929,15 +2053,18 @@ class TestFormatNetworkSummary:
 
 class TestFormatScriptSummary:
     def test_empty_returns_no(self) -> None:
+        """_format_script_summary 空列表返回无。"""
         assert ReverseAgent._format_script_summary([]) == "(无)"
 
     def test_formats_scripts(self) -> None:
+        """_format_script_summary 格式化脚本列表。"""
         result = ReverseAgent._format_script_summary(["a.js", "b.js", "c.js"])
         assert "a.js" in result
         assert "b.js" in result
         assert "c.js" in result
 
     def test_limits_to_20_scripts(self) -> None:
+        """_format_script_summary 仅保留前 20 条脚本。"""
         scripts = [f"s{i}.js" for i in range(30)]
         result = ReverseAgent._format_script_summary(scripts)
         assert "s0.js" in result  # 前 20 条应保留
@@ -1946,9 +2073,11 @@ class TestFormatScriptSummary:
 
 class TestFormatHistorySummary:
     def test_empty_returns_no(self) -> None:
+        """_format_history_summary 空列表返回无。"""
         assert ReverseAgent._format_history_summary([]) == "(无)"
 
     def test_formats_history_entries(self) -> None:
+        """_format_history_summary 格式化历史条目。"""
         result = ReverseAgent._format_history_summary(
             [
                 {"step": 1, "action": "click", "reasoning": "clicked"},
@@ -1961,12 +2090,14 @@ class TestFormatHistorySummary:
         assert "boom" in result
 
     def test_limits_to_last_10_entries(self) -> None:
+        """_format_history_summary 仅保留最近 10 条历史。"""
         history = [{"step": i, "action": "wait"} for i in range(20)]
         result = ReverseAgent._format_history_summary(history)
         assert "step 10" in result  # 最后 10 条包含 step 10-19
         assert "step 0" not in result  # 早期条目被丢弃
 
     def test_truncates_reasoning_to_150_chars(self) -> None:
+        """_format_history_summary 将 reasoning 截断到 150 字符。"""
         long_reasoning = "x" * 200
         result = ReverseAgent._format_history_summary(
             [{"step": 1, "action": "wait", "reasoning": long_reasoning}]
@@ -1983,6 +2114,7 @@ class TestFormatHistorySummary:
 
 class TestSetupPageListeners:
     def test_registers_request_listener(self) -> None:
+        """_setup_page_listeners 注册请求监听器。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.on = MagicMock()
@@ -1993,6 +2125,7 @@ class TestSetupPageListeners:
         assert callable(args[1])
 
     def test_request_listener_appends_to_network_log(self) -> None:
+        """请求监听器将请求追加到网络日志。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         agent._setup_page_listeners(page)
@@ -2037,6 +2170,7 @@ class TestSetupPageListeners:
         agent._setup_page_listeners(page)
 
     def test_setup_page_listeners_clears_existing_network_log(self) -> None:
+        """_setup_page_listeners 清空已有网络日志。"""
         agent = _make_agent()
         agent._network_log.append({"url": "old"})
         page = _AsyncPageMock()
@@ -2107,6 +2241,7 @@ class TestCreatePage:
 
     @pytest.mark.asyncio
     async def test_create_page_async_returns_context_and_page(self) -> None:
+        """_create_page_async 返回上下文与页面。"""
         agent = _make_agent(hooks=["fetch_hook"])
         fetcher = MagicMock()
         browser = MagicMock()
@@ -2130,6 +2265,7 @@ class TestCreatePage:
 
     @pytest.mark.asyncio
     async def test_create_page_async_handles_init_script_exception(self) -> None:
+        """_create_page_async 注入脚本异常时仍返回页面。"""
         agent = _make_agent()
         fetcher = MagicMock()
         browser = MagicMock()
@@ -2150,6 +2286,7 @@ class TestCreatePage:
 
 class TestTryRecoverPage:
     async def test_try_recover_page_success(self) -> None:
+        """_try_recover_page 成功恢复页面。"""
         agent = _make_agent()
         # 让 _create_page 返回 mock 对象
         new_page = _AsyncPageMock()
@@ -2161,6 +2298,7 @@ class TestTryRecoverPage:
         agent._create_page_async.assert_called_once()
 
     async def test_try_recover_page_failure(self) -> None:
+        """_try_recover_page 恢复失败时返回假。"""
         agent = _make_agent()
         agent._create_page = MagicMock(side_effect=RuntimeError("create fail"))  # type: ignore[assignment]
         ok, page = await agent._try_recover_page_async("https://x.example")
@@ -2169,6 +2307,7 @@ class TestTryRecoverPage:
 
     @pytest.mark.asyncio
     async def test_try_recover_page_async_success(self) -> None:
+        """_try_recover_page_async 成功恢复页面。"""
         agent = _make_agent()
         ctx = MagicMock()
         page = _AsyncPageMock()
@@ -2181,6 +2320,7 @@ class TestTryRecoverPage:
 
     @pytest.mark.asyncio
     async def test_try_recover_page_async_failure(self) -> None:
+        """_try_recover_page_async 恢复失败时返回假。"""
         agent = _make_agent()
         agent._create_page_async = AsyncMock(side_effect=RuntimeError("create fail"))  # type: ignore[assignment]
         ok, page = await agent._try_recover_page_async("https://x.example")
@@ -2213,6 +2353,7 @@ class TestAnalyzeCapturedJs:
         return resp
 
     async def test_returns_none_when_no_scripts(self) -> None:
+        """_analyze_captured_js_async 无脚本时返回 None。"""
         agent = _make_agent()
         result = await agent._analyze_captured_js_async([], ["sign"])
         assert result is None
@@ -2229,6 +2370,7 @@ class TestAnalyzeCapturedJs:
             assert result is None
 
     async def test_returns_none_when_status_not_200(self) -> None:
+        """抓取脚本状态非 200 时返回 None。"""
         agent = _make_agent()
         client = self._fake_httpx_client([self._fake_resp("https://x.example/a.js", status=404)])
         with patch("httpx.AsyncClient", return_value=client):
@@ -2236,6 +2378,7 @@ class TestAnalyzeCapturedJs:
             assert result is None
 
     async def test_returns_none_when_text_empty(self) -> None:
+        """抓取脚本文本为空时返回 None。"""
         agent = _make_agent()
         client = self._fake_httpx_client([self._fake_resp("https://x.example/a.js")])
         with patch("httpx.AsyncClient", return_value=client):
@@ -2349,6 +2492,7 @@ class TestAnalyzeCapturedJs:
 
 class TestScreenshotHelpers:
     def test_screenshot_dir_is_cwd_reverse_screenshots(self, tmp_path: Path) -> None:
+        """截图目录为当前工作目录下的 reverse_screenshots。"""
         agent = _make_agent()
         import os
 
@@ -2361,15 +2505,18 @@ class TestScreenshotHelpers:
             os.chdir(old_cwd)
 
     def test_screenshot_task_id_defaults_to_default(self) -> None:
+        """_screenshot_task_id 无任务时默认为 default。"""
         agent = _make_agent()
         assert agent._screenshot_task_id() == "default"
 
     def test_screenshot_task_id_uses_checkpoint_manager_task_id(self) -> None:
+        """_screenshot_task_id 取检查点管理器的 task_id。"""
         agent = _make_agent()
         agent.checkpoint_manager.task_id = "task-abc"
         assert agent._screenshot_task_id() == "task-abc"
 
     def test_screenshot_task_id_handles_exception(self) -> None:
+        """_screenshot_task_id 取 task_id 异常时回退默认。"""
         agent = _make_agent()
         # checkpoint_manager 抛异常时回退为 default
         agent.checkpoint_manager = MagicMock()  # type: ignore[assignment]
@@ -2440,6 +2587,7 @@ class TestScreenshotHelpers:
 
 class TestCheckpointsSnapshot:
     def test_returns_empty_when_checkpoint_disabled(self) -> None:
+        """检查点禁用时快照返回空列表。"""
         agent = _make_agent()  # enable_checkpoint=False
         assert agent.checkpoints_snapshot() == []
 
@@ -2458,6 +2606,7 @@ class TestCheckpointsSnapshot:
         assert agent.checkpoints_snapshot() == []
 
     def test_returns_list_when_task_id_and_paths_exist(self) -> None:
+        """有任务 ID 与截图路径时快照返回列表。"""
         cfg = ReverseAgentConfig(
             enable_screenshot=False,
             enable_guard=False,
@@ -2478,6 +2627,7 @@ class TestCheckpointsSnapshot:
         assert {"step": 14, "path": str(paths[1])} in result
 
     def test_handles_invalid_step_filename(self) -> None:
+        """快照容忍非法步骤文件名。"""
         cfg = ReverseAgentConfig(
             enable_screenshot=False,
             enable_guard=False,
@@ -2495,6 +2645,7 @@ class TestCheckpointsSnapshot:
         assert result == [{"step": 0, "path": str(paths[0])}]
 
     def test_handles_store_exception(self) -> None:
+        """快照容忍存储异常。"""
         cfg = ReverseAgentConfig(
             enable_screenshot=False,
             enable_guard=False,
@@ -2519,6 +2670,7 @@ class TestCheckpointsSnapshot:
 
 class TestCleanup:
     def test_close_closes_page_and_context_and_fetcher(self) -> None:
+        """close 关闭页面、上下文与抓取器。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         context = MagicMock()
@@ -2559,6 +2711,7 @@ class TestCleanup:
 
     @pytest.mark.asyncio
     async def test_aclose_closes_async(self) -> None:
+        """aclose 异步关闭页面与上下文。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.close = AsyncMock()
@@ -2609,6 +2762,7 @@ class TestCleanup:
         assert agent.fetcher is None
 
     def test_cleanup_page_sync_closes_page_then_context(self) -> None:
+        """_cleanup_page_sync 先关页面再关上下文。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         context = MagicMock()
@@ -2621,6 +2775,7 @@ class TestCleanup:
         assert agent._context is None
 
     def test_cleanup_page_sync_handles_exceptions(self) -> None:
+        """_cleanup_page_sync 吞掉关闭异常。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.close.side_effect = RuntimeError("fail")
@@ -2634,6 +2789,7 @@ class TestCleanup:
 
     @pytest.mark.asyncio
     async def test_cleanup_page_async(self) -> None:
+        """_cleanup_page_async 先关页面再关上下文。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.close = AsyncMock()
@@ -2648,6 +2804,7 @@ class TestCleanup:
 
     @pytest.mark.asyncio
     async def test_cleanup_page_async_handles_exceptions(self) -> None:
+        """_cleanup_page_async 吞掉关闭异常。"""
         agent = _make_agent()
         page = _AsyncPageMock()
         page.close = AsyncMock(side_effect=RuntimeError("fail"))
@@ -2666,21 +2823,25 @@ class TestCleanup:
 
 class TestResolveTab:
     def test_resolve_tab_returns_none_when_no_name_no_index(self) -> None:
+        """_resolve_tab 无名无索引时返回 None。"""
         agent = _make_agent()
         assert agent._resolve_tab(name=None, index=None) is None
 
     def test_resolve_tab_returns_none_for_invalid_index(self) -> None:
+        """_resolve_tab 非法索引时返回 None。"""
         agent = _make_agent()
         agent._tabs = {"a": "page-a"}
         assert agent._resolve_tab(name=None, index=99) is None
 
     def test_resolve_tab_returns_none_for_non_int_index(self) -> None:
+        """_resolve_tab 非整数索引时返回 None。"""
         agent = _make_agent()
         agent._tabs = {"a": "page-a"}
         # index 是无法转 int 的字符串
         assert agent._resolve_tab(name=None, index="not-int") is None  # type: ignore[arg-type]
 
     def test_resolve_tab_by_index_returns_correct_tab(self) -> None:
+        """_resolve_tab 按索引返回对应标签页。"""
         agent = _make_agent()
         agent._tabs = {"first": "p1", "second": "p2"}
         assert agent._resolve_tab(name=None, index=0) == "p1"

@@ -21,6 +21,7 @@ from web_crawler.ai.image_captcha import ClickSolution, ImageCaptchaSolver
 
 
 def test_captcha_type_values() -> None:
+    """CaptchaType 枚举值与预期集合一致。"""
     expected = {
         "hcaptcha",
         "turnstile",
@@ -34,6 +35,7 @@ def test_captcha_type_values() -> None:
 
 
 def test_captcha_info_defaults() -> None:
+    """CaptchaInfo 默认字段为空。"""
     info = CaptchaInfo(type=CaptchaType.NONE)
     assert info.type is CaptchaType.NONE
     assert info.iframe_url is None
@@ -55,11 +57,13 @@ def _make_page(selector_map: dict) -> MagicMock:
 
 def test_detector_no_captcha() -> None:
     # 页面上没有任何验证码特征元素
+    """CaptchaDetector 无验证码时返回 None。"""
     page = _make_page({})
     assert CaptchaDetector().detect(page) is None
 
 
 def test_detector_hcaptcha() -> None:
+    """CaptchaDetector 识别 hCaptcha iframe。"""
     iframe = MagicMock()
     iframe.get_attribute.return_value = "https://hcaptcha.com/?sitekey=abc123"
     page = _make_page({_HCAPTCHA_IFRAME: iframe})
@@ -75,6 +79,7 @@ def test_detector_hcaptcha() -> None:
 
 def test_captcha_manager_no_captcha() -> None:
     # 无验证码时 manager.handle 直接返回 True
+    """CaptchaManager 无验证码时直接返回真。"""
     page = _make_page({})
     assert CaptchaManager().handle(page) is True
 
@@ -85,17 +90,20 @@ def test_captcha_manager_no_captcha() -> None:
 
 
 def test_captcha_solver_accepts_image_solver() -> None:
+    """CaptchaSolver 接受自定义图像求解器。"""
     img_solver = ImageCaptchaSolver(provider=None)
     solver = CaptchaSolver(image_solver=img_solver)
     assert solver.image_solver is img_solver
 
 
 def test_captcha_solver_default_no_image_solver() -> None:
+    """CaptchaSolver 默认无图像求解器。"""
     solver = CaptchaSolver()
     assert solver.image_solver is None
 
 
 def test_captcha_manager_injects_image_solver_to_default_solver() -> None:
+    """CaptchaManager 将图像求解器注入默认求解器。"""
     img_solver = ImageCaptchaSolver(provider=None)
     manager = CaptchaManager(image_solver=img_solver)
     assert manager.solver.image_solver is img_solver
@@ -103,6 +111,7 @@ def test_captcha_manager_injects_image_solver_to_default_solver() -> None:
 
 
 def test_captcha_manager_injects_image_solver_to_custom_solver() -> None:
+    """CaptchaManager 将图像求解器注入自定义求解器。"""
     img_solver = ImageCaptchaSolver(provider=None)
     custom_solver = CaptchaSolver(max_wait=10.0)
     manager = CaptchaManager(solver=custom_solver, image_solver=img_solver)
@@ -111,12 +120,14 @@ def test_captcha_manager_injects_image_solver_to_custom_solver() -> None:
 
 
 def test_captcha_manager_no_image_solver_default() -> None:
+    """CaptchaManager 无图像求解器时各处为 None。"""
     manager = CaptchaManager()
     assert manager.solver.image_solver is None
     assert manager.image_solver is None
 
 
 def test_solve_image_challenge_no_image_solver_returns_false() -> None:
+    """无图像求解器时图像挑战返回假。"""
     solver = CaptchaSolver(image_solver=None)
     page = MagicMock()
     info = CaptchaInfo(type=CaptchaType.HCAPTCHA, container_selector=_HCAPTCHA_IFRAME)
@@ -124,6 +135,7 @@ def test_solve_image_challenge_no_image_solver_returns_false() -> None:
 
 
 def test_solve_image_challenge_no_iframe_returns_false() -> None:
+    """无 iframe 时图像挑战返回假。"""
     img_solver = MagicMock(spec=ImageCaptchaSolver)
     solver = CaptchaSolver(image_solver=img_solver)
     page = _make_page({})  # 没有 iframe
@@ -132,6 +144,7 @@ def test_solve_image_challenge_no_iframe_returns_false() -> None:
 
 
 def test_solve_image_challenge_no_bounding_box_returns_false() -> None:
+    """无 iframe 边界框时图像挑战返回假。"""
     img_solver = MagicMock(spec=ImageCaptchaSolver)
     solver = CaptchaSolver(image_solver=img_solver)
     iframe = MagicMock()
@@ -142,6 +155,7 @@ def test_solve_image_challenge_no_bounding_box_returns_false() -> None:
 
 
 def test_solve_image_challenge_screenshot_failure_returns_false() -> None:
+    """iframe 截图失败时图像挑战返回假。"""
     img_solver = MagicMock(spec=ImageCaptchaSolver)
     solver = CaptchaSolver(image_solver=img_solver)
     iframe = MagicMock()
@@ -153,6 +167,7 @@ def test_solve_image_challenge_screenshot_failure_returns_false() -> None:
 
 
 def test_solve_image_challenge_solve_click_returns_none_returns_false() -> None:
+    """solve_click 返回 None 时图像挑战返回假。"""
     img_solver = MagicMock(spec=ImageCaptchaSolver)
     img_solver.solve_click.return_value = None
     solver = CaptchaSolver(image_solver=img_solver)
@@ -165,6 +180,7 @@ def test_solve_image_challenge_solve_click_returns_none_returns_false() -> None:
 
 
 def test_solve_image_challenge_solve_click_exception_returns_false() -> None:
+    """solve_click 抛异常时图像挑战返回假。"""
     img_solver = MagicMock(spec=ImageCaptchaSolver)
     img_solver.solve_click.side_effect = RuntimeError("llm error")
     solver = CaptchaSolver(image_solver=img_solver)
@@ -177,6 +193,7 @@ def test_solve_image_challenge_solve_click_exception_returns_false() -> None:
 
 
 def test_solve_image_challenge_clicks_points_and_returns_true() -> None:
+    """图像挑战按点位点击并返回真。"""
     img_solver = MagicMock(spec=ImageCaptchaSolver)
     img_solver.solve_click.return_value = ClickSolution(
         points=[(10, 20), (30, 40)],
@@ -207,6 +224,7 @@ def test_solve_image_challenge_clicks_points_and_returns_true() -> None:
 
 
 def test_solve_image_challenge_humanize_adds_delay() -> None:
+    """图像挑战开启人性化时点击后加延迟。"""
     img_solver = MagicMock(spec=ImageCaptchaSolver)
     img_solver.solve_click.return_value = ClickSolution(points=[(5, 5)])
     # humanize=True 会触发 time.sleep，但不应影响结果
@@ -222,12 +240,14 @@ def test_solve_image_challenge_humanize_adds_delay() -> None:
 
 
 def test_geetest_detect_offset_no_image_solver_returns_none() -> None:
+    """极验偏移检测无图像求解器时返回 None。"""
     solver = CaptchaSolver(image_solver=None)
     page = _make_page({})
     assert solver._geetest_detect_offset(page) is None
 
 
 def test_geetest_detect_offset_panel_screenshot_failure_returns_none() -> None:
+    """极验偏移检测面板截图失败时返回 None。"""
     img_solver = MagicMock(spec=ImageCaptchaSolver)
     solver = CaptchaSolver(image_solver=img_solver)
     panel = MagicMock()
@@ -237,6 +257,7 @@ def test_geetest_detect_offset_panel_screenshot_failure_returns_none() -> None:
 
 
 def test_geetest_detect_offset_no_slider_element_returns_none() -> None:
+    """极验偏移检测无滑块元素时返回 None。"""
     img_solver = MagicMock(spec=ImageCaptchaSolver)
     solver = CaptchaSolver(image_solver=img_solver)
     panel = MagicMock()
@@ -246,6 +267,7 @@ def test_geetest_detect_offset_no_slider_element_returns_none() -> None:
 
 
 def test_geetest_detect_offset_returns_solver_x() -> None:
+    """极验偏移检测返回求解器给出的 x 偏移。"""
     from web_crawler.ai.image_captcha import SliderSolution
 
     img_solver = MagicMock(spec=ImageCaptchaSolver)
@@ -266,6 +288,7 @@ def test_geetest_detect_offset_returns_solver_x() -> None:
 
 
 def test_geetest_detect_offset_solver_returns_none() -> None:
+    """极验偏移检测求解器返回 None 时返回 None。"""
     img_solver = MagicMock(spec=ImageCaptchaSolver)
     img_solver.solve_slider.return_value = None
     solver = CaptchaSolver(image_solver=img_solver)
@@ -302,6 +325,7 @@ def test_first_query_skips_none_and_returns_later_hit() -> None:
 
 
 def test_first_query_all_miss_returns_none() -> None:
+    """_first_query 全部选择器未命中时返回 None。"""
     page = _make_page({})
     assert _first_query(page, ("a", "b")) is None
 
@@ -321,20 +345,24 @@ def test_first_query_exception_treated_as_none() -> None:
 
 
 def test_first_query_all_raise_returns_none() -> None:
+    """_first_query 全部选择器抛异常时返回 None。"""
     page = MagicMock()
     page.query_selector.side_effect = RuntimeError("boom")
     assert _first_query(page, ("a", "b")) is None
 
 
 def test_sitekey_from_url_empty_returns_none() -> None:
+    """_sitekey_from_url 空 URL 返回 None。"""
     assert _sitekey_from_url("", "sitekey") is None
 
 
 def test_sitekey_from_url_none_url_returns_none() -> None:
+    """_sitekey_from_url None URL 返回 None。"""
     assert _sitekey_from_url(None, "sitekey") is None  # type: ignore[arg-type]
 
 
 def test_sitekey_from_url_finds_key() -> None:
+    """_sitekey_from_url 从 URL 查询串提取 sitekey。"""
     url = "https://hcaptcha.com/?sitekey=abc123&other=1"
     assert _sitekey_from_url(url, "sitekey") == "abc123"
 
@@ -346,6 +374,7 @@ def test_sitekey_from_url_falls_through_multiple_keys() -> None:
 
 
 def test_sitekey_from_url_no_match_returns_none() -> None:
+    """_sitekey_from_url 无匹配时返回 None。"""
     url = "https://example.com/?foo=bar"
     assert _sitekey_from_url(url, "sitekey") is None
 
@@ -390,6 +419,7 @@ def test_detector_hcaptcha_empty_src_yields_none_iframe_url() -> None:
 
 
 def test_detector_turnstile_first_selector() -> None:
+    """CaptchaDetector 按首个选择器识别 Turnstile。"""
     iframe = MagicMock()
     iframe.get_attribute.return_value = "https://challenges.cloudflare.com/?x=1"
     page = _make_page({_TURNSTILE_IFRAMES[0]: iframe})
@@ -403,6 +433,7 @@ def test_detector_turnstile_first_selector() -> None:
 
 
 def test_detector_turnstile_second_selector() -> None:
+    """CaptchaDetector 按次选选择器识别 Turnstile。"""
     iframe = MagicMock()
     iframe.get_attribute.return_value = "https://turnstile.example/?sitekey=ts_key"
     page = _make_page({_TURNSTILE_IFRAMES[1]: iframe})
@@ -450,6 +481,7 @@ def test_detector_recaptcha_v2_anchor_path() -> None:
 
 
 def test_detector_recaptcha_v2_with_data_sitekey() -> None:
+    """CaptchaDetector 识别 reCAPTCHA v2 并取 data-sitekey。"""
     iframe = MagicMock()
     iframe.get_attribute.return_value = "https://recaptcha.google.com/anchor"
     sitekey_el = MagicMock()
@@ -531,11 +563,13 @@ def test_detector_geetest_query_exception_falls_through() -> None:
 
 
 def test_detector_read_data_sitekey_no_element() -> None:
+    """_read_data_sitekey 无元素时返回 None。"""
     page = _make_page({})
     assert CaptchaDetector._read_data_sitekey(page) is None
 
 
 def test_detector_read_data_sitekey_exception_returns_none() -> None:
+    """_read_data_sitekey 异常时返回 None。"""
     page = MagicMock()
     page.query_selector.side_effect = RuntimeError("boom")
     assert CaptchaDetector._read_data_sitekey(page) is None
@@ -561,12 +595,14 @@ def test_detector_priority_hcaptcha_before_turnstile() -> None:
 
 
 def test_solve_none_type_returns_true() -> None:
+    """solve 对 NONE 类型直接返回真。"""
     solver = CaptchaSolver()
     info = CaptchaInfo(type=CaptchaType.NONE)
     assert solver.solve(MagicMock(), info) is True
 
 
 def test_solve_unknown_type_returns_false() -> None:
+    """solve 对 UNKNOWN 类型返回假。"""
     solver = CaptchaSolver()
     info = CaptchaInfo(type=CaptchaType.UNKNOWN)
     assert solver.solve(MagicMock(), info) is False
@@ -581,6 +617,7 @@ def test_solve_handler_exception_returns_false() -> None:
 
 
 def test_solve_dispatches_turnstile() -> None:
+    """solve 将 Turnstile 类型分发到对应方法。"""
     solver = CaptchaSolver()
     info = CaptchaInfo(type=CaptchaType.TURNSTILE)
     with patch.object(solver, "_solve_turnstile", return_value=True) as mock_fn:
@@ -647,6 +684,7 @@ def test_solve_turnstile_click_but_token_fail_returns_false() -> None:
 
 
 def test_solve_hcaptcha_no_checkbox_returns_false() -> None:
+    """hCaptcha 无复选框时返回假。"""
     solver = CaptchaSolver(max_wait=10.0)
     info = CaptchaInfo(type=CaptchaType.HCAPTCHA)
     page = MagicMock()
@@ -655,6 +693,7 @@ def test_solve_hcaptcha_no_checkbox_returns_false() -> None:
 
 
 def test_solve_hcaptcha_auto_token_pass() -> None:
+    """hCaptcha 自动获取 token 时判定通过。"""
     solver = CaptchaSolver(max_wait=10.0, humanize=False)
     info = CaptchaInfo(type=CaptchaType.HCAPTCHA)
     page = MagicMock()
@@ -690,6 +729,7 @@ def test_solve_hcaptcha_image_challenge_path_success() -> None:
 
 
 def test_solve_hcaptcha_token_fail_no_image_solver_returns_false() -> None:
+    """hCaptcha token 失败且无图像求解器时返回假。"""
     solver = CaptchaSolver(max_wait=10.0, humanize=False)
     info = CaptchaInfo(type=CaptchaType.HCAPTCHA)
     page = MagicMock()
@@ -705,6 +745,7 @@ def test_solve_hcaptcha_token_fail_no_image_solver_returns_false() -> None:
 
 
 def test_solve_recaptcha_v2_no_anchor_returns_false() -> None:
+    """reCAPTCHA v2 无 anchor 时返回假。"""
     solver = CaptchaSolver(max_wait=10.0)
     info = CaptchaInfo(type=CaptchaType.RECAPTCHA_V2)
     page = MagicMock()
@@ -713,6 +754,7 @@ def test_solve_recaptcha_v2_no_anchor_returns_false() -> None:
 
 
 def test_solve_recaptcha_v2_auto_token_pass() -> None:
+    """reCAPTCHA v2 自动获取 token 时判定通过。"""
     solver = CaptchaSolver(max_wait=10.0, humanize=False)
     info = CaptchaInfo(type=CaptchaType.RECAPTCHA_V2)
     page = MagicMock()
@@ -728,6 +770,7 @@ def test_solve_recaptcha_v2_auto_token_pass() -> None:
 
 
 def test_solve_recaptcha_v2_image_challenge_path_success() -> None:
+    """reCAPTCHA v2 图像挑战路径成功。"""
     img_solver = MagicMock(spec=ImageCaptchaSolver)
     solver = CaptchaSolver(max_wait=10.0, humanize=False, image_solver=img_solver)
     info = CaptchaInfo(type=CaptchaType.RECAPTCHA_V2, container_selector=_RECAPTCHA_IFRAME)
@@ -745,6 +788,7 @@ def test_solve_recaptcha_v2_image_challenge_path_success() -> None:
 
 
 def test_solve_recaptcha_v2_token_fail_no_image_solver_returns_false() -> None:
+    """reCAPTCHA v2 token 失败且无图像求解器时返回假。"""
     solver = CaptchaSolver(max_wait=10.0, humanize=False)
     info = CaptchaInfo(type=CaptchaType.RECAPTCHA_V2)
     page = MagicMock()
@@ -771,6 +815,7 @@ def test_solve_recaptcha_v3_waits_for_token() -> None:
 
 
 def test_solve_recaptcha_v3_token_timeout_returns_false() -> None:
+    """reCAPTCHA v3 token 超时时返回假。"""
     solver = CaptchaSolver(max_wait=10.0)
     info = CaptchaInfo(type=CaptchaType.RECAPTCHA_V3)
     with patch.object(solver, "_wait_for_token", return_value=False):
@@ -783,6 +828,7 @@ def test_solve_recaptcha_v3_token_timeout_returns_false() -> None:
 
 
 def test_solve_geetest_no_slider_returns_false() -> None:
+    """极验无滑块时返回假。"""
     solver = CaptchaSolver(max_wait=10.0, humanize=False)
     info = CaptchaInfo(type=CaptchaType.GEETEST)
     page = _make_page({})  # 无滑块
@@ -791,6 +837,7 @@ def test_solve_geetest_no_slider_returns_false() -> None:
 
 
 def test_solve_geetest_no_bounding_box_returns_false() -> None:
+    """极验无滑块边界框时返回假。"""
     solver = CaptchaSolver(max_wait=10.0, humanize=False)
     info = CaptchaInfo(type=CaptchaType.GEETEST)
     slider = MagicMock()
@@ -900,6 +947,7 @@ def test_solve_geetest_offset_failure_hands_off() -> None:
 
 
 def test_solve_geetest_token_fail_returns_false() -> None:
+    """极验 token 失败时返回假。"""
     img_solver = MagicMock(spec=ImageCaptchaSolver)
     solver = CaptchaSolver(max_wait=10.0, humanize=False, image_solver=img_solver)
     info = CaptchaInfo(type=CaptchaType.GEETEST)
@@ -953,6 +1001,7 @@ def _make_token_element(value: str = "token123") -> MagicMock:
 
 
 def test_wait_for_token_found_in_textarea() -> None:
+    """_wait_for_token 从 textarea 找到 token。"""
     solver = CaptchaSolver(max_wait=10.0)
     info = CaptchaInfo(type=CaptchaType.HCAPTCHA)
     el = _make_token_element("h-captcha-token")
@@ -961,6 +1010,7 @@ def test_wait_for_token_found_in_textarea() -> None:
 
 
 def test_wait_for_token_found_in_input() -> None:
+    """_wait_for_token 从 input 找到 token。"""
     solver = CaptchaSolver(max_wait=10.0)
     info = CaptchaInfo(type=CaptchaType.TURNSTILE)
     el = _make_token_element("cf-token")
@@ -990,6 +1040,7 @@ def test_wait_for_token_empty_value_times_out_returns_false() -> None:
 
 
 def test_wait_for_token_no_element_times_out_returns_false() -> None:
+    """_wait_for_token 无元素时超时返回假。"""
     solver = CaptchaSolver(max_wait=10.0)
     info = CaptchaInfo(type=CaptchaType.HCAPTCHA)
     page = _make_page({})  # 无元素
@@ -1017,6 +1068,7 @@ def test_wait_for_token_geetest_success_selector_returns_true() -> None:
 
 
 def test_wait_for_token_geetest_no_success_times_out_returns_false() -> None:
+    """_wait_for_token 极验无成功标志时超时返回假。"""
     solver = CaptchaSolver(max_wait=10.0)
     info = CaptchaInfo(type=CaptchaType.GEETEST)
     page = _make_page({})
@@ -1191,6 +1243,7 @@ def test_bezier_move_calls_mouse_move_repeatedly() -> None:
 
 
 def test_find_hcaptcha_checkbox_returns_element() -> None:
+    """_find_hcaptcha_checkbox 返回复选框元素。"""
     page = MagicMock()
     el = MagicMock()
     page.frame_locator.return_value.locator.return_value.element_handle.return_value = el
@@ -1198,12 +1251,14 @@ def test_find_hcaptcha_checkbox_returns_element() -> None:
 
 
 def test_find_hcaptcha_checkbox_exception_returns_none() -> None:
+    """_find_hcaptcha_checkbox 异常时返回 None。"""
     page = MagicMock()
     page.frame_locator.side_effect = RuntimeError("no frame")
     assert CaptchaSolver._find_hcaptcha_checkbox(page) is None
 
 
 def test_find_recaptcha_anchor_returns_element() -> None:
+    """_find_recaptcha_anchor 返回 anchor 元素。"""
     page = MagicMock()
     el = MagicMock()
     page.frame_locator.return_value.locator.return_value.element_handle.return_value = el
@@ -1211,6 +1266,7 @@ def test_find_recaptcha_anchor_returns_element() -> None:
 
 
 def test_find_recaptcha_anchor_exception_returns_none() -> None:
+    """_find_recaptcha_anchor 异常时返回 None。"""
     page = MagicMock()
     page.frame_locator.return_value.locator.side_effect = RuntimeError("no frame")
     assert CaptchaSolver._find_recaptcha_anchor(page) is None
@@ -1222,6 +1278,7 @@ def test_find_recaptcha_anchor_exception_returns_none() -> None:
 
 
 def test_read_challenge_prompt_hcaptcha_returns_text() -> None:
+    """_read_challenge_prompt 读取 hCaptcha 提示文本。"""
     page = MagicMock()
     frame = MagicMock()
     loc = MagicMock()
@@ -1233,6 +1290,7 @@ def test_read_challenge_prompt_hcaptcha_returns_text() -> None:
 
 
 def test_read_challenge_prompt_recaptcha_v2_returns_text() -> None:
+    """_read_challenge_prompt 读取 reCAPTCHA v2 提示文本。"""
     page = MagicMock()
     frame = MagicMock()
     loc = MagicMock()
@@ -1251,12 +1309,14 @@ def test_read_challenge_prompt_no_selector_map_returns_empty() -> None:
 
 
 def test_read_challenge_prompt_no_container_selector_returns_empty() -> None:
+    """_read_challenge_prompt 无容器选择器时返回空。"""
     page = MagicMock()
     info = CaptchaInfo(type=CaptchaType.HCAPTCHA, container_selector=None)
     assert CaptchaSolver._read_challenge_prompt(page, info) == ""
 
 
 def test_read_challenge_prompt_frame_locator_exception_returns_empty() -> None:
+    """_read_challenge_prompt frame_locator 异常时返回空。"""
     page = MagicMock()
     page.frame_locator.side_effect = RuntimeError("no frame")
     info = CaptchaInfo(type=CaptchaType.HCAPTCHA, container_selector=_HCAPTCHA_IFRAME)
@@ -1276,6 +1336,7 @@ def test_read_challenge_prompt_all_text_empty_returns_empty() -> None:
 
 
 def test_submit_challenge_hcaptcha_clicks_button() -> None:
+    """_submit_challenge 点击 hCaptcha 提交按钮。"""
     page = MagicMock()
     frame = MagicMock()
     btn = MagicMock()
@@ -1287,6 +1348,7 @@ def test_submit_challenge_hcaptcha_clicks_button() -> None:
 
 
 def test_submit_challenge_recaptcha_v2_clicks_button() -> None:
+    """_submit_challenge 点击 reCAPTCHA v2 提交按钮。"""
     page = MagicMock()
     frame = MagicMock()
     btn = MagicMock()
@@ -1306,6 +1368,7 @@ def test_submit_challenge_no_selector_map_does_nothing() -> None:
 
 
 def test_submit_challenge_no_container_selector_does_nothing() -> None:
+    """_submit_challenge 无容器选择器时不操作。"""
     page = MagicMock()
     info = CaptchaInfo(type=CaptchaType.HCAPTCHA, container_selector=None)
     CaptchaSolver._submit_challenge(page, info)
@@ -1313,6 +1376,7 @@ def test_submit_challenge_no_container_selector_does_nothing() -> None:
 
 
 def test_submit_challenge_frame_locator_exception_swallows() -> None:
+    """_submit_challenge frame_locator 异常时吞掉。"""
     page = MagicMock()
     page.frame_locator.side_effect = RuntimeError("no frame")
     info = CaptchaInfo(type=CaptchaType.HCAPTCHA, container_selector=_HCAPTCHA_IFRAME)
@@ -1333,6 +1397,7 @@ def test_submit_challenge_all_buttons_fail_silently() -> None:
 
 
 def test_find_challenge_frame_returns_element() -> None:
+    """_find_challenge_frame 返回挑战框架元素。"""
     page = MagicMock()
     el = MagicMock()
     page.query_selector.return_value = el
@@ -1341,12 +1406,14 @@ def test_find_challenge_frame_returns_element() -> None:
 
 
 def test_find_challenge_frame_no_container_returns_none() -> None:
+    """_find_challenge_frame 无容器选择器时返回 None。"""
     page = MagicMock()
     info = CaptchaInfo(type=CaptchaType.HCAPTCHA, container_selector=None)
     assert CaptchaSolver._find_challenge_frame(page, info) is None
 
 
 def test_find_challenge_frame_exception_returns_none() -> None:
+    """_find_challenge_frame 异常时返回 None。"""
     page = MagicMock()
     page.query_selector.side_effect = RuntimeError("boom")
     info = CaptchaInfo(type=CaptchaType.HCAPTCHA, container_selector=_HCAPTCHA_IFRAME)
@@ -1556,3 +1623,104 @@ def test_detector_recaptcha_query_exception_returns_none() -> None:
     page = MagicMock()
     page.query_selector.side_effect = RuntimeError("context destroyed")
     assert CaptchaDetector()._detect_recaptcha(page) is None
+
+
+# ===========================================================================
+# 异步页面版探测（Playwright async API）：与同步版语义一致，全程 await
+# ===========================================================================
+
+
+class _AsyncEl:
+    """异步元素桩：只实现 get_attribute。"""
+
+    def __init__(self, attrs: dict[str, str]) -> None:
+        self._attrs = attrs
+
+    async def get_attribute(self, name: str) -> str | None:
+        return self._attrs.get(name)
+
+
+class _AsyncPage:
+    """异步页面桩：按 selector 返回预设元素，未登记的 selector 返回 None。"""
+
+    def __init__(self, selector_map: dict[str, _AsyncEl]) -> None:
+        self._map = selector_map
+
+    async def query_selector(self, selector: str) -> _AsyncEl | None:
+        return self._map.get(selector)
+
+
+async def test_detect_async_no_captcha() -> None:
+    """异步版：页面上无验证码特征元素时返回 None。"""
+    assert await CaptchaDetector().detect_async(_AsyncPage({})) is None
+
+
+async def test_detect_async_hcaptcha() -> None:
+    """异步版：识别 hCaptcha iframe 并从 URL 取到 sitekey。"""
+    page = _AsyncPage({_HCAPTCHA_IFRAME: _AsyncEl({"src": "https://hcaptcha.com/?sitekey=abc"})})
+    info = await CaptchaDetector().detect_async(page)
+    assert info is not None
+    assert info.type is CaptchaType.HCAPTCHA
+    assert info.site_key == "abc"
+    assert info.container_selector == _HCAPTCHA_IFRAME
+
+
+async def test_detect_async_turnstile_second_selector() -> None:
+    """异步版：首个 Turnstile 选择器未命中时回退到次选。"""
+    src = "https://challenges.cloudflare.com/turnstile?sitekey=k2"
+    page = _AsyncPage({_TURNSTILE_IFRAMES[1]: _AsyncEl({"src": src})})
+    info = await CaptchaDetector().detect_async(page)
+    assert info is not None
+    assert info.type is CaptchaType.TURNSTILE
+    assert info.site_key == "k2"
+    assert info.container_selector == _TURNSTILE_IFRAMES[1]
+
+
+async def test_detect_async_recaptcha_v3() -> None:
+    """异步版：URL 带 render= 时判定为 reCAPTCHA v3。"""
+    page = _AsyncPage({_RECAPTCHA_IFRAME: _AsyncEl({"src": "https://g.com/api.js?render=k3"})})
+    info = await CaptchaDetector().detect_async(page)
+    assert info is not None
+    assert info.type is CaptchaType.RECAPTCHA_V3
+    assert info.site_key == "k3"
+
+
+async def test_detect_async_recaptcha_v2() -> None:
+    """异步版：anchor 入口判定为 reCAPTCHA v2，sitekey 取 k 参数。"""
+    page = _AsyncPage({_RECAPTCHA_IFRAME: _AsyncEl({"src": "https://g.com/api2/anchor?k=k2"})})
+    info = await CaptchaDetector().detect_async(page)
+    assert info is not None
+    assert info.type is CaptchaType.RECAPTCHA_V2
+    assert info.site_key == "k2"
+
+
+async def test_detect_async_recaptcha_v2_reads_data_sitekey() -> None:
+    """异步版：URL 无 sitekey 时回退到页面上的 data-sitekey 元素。"""
+    page = _AsyncPage(
+        {
+            _RECAPTCHA_IFRAME: _AsyncEl({"src": "https://g.com/api2/anchor"}),
+            "[data-sitekey]": _AsyncEl({"data-sitekey": "from-dom"}),
+        }
+    )
+    info = await CaptchaDetector().detect_async(page)
+    assert info is not None
+    assert info.site_key == "from-dom"
+
+
+async def test_detect_async_geetest() -> None:
+    """异步版：识别 GeeTest 容器选择器。"""
+    page = _AsyncPage({_GEETEST_SELECTORS[0]: _AsyncEl({})})
+    info = await CaptchaDetector().detect_async(page)
+    assert info is not None
+    assert info.type is CaptchaType.GEETEST
+    assert info.container_selector == _GEETEST_SELECTORS[0]
+
+
+async def test_detect_async_probe_errors_are_tolerated() -> None:
+    """异步版：query_selector 抛错按未命中处理，不向上冒泡。"""
+
+    class _BoomPage:
+        async def query_selector(self, selector: str) -> None:
+            raise RuntimeError("context destroyed")
+
+    assert await CaptchaDetector().detect_async(_BoomPage()) is None

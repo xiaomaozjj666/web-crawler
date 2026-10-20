@@ -1,0 +1,26 @@
+26	 	test_field_error_to_dict_copies_loc	err = FieldError(loc=["a", "b"], msg="bad", type="value_error") | d = err.to_dict() | assert d == {"loc": ["a", "b"], "msg": "bad", "type": "value_error"}
+35	 	test_field_error_default_type_is_empty	err = FieldError(loc=["x"], msg="required") | assert err.type == ""
+40	 	test_validation_result_error_messages_format	result = ValidationResult( valid=False, errors=[ FieldError(loc=["name"], msg="field required", type="missing"), FieldError(loc=["age", "value"], msg="not int",
+51	 	test_validation_result_error_messages_empty_when_valid	result = ValidationResult(valid=True) | assert result.error_messages == []
+56	 	test_validation_result_to_dict_with_serializable_raw	result = ValidationResult(valid=True, coerced={"a": 1}, raw={"x": 2}) | d = result.to_dict() | assert d["valid"] is True
+73	 	test_validation_result_to_dict_includes_errors	result = ValidationResult( valid=False, errors=[FieldError(loc=["k"], msg="missing", type="missing")], raw=None, ) | d = result.to_dict() | assert d["valid"] is
+90	 	test_extracted_params_defaults	obj = ExtractedParams() | assert obj.params == {} | assert obj.confidence == 0.0
+103	 	test_hook_record_defaults	obj = HookRecord() | assert obj.type == "" | assert obj.url == ""
+113	 	test_web_page_state_requires_url	obj = WebPageState(url="https://example.com") | assert obj.url == "https://example.com" | assert obj.title == ""
+121	 	test_web_page_state_missing_url_fails_validation	validator = SchemaValidator(WebPageState) | result = validator.validate({"title": "no url"}) | assert result.valid is False
+133	 	test_validator_with_basemodel_validates_and_coerces	validator = SchemaValidator(ExtractedParams) | result = validator.validate({"params": {"q": "x"}, "confidence": 0.8}) | assert result.valid is True
+150	 	test_validator_with_basemodel_invalid_returns_field_errors	validator = SchemaValidator(ExtractedParams) | result = validator.validate({"confidence": "not-a-number"}) | assert result.valid is False
+187	 	test_validator_with_none_schema_uses_fallback	validator = SchemaValidator(None) | assert validator._adapter is None | result = validator.validate({"a": 1})
+199	 	test_validate_async_returns_same_as_sync	validator = SchemaValidator(ExtractedParams) | result = await validator.validate_async({"params": {"q": "x"}, "confidence": 0.5}) | assert result.valid is True
+206	 	test_validate_async_invalid_data	validator = SchemaValidator(ExtractedParams) | result = await validator.validate_async({"confidence": "bad"}) | assert result.valid is False
+217	 	test_fallback_no_required_keys_dict_passes	validator = SchemaValidator(None) | result = validator.validate({"a": 1}) | assert result.valid is True
+225	 	test_fallback_no_required_keys_non_dict_wraps_value	validator = SchemaValidator(None) | result = validator.validate(123) | assert result.valid is True
+232	 	test_fallback_with_required_keys_all_present_passes	validator = SchemaValidator(None, required_keys=["name", "age"]) | result = validator.validate({"name": "x", "age": 18, "extra": True}) | assert result.valid is
+239	 	test_fallback_with_required_keys_non_dict_fails	validator = SchemaValidator(None, required_keys=["name"]) | result = validator.validate("not a dict") | assert result.valid is False
+248	 	test_fallback_with_required_keys_missing_key_fails	validator = SchemaValidator(None, required_keys=["name", "age"]) | result = validator.validate({"name": "x"}) | assert result.valid is False
+258	 	test_fallback_with_required_keys_empty_value_fails	validator = SchemaValidator(None, required_keys=["name"]) | result = validator.validate({"name": ""}) | assert result.valid is False
+267	 	test_fallback_with_required_keys_none_value_fails	validator = SchemaValidator(None, required_keys=["name"]) | result = validator.validate({"name": None}) | assert result.valid is False
+274	 	test_fallback_with_required_keys_empty_list_fails	validator = SchemaValidator(None, required_keys=["items"]) | result = validator.validate({"items": []}) | assert result.valid is False
+293	 	test_validate_and_repair_prompt_valid_returns_empty_prompt	validator = SchemaValidator(ExtractedParams) | result, prompt = validator.validate_and_repair_prompt({"params": {"q": "x"}, "confidence": 0.5}) | assert result.
+300	 	test_validate_and_repair_prompt_invalid_returns_repair_instructions	validator = SchemaValidator(ExtractedParams) | data = {"confidence": "bad"} | result, prompt = validator.validate_and_repair_prompt(data)
+314	 	test_validate_and_repair_prompt_with_none_data_includes_null	validator = SchemaValidator(None, required_keys=["name"]) | result, prompt = validator.validate_and_repair_prompt(None) | assert result.valid is False

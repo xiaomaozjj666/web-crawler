@@ -1,0 +1,21 @@
+10	 	test_text_handler_clean_collapses_whitespace	assert str(TextHandler("  hello   world  ").clean()) == "hello world"
+14	 	test_text_handler_chainable_returns_text_handler	result = TextHandler("  hi  ").clean() | assert isinstance(result, TextHandler) | assert str(result) == "hi"
+20	 	test_text_handler_remove_and_trim	assert str(TextHandler("a-b-c").remove("-")) == "abc" | assert str(TextHandler("  x  ").trim()) == "x"
+25	 	test_text_handler_starts_ends	t = TextHandler("hello world") | assert t.starts_with("hello") | assert t.ends_with("world")
+32	 	test_attrs_case_insensitive	a = Attrs({"Class": "btn", "ID": "x"}) | assert a.get("class") == "btn" | assert a.get("CLASS") == "btn"
+41	 	test_attrs_non_str_key_not_in	a = Attrs({"x": "1"}) | assert (123) not in a  # type: ignore[operator]
+46	 	test_result_list_first_last	rl: ResultList[int] = ResultList([1, 2, 3]) | assert rl.first == 1 | assert rl.last == 3
+55	 	test_result_list_text_concatenates	class FakeSel: def __init__(self, t: str) -> None: self.text = t | rl = ResultList([FakeSel("a"), FakeSel("b"), FakeSel("c")]) | assert str(rl.text) == "a b c"
+65	 	test_ensure_list	assert ensure_list(None) == [] | assert ensure_list(5) == [5] | assert ensure_list([1, 2]) == [1, 2]
+72	 	test_iter_chunks	chunks = list(iter_chunks([1, 2, 3, 4, 5], 2)) | assert chunks == [[1, 2], [3, 4], [5]]
+77	 	test_result_list_get_default_when_empty	rl: ResultList[int] = ResultList() | assert rl.get(99) == 99
+82	 	test_result_list_get_returns_first_when_non_empty	rl: ResultList[str] = ResultList(["a", "b"]) | assert rl.get() == "a"
+87	 	test_result_list_getall	rl: ResultList[int] = ResultList([1, 2, 3]) | assert rl.getall() == [1, 2, 3] | assert ResultList[int]().getall() == []
+93	 	test_result_list_length_property	rl: ResultList[int] = ResultList([1, 2, 3]) | assert rl.length == 3 | assert ResultList[int]().length == 0
+99	 	test_result_list_slice_preserves_type	rl: ResultList[int] = ResultList([1, 2, 3, 4]) | sliced = rl[1:3] | assert isinstance(sliced, ResultList)
+106	 	test_result_list_index_access_returns_item	rl: ResultList[int] = ResultList([10, 20]) | assert rl[0] == 10 | assert rl[-1] == 20
+112	 	test_result_list_to_json_returns_string	rl: ResultList[dict] = ResultList([{"a": 1}, {"b": 2}]) | text = rl.to_json() | assert '"a": 1' in text
+119	 	test_result_list_to_json_writes_file	rl: ResultList[dict] = ResultList([{"x": 1}]) | path = tmp_path / "out.json" | rl.to_json(path)
+129	 	test_result_list_to_jsonl_returns_string	rl: ResultList[dict] = ResultList([{"a": 1}, {"b": 2}]) | text = rl.to_jsonl() | lines = text.strip().split("\n")
+137	 	test_result_list_to_jsonl_writes_file	rl: ResultList[dict] = ResultList([{"x": 1}, {"x": 2}]) | path = tmp_path / "out.jsonl" | rl.to_jsonl(path)
+146	 	test_result_list_to_json_coerces_dataclass	from dataclasses import dataclass | class Item: name: str price: float | rl: ResultList = ResultList([Item("Widget", 9.99), Item("Gadget", 19.99)])  # type: ign

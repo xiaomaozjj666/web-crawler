@@ -1,0 +1,16 @@
+31	 	test_init_keeps_base_url_without_slash	extractor = VisualExtractor(api_key="k", base_url="https://api.x.com/v1") | assert extractor.base_url == "https://api.x.com/v1"
+36	 	test_init_custom_parameters	extractor = VisualExtractor( api_key="secret", base_url="https://dashscope.aliyuncs.com/compatible-mode/v1", model="qwen-vl-max", max_tokens=2048, timeout=30.0,
+55	 	test_extract_empty_tiles_raises_value_error	extractor = VisualExtractor(api_key="k") | with pytest.raises(ValueError, match="tiles must not be empty"): extractor.extract([])
+95	 	test_extract_uses_default_prompt_when_none_given	extractor = VisualExtractor(api_key="k") | with patch.object(extractor, "_call_api", return_value="ok") as mock_call: extractor.extract([{"b64": "A"}]) | prompt
+117	 	test_extract_passes_temperature_to_call_api	extractor = VisualExtractor(api_key="k") | with patch.object(extractor, "_call_api", return_value="ok") as mock_call: extractor.extract([{"b64": "A"}], "p", tem
+138	 	test_call_api_success_returns_stripped_content	extractor = VisualExtractor(api_key="key", base_url="https://api.x.com/v1") | payload = {"choices": [{"message": {"content": "  extracted text  "}, "finish_reas
+158	 	test_call_api_urlopen_exception_raises_runtime_error	extractor = VisualExtractor(api_key="k") | with ( patch("web_crawler.parser.visual.urlopen", side_effect=ConnectionError("net down")), pytest.raises(RuntimeErro
+167	 	test_call_api_no_choices_with_error_message_raises_runtime_error	extractor = VisualExtractor(api_key="k") | payload = {"choices": [], "error": {"message": "rate limited"}} | with ( patch("web_crawler.parser.visual.urlopen", r
+177	 	test_call_api_no_choices_without_error_key_uses_unknown_error	extractor = VisualExtractor(api_key="k") | payload = {"choices": []} | with ( patch("web_crawler.parser.visual.urlopen", return_value=_make_urlopen_response(pay
+220	 	test_extract_with_client_none_falls_back_to_extract	extractor = VisualExtractor(api_key="k") | with patch.object(extractor, "extract", return_value="fallback") as mock_extract: result = extractor.extract_with_cli
+228	 	test_extract_with_client_empty_tiles_raises_value_error	extractor = VisualExtractor(api_key="k") | client = MagicMock() | with pytest.raises(ValueError, match="tiles must not be empty"): extractor.extract_with_client
+235	 	test_extract_with_client_success_returns_content	extractor = VisualExtractor(api_key="k", model="gpt-4o") | client = MagicMock() | client.chat.completions.create.return_value = _make_openai_response("  result 
+252	 	test_extract_with_client_multiple_tiles_annotates_sections	extractor = VisualExtractor(api_key="k") | client = MagicMock() | client.chat.completions.create.return_value = _make_openai_response("ok")
+267	 	test_extract_with_client_exception_raises_runtime_error	extractor = VisualExtractor(api_key="k") | client = MagicMock() | client.chat.completions.create.side_effect = RuntimeError("timeout")
+276	 	test_extract_with_client_null_content_raises_runtime_error	extractor = VisualExtractor(api_key="k") | client = MagicMock() | client.chat.completions.create.return_value = _make_openai_response(None)
+285	 	test_extract_with_client_passes_temperature_and_max_tiles	extractor = VisualExtractor(api_key="k") | client = MagicMock() | client.chat.completions.create.return_value = _make_openai_response("ok")

@@ -1,0 +1,17 @@
+93	 	test_fetcher_constructs_with_curl_cffi	if not compat.HAS_CURL_CFFI: pytest.skip("curl_cffi not installed") | with Fetcher(impersonate="chrome131", timeout=5.0) as f: assert f._use_curl is True assert
+102	 	test_fetcher_get_returns_response	with Fetcher(timeout=10.0) as f: resp = f.get(local_server + "/") | assert isinstance(resp, Response) | assert resp.status == 200
+114	 	test_fetcher_get_json	with Fetcher(timeout=10.0) as f: resp = f.get(local_server + "/json") | assert resp.json() == {"ok": True, "n": 42}
+120	 	test_fetcher_get_404	with Fetcher(timeout=10.0) as f: resp = f.get(local_server + "/404") | assert resp.status == 404 | assert resp.ok is False
+127	 	test_fetcher_context_manager_closes	with Fetcher(timeout=10.0) as f: f.get(local_server + "/") | assert f._session is None
+133	 	test_fetcher_post	with Fetcher(timeout=10.0) as f: resp = f.post(local_server + "/") | assert resp.status >= 400
+140	 	test_fetcher_async_get	import asyncio | async def go() -> Response: async with Fetcher(timeout=10.0) as f: return await f.async_get(local_server + "/") | resp = asyncio.run(go())
+152	 	test_fetcher_with_proxy_pool_is_consulted_per_request	pool = ProxyPool(["http://127.0.0.1:8080", "http://127.0.0.1:8081"]) | with Fetcher(proxy=pool, timeout=2.0, retries=0) as f: # _resolve_proxy is the integratio
+166	 	test_fetcher_request_headers_merged	with Fetcher(timeout=10.0, extra_headers={"X-Test": "abc"}) as f: merged = f._merge_headers({"X-Per": "req"}) | assert merged["X-Test"] == "abc" | assert merged
+174	 	test_fetcher_retries_on_server_error	with Fetcher(retries=2, timeout=10.0) as f: assert f.retries == 2
+180	 	test_parse_retry_after_seconds	from web_crawler.fetchers.fetcher import _parse_retry_after | assert _parse_retry_after("120") == 120.0 | assert _parse_retry_after("0") == 0.0
+187	 	test_parse_retry_after_caps_at_300	from web_crawler.fetchers.fetcher import _parse_retry_after | assert _parse_retry_after("9999") == 300.0
+194	 	test_parse_retry_after_none_or_invalid	from web_crawler.fetchers.fetcher import _parse_retry_after | assert _parse_retry_after(None) is None | assert _parse_retry_after("") is None
+202	 	test_parse_retry_after_http_date	from datetime import datetime, timedelta, timezone | from email.utils import format_datetime | from web_crawler.fetchers.fetcher import _parse_retry_after
+215	 	test_fetcher_default_headers_are_realistic	with Fetcher() as f: headers = f._default_headers() | assert "Accept-Language" in headers | assert "Sec-Ch-Ua" in headers
+223	 	test_fetcher_build_response_carries_adaptive	with Fetcher(adaptive=True) as f: resp = f._build_response("https://x.example", 200, b"<a id='p'>x</a>", {}) | assert resp.selector.adaptive is True
+2714	 	test_pin_url_ipv6_is_bracketed	monkeypatch.setattr( _pin_mod.socket, "getaddrinfo", lambda h, p, **kw: [(socket.AF_INET6, 1, 6, "", ("2606:2800:220:1::1946", p, 0, 0))], ) | assert pin_url("h
