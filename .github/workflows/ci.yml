@@ -120,7 +120,7 @@ jobs:
       - name: Archive benchmark results
         # bench step 失败（回归 exit 1）时 continue-on-error 保证本步照常执行；
         # JSON 在 exit 前已写盘，故无需 if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bench-result
           path: bench-result.json
