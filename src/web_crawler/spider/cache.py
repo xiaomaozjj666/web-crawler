@@ -52,6 +52,11 @@ _DECOMP_CHUNK = 64 * 1024
 # os.replace 在 Windows 上并发替换同一目标时的瞬态 sharing violation
 # 重试次数（每次退避 1ms 递增；替换冲突窗口远短于该间隔，见 _atomic_write）
 _REPLACE_RETRIES = 5
+# 同一目标的并发替换在 Windows 上本身就会互撞（目标被另一线程的替换窗口
+# 短暂锁定）：用一把模块级锁只串行化 os.replace 这一步，写临时文件仍在锁外，
+# 因此磁盘 IO 依旧不进临界区。它同时兜住「读线程短暂持有目标文件」的情形——
+# 那种情况锁管不到，仍由上面的退避重试覆盖。
+_REPLACE_LOCK = threading.Lock()
 
 
 def _normalize_url(url: str) -> str:
@@ -408,7 +413,8 @@ class CacheMiddleware(DownloaderMiddleware):
             tmp.write_bytes(data)
             for attempt in range(_REPLACE_RETRIES):
                 try:
-                    os.replace(tmp, path)
+                    with _REPLACE_LOCK:
+                        os.replace(tmp, path)
                     return
                 except PermissionError:
                     if attempt == _REPLACE_RETRIES - 1:
