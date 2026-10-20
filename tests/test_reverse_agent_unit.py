@@ -583,8 +583,8 @@ class TestObserve:
         # evaluate 不能抛异常：_observe_async 内联 await page.evaluate 无 try/except
         page.evaluate = AsyncMock(return_value=[])
         page.screenshot = AsyncMock(return_value=b"")
-        # captcha_manager.detector.detect 返回 None
-        agent.captcha_manager.detector.detect = MagicMock(return_value=None)  # type: ignore[assignment]
+        # captcha_manager.detector.detect_async 返回 None（异步 page 走 await 版）
+        agent.captcha_manager.detector.detect_async = AsyncMock(return_value=None)  # type: ignore[assignment]
         obs = await agent._observe_async(page, step=1)
         assert obs.url == "https://x.example"
         assert obs.page_title == ""
@@ -620,7 +620,7 @@ class TestObserve:
         page.title = AsyncMock(return_value="T")
         page.content = AsyncMock(return_value="x" * 5000)
         page.evaluate = AsyncMock(return_value=[])
-        agent.captcha_manager.detector.detect = MagicMock(return_value=None)  # type: ignore[assignment]
+        agent.captcha_manager.detector.detect_async = AsyncMock(return_value=None)  # type: ignore[assignment]
         # Mock DomPruner.prune 返回带 text 的 PrunedDom
         pruned = MagicMock()
         pruned.text = "PRUNED_TEXT"
@@ -647,7 +647,7 @@ class TestObserve:
         page.title = AsyncMock(return_value="T")
         page.content = AsyncMock(return_value="abcdefghij" * 500)
         page.evaluate = AsyncMock(return_value=[])
-        agent.captcha_manager.detector.detect = MagicMock(return_value=None)  # type: ignore[assignment]
+        agent.captcha_manager.detector.detect_async = AsyncMock(return_value=None)  # type: ignore[assignment]
         pruned = MagicMock()
         pruned.text = ""  # 空 text
         agent.dom_pruner.prune_async = AsyncMock(return_value=pruned)  # type: ignore[assignment]
