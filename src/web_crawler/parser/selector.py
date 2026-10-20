@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
+from functools import lru_cache
 from typing import Any, Pattern  # noqa: UP035
 from urllib.parse import urlparse
 
@@ -29,6 +30,7 @@ from lxml import etree
 from lxml import html as lxml_html
 
 from .._types import Attrs, ResultList, TextHandler
+from ..exceptions import InvalidStateError
 from .adaptive import (
     AdaptiveStorage,
     best_match,
@@ -40,6 +42,25 @@ from .storage import DEFAULT_DB_PATH
 # 匹配 CSS 选择器末尾的 Scrapling 风格伪元素 ::attr(name)，
 # 属性名可带可选的单/双引号。例：".product::attr(href)"、'a::attr("data-id")'
 _ATTR_PSEUDO_RE = re.compile(r"::attr\(\s*['\"]?([^'\"\)\s]+)['\"]?\s*\)\s*$")
+
+
+@lru_cache(maxsize=256)
+def _css_to_xpath(selector: str) -> str:
+    """把 CSS 选择器翻译为 XPath 表达式字符串（按选择器字符串缓存）。
+
+    lxml.html 的 ``Element.cssselect()`` 每次调用都会重新执行
+    「CSS→XPath 翻译 + XPath 编译」的纯 Python 热路径（lxml 文档亦注明
+    预编译可获得显著加速）。此处缓存翻译结果；``translator="html"`` 与
+    ``cssselect()`` 的默认值一致，选择器语义完全相同。选择器非法时由
+    翻译阶段抛出与原先相同的异常，且失败结果不会被缓存。
+
+    实测 ``Element.xpath(翻译后的表达式字符串)`` 比复用已编译的
+    ``CSSSelector`` 对象更快：前者走 lxml 的纯 C 调用路径（对重复表达式
+    有内部优化），后者每次 ``__call__`` 都要做 Python 层的参数适配。
+    """
+    from lxml.cssselect import CSSSelector
+
+    return CSSSelector(selector, translator="html").path
 
 
 def _split_attr_pseudo(selector: str) -> tuple[str, str | None]:
@@ -197,7 +218,8 @@ class Selector:
 
     @property
     def children(self) -> ResultList[Selector]:
-        return ResultList(self._wrap(c) for c in self._element if isinstance(c.tag, str))
+        # list推导式直接构造：比把生成器喂给 list.__init__ 少一层逐项协议开销
+        return ResultList([self._wrap(c) for c in self._element if isinstance(c.tag, str)])
 
     # -- DOM 遍历（对齐 Scrapling） -------------------------------------------
     @property
@@ -207,7 +229,7 @@ class Selector:
         if parent is None:
             return ResultList()
         return ResultList(
-            self._wrap(c) for c in parent if isinstance(c.tag, str) and c is not self._element
+            [self._wrap(c) for c in parent if isinstance(c.tag, str) and c is not self._element]
         )
 
     @property
@@ -231,7 +253,7 @@ class Selector:
             chain.append(node)
             node = node.getparent()
         chain.reverse()
-        return ResultList(self._wrap(c) for c in chain)
+        return ResultList([self._wrap(c) for c in chain])
 
     # -- CSS / XPath ---------------------------------------------------------
     def css(
@@ -252,12 +274,15 @@ class Selector:
         pure_selector, attr_name = _split_attr_pseudo(selector)
         results = self._css_raw(pure_selector)
         if results:
-            if auto_save and self._adaptors:
-                self._adaptors.save(pure_selector, results[0], url=self.url or "")
-            wrapped = [self._wrap(c) for c in results]
+            adaptors = self._adaptors
+            if auto_save and adaptors:
+                adaptors.save(pure_selector, results[0], url=self.url or "")
             if attr_name is not None:
-                return ResultList(TextHandler(w.attr(attr_name) or "") for w in wrapped)
-            return ResultList(wrapped)
+                # ::attr 路径直接读原始元素属性（与包装后 .attr() 等价），
+                # 避免为仅取属性的场景构造全部 Selector 包装对象。
+                return ResultList([TextHandler(c.get(attr_name) or "") for c in results])
+            wrap = self._wrap
+            return ResultList([wrap(c) for c in results])
 
         if adaptive and self._adaptors:
             relocated = self._adaptive_lookup(pure_selector, threshold)
@@ -281,9 +306,28 @@ class Selector:
 
         若选择器带 ``::attr(name)``，返回属性值（``TextHandler``），否则返回
         ``Selector``。
+
+        性能：与 ``self.css(selector).first`` 语义一致，但只包装首个匹配
+        元素，不为丢弃其余 N-1 个匹配逐个构造 ``Selector``。
         """
-        result = self.css(selector, auto_save=auto_save, adaptive=adaptive, threshold=threshold)
-        return result.first if result.first is not None else default
+        pure_selector, attr_name = _split_attr_pseudo(selector)
+        results = self._css_raw(pure_selector)
+        if results:
+            first = results[0]
+            adaptors = self._adaptors
+            if auto_save and adaptors:
+                adaptors.save(pure_selector, first, url=self.url or "")
+            if attr_name is not None:
+                return TextHandler(first.get(attr_name) or "")
+            return self._wrap(first)
+        if adaptive and self._adaptors:
+            relocated = self._adaptive_lookup(pure_selector, threshold)
+            if relocated is not None:
+                rel_sel = self._wrap(relocated)
+                if attr_name is not None:
+                    return TextHandler(rel_sel.attr(attr_name) or "")
+                return rel_sel
+        return default
 
     def xpath(
         self,
@@ -301,13 +345,16 @@ class Selector:
         pure_selector, attr_name = _split_attr_pseudo(selector)
         results = self._element.xpath(pure_selector)
         # lxml 的 xpath 对 @attr 表达式会直接返回字符串而非元素
-        wrapped = [self._wrap(r) for r in results if isinstance(r, etree._Element)]
-        if wrapped:
-            if auto_save and self._adaptors:
-                self._adaptors.save(pure_selector, wrapped[0].element, url=self.url or "")
+        elements = [r for r in results if isinstance(r, etree._Element)]
+        if elements:
+            adaptors = self._adaptors
+            if auto_save and adaptors:
+                adaptors.save(pure_selector, elements[0], url=self.url or "")
             if attr_name is not None:
-                return ResultList(TextHandler(w.attr(attr_name) or "") for w in wrapped)
-            return ResultList(wrapped)
+                # ::attr 路径直接读原始元素属性，跳过元素包装（同 css）。
+                return ResultList([TextHandler(r.get(attr_name) or "") for r in elements])
+            wrap = self._wrap
+            return ResultList([wrap(r) for r in elements])
         if adaptive and self._adaptors:
             relocated = self._adaptive_lookup(pure_selector, threshold)
             if relocated is not None:
@@ -326,9 +373,30 @@ class Selector:
         adaptive: bool = False,
         threshold: float = 0.5,
     ) -> Any:
-        """首个匹配，无匹配时返回 ``default``。支持 ``::attr(name)`` 伪元素。"""
-        result = self.xpath(selector, auto_save=auto_save, adaptive=adaptive, threshold=threshold)
-        return result.first if result.first is not None else default
+        """首个匹配，无匹配时返回 ``default``。支持 ``::attr(name)`` 伪元素。
+
+        性能：与 ``self.xpath(selector).first`` 语义一致，但只包装首个
+        元素结果，不为丢弃其余 N-1 个匹配逐个构造 ``Selector``。
+        """
+        pure_selector, attr_name = _split_attr_pseudo(selector)
+        results = self._element.xpath(pure_selector)
+        # lxml 的 xpath 对 @attr 表达式会直接返回字符串而非元素
+        for r in results:
+            if isinstance(r, etree._Element):
+                adaptors = self._adaptors
+                if auto_save and adaptors:
+                    adaptors.save(pure_selector, r, url=self.url or "")
+                if attr_name is not None:
+                    return TextHandler(r.get(attr_name) or "")
+                return self._wrap(r)
+        if adaptive and self._adaptors:
+            relocated = self._adaptive_lookup(pure_selector, threshold)
+            if relocated is not None:
+                rel_sel = self._wrap(relocated)
+                if attr_name is not None:
+                    return TextHandler(rel_sel.attr(attr_name) or "")
+                return rel_sel
+        return default
 
     # -- 文本 / 相似度搜索 ----------------------------------------------------
     def find_by_text(
@@ -341,14 +409,15 @@ class Selector:
         """查找直接文本匹配 ``text`` 的元素。"""
         needle = text if case_sensitive else text.lower()
         matches: list[etree._Element] = []
+        append = matches.append
         for el in self._element.iter():
             if not isinstance(el.tag, str):
                 continue
             direct = el.text or ""
             hay = direct if case_sensitive else direct.lower()
             if (exact and hay.strip() == needle) or (not exact and needle in hay):
-                matches.append(el)
-        return ResultList(self._wrap(m) for m in matches)
+                append(el)
+        return ResultList([self._wrap(m) for m in matches])
 
     def find_by_regex(
         self,
@@ -364,13 +433,15 @@ class Selector:
         flags = 0 if case_sensitive else re.IGNORECASE
         pattern = re.compile(query, flags) if isinstance(query, str) else query
         matches: list[etree._Element] = []
+        append = matches.append
+        search = pattern.search
         for el in self._element.iter():
             if not isinstance(el.tag, str):
                 continue
             direct = el.text or ""
-            if pattern.search(direct):
-                matches.append(el)
-        return ResultList(self._wrap(m) for m in matches)
+            if search(direct):
+                append(el)
+        return ResultList([self._wrap(m) for m in matches])
 
     def find_similar(
         self,
@@ -438,18 +509,28 @@ class Selector:
 
         对齐 Scrapling 的 ``get_all_text``：遍历子树，默认跳过
         ``script``/``style``，用 ``separator`` 连接文本。
+
+        性能：沿用逐元素遍历（而非 ``itertext``），因为被跳过的
+        ``ignore_tags`` 元素其 ``tail`` 也必须一并丢弃，``itertext``
+        无法表达该语义；此处仅做循环内 append 局部化与空串快速路径。
         """
         parts: list[str] = []
+        append = parts.append
         for el in self._element.iter():
             if not isinstance(el.tag, str) or el.tag in ignore_tags:
                 continue
-            direct = el.text or ""
-            tail = el.tail or ""
+            # el.text / el.tail 为 None 或 "" 时同样跳过（与原 ``or ""``
+            # 后判空的语义一致），且省去每次构造空字符串
+            direct = el.text
             if direct:
-                parts.append(direct.strip() if strip else direct)
+                append(direct.strip() if strip else direct)
+            tail = el.tail
             if tail:
-                parts.append(tail.strip() if strip else tail)
-        return TextHandler(separator.join(p for p in parts if p))
+                append(tail.strip() if strip else tail)
+        if not parts:
+            return TextHandler("")
+        # list 推导式比生成器表达式喂 join 更快（join 对序列可两遍预扫）
+        return TextHandler(separator.join([p for p in parts if p]))
 
     def prettify(self) -> str:
         """返回本元素格式化美化后的序列化结果（对齐 Scrapling）。"""
@@ -463,7 +544,7 @@ class Selector:
         指纹，供之后自适应重定位使用，而不必依赖选择时的 ``auto_save=True``。
         """
         if self._adaptors is None:
-            raise RuntimeError(
+            raise InvalidStateError(
                 "save() requires adaptive=True; construct Selector(adaptive=True, storage=...)"
             )
         el = element.element if isinstance(element, Selector) else element
@@ -476,7 +557,7 @@ class Selector:
         （tag/text/fingerprint/url），供人工检查或自定义匹配。
         """
         if self._adaptors is None:
-            raise RuntimeError(
+            raise InvalidStateError(
                 "retrieve() requires adaptive=True; construct Selector(adaptive=True, storage=...)"
             )
         return self._adaptors.storage.load(self._domain, identifier)
@@ -496,7 +577,7 @@ class Selector:
         时为空）。
         """
         if self._adaptors is None:
-            raise RuntimeError(
+            raise InvalidStateError(
                 "relocate() requires adaptive=True; construct Selector(adaptive=True, storage=...)"
             )
         # 把输入归一化为指纹字符串。
@@ -517,18 +598,30 @@ class Selector:
 
     # -- 内部辅助 -------------------------------------------------------------
     def _css_raw(self, selector: str) -> list[etree._Element]:
-        # lxml.html 元素自带原生 ``cssselect`` 方法（cssselect 是硬依赖）——
-        # 比翻译成 XPath 更快也更简单。
-        return list(self._element.cssselect(selector))
+        # 与 self._element.cssselect(selector) 完全等价：后者即
+        # CSSSelector(selector, translator="html")(self)，本方法用缓存
+        # 的 XPath 表达式走 Element.xpath() 的纯 C 求值路径，跳过每次
+        # 重复的翻译/编译与 XPath.__call__ 的 Python 层参数适配。
+        # Element.xpath() 每次返回全新 list，无需再套一层 list() 拷贝；
+        # 调用方（css/css_first）仅只读消费。
+        return self._element.xpath(_css_to_xpath(selector))
 
     def _wrap(self, element: etree._Element) -> Selector:
-        return Selector(
-            element,
-            url=self.url,
-            adaptive=self.adaptive,
-            adaptive_domain=self._adaptive_domain,
-            storage=self._storage,
-        )
+        # 性能关键路径：绕过 __init__ 直接构造实例。__init__ 每次都会对
+        # 同一 URL 重复执行 urlparse（纯 Python）并重建 Adaptors；多匹配
+        # 场景下逐元素包装时这些开销被放大数百倍。此处按 __init__ 完全
+        # 相同的属性集合填充 __dict__（_adaptors 为无状态门面，复用同一
+        # 实例行为等价），对外行为不变。
+        sel = object.__new__(Selector)
+        d = sel.__dict__
+        d["url"] = self.url
+        d["adaptive"] = self.adaptive
+        d["_domain"] = self._domain
+        d["_adaptors"] = self._adaptors
+        d["_element"] = element
+        d["_storage"] = self._storage
+        d["_adaptive_domain"] = self._adaptive_domain
+        return sel
 
     def _adaptive_lookup(self, identifier: str, threshold: float) -> etree._Element | None:
         assert self._adaptors is not None

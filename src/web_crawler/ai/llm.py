@@ -32,6 +32,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from ..exceptions import AIProviderError, ConfigError
+
 # 默认模型与端点：DeepSeek 的 OpenAI 兼容接口。
 # 注意：模型 ID 大小写敏感，DeepSeek API 的合法值为小写 "deepseek-flash" 或 "deepseek-v4-pro"。
 DEFAULT_MODEL = "deepseek-flash"
@@ -320,9 +322,9 @@ class OpenAICompatibleProvider:
         return f"{self.base_url}/chat/completions"
 
     def _ensure_api_key(self) -> None:
-        """未配置 API key 时抛出统一格式的 RuntimeError。"""
+        """未配置 API key 时抛出统一格式的 :class:`AIProviderError`。"""
         if not self.api_key:
-            raise RuntimeError(
+            raise AIProviderError(
                 f"no API key for provider {self.name!r}; pass api_key= or set "
                 f"the {self.api_key_env} environment variable"
             )
@@ -682,7 +684,7 @@ def select_provider(
         missing = [k for k, v in demands.items() if v and not getattr(caps, k)]
         failures.append(f"{name}: missing {missing}")
 
-    raise ValueError(
+    raise ConfigError(
         f"no registered provider satisfies all demands; checked={order}, failures={failures}"
     )
 
@@ -695,7 +697,7 @@ def get_provider(name: str = "deepseek", **kwargs: Any) -> LLMProvider:
     """
     key = name.lower()
     if key not in _PROVIDERS:
-        raise ValueError(f"unknown LLM provider {name!r}; available: {available_providers()}")
+        raise ConfigError(f"unknown LLM provider {name!r}; available: {available_providers()}")
     return _PROVIDERS[key](**kwargs)
 
 

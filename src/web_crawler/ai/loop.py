@@ -19,6 +19,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
+from ..exceptions import ConfigError
 from .llm import LLMMessage, LLMProvider
 
 # 触发循环检测的最小重复次数
@@ -155,7 +156,7 @@ class ContextCompressor:
         compress_to: int = 5,
     ) -> None:
         if compress_to >= max_history:
-            raise ValueError("compress_to must be smaller than max_history")
+            raise ConfigError("compress_to must be smaller than max_history")
         self.provider = provider
         self.max_history = max_history
         self.compress_to = compress_to

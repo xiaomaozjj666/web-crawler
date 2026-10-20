@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from typing import Any
 from urllib.parse import urlsplit
+
+from .._ssrf import normalize_ip_literal
 
 # -- 目标/URL 安全门禁 ---------------------------------------------------------
 #
@@ -19,7 +20,7 @@ from urllib.parse import urlsplit
 # 额外要求显式授权确认。解析失败的未知主机一律按"非公网"拒绝（deny by default）。
 
 
-def _ip_is_global(ip: Any) -> bool:
+def _ip_is_global(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """判断 IP 是否可视为公网可达（排除私网/环回/链路本地/保留/组播/未指定）。"""
     return not (
         ip.is_private
@@ -51,18 +52,27 @@ def _resolve_host_ips(host: str) -> list[str] | None:
 def _host_is_public(host: str) -> bool:
     """判断主机是否为公网可达地址。
 
-    字面 IP 直接判定；主机名解析后逐一判定，任一地址非公网即视为否；
-    解析失败视为非公网（保守拒绝）。
+    字面 IP 先经 :func:`web_crawler._ssrf.normalize_ip_literal` 归一化
+    （复用 ``_ssrf`` 的完整归一化，避免两处判定漂移）：覆盖 inet_aton
+    兼容的非点分 IPv4 写法（``2130706433``/``0177.0.0.1``/``0x7f000001``/
+    ``127.1``——glibc 与 libcurl 的解析器接受这些形式，不归一化即可绕过
+    静态检查直连环回）与 IPv4-mapped IPv6 的显式解包（``::ffff:127.0.0.1``
+    ——旧 CPython <3.12.4 上其 ``is_private`` 为 False，不解析即可被误判
+    为公网）。主机名解析后逐一判定，任一地址非公网即视为否；解析失败视为
+    非公网（保守拒绝，deny by default）。
     """
-    try:
-        ip = ipaddress.ip_address(host)
-        return _ip_is_global(ip)
-    except ValueError:
-        pass
+    addr = normalize_ip_literal(host)
+    if addr is not None:
+        return _ip_is_global(addr)
     ips = _resolve_host_ips(host)
     if not ips:
         return False
-    return all(_ip_is_global(ipaddress.ip_address(ip)) for ip in ips)
+    for ip in ips:
+        resolved = normalize_ip_literal(ip)
+        # getaddrinfo 返回规范 IP，理论上必能归一化；失败按保守策略拒绝
+        if resolved is None or not _ip_is_global(resolved):
+            return False
+    return True
 
 
 def _check_target_public(host: str) -> str | None:

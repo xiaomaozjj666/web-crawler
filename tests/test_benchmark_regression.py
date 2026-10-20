@@ -79,3 +79,49 @@ def test_save_and_load_baseline(benchmarks_mod, tmp_path: Path) -> None:
     benchmarks_mod.save_baseline(results, path)
     loaded = benchmarks_mod.load_baseline(path)
     assert loaded == results
+
+
+# ===========================================================================
+# Selector._wrap 属性契约守卫（内置规则审查 L6）
+# ===========================================================================
+
+
+def test_wrap_attribute_set_matches_init(tmp_path: Path) -> None:
+    """L6 守卫：_wrap 直填 __dict__ 的属性集合必须与 __init__ 完全一致。
+
+    ``Selector._wrap``（性能关键路径）用 ``object.__new__`` 绕过
+    ``__init__`` 手工填充 ``__dict__``；``__init__`` 未来新增属性而
+    ``_wrap`` 漏填时会静默构造出缺属性实例（调用方后续 ``AttributeError``
+    且难定位）。本测试用相同参数分别走 ``__init__`` 正常构造与
+    ``children``（内部调用 ``_wrap``）产出子实例，断言两者 ``__dict__``
+    键集合逐项一致，锁定属性契约。同时覆盖 ``adaptive`` 两态：
+    ``_adaptors`` 在 adaptive=False 时为 None、True 时为 Adaptors 实例
+    （键始终存在，仅值不同）。
+    """
+    from web_crawler.parser.adaptive import AdaptiveStorage
+    from web_crawler.parser.selector import Selector
+
+    html = '<div><a id="x" class="link">text</a><p>para</p></div>'
+    # __init__ 当前初始化的全部实例属性（新增属性时同步更新此集合）
+    expected_keys = {
+        "url",
+        "adaptive",
+        "_domain",
+        "_adaptors",
+        "_element",
+        "_storage",
+        "_adaptive_domain",
+    }
+    storage = AdaptiveStorage(tmp_path / "guard.sqlite3")
+    try:
+        for adaptive in (False, True):
+            normal = Selector(
+                html, url="https://guard.example/", adaptive=adaptive, storage=storage
+            )
+            wrapped = normal.children[0]  # 触发 _wrap 路径
+            assert set(normal.__dict__) == expected_keys  # __init__ 侧契约
+            assert set(wrapped.__dict__) == expected_keys  # _wrap 侧契约
+            # wrapped 是正常工作的 Selector（非缺属性残次品）
+            assert wrapped.attr("id") == "x"
+    finally:
+        storage.close()

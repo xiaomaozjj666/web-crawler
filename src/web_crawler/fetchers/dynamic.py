@@ -4,6 +4,14 @@
 从而能够抓取重 JavaScript 的站点。单个浏览器实例跨多次抓取复用以提升
 性能，而每次抓取创建全新的浏览器 context，避免请求间 cookie/状态泄漏。
 
+状态持久化（对标 crawlee-python / browser-use）全部可选、默认关闭：
+
+- ``storage_state`` / ``save_storage_state``：登录态注入与导出（轻量、
+  跨 fetcher 可复用的 JSON 状态文件）；
+- ``user_data_dir``：``launch_persistent_context`` 持久化 profile（cookie、
+  localStorage、IndexedDB 全保留）；
+- ``cdp_url``：``connect_over_cdp`` 接管已有浏览器（优先级最高）。
+
 类暴露了少量受保护的钩子方法（``_setup_page``、``_post_load``），隐身子类
 可以借此注入隐身脚本与拟人行为，而无需复制渲染流程。
 
@@ -18,12 +26,14 @@ import base64
 import math
 import warnings
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
 
 from typing_extensions import Self
 
 from ..compat import require_playwright
+from ..exceptions import FetchError
 from ._base import BaseFetcher
 from .proxy import ProxyPool
 
@@ -48,7 +58,8 @@ class DynamicFetcher(BaseFetcher):
     Parameters
     ----------
     headless:
-        以 headless 模式运行 Chromium。
+        以 headless 模式运行 Chromium（``cdp_url`` 接管时被忽略——浏览器
+        已由调用方自行启动）。
     block_images:
         中止图片请求以加速渲染。
     disable_resources:
@@ -64,6 +75,45 @@ class DynamicFetcher(BaseFetcher):
         前执行自定义交互（滚动、点击等）。
     google_search:
         将 referer 设为 ``https://www.google.com/``，伪装流量来源。
+    storage_state:
+        登录态注入：原样透传给 ``browser.new_context`` 的同名参数，可传
+        状态文件路径（``str``/``Path``，如 ``"auth.json"``）或内联 dict
+        （``{"cookies": [...], "origins": [...]}``）。配合
+        ``save_storage_state`` 可实现"登录一次、后续任务复用"。不能与
+        ``user_data_dir`` 同时使用（持久化 profile 自带登录态）。
+    save_storage_state:
+        登录态导出路径：在每次渲染结束、以及 persistent context 关闭前，
+        调用 ``context.storage_state(path=...)`` 写盘。注意渲染 context 是
+        每次新建的，因此文件始终保存**最近一次渲染**的状态（含 cookies 与
+        localStorage；IndexedDB 不在内——需要完整保留请用 ``user_data_dir``）。
+    user_data_dir:
+        持久化 profile 目录：改用 ``launch_persistent_context`` 启动，浏览器
+        的 cookie/localStorage/IndexedDB 全保留在磁盘。此时 context 即浏览器
+        会话、跨 fetch 复用（不再每次渲染新建/关闭 context）；代理与视口在
+        启动时固化（``screenshot_tiles`` 会按需调整当前 page 的视口宽度）。
+        不能与 ``cdp_url``/``storage_state`` 同时使用。
+    cdp_url:
+        CDP 接管已有浏览器（如用户自己启动的
+        ``chrome --remote-debugging-port=9222``），经
+        ``chromium.connect_over_cdp`` 连接，优先级最高。``headless`` 等
+        启动参数被忽略；close()/aclose() 仅断开连接（disconnect），**不会**
+        杀掉该浏览器进程——其生命周期归调用方管理。
+
+    登录态复用示例
+    --------------
+    >>> from web_crawler import DynamicFetcher
+    >>> # 第一步：手动登录一次并导出登录态（headless=False 便于人工登录）
+    >>> with DynamicFetcher(headless=False, save_storage_state="auth.json") as f:
+    ...     f.fetch("https://example.com/login")  # 可配合 page_action 自动填表
+    >>> # 第二步：后续任务注入登录态，无需再次登录
+    >>> with DynamicFetcher(storage_state="auth.json") as f:
+    ...     resp = f.fetch("https://example.com/dashboard")
+
+    CDP 接管示例::
+
+        # 终端先启动：chrome --remote-debugging-port=9222
+        with DynamicFetcher(cdp_url="http://localhost:9222") as f:
+            resp = f.fetch("https://example.com")
     """
 
     def __init__(
@@ -85,6 +135,10 @@ class DynamicFetcher(BaseFetcher):
         verify: bool = True,
         allow_private_hosts: bool | None = None,
         resolve_hosts: bool = True,
+        storage_state: str | Path | dict[str, Any] | None = None,
+        save_storage_state: str | Path | None = None,
+        user_data_dir: str | Path | None = None,
+        cdp_url: str | None = None,
     ) -> None:
         super().__init__(
             timeout=timeout,
@@ -98,6 +152,22 @@ class DynamicFetcher(BaseFetcher):
             allow_private_hosts=allow_private_hosts,
             resolve_hosts=resolve_hosts,
         )
+        # 组合校验放在 require_playwright() 之前：参数互斥是纯逻辑问题，
+        # 不应被"未安装 playwright"的 ImportError 掩盖（也更易测试）。
+        if cdp_url is not None and user_data_dir is not None:
+            raise ValueError(
+                "cdp_url 与 user_data_dir 不能同时使用：connect_over_cdp 接管的"
+                "浏览器沿用其启动时已有的用户数据目录，无法再指定 profile。"
+                "若要复用已有浏览器（如 chrome --remote-debugging-port=9222），"
+                "请仅传 cdp_url；若要本地持久化 profile，请仅传 user_data_dir。"
+            )
+        if user_data_dir is not None and storage_state is not None:
+            raise ValueError(
+                "user_data_dir 与 storage_state 不能同时使用：持久化 profile 目录"
+                "本身承载登录态（cookies/localStorage/IndexedDB 均落在磁盘），"
+                "无需也无法再注入 storage_state。若只需轻量登录态复用，请改用 "
+                "storage_state + save_storage_state 组合。"
+            )
         require_playwright()
         self.headless = headless
         self.block_images = block_images
@@ -108,7 +178,13 @@ class DynamicFetcher(BaseFetcher):
         self.page_action = page_action
         self.google_search = google_search
         self.user_agent = _DEFAULT_UA
-        # browser 实例在 fetcher 生命周期内复用，每次 fetch 创建新 context
+        # 状态持久化四参数：全部默认 None（行为与历史版本完全一致）
+        self.storage_state = storage_state
+        self.save_storage_state = save_storage_state
+        self.user_data_dir = user_data_dir
+        self.cdp_url = cdp_url
+        # browser 实例在 fetcher 生命周期内复用，每次 fetch 创建新 context；
+        # persistent 模式下 _browser 存放的是 BrowserContext（即浏览器会话）
         self._pw: Any = None
         self._browser: Any = None
         self._async_pw: Any = None
@@ -176,6 +252,79 @@ class DynamicFetcher(BaseFetcher):
 
         return handler
 
+    # -- 状态持久化辅助 ------------------------------------------------------
+    def _new_context(
+        self,
+        browser: Any,
+        *,
+        viewport: dict[str, int] | None = None,
+        proxy: dict[str, str] | None = None,
+    ) -> Any:
+        """在 ``browser`` 上创建本次渲染的 BrowserContext（同步）。
+
+        在 ``_context_kwargs``（子类覆写点）之上叠加 ``storage_state`` 登录态
+        注入参数——叠加而非并入 ``_context_kwargs``，保证子类（如
+        :class:`CamoufoxFetcher`）覆写指纹参数时登录态注入依然生效。
+        """
+        kwargs = self._context_kwargs(viewport=viewport, proxy=proxy)
+        if self.storage_state is not None:
+            kwargs["storage_state"] = self.storage_state
+        return browser.new_context(**kwargs)
+
+    async def _new_context_async(
+        self,
+        browser: Any,
+        *,
+        viewport: dict[str, int] | None = None,
+        proxy: dict[str, str] | None = None,
+    ) -> Any:
+        """异步版 :meth:`_new_context`。"""
+        kwargs = self._context_kwargs(viewport=viewport, proxy=proxy)
+        if self.storage_state is not None:
+            kwargs["storage_state"] = self.storage_state
+        return await browser.new_context(**kwargs)
+
+    def _persistent_launch_kwargs(self) -> dict[str, Any]:
+        """组装 ``launch_persistent_context`` 的启动参数（persistent 模式）。
+
+        persistent context 没有独立的 Browser 对象，context 级参数（UA /
+        locale / 视口 / 代理等）必须在启动时一次给定：复用 ``_context_kwargs``
+        并把视口固定为与 ``_render_page`` 一致的 1366x768；代理取
+        ``_resolve_proxy()`` 当前解析结果（``ProxyPool`` 场景取首个并随之固化）。
+        """
+        proxy_settings = self._parse_proxy(self._resolve_proxy())
+        return self._context_kwargs(viewport={"width": 1366, "height": 768}, proxy=proxy_settings)
+
+    def _export_storage_state(self, context: Any) -> None:
+        """把 ``context`` 的登录态导出到 ``save_storage_state`` 路径（同步）。
+
+        best-effort：导出失败仅发 RuntimeWarning——登录态导出是渲染主流程的
+        附属动作，不应让已成功渲染的结果失败，也不应阻塞 close() 清理。
+        """
+        if self.save_storage_state is None:
+            return
+        try:
+            context.storage_state(path=self.save_storage_state)
+        except Exception as exc:
+            warnings.warn(
+                f"保存 storage state 到 {self.save_storage_state} 失败: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+    async def _export_storage_state_async(self, context: Any) -> None:
+        """异步版 :meth:`_export_storage_state`。"""
+        if self.save_storage_state is None:
+            return
+        try:
+            await context.storage_state(path=self.save_storage_state)
+        except Exception as exc:
+            warnings.warn(
+                f"保存 storage state 到 {self.save_storage_state} 失败: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
     # -- 渲染钩子（由 StealthyFetcher 覆写） ----------------------------------
     def _setup_page(self, page: Any) -> None:
         """钩子：导航前配置页面（路由拦截）。"""
@@ -192,15 +341,36 @@ class DynamicFetcher(BaseFetcher):
 
         if self._browser is None:
             self._pw = sync_playwright().start()
-            self._browser = self._pw.chromium.launch(headless=self.headless)
+            if self.cdp_url is not None:
+                # CDP 接管：连接已有浏览器（headless 等启动参数由该浏览器
+                # 自己决定），本 fetcher 只在其上创建渲染 context
+                self._browser = self._pw.chromium.connect_over_cdp(self.cdp_url)
+            elif self.user_data_dir is not None:
+                # 持久化 profile：context 即浏览器会话（无独立 Browser 对象），
+                # cookie/localStorage/IndexedDB 全保留在 user_data_dir；
+                # 代理与视口随启动固化，后续 fetch 复用同一 context
+                self._browser = self._pw.chromium.launch_persistent_context(
+                    str(self.user_data_dir),
+                    headless=self.headless,
+                    **self._persistent_launch_kwargs(),
+                )
+            else:
+                self._browser = self._pw.chromium.launch(headless=self.headless)
         return self._browser
 
     def _render_page(self, browser: Any, url: str, proxy_settings: Any) -> Any:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-        context = browser.new_context(
-            **self._context_kwargs(viewport={"width": 1366, "height": 768}, proxy=proxy_settings)
-        )
+        if self.user_data_dir is not None:
+            # persistent 模式：browser 即跨 fetch 复用的 BrowserContext，
+            # 不能 new_context（代理已在启动时固化，proxy_settings 被忽略）
+            context = browser
+            own_context = False
+        else:
+            context = self._new_context(
+                browser, viewport={"width": 1366, "height": 768}, proxy=proxy_settings
+            )
+            own_context = True
         try:
             page = context.new_page()
             self._setup_page(page)
@@ -233,7 +403,12 @@ class DynamicFetcher(BaseFetcher):
                 request_headers=self.extra_headers,
             )
         finally:
-            context.close()
+            # 导出最近一次渲染的登录态：new_context 模式必须在 close 之前
+            # （context 一旦关闭便无法读取状态）；persistent 模式不关 context，
+            # 最终登录态还会在 close()/aclose() 时再次导出
+            self._export_storage_state(context)
+            if own_context:
+                context.close()
 
     def fetch(self, url: str, **kwargs: Any) -> Any:
         """用 headless 浏览器渲染 ``url`` 并返回 :class:`Response`。"""
@@ -244,7 +419,7 @@ class DynamicFetcher(BaseFetcher):
         try:
             return self._render_page(browser, url, proxy_settings)
         except Exception as exc:
-            raise RuntimeError(f"dynamic fetch of {url} failed: {exc}") from exc
+            raise FetchError(f"dynamic fetch of {url} failed: {exc}") from exc
 
     def get(self, url: str, **kwargs: Any) -> Any:
         """``fetch`` 的动词统一别名：与 :class:`~web_crawler.fetchers.Fetcher.get`
@@ -260,7 +435,19 @@ class DynamicFetcher(BaseFetcher):
 
         if self._async_browser is None:
             self._async_pw = await async_playwright().start()
-            self._async_browser = await self._async_pw.chromium.launch(headless=self.headless)
+            chromium = self._async_pw.chromium
+            if self.cdp_url is not None:
+                # CDP 接管：连接已有浏览器，本 fetcher 只在其上创建渲染 context
+                self._async_browser = await chromium.connect_over_cdp(self.cdp_url)
+            elif self.user_data_dir is not None:
+                # 持久化 profile：context 即浏览器会话，跨 fetch 复用
+                self._async_browser = await chromium.launch_persistent_context(
+                    str(self.user_data_dir),
+                    headless=self.headless,
+                    **self._persistent_launch_kwargs(),
+                )
+            else:
+                self._async_browser = await chromium.launch(headless=self.headless)
         return self._async_browser
 
     async def _setup_page_async(self, page: Any) -> None:
@@ -275,9 +462,16 @@ class DynamicFetcher(BaseFetcher):
     async def _render_page_async(self, browser: Any, url: str, proxy_settings: Any) -> Any:
         from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-        context = await browser.new_context(
-            **self._context_kwargs(viewport={"width": 1366, "height": 768}, proxy=proxy_settings)
-        )
+        if self.user_data_dir is not None:
+            # persistent 模式：browser 即跨 fetch 复用的 BrowserContext，
+            # 不能 new_context（代理已在启动时固化，proxy_settings 被忽略）
+            context = browser
+            own_context = False
+        else:
+            context = await self._new_context_async(
+                browser, viewport={"width": 1366, "height": 768}, proxy=proxy_settings
+            )
+            own_context = True
         try:
             page = await context.new_page()
             await self._setup_page_async(page)
@@ -309,7 +503,11 @@ class DynamicFetcher(BaseFetcher):
                 request_headers=self.extra_headers,
             )
         finally:
-            await context.close()
+            # 导出最近一次渲染的登录态：new_context 模式必须在 close 之前；
+            # persistent 模式不关 context，最终登录态在 aclose() 时再次导出
+            await self._export_storage_state_async(context)
+            if own_context:
+                await context.close()
 
     async def async_fetch(self, url: str, **kwargs: Any) -> Any:
         """异步渲染 ``url`` 并返回 :class:`Response`。"""
@@ -320,7 +518,7 @@ class DynamicFetcher(BaseFetcher):
         try:
             return await self._render_page_async(browser, url, proxy_settings)
         except Exception as exc:
-            raise RuntimeError(f"dynamic async fetch of {url} failed: {exc}") from exc
+            raise FetchError(f"dynamic async fetch of {url} failed: {exc}") from exc
 
     async def async_get(self, url: str, **kwargs: Any) -> Any:
         """``async_fetch`` 的动词统一别名（见 :meth:`get`）。"""
@@ -372,13 +570,22 @@ class DynamicFetcher(BaseFetcher):
 
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-        context = browser.new_context(
-            **self._context_kwargs(
-                viewport={"width": viewport_width, "height": 768}, proxy=proxy_settings
+        if self.user_data_dir is not None:
+            # persistent 模式：browser 即复用的 BrowserContext（代理已固化）
+            context = browser
+            own_context = False
+        else:
+            context = self._new_context(
+                browser,
+                viewport={"width": viewport_width, "height": 768},
+                proxy=proxy_settings,
             )
-        )
+            own_context = True
         try:
             page = context.new_page()
+            if not own_context:
+                # persistent 模式：context 视口启动时已固定，按需调整 page 视口
+                page.set_viewport_size({"width": viewport_width, "height": 768})
             self._setup_page(page)
 
             referer = "https://www.google.com/" if self.google_search else None
@@ -450,7 +657,10 @@ class DynamicFetcher(BaseFetcher):
 
             return tiles
         finally:
-            context.close()
+            # 导出最近一次渲染的登录态（若配置）；persistent 模式不关 context
+            self._export_storage_state(context)
+            if own_context:
+                context.close()
 
     async def async_screenshot_tiles(
         self,
@@ -470,13 +680,22 @@ class DynamicFetcher(BaseFetcher):
 
         from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-        context = await browser.new_context(
-            **self._context_kwargs(
-                viewport={"width": viewport_width, "height": 768}, proxy=proxy_settings
+        if self.user_data_dir is not None:
+            # persistent 模式：browser 即复用的 BrowserContext（代理已固化）
+            context = browser
+            own_context = False
+        else:
+            context = await self._new_context_async(
+                browser,
+                viewport={"width": viewport_width, "height": 768},
+                proxy=proxy_settings,
             )
-        )
+            own_context = True
         try:
             page = await context.new_page()
+            if not own_context:
+                # persistent 模式：context 视口启动时已固定，按需调整 page 视口
+                await page.set_viewport_size({"width": viewport_width, "height": 768})
             await self._setup_page_async(page)
 
             referer = "https://www.google.com/" if self.google_search else None
@@ -547,7 +766,10 @@ class DynamicFetcher(BaseFetcher):
 
             return tiles
         finally:
-            await context.close()
+            # 导出最近一次渲染的登录态（若配置）；persistent 模式不关 context
+            await self._export_storage_state_async(context)
+            if own_context:
+                await context.close()
 
     # -- 生命周期 ------------------------------------------------------------
     def close(self) -> None:
@@ -555,9 +777,21 @@ class DynamicFetcher(BaseFetcher):
 
         对 async 句柄做 best-effort 清理：启动临时事件循环执行 aclose。
         避免混用 async/sync 接口后 async browser 进程残留。
+
+        会话模式差异：
+        - 默认 ``launch``：关闭 Chromium 进程；
+        - ``user_data_dir``：persistent context 关闭即关浏览器，关闭前会把
+          最终登录态导出到 ``save_storage_state``（若配置）；
+        - ``cdp_url``：仅断开 CDP 连接（disconnect），**不杀**用户自己的
+          浏览器进程——浏览器由外部启动，生命周期归调用方管理。
         """
         if self._browser is not None:
             try:
+                if self.user_data_dir is not None:
+                    # persistent context：关闭前导出最终登录态
+                    self._export_storage_state(self._browser)
+                # CDP 接管时 close() 只是 disconnect，浏览器进程保持存活；
+                # launch / persistent 模式则关闭浏览器进程
                 self._browser.close()
             except Exception:
                 pass
@@ -599,6 +833,10 @@ class DynamicFetcher(BaseFetcher):
         """
         if self._async_browser is not None:
             try:
+                if self.user_data_dir is not None:
+                    # persistent context：关闭前导出最终登录态（best-effort）
+                    await self._export_storage_state_async(self._async_browser)
+                # CDP 接管时 close() 只是 disconnect，浏览器进程保持存活
                 await self._async_browser.close()
                 self._async_browser = None
             except Exception:
@@ -611,9 +849,16 @@ class DynamicFetcher(BaseFetcher):
                 pass
 
     async def aclose(self) -> None:
-        """异步关闭同步与异步浏览器 / Playwright driver。"""
+        """异步关闭同步与异步浏览器 / Playwright driver。
+
+        与 :meth:`close` 相同的模式差异（persistent 关闭前导出登录态、
+        CDP 仅 disconnect 不杀外部浏览器进程）。
+        """
         if self._browser is not None:
             try:
+                if self.user_data_dir is not None:
+                    # persistent context：关闭前导出最终登录态（best-effort）
+                    self._export_storage_state(self._browser)
                 self._browser.close()
             except Exception:
                 pass

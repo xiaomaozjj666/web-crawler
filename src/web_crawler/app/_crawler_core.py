@@ -34,6 +34,7 @@ from web_crawler.app.crawler_net import (
     SafeRedirectHandler,
     _is_safe_hostname,
 )
+from web_crawler.exceptions import FetchError, UnsafeTargetError
 
 _log = logging.getLogger("crawler")
 
@@ -177,7 +178,7 @@ def _get_stealth_fetcher(
             pass
     Fetcher_cls = _import_stealth_fetcher()
     if Fetcher_cls is None:
-        raise RuntimeError("stealth fetcher unavailable")
+        raise FetchError("stealth fetcher unavailable")
     _stealth_fetcher = Fetcher_cls(
         impersonate=impersonate,
         timeout=float(timeout),
@@ -221,7 +222,7 @@ def _stealth_fetch(
             next_url = urljoin(current_url, location.strip())
             parsed = urlparse(next_url)
             if parsed.scheme not in {"http", "https"} or not _is_safe_hostname(parsed.hostname):
-                raise ValueError(f"blocked redirect to unsafe URL: {next_url}")
+                raise UnsafeTargetError(f"blocked redirect to unsafe URL: {next_url}")
             current_url = next_url
             continue
         # Content-Length 预检：明显超限直接拒绝,避免整包缓冲后才失败

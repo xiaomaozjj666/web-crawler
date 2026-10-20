@@ -25,13 +25,21 @@ from urllib.parse import urljoin, urlparse
 from typing_extensions import Self
 
 from ..compat import HAS_CURL_CFFI, HAS_HTTPX
+from ..exceptions import ConfigError, FetchError
 from ._base import BaseFetcher
-from ._pin import env_proxy_configured, host_header_for, pin_url
+from ._pin import (
+    CurlResolvePinner,
+    apply_curl_resolve,
+    env_proxy_configured,
+    host_header_for,
+    pin_url,
+)
 from .proxy import ProxyPool
 
 if TYPE_CHECKING:
     from ..parser.adaptive import AdaptiveStorage
     from ..response import Response
+    from .session import SessionHandle, SessionPool
 
 
 def _load_curl_backend() -> tuple[Any, Any, Any, Any]:
@@ -58,6 +66,34 @@ def _httpx_body(data: Any) -> tuple[Any, Any]:
     if data is not None and not isinstance(data, Mapping):
         return data, None
     return None, data
+
+
+# httpx 兜底路径实际可解压编码的探测结果（惰性一次，模块级缓存）。
+# 失败 import 的代价是全 sys.path 遍历（实测每次 ~1.7ms）——逐请求重复
+# 探测会把 _merge_headers 推到毫秒级；而已装包集合在进程内不变，探测
+# 一次即够。None 表示尚未探测。
+_DECODABLE_ENCODINGS: frozenset[str] | None = None
+
+
+def _decodable_encodings() -> frozenset[str]:
+    """返回 httpx 运行时实际可解压的编码集合（首次调用探测一次后缓存）。"""
+    global _DECODABLE_ENCODINGS
+    if _DECODABLE_ENCODINGS is None:
+        decodable = {"gzip", "deflate", "identity"}
+        try:
+            import brotli  # type: ignore[import-not-found]  # noqa: F401
+        except ImportError:
+            pass
+        else:
+            decodable.add("br")
+        try:
+            import zstandard  # type: ignore[import-not-found]  # noqa: F401
+        except ImportError:
+            pass
+        else:
+            decodable.add("zstd")
+        _DECODABLE_ENCODINGS = frozenset(decodable)
+    return _DECODABLE_ENCODINGS
 
 
 def _parse_retry_after(value: str | None) -> float | None:
@@ -130,6 +166,7 @@ class _FetcherCore(BaseFetcher):
         ja4_fingerprint: str | None = None,  # 兼容旧参数名（已弃用）
         allow_private_hosts: bool | None = None,
         resolve_hosts: bool = True,
+        session_pool: SessionPool | None = None,
     ) -> None:
         super().__init__(
             timeout=timeout,
@@ -144,7 +181,7 @@ class _FetcherCore(BaseFetcher):
             resolve_hosts=resolve_hosts,
         )
         if max_redirects < 0:
-            raise ValueError("max_redirects must be >= 0")
+            raise ConfigError("max_redirects must be >= 0")
         self.max_redirects = max_redirects
         self.impersonate = impersonate
         self.http2 = http2
@@ -184,11 +221,28 @@ class _FetcherCore(BaseFetcher):
         # 惰性创建的会话（同步 / 异步）。首次使用前均为 None。
         self._session: Any = None
         self._async_session: Any = None
+        # 可选会话池（见 fetchers/session.py）：启用时每次请求借还池化会话
+        # ——指纹随会话轮换、空闲回收、失败淘汰；None（默认）走上面的单会话
+        # 路径，行为与历史版本完全一致。传入时自动把本 fetcher 的会话构建
+        # 方法绑进池（first-wins，见 SessionPool.bind_factories），池化会话
+        # 继承本 fetcher 的超时/校验/HTTP2/JA3 等全部配置。
+        self.session_pool = session_pool
+        if session_pool is not None:
+            session_pool.bind_factories(
+                session_factory=self._pooled_sync_session_factory,
+                async_session_factory=self._pooled_async_session_factory,
+            )
+        # curl_cffi 路径的 DNS 钉扎器（CURLOPT_RESOLVE 条目 LRU；httpx 路径
+        # 走 _pin_target 的 URL 改写方案，两条路径共用 _pin.py 的即时解析校验）。
+        self._curl_pinner = CurlResolvePinner()
         # 代理路径的专用 httpx 客户端（按 proxy 字符串缓存）。原实现每次
         # 请求都重建客户端——重定向每一跳、每次重试都全新 TLS 握手，零
         # 连接复用；缓存后与无代理会话同样复用连接池，close()/aclose() 统一释放。
         self._proxied_sync_clients: dict[str, Any] = {}
         self._proxied_async_clients: dict[str, Any] = {}
+        # 重试异常元组的实例级缓存（_retry_errors 惰性填充）：后端符号
+        # 同一进程内不变，逐请求重复加载只付无谓的 import 开销
+        self._retry_errors_cache: tuple[type[BaseException], ...] | None = None
 
     # -- 会话构建（后端导入延迟） ---------------------------------------------
     def _curl_session_kwargs(self) -> dict[str, Any]:
@@ -205,16 +259,25 @@ class _FetcherCore(BaseFetcher):
             kwargs["ja3"] = self.ja3_fingerprint
         return kwargs
 
-    def _build_curl_sync_session(self) -> Any:
+    def _build_curl_sync_session(self, impersonate: str | None = None) -> Any:
+        """构建 curl_cffi 同步会话；``impersonate`` 非 None 时覆盖默认指纹。
+
+        覆盖入参只被 SessionPool 的轮换指纹使用——普通路径不传，行为不变。
+        """
         CurlHttpVersion, CurlSession, _, _ = _load_curl_backend()
         kwargs = self._curl_session_kwargs()
+        if impersonate is not None:
+            kwargs["impersonate"] = impersonate
         if not self.http2:
             kwargs["http_version"] = CurlHttpVersion.V1_1
         return CurlSession(**kwargs)
 
-    def _build_curl_async_session(self) -> Any:
+    def _build_curl_async_session(self, impersonate: str | None = None) -> Any:
+        """构建 curl_cffi 异步会话；``impersonate`` 非 None 时覆盖默认指纹。"""
         CurlHttpVersion, _, CurlAsyncSession, _ = _load_curl_backend()
         kwargs = self._curl_session_kwargs()
+        if impersonate is not None:
+            kwargs["impersonate"] = impersonate
         if not self.http2:
             kwargs["http_version"] = CurlHttpVersion.V1_1
         return CurlAsyncSession(**kwargs)
@@ -299,6 +362,51 @@ class _FetcherCore(BaseFetcher):
             self._proxied_async_clients[proxy] = client
         return client
 
+    # -- 池化会话借还（session_pool 启用时；默认 None 不走这里） ---------------
+    def _pooled_sync_session_factory(self, impersonate: str | None) -> Any:
+        """SessionPool 的同步会话工厂：fetcher 全套配置 + 池轮换的指纹。"""
+        if self._use_curl:
+            return self._build_curl_sync_session(impersonate)
+        # httpx 兜底无 TLS 指纹能力：忽略指纹维度，仅保留连接池化收益
+        return self._build_httpx_sync_client()
+
+    def _pooled_async_session_factory(self, impersonate: str | None) -> Any:
+        """SessionPool 的异步会话工厂（同 :meth:`_pooled_sync_session_factory`）。"""
+        if self._use_curl:
+            return self._build_curl_async_session(impersonate)
+        return self._build_httpx_async_client()
+
+    def _acquire_pooled(self, proxy: str | None) -> SessionHandle | None:
+        """借出池化同步会话；未启用或 httpx 兜底走代理时不适用（返回 None）。
+
+        httpx 的代理挂载是客户端构造级配置（mounts），而代理按请求轮换
+        （ProxyPool），池化客户端无法跟随轮换——该组合退回按 proxy 缓存的
+        原路径。curl_cffi 的 proxy 是请求级参数，不受此限制。
+        """
+        pool = self.session_pool
+        if pool is None or (not self._use_curl and proxy is not None):
+            return None
+        return pool.acquire()
+
+    async def _acquire_pooled_async(self, proxy: str | None) -> SessionHandle | None:
+        """异步版 :meth:`_acquire_pooled`（语义一致）。"""
+        pool = self.session_pool
+        if pool is None or (not self._use_curl and proxy is not None):
+            return None
+        return await pool.acquire_async()
+
+    def _release_pooled(self, handle: SessionHandle | None, *, success: bool) -> None:
+        """归还池化同步会话；请求成败决定其健康计数（连续失败会被池淘汰）。"""
+        pool = self.session_pool
+        if handle is not None and pool is not None:
+            pool.release(handle, success=success)
+
+    async def _release_pooled_async(self, handle: SessionHandle | None, *, success: bool) -> None:
+        """异步版 :meth:`_release_pooled`。"""
+        pool = self.session_pool
+        if handle is not None and pool is not None:
+            await pool.release_async(handle, success=success)
+
     # -- 请求头合并 -----------------------------------------------------------
     def _merge_headers(self, per_request: dict[str, str] | None) -> dict[str, str]:
         """合并请求头且不破坏 curl_cffi 伪装指纹。
@@ -324,23 +432,15 @@ class _FetcherCore(BaseFetcher):
         仿真默认头广告了 ``br``/``zstd``；curl 原生支持这些编码，但 httpx 的
         brotli/zstd 解码依赖可选包——不装包却广告 ``br``，服务器就会返回
         httpx 解不开的 brotli body（实测复现）。广告能力必须以解码能力为准。
+
+        解码能力探测经 :func:`_decodable_encodings` 进程内只做一次（失败
+        import 需全 sys.path 遍历，逐请求重复探测在毫秒级）；收缩逻辑本身
+        每次对传入 headers 原地执行，语义与逐次探测完全一致。
         """
         value = headers.get("Accept-Encoding")
         if not value:
             return
-        decodable = {"gzip", "deflate", "identity"}
-        try:
-            import brotli  # type: ignore[import-not-found]  # noqa: F401
-        except ImportError:
-            pass
-        else:
-            decodable.add("br")
-        try:
-            import zstandard  # type: ignore[import-not-found]  # noqa: F401
-        except ImportError:
-            pass
-        else:
-            decodable.add("zstd")
+        decodable = _decodable_encodings()
         kept = [e.strip() for e in value.split(",") if e.strip().lower() in decodable]
         if kept:
             headers["Accept-Encoding"] = ", ".join(kept)
@@ -348,13 +448,25 @@ class _FetcherCore(BaseFetcher):
             headers.pop("Accept-Encoding", None)
 
     def _retry_errors(self) -> tuple[type[BaseException], ...]:
+        """返回重试循环要捕获的异常元组（实例级缓存，首次请求时填充）。
+
+        后端选型在构造时定死（``_use_curl``）、符号在进程内不变，缓存只
+        免掉逐请求的后端符号重复加载；测试以「patch 后端加载器 + 新建
+        实例」的顺序注入 fake 时，首次调用仍走注入路径，语义不变。
+        """
+        cached = self._retry_errors_cache
+        if cached is not None:
+            return cached
         if self._use_curl:
             _, _, _, CurlRequestError = _load_curl_backend()
-            return (CurlRequestError, OSError)
-        if HAS_HTTPX:
+            errors: tuple[type[BaseException], ...] = (CurlRequestError, OSError)
+        elif HAS_HTTPX:
             httpx = _load_httpx_backend()
-            return (httpx.HTTPError, OSError)
-        return ()  # pragma: no cover - defensive
+            errors = (httpx.HTTPError, OSError)
+        else:  # pragma: no cover - defensive
+            errors = ()
+        self._retry_errors_cache = errors
+        return errors
 
     # -- 响应转换 -------------------------------------------------------------
     def _to_response(self, raw: Any, request_headers: dict[str, str]) -> Response:
@@ -371,7 +483,7 @@ class _FetcherCore(BaseFetcher):
             adaptive=self.adaptive,
         )
 
-    # -- TOCTOU 钉扎（httpx 路径；sync/async 发送共用） -----------------------
+    # -- TOCTOU 钉扎（httpx / curl_cffi 双路径；sync/async 发送共用） --------
     def _pin_target(
         self, url: str, proxy: str | None
     ) -> tuple[str, dict[str, str], dict[str, Any]]:
@@ -399,6 +511,30 @@ class _FetcherCore(BaseFetcher):
             extensions = {"sni_hostname": parsed.hostname}
         return pinned, extra_headers, extensions
 
+    def _pin_curl_session(self, session: Any, url: str, proxy: str | None) -> None:
+        """curl_cffi 路径的连接级 DNS 钉扎（CURLOPT_RESOLVE）。
+
+        与 :meth:`_pin_target` 同一生效条件（直连 + DNS 复查开启）：先绕过
+        60s 判定缓存**即时解析并逐 IP 复核**（任一结果落入拒绝段即抛
+        :class:`ValueError` 中止请求），再把全族已校验 IP 钉给 libcurl——
+        连接强制使用已校验地址，"校验的那个 IP"就是"连接的那个 IP"。
+        URL / Host 头 / SNI / 证书校验保持原始主机名，无需改写。
+
+        curl_cffi 过旧或缺失时 :func:`apply_curl_resolve` 返回 False 放弃
+        钉扎（降级），但上面的即时解析校验仍然生效——TOCTOU 窗口已从
+        60s 判定缓存缩到单次请求内（残余风险见 _pin.py 模块文档）。
+        """
+        if (
+            proxy is not None
+            or env_proxy_configured()
+            or not self.resolve_hosts
+            or self.allow_private_hosts
+        ):
+            return
+        entries = self._curl_pinner.entries_for(url)
+        if entries:
+            apply_curl_resolve(session, entries)
+
     # -- 共享异步传输（Fetcher 与 AsyncFetcher 共用） -------------------------
     async def _send_once_async(
         self,
@@ -414,41 +550,59 @@ class _FetcherCore(BaseFetcher):
         verify: bool,
     ) -> Any:
         if self._use_curl:
-            session = self._ensure_async_session()
-            return await session.request(
+            # 会话池启用时借出池化会话（指纹随会话轮换），否则用惰性单会话
+            handle = await self._acquire_pooled_async(proxy)
+            try:
+                session = handle.session if handle is not None else self._ensure_async_session()
+                # 连接级 DNS 钉扎（CURLOPT_RESOLVE）：DNS 翻转到私网时抛
+                # ValueError 即时中止，否则 libcurl 强制用已校验 IP 连接
+                self._pin_curl_session(session, url, proxy)
+                raw = await session.request(
+                    method=method,
+                    url=url,
+                    params=params,
+                    data=data,
+                    json=json,
+                    headers=headers,
+                    proxy=proxy,
+                    timeout=timeout,
+                    allow_redirects=allow_redirects,
+                    verify=verify,
+                )
+            except BaseException:
+                await self._release_pooled_async(handle, success=False)
+                raise
+            await self._release_pooled_async(handle, success=True)
+            return raw
+        # httpx 异步兜底：无代理复用共享会话（或池化会话）；代理客户端按 proxy 缓存复用
+        handle = await self._acquire_pooled_async(proxy)
+        try:
+            client = (
+                (handle.session if handle is not None else self._ensure_async_session())
+                if proxy is None
+                else self._ensure_proxied_async_client(proxy)
+            )
+            request_url, extra_headers, extensions = self._pin_target(url, proxy)
+            if extra_headers:
+                headers = {**headers, **extra_headers}
+            content, data_arg = _httpx_body(data)
+            raw = await client.request(
                 method=method,
-                url=url,
+                url=request_url,
                 params=params,
-                data=data,
+                content=content,
+                data=data_arg,
                 json=json,
                 headers=headers,
-                proxy=proxy,
                 timeout=timeout,
-                allow_redirects=allow_redirects,
-                verify=verify,
+                follow_redirects=allow_redirects,
+                extensions=extensions,
             )
-        # httpx 异步兜底：无代理复用共享会话；代理客户端按 proxy 缓存复用
-        client = (
-            self._ensure_async_session()
-            if proxy is None
-            else self._ensure_proxied_async_client(proxy)
-        )
-        request_url, extra_headers, extensions = self._pin_target(url, proxy)
-        if extra_headers:
-            headers = {**headers, **extra_headers}
-        content, data_arg = _httpx_body(data)
-        return await client.request(
-            method=method,
-            url=request_url,
-            params=params,
-            content=content,
-            data=data_arg,
-            json=json,
-            headers=headers,
-            timeout=timeout,
-            follow_redirects=allow_redirects,
-            extensions=extensions,
-        )
+        except BaseException:
+            await self._release_pooled_async(handle, success=False)
+            raise
+        await self._release_pooled_async(handle, success=True)
+        return raw
 
     # -- 重定向跟随（逐跳 SSRF scheme 校验） ----------------------------------
     def _next_redirect(
@@ -469,6 +623,7 @@ class _FetcherCore(BaseFetcher):
         next_url = urljoin(current_url, location.strip())
         self._validate_target(next_url)
         next_headers = headers
+
         if urlparse(next_url).netloc != urlparse(current_url).netloc:
             next_headers = {k: v for k, v in headers.items() if k.lower() != "authorization"}
         # 303 恒转 GET；301/302 的 POST 也转 GET（与浏览器/curl 默认一致）
@@ -531,7 +686,7 @@ class _FetcherCore(BaseFetcher):
             )
             if not self._advance_redirect(state, raw):
                 return raw
-        raise RuntimeError(f"too many redirects (max {self.max_redirects}) for {url}")
+        raise FetchError(f"too many redirects (max {self.max_redirects}) for {url}")
 
     async def _send_async(
         self,
@@ -597,7 +752,7 @@ class _FetcherCore(BaseFetcher):
             await asyncio.sleep(delay)
         if last_exc is not None:  # pragma: no cover - 重试循环在最后一次必定 return 或 raise
             raise last_exc
-        raise RuntimeError(
+        raise FetchError(
             f"request to {url} failed without a captured exception"
         )  # pragma: no cover
 
@@ -625,6 +780,13 @@ class Fetcher(_FetcherCore):
     ja3_fingerprint:
         可选的 JA3 TLS 指纹字符串，用于覆盖伪装预设（如自定义加密套件/
         扩展顺序）。仅 ``curl_cffi`` 后端使用；回退 ``httpx`` 时忽略。
+    session_pool:
+        可选的 :class:`~web_crawler.fetchers.session.SessionPool`。启用时
+        每次请求从池中借出会话——指纹随会话轮换、空闲回收、连续失败淘汰，
+        请求（含 DNS 钉扎）完成后归还；``None``（默认）走单会话路径，
+        行为不变。传入的池会自动绑定本 fetcher 的会话工厂（超时/校验/
+        HTTP2 等配置随之生效，且 ``impersonate`` 参数退化为池降级时的
+        兜底指纹）。
     """
 
     # -- 同步传输 -------------------------------------------------------------
@@ -642,41 +804,59 @@ class Fetcher(_FetcherCore):
         verify: bool,
     ) -> Any:
         if self._use_curl:
-            session = self._ensure_sync_session()
-            return session.request(
+            # 会话池启用时借出池化会话（指纹随会话轮换），否则用惰性单会话
+            handle = self._acquire_pooled(proxy)
+            try:
+                session = handle.session if handle is not None else self._ensure_sync_session()
+                # 连接级 DNS 钉扎（CURLOPT_RESOLVE）：DNS 翻转到私网时抛
+                # ValueError 即时中止，否则 libcurl 强制用已校验 IP 连接
+                self._pin_curl_session(session, url, proxy)
+                raw = session.request(
+                    method=method,
+                    url=url,
+                    params=params,
+                    data=data,
+                    json=json,
+                    headers=headers,
+                    proxy=proxy,
+                    timeout=timeout,
+                    allow_redirects=allow_redirects,
+                    verify=verify,
+                )
+            except BaseException:
+                self._release_pooled(handle, success=False)
+                raise
+            self._release_pooled(handle, success=True)
+            return raw
+        # httpx 兜底：无代理复用共享会话（或池化会话）；代理客户端按 proxy 缓存复用
+        handle = self._acquire_pooled(proxy)
+        try:
+            client = (
+                (handle.session if handle is not None else self._ensure_sync_session())
+                if proxy is None
+                else self._ensure_proxied_sync_client(proxy)
+            )
+            request_url, extra_headers, extensions = self._pin_target(url, proxy)
+            if extra_headers:
+                headers = {**headers, **extra_headers}
+            content, data_arg = _httpx_body(data)
+            raw = client.request(
                 method=method,
-                url=url,
+                url=request_url,
                 params=params,
-                data=data,
+                content=content,
+                data=data_arg,
                 json=json,
                 headers=headers,
-                proxy=proxy,
                 timeout=timeout,
-                allow_redirects=allow_redirects,
-                verify=verify,
+                follow_redirects=allow_redirects,
+                extensions=extensions,
             )
-        # httpx 兜底：无代理复用共享会话；代理客户端按 proxy 缓存复用
-        client = (
-            self._ensure_sync_session()
-            if proxy is None
-            else self._ensure_proxied_sync_client(proxy)
-        )
-        request_url, extra_headers, extensions = self._pin_target(url, proxy)
-        if extra_headers:
-            headers = {**headers, **extra_headers}
-        content, data_arg = _httpx_body(data)
-        return client.request(
-            method=method,
-            url=request_url,
-            params=params,
-            content=content,
-            data=data_arg,
-            json=json,
-            headers=headers,
-            timeout=timeout,
-            follow_redirects=allow_redirects,
-            extensions=extensions,
-        )
+        except BaseException:
+            self._release_pooled(handle, success=False)
+            raise
+        self._release_pooled(handle, success=True)
+        return raw
 
     def _send_with_redirects_sync(
         self,
@@ -712,7 +892,7 @@ class Fetcher(_FetcherCore):
             )
             if not self._advance_redirect(state, raw):
                 return raw
-        raise RuntimeError(f"too many redirects (max {self.max_redirects}) for {url}")
+        raise FetchError(f"too many redirects (max {self.max_redirects}) for {url}")
 
     def _send_sync(
         self,
@@ -778,7 +958,7 @@ class Fetcher(_FetcherCore):
             time.sleep(delay)
         if last_exc is not None:  # pragma: no cover - 重试循环在最后一次必定 return 或 raise
             raise last_exc
-        raise RuntimeError(
+        raise FetchError(
             f"request to {url} failed without a captured exception"
         )  # pragma: no cover
 
@@ -908,7 +1088,9 @@ class AsyncFetcher(_FetcherCore):
     与 :class:`Fetcher` 共享全部配置、后端选择与重试逻辑，但**只**暴露
     异步 API。没有同步 ``get``/``post`` 方法，意图明确且绝不创建同步会话。
 
-    异步应用中使用它，可避免同步调用意外阻塞事件循环。
+    异步应用中使用它，可避免同步调用意外阻塞事件循环。构造参数与
+    :class:`Fetcher` 完全一致——包括可选的 ``session_pool``（异步借还
+    走池的 ``acquire_async`` / ``release_async``）。
     """
 
     # -- 公开异步 API ----------------------------------------------------------

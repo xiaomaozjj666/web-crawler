@@ -10,8 +10,15 @@
 - :class:`DynamicFetcher` — Playwright 渲染抓取。
 - :class:`StealthyFetcher` — 反反爬 / 感知 Cloudflare 的 Playwright fetcher。
 - :class:`ProxyPool` — 轮询 / 随机代理轮换，带健康跟踪。
+- :class:`SessionPool` — curl_cffi 会话池，指纹随会话轮换（round_robin /
+  random），空闲回收与失败淘汰。
 - :class:`Spider` / :class:`Request` — 回调驱动的 spider 框架，支持
-  暂停/恢复。
+  暂停/恢复、:class:`CacheMiddleware` 磁盘缓存（TTL / 离线回放）、
+  :class:`AutoThrottle` 自适应限速、robots ``Crawl-delay`` 遵守与
+  stats JSON/JSONL 导出。
+- :class:`WebCrawlerError` — 统一异常体系根（子类兼容
+  ``ValueError`` / ``RuntimeError``），可用 ``except WebCrawlerError``
+  一次捕获库自身的错误。
 
 所有公开符号均为惰性导入：``import web_crawler`` 不会引入 ``playwright``
 或 ``curl_cffi``。重型子模块仅在对应类首次访问时加载（Scrapling 采用同样
@@ -37,6 +44,14 @@ __author__ = "web-crawler contributors"
 # 模块在首次经 __getattr__ 访问时才导入，因此 ``import web_crawler``
 # 绝不会触发 playwright/curl_cffi 加载。
 _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
+    # 统一异常体系（兼容式多继承：子类同时是 ValueError/RuntimeError）
+    "WebCrawlerError": ("web_crawler.exceptions", "WebCrawlerError"),
+    "UnsafeTargetError": ("web_crawler.exceptions", "UnsafeTargetError"),
+    "ConfigError": ("web_crawler.exceptions", "ConfigError"),
+    "ParseError": ("web_crawler.exceptions", "ParseError"),
+    "FetchError": ("web_crawler.exceptions", "FetchError"),
+    "InvalidStateError": ("web_crawler.exceptions", "InvalidStateError"),
+    "AIProviderError": ("web_crawler.exceptions", "AIProviderError"),
     # parser / 自适应
     "Selector": ("web_crawler.parser.selector", "Selector"),
     "Adaptors": ("web_crawler.parser.selector", "Adaptors"),
@@ -52,11 +67,14 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "StealthyFetcher": ("web_crawler.fetchers.stealthy", "StealthyFetcher"),
     "CamoufoxFetcher": ("web_crawler.fetchers.camoufox", "CamoufoxFetcher"),
     "ProxyPool": ("web_crawler.fetchers.proxy", "ProxyPool"),
+    "SessionPool": ("web_crawler.fetchers.session", "SessionPool"),
     # 响应对象
     "Response": ("web_crawler.response", "Response"),
     # 可视化提取（PixelRAG 风格）
     "VisualExtractor": ("web_crawler.parser.visual", "VisualExtractor"),
     # spider 框架
+    "AutoThrottle": ("web_crawler.spider.autothrottle", "AutoThrottle"),
+    "CacheMiddleware": ("web_crawler.spider.cache", "CacheMiddleware"),
     "DupeFilter": ("web_crawler.spider.spider", "DupeFilter"),
     "DownloaderMiddleware": ("web_crawler.spider.spider", "DownloaderMiddleware"),
     "DropItem": ("web_crawler.spider.spider", "DropItem"),
@@ -88,6 +106,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "JSFragment": ("web_crawler.ai.analyzer", "JSFragment"),
     "CaptchaType": ("web_crawler.ai.captcha", "CaptchaType"),
     "CaptchaManager": ("web_crawler.ai.captcha", "CaptchaManager"),
+    "ImageCaptchaSolver": ("web_crawler.ai.image_captcha", "ImageCaptchaSolver"),
     "ReverseAgent": ("web_crawler.ai.reverse_agent", "ReverseAgent"),
     "ReverseAgentConfig": ("web_crawler.ai.reverse_agent", "ReverseAgentConfig"),
     # MCP 服务器
@@ -96,26 +115,33 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
 
 __all__ = [
     "AIExtractor",
+    "AIProviderError",
     "AIScrapeAgent",
     "AdaptiveStorage",
     "Adaptor",
     "Adaptors",
     "AsyncFetcher",
+    "AutoThrottle",
     # fetcher 系列
     "BaseFetcher",
+    "CacheMiddleware",
     "CamoufoxFetcher",
     "CaptchaManager",
     "CaptchaType",
+    "ConfigError",
     "DeepSeekProvider",
     "DownloaderMiddleware",
     "DropItem",
     "DupeFilter",
     "DynamicFetcher",
     "ExtractionResult",
+    "FetchError",
     "Fetcher",
     # ai — JS 逆向 Agent 套件
     "HookLibrary",
     "IgnoreRequest",
+    "ImageCaptchaSolver",
+    "InvalidStateError",
     "ItemPipeline",
     "JSAnalyzer",
     "JSFragment",
@@ -123,6 +149,7 @@ __all__ = [
     "LLMProvider",
     "LLMResponse",
     "OpenAICompatibleProvider",
+    "ParseError",
     "ProxyPool",
     # spider 框架
     "Request",
@@ -136,12 +163,15 @@ __all__ = [
     "ScrapeResult",
     # parser / 自适应
     "Selector",
+    "SessionPool",
     "Spider",
     "SpiderError",
     "SpiderStats",
     "StealthyFetcher",
+    "UnsafeTargetError",
     # 可视化提取（PixelRAG 风格）
     "VisualExtractor",
+    "WebCrawlerError",
     "__version__",
     "available_providers",
     "compute_fingerprint",
@@ -180,6 +210,7 @@ def __dir__() -> list[str]:
 if TYPE_CHECKING:
     from .ai.agent import AIScrapeAgent, RobotsPolicy, ScrapeResult
     from .ai.extractor import AIExtractor, ExtractionResult
+    from .ai.image_captcha import ImageCaptchaSolver
     from .ai.llm import (
         DeepSeekProvider,
         LLMMessage,
@@ -190,16 +221,28 @@ if TYPE_CHECKING:
         get_provider,
         register_provider,
     )
+    from .exceptions import (
+        AIProviderError,
+        ConfigError,
+        FetchError,
+        InvalidStateError,
+        ParseError,
+        UnsafeTargetError,
+        WebCrawlerError,
+    )
     from .fetchers._base import BaseFetcher
     from .fetchers.camoufox import CamoufoxFetcher
     from .fetchers.dynamic import DynamicFetcher
     from .fetchers.fetcher import AsyncFetcher, Fetcher
     from .fetchers.proxy import ProxyPool
+    from .fetchers.session import SessionPool
     from .fetchers.stealthy import StealthyFetcher
     from .parser.adaptive import AdaptiveStorage, compute_fingerprint, similarity_score
     from .parser.selector import Adaptors, Selector
     from .parser.visual import VisualExtractor
     from .response import Response
+    from .spider.autothrottle import AutoThrottle
+    from .spider.cache import CacheMiddleware
     from .spider.spider import (
         DownloaderMiddleware,
         DropItem,

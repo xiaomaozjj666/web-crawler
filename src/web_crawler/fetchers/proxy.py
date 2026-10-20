@@ -11,6 +11,8 @@ import random
 import threading
 import time
 
+from ..exceptions import ConfigError
+
 
 class ProxyPool:
     """线程安全的轮换代理池，按代理跟踪失败情况。
@@ -37,7 +39,7 @@ class ProxyPool:
         cooldown: float = 60.0,
     ) -> None:
         if strategy not in ("round_robin", "random"):
-            raise ValueError(f"unknown strategy: {strategy!r} (use 'round_robin' or 'random')")
+            raise ConfigError(f"unknown strategy: {strategy!r} (use 'round_robin' or 'random')")
         self._proxies: list[str] = list(proxies) if proxies else []
         self._strategy = strategy
         self._max_failures = max_failures

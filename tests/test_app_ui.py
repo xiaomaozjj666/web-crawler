@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import sys
@@ -17,6 +18,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, Mock, patch
+from urllib.parse import urlparse
 
 import httpx
 import pytest
@@ -1822,6 +1824,152 @@ class TestCsrfOriginCheck:
             )
         assert resp.json()["ok"] is False
         mock_run.assert_not_called()
+
+
+class TestDnsRebindingGuard:
+    """Host 头白名单：防 DNS rebinding（attacker.com 解析到 127.0.0.1）。
+
+    rebinding 页面发出的请求 Origin 与 Host 同为 attacker.com:8765，
+    仅比对 Origin==Host 无法拦截；Host 白名单校验后应统一 403。
+    """
+
+    def test_get_status_attacker_host_rejected(self, http_server: str) -> None:
+        """rebinding 页面（Host: attacker.com:8765）读不到任务状态。"""
+        job = _make_job_state(id="rb1")
+        ui.JOBS["rb1"] = job
+        resp = httpx.get(f"{http_server}/status?id=rb1", headers={"Host": "attacker.com:8765"})
+        assert resp.status_code == 403
+        assert resp.json()["ok"] is False
+
+    def test_get_index_attacker_host_rejected(self, http_server: str) -> None:
+        """rebinding 页面拿不到首页 HTML。"""
+        resp = httpx.get(f"{http_server}/", headers={"Host": "attacker.com:8765"})
+        assert resp.status_code == 403
+
+    def test_get_jobs_evil_host_rejected(self, http_server: str) -> None:
+        """rebinding 页面读不到任务历史。"""
+        resp = httpx.get(f"{http_server}/jobs", headers={"Host": "evil.example"})
+        assert resp.status_code == 403
+
+    def test_get_reverse_status_evil_host_rejected(self, http_server: str) -> None:
+        """rebinding 页面读不到逆向任务状态。"""
+        resp = httpx.get(f"{http_server}/reverse/status?id=x", headers={"Host": "evil.example"})
+        assert resp.status_code == 403
+
+    def test_get_reverse_screenshot_attacker_host_rejected(self, http_server: str) -> None:
+        """rebinding 页面读不到截图（此前完全无校验的端点）。"""
+        resp = httpx.get(
+            f"{http_server}/reverse/screenshot?id=x&step=1",
+            headers={"Host": "attacker.com:8765"},
+        )
+        assert resp.status_code == 403
+
+    def test_post_run_attacker_host_rejected(self, http_server: str) -> None:
+        """rebinding 页面 POST /run 被拒（403），且不启动采集任务。"""
+        with patch.object(_ui_http, "run_job") as mock_run:
+            resp = httpx.post(
+                f"{http_server}/run",
+                data={"url": "https://example.com", "out": "", "max_pages": "1"},
+                headers={"Host": "attacker.com:8765"},
+            )
+        assert resp.status_code == 403
+        assert resp.json()["ok"] is False
+        mock_run.assert_not_called()
+
+    def test_post_reverse_run_evil_host_rejected(self, http_server: str) -> None:
+        """rebinding 页面 POST /reverse/run 被拒，且不启动逆向任务。"""
+        with patch.object(_ui_http, "run_reverse_job") as mock_run:
+            resp = httpx.post(
+                f"{http_server}/reverse/run",
+                data={"url": "https://example.com", "task": "x"},
+                headers={"Host": "evil.example"},
+            )
+        assert resp.status_code == 403
+        mock_run.assert_not_called()
+
+    def test_delete_attacker_host_rejected(self, http_server: str) -> None:
+        """rebinding 页面 DELETE 任务历史被拒。"""
+        resp = httpx.delete(f"{http_server}/jobs/some-id", headers={"Host": "evil.example"})
+        assert resp.status_code == 403
+
+    def test_missing_host_rejected_http10(self, http_server: str) -> None:
+        """HTTP/1.0 客户端（无 Host 头）：fail-closed 拒绝。"""
+        parsed = urlparse(http_server)
+        conn = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
+        try:
+            conn.putrequest("GET", "/status?id=x", skip_host=True)  # 抑制自动 Host 头
+            conn.endheaders()
+            resp = conn.getresponse()
+            assert resp.status == 403
+        finally:
+            conn.close()
+
+    def test_wrong_port_rejected(self, http_server: str) -> None:
+        """Host 端口与绑定端口不一致时拒绝（端口混淆）。"""
+        resp = httpx.get(f"{http_server}/", headers={"Host": "127.0.0.1:9999"})
+        assert resp.status_code == 403
+
+    def test_localhost_host_get_allowed(self, http_server: str) -> None:
+        """正常访问回归：Host: localhost:<port> 的 GET 正常 200。"""
+        port = http_server.rsplit(":", 1)[1]
+        resp = httpx.get(f"{http_server}/status?id=x", headers={"Host": f"localhost:{port}"})
+        assert resp.status_code == 200
+
+    def test_loopback_host_post_allowed(self, http_server: str) -> None:
+        """正常访问回归：Host: localhost:<port> 的 POST /run 正常 200。"""
+        port = http_server.rsplit(":", 1)[1]
+        with patch.object(_ui_http, "run_job"):
+            resp = httpx.post(
+                f"{http_server}/run",
+                data={"url": "https://example.com", "out": "", "max_pages": "1"},
+                headers={"Host": f"localhost:{port}"},
+            )
+        assert resp.status_code == 200
+        assert "id" in resp.json()
+
+
+class TestHostHeaderAllowedUnit:
+    """_host_header_allowed 纯函数分支覆盖（含 --allow-remote 远程绑定取舍）。"""
+
+    def test_loopback_whitelist(self) -> None:
+        """回环绑定白名单：127.0.0.1 / localhost / [::1] 均放行。"""
+        for host in ("127.0.0.1:8765", "localhost:8765", "[::1]:8765"):
+            assert _ui_http._host_header_allowed(host, "127.0.0.1", 8765) is True
+
+    def test_loopback_bind_127_0_0_2_allows_itself(self) -> None:
+        """绑定 127.0.0.2 时自身也在白名单（127.x 全段均为回环）。"""
+        assert _ui_http._host_header_allowed("127.0.0.2:8765", "127.0.0.2", 8765) is True
+
+    def test_attacker_domain_rejected_on_loopback(self) -> None:
+        """rebinding 域名（端口一致）在回环绑定下被拒。"""
+        assert _ui_http._host_header_allowed("attacker.com:8765", "127.0.0.1", 8765) is False
+
+    def test_remote_bind_allows_arbitrary_hostname(self) -> None:
+        """远程绑定：任意主机名（IP/域名/映射名）端口匹配即放行（可用性取舍）。"""
+        assert _ui_http._host_header_allowed("192.168.1.5:8765", "0.0.0.0", 8765) is True
+        assert _ui_http._host_header_allowed("nas.lan:8765", "0.0.0.0", 8765) is True
+        # Docker 宿主机 localhost 映射访问容器内 0.0.0.0 服务的常见形态
+        assert _ui_http._host_header_allowed("localhost:8765", "0.0.0.0", 8765) is True
+
+    def test_remote_bind_rejects_malformed(self) -> None:
+        """远程绑定下仍拒绝：空 Host / userinfo 混淆 / 端口不匹配 / 畸形字符。"""
+        assert _ui_http._host_header_allowed("", "0.0.0.0", 8765) is False
+        assert _ui_http._host_header_allowed("a@b:8765", "0.0.0.0", 8765) is False
+        assert _ui_http._host_header_allowed("x.com:9999", "0.0.0.0", 8765) is False
+        assert _ui_http._host_header_allowed("x.com/../etc:8765", "0.0.0.0", 8765) is False
+
+    def test_no_port_rejected_unless_port_80(self) -> None:
+        """无端口 Host 仅在服务监听 80 时合法。"""
+        assert _ui_http._host_header_allowed("127.0.0.1", "127.0.0.1", 8765) is False
+        assert _ui_http._host_header_allowed("127.0.0.1", "127.0.0.1", 80) is True
+
+    def test_bare_ipv6_rejected(self) -> None:
+        """非括号裸 IPv6（::1）为非法 Host 形式，拒绝。"""
+        assert _ui_http._host_header_allowed("::1:8765", "127.0.0.1", 8765) is False
+
+    def test_ipv6_loopback_bind(self) -> None:
+        """绑定 ::1 时 [::1]:port 放行（括号规范化）。"""
+        assert _ui_http._host_header_allowed("[::1]:8765", "::1", 8765) is True
 
 
 class TestLoopbackHost:

@@ -20,14 +20,31 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
+from ..exceptions import ConfigError
 from ..response import Response
 from ..robots import RobotsPolicy, fetch_robots_text
+from .autothrottle import AutoThrottle
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1024)
+def _throttle_host(url: str) -> str:
+    """提取 URL 的 host 作为 autothrottle 域键（小写；无 host 返回空串）。
+
+    热路径缓存（对齐 selector.py 的 CSS→XPath 翻译缓存手法）：调度器对
+    每个请求至少调用两次（``_domain_delay_for`` 与三源延迟的 host 键），
+    解析是纯函数、URL 字符串可哈希——``lru_cache`` 让重复 URL（重试 /
+    ``dont_filter`` 重抓 / 同 URL 多次调度）只付一次 ``urlparse`` 成本。
+    上限 1024 条防长爬取任务内存无限增长，被挤出 LRU 的条目下次调用
+    重新解析即可（无正确性影响）。"""
+    return (urlparse(url).hostname or "").lower()
 
 
 class _FetcherLike(Protocol):
@@ -100,7 +117,7 @@ class Request:
 
     def __post_init__(self) -> None:
         if not self.url:
-            raise ValueError("Request.url must be a non-empty string")
+            raise ConfigError("Request.url must be a non-empty string")
 
 
 @dataclass
@@ -114,6 +131,9 @@ class SpiderStats:
     requests_ignored: int = 0
     start_time: float = 0.0
     end_time: float = 0.0
+    # 运行结束时的 autothrottle 快照（未开启时保持 None，as_dict 不透出
+    # 该键——默认路径的输出与旧版逐字一致）
+    autothrottle: dict[str, dict[str, float | int | None]] | None = None
 
     @property
     def elapsed(self) -> float:
@@ -123,7 +143,7 @@ class SpiderStats:
         return end - self.start_time
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "pages_crawled": self.pages_crawled,
             "items_scraped": self.items_scraped,
             "requests_scheduled": self.requests_scheduled,
@@ -131,6 +151,9 @@ class SpiderStats:
             "requests_ignored": self.requests_ignored,
             "elapsed_seconds": round(self.elapsed, 3),
         }
+        if self.autothrottle is not None:
+            d["autothrottle"] = self.autothrottle
+        return d
 
 
 class DupeFilter:
@@ -198,12 +221,21 @@ class Spider:
         *,
         adaptive: bool = False,
         dupefilter: DupeFilter | None = None,
+        autothrottle: AutoThrottle | None = None,
+        stats_output: str | Path | None = None,
     ) -> None:
         # ``fetcher`` 允许延迟提供，spider 可先定义后绑定。
         self.fetcher = fetcher
         self.adaptive = adaptive
         self.stats = SpiderStats()
         self.dupefilter = dupefilter if dupefilter is not None else DupeFilter()
+        # AutoThrottle 自适应限速器：None = 完全关闭，节流行为与旧版
+        # 逐字一致（零回归硬性要求）；开启后同域延迟按响应延迟 EMA 反馈
+        self.autothrottle = autothrottle
+        # stats 导出路径：None = 不导出（默认，行为与旧版逐字一致）；
+        # ``.jsonl`` 后缀按行追加（多次运行可聚合分析），其他后缀写
+        # 单次 JSON 快照（覆盖写）。运行结束（正常/异常/暂停均）落盘。
+        self.stats_output = stats_output
         self._middlewares: list[DownloaderMiddleware] = [
             mw() if isinstance(mw, type) else mw for mw in self.middlewares
         ]
@@ -235,10 +267,9 @@ class Spider:
         """``url`` 的 host 在允许范围内时返回 True（忽略端口与 userinfo）。"""
         if not self.allowed_domains:
             return True
-        host = urlparse(url).hostname
+        host = _throttle_host(url)
         if not host:
             return False
-        host = host.lower()
         return any(
             host == d.lower() or host.endswith("." + d.lower()) for d in self.allowed_domains
         )
@@ -260,13 +291,25 @@ class Spider:
             return True
         return self._robots_policy.allowed(url, fetch_robots_text)
 
+    def _robots_crawl_delay(self, url: str) -> float | None:
+        """查询 ``url`` 所在站点 robots.txt 声明的 Crawl-delay（秒）。
+
+        仅 ``respect_robots=True`` 时生效；与 :meth:`_robots_allowed`
+        共享同一按主机缓存（谁先触发谁拉取，同主机至多一次外呼）。
+        未声明 / 拉取失败返回 None，不改变节流行为。对齐 Scrapy 语义：
+        Crawl-delay 是站点方显式声明的礼貌底线，只应抬高延迟、永不放宽。
+        """
+        if not self.respect_robots:
+            return None
+        return self._robots_policy.crawl_delay(url, fetch_robots_text)
+
     def _domain_delay_for(self, url: str) -> tuple[float, str]:
         """返回 ``(延迟, 匹配到的域名)``（精确或子域后缀匹配，取最长命中）。
 
         状态键用匹配域名而非请求 host：同域不同子域（a.x.com / b.x.com）
         共享同一限速账本；未配置返回 ``(0.0, "")``。
         """
-        host = (urlparse(url).hostname or "").lower()
+        host = _throttle_host(url)
         if not host or not self.per_domain_delay:
             return 0.0, ""
         best_delay, best_domain = 0.0, ""
@@ -276,9 +319,46 @@ class Spider:
                 best_delay, best_domain = delay, d
         return best_delay, best_domain
 
+    def _throttle_delay_for(self, url: str) -> tuple[float, str]:
+        """统一节流入口：返回 ``(延迟秒数, 节流账本键)``。
+
+        三个延迟来源取最保守者（最大值）：
+
+        1. ``per_domain_delay`` 静态下限——用户显式承诺的礼貌底线；
+        2. autothrottle 自适应值——只允许比静态下限更保守；
+        3. robots ``Crawl-delay``（仅 ``respect_robots=True``）——站点方
+           显式声明的礼貌底线（对齐 Scrapy 语义），同样只允许抬高。
+
+        三者全部未开启时与 :meth:`_domain_delay_for` 逐字等价（零行为
+        变化）。账本键随胜者：静态下限胜出取最长命中域（同域子域共享
+        账本的旧行为），autothrottle / robots 胜出取请求 host（两者都按
+        host 生效，记账粒度一致）。
+        """
+        delay, key = self._domain_delay_for(url)
+        if self.autothrottle is not None or self.respect_robots:
+            host = _throttle_host(url)
+            if self.autothrottle is not None:
+                at_delay = self.autothrottle.get_delay(host)
+                if at_delay > delay:
+                    delay, key = at_delay, host
+            robots_delay = self._robots_crawl_delay(url)
+            if robots_delay is not None and robots_delay > delay:
+                delay, key = robots_delay, host
+        return delay, key
+
+    def _note_throttle(self, url: str, elapsed: float, success: bool) -> None:
+        """把一次真实下载的结果反馈给 autothrottle（未开启时为空操作）。
+
+        只在真实下载路径调用：中间件短路（如缓存命中）没有网络耗时，
+        不该反馈；``elapsed`` 只含下载本身，不含引擎自己的节流等待。
+        """
+        if self.autothrottle is None:
+            return
+        self.autothrottle.note_response(_throttle_host(url), elapsed, success)
+
     def _throttle_domain_sync(self, url: str) -> None:
         """同步路径：补足与同域上一请求的最小间隔（run() 顺序执行，无需锁）。"""
-        delay, key = self._domain_delay_for(url)
+        delay, key = self._throttle_delay_for(url)
         if delay <= 0:
             return
         now = time.monotonic()
@@ -287,9 +367,22 @@ class Spider:
             time.sleep(wait)
         self._domain_last_ts[key] = time.monotonic()
 
-    async def _throttle_domain_async(self, url: str, lock: asyncio.Lock) -> None:
-        """异步路径：在 per-domain 锁内补足同域最小间隔（同域串行）。"""
-        delay, key = self._domain_delay_for(url)
+    async def _throttle_domain_async(
+        self,
+        url: str,
+        lock: asyncio.Lock,
+        *,
+        precomputed: tuple[float, str] | None = None,
+    ) -> None:
+        """异步路径：在 per-domain 锁内补足同域最小间隔（同域串行）。
+
+        ``precomputed`` 是调用方已算好的 ``(delay, key)``：stream() 的
+        worker 为取域锁先调用过一次 :meth:`_throttle_delay_for`，且两次
+        调用之间无 ``await`` 点（事件循环内原子、autothrottle/robots 状态
+        不可能变化），传入即严格等价于内部重算——省掉每请求一次完整的三
+        源延迟计算。缺省 ``None`` 时内部自算，独立调用行为不变。
+        """
+        delay, key = precomputed if precomputed is not None else self._throttle_delay_for(url)
         if delay <= 0:
             return
         async with lock:
@@ -503,6 +596,41 @@ class Spider:
         elif manage_state and owns_state and path.exists():
             path.unlink()
 
+    def _export_stats(self) -> None:
+        """运行结束时把 stats 快照写入 ``stats_output``（未设置则不导出）。
+
+        ``.jsonl`` 后缀按 JSON Lines 追加一行：``as_dict()`` 全部字段加
+        ISO 格式结束时间戳 ``asctime``（UTC），多次运行天然可聚合分析；
+        其他后缀写单次 JSON 快照（覆盖写）。父目录不存在时自动创建；
+        写入失败（权限等）只记 warning 日志不抛出（走 logging 而非
+        warnings）——可观测性导出绝不能让已抓到的数据因收尾异常而丢失。
+        ``as_dict()`` 的输出格式保持逐字不变，导出字段在副本上追加。
+        """
+        if self.stats_output is None:
+            return
+        path = Path(self.stats_output)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.suffix.lower() == ".jsonl":
+                payload = self.stats.as_dict()
+                # stats.start/end_time 是 monotonic 时钟（无墙钟语义），
+                # 结束时间戳独立取 UTC 墙钟保证跨运行可比较
+                payload["asctime"] = datetime.now(timezone.utc).isoformat()
+                with path.open("a", encoding="utf-8") as fh:
+                    # default=str 对齐 JSON 快照分支（_dump_state 同款防御）：
+                    # 未来字段不可序列化时降级为 str 表示——TypeError 不在
+                    # except OSError 覆盖范围内，穿透后会中断 run() 返回
+                    # 已抓取的 items，违背导出"绝不连累数据"的设计目标
+                    fh.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+            else:
+                # default=str 对齐 _dump_state：防御未来扩展出不可序列化字段
+                path.write_text(
+                    json.dumps(self.stats.as_dict(), ensure_ascii=False, indent=2, default=str),
+                    encoding="utf-8",
+                )
+        except OSError as exc:
+            logger.warning("stats export to %s failed: %s", path, exc)
+
     # -- public API --------------------------------------------------------
     def pause(self) -> None:
         """通知运行中的循环持久化状态并在当前批次后停止。"""
@@ -561,6 +689,9 @@ class Spider:
                     continue
                 if response is None:
                     self._throttle_domain_sync(request.url)
+                    # elapsed 只度量下载本身（不含上面的节流等待），
+                    # 供 autothrottle 估计站点真实服务能力
+                    fetch_started = time.monotonic()
                     try:
                         response = self._fetch_sync(request)
                     except IgnoreRequest:
@@ -568,11 +699,14 @@ class Spider:
                         logger.info("request ignored by middleware: %s", request.url)
                         continue
                     except Exception as exc:
+                        # 失败也反馈真实耗时：请求失败本身就该放大该域惩罚
+                        self._note_throttle(request.url, time.monotonic() - fetch_started, False)
                         if self._schedule_retry(request, queue, exc):
                             delay = self._retry_backoff(request.retries)
                             if delay:
                                 time.sleep(delay)
                         continue
+                    self._note_throttle(request.url, time.monotonic() - fetch_started, response.ok)
                 response = self._apply_response_middlewares(response, request)
 
                 self.stats.pages_crawled += 1
@@ -598,7 +732,12 @@ class Spider:
                     self.stats.items_scraped += 1
         finally:
             self.stats.end_time = time.monotonic()
+            if self.autothrottle is not None:
+                self.stats.autothrottle = self.autothrottle.stats()
             self._finalize_state(queue, path, manage_state, owns_state)
+            # 状态持久化优先于可观测性导出（前者防丢请求），导出自身
+            # 吞掉 OSError（见 _export_stats），不会让 finally 链断裂
+            self._export_stats()
         return items
 
     async def async_run(
@@ -665,13 +804,20 @@ class Spider:
                 logger.info("request ignored by middleware: %s", request.url)
                 return
             if response is None:
-                delay, domain_key = self._domain_delay_for(request.url)
+                delay, domain_key = self._throttle_delay_for(request.url)
                 if delay > 0:
                     lock = self._domain_locks.get(domain_key)
                     if lock is None:
                         lock = asyncio.Lock()
                         self._domain_locks[domain_key] = lock
-                    await self._throttle_domain_async(request.url, lock)
+                    # precomputed：两次三源计算之间无 await（严格等价），
+                    # 省掉每请求一次的重复三源延迟计算
+                    await self._throttle_domain_async(
+                        request.url, lock, precomputed=(delay, domain_key)
+                    )
+                # elapsed 只度量下载本身（不含上面的节流等待），
+                # 供 autothrottle 估计站点真实服务能力
+                fetch_started = time.monotonic()
                 try:
                     response = await self._fetch_async(request)
                 except IgnoreRequest:
@@ -679,6 +825,8 @@ class Spider:
                     logger.info("request ignored by middleware: %s", request.url)
                     return
                 except Exception as exc:
+                    # 失败也反馈真实耗时：请求失败本身就该放大该域惩罚
+                    self._note_throttle(request.url, time.monotonic() - fetch_started, False)
                     # 与 run() 一致的重试语义：push 回队列而非在 worker 内自旋，
                     # 让主循环统一控制调度与暂停检查
                     if self._schedule_retry(request, queue, exc):
@@ -686,6 +834,7 @@ class Spider:
                         if delay:
                             await asyncio.sleep(delay)
                     return
+                self._note_throttle(request.url, time.monotonic() - fetch_started, response.ok)
             response = self._apply_response_middlewares(response, request)
             self.stats.pages_crawled += 1
             if self.download_delay:
@@ -745,7 +894,12 @@ class Spider:
             for leftover in pending:
                 leftover.cancel()
             self.stats.end_time = time.monotonic()
+            if self.autothrottle is not None:
+                self.stats.autothrottle = self.autothrottle.stats()
             self._finalize_state(queue, path, manage_state, owns_state)
+            # 与 run() 同源：消费方提前 break（aclose）、回调异常或暂停
+            # 走到这里的每条路径都要完成 stats 导出
+            self._export_stats()
 
 
 __all__ = [

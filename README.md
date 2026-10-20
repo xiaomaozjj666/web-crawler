@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/lxml-adaptive%20selector-8CA1B6" alt="lxml 自适应选择器" />
   <img src="https://img.shields.io/badge/TLS-impersonation-0F6B9E" alt="TLS 指纹隐身" />
   <img src="https://github.com/xiaomaozjj666/web-crawler/actions/workflows/ci.yml/badge.svg" alt="CI" />
-  <img src="https://img.shields.io/badge/coverage-99.95%25%20(full-deps)-brightgreen" alt="覆盖率 99.95%（full-deps）/ 100%（minimal-deps）" />
+  <img src="https://img.shields.io/badge/coverage-92%25%2F97%25%20(CI%20gate)-brightgreen" alt="覆盖率 CI 门禁：minimal-deps ≥92%、full-deps ≥97%（非实时数据）" />
   <a href="https://xiaomaozjj666.github.io/web-crawler/"><img src="https://img.shields.io/badge/docs-online-brightgreen" alt="文档站" /></a>
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" />
 </p>
@@ -56,7 +56,9 @@ flowchart TB
 - **JS 渲染** — `DynamicFetcher` 驱动 Playwright/Chromium 渲染动态页面，支持按资源类型屏蔽、按选择器等待。
 - **反爬处理** — `StealthyFetcher` 注入指纹补丁 JS、人类化鼠标/滚动轨迹，并对 Cloudflare 挑战做尽力而为的处理。
 - **代理轮换** — `ProxyPool` 支持轮询/随机策略与按代理失败次数冷却。
-- **Spider 框架** — `Spider` / `Request` 提供回调分发、优先级调度、域名过滤、指纹去重（method+url+body，`DupeFilter` 可插拔）、失败重试（指数退避）、可选 `robots.txt` 遵守与基于 JSON 的暂停/续跑。
+- **会话池** — `SessionPool` 池化 `curl_cffi` 会话并让 TLS 指纹随会话轮换（round_robin / random），带 LIFO 复用、池上限与临时超额、空闲回收、连续失败淘汰与预热；`Fetcher(session_pool=...)` 一行接入，DNS 钉扎在池化会话上同样生效。
+- **Spider 框架** — `Spider` / `Request` 提供回调分发、优先级调度、域名过滤、指纹去重（method+url+body，`DupeFilter` 可插拔）、失败重试（指数退避）、可选 `robots.txt` 遵守（含 `Crawl-delay` 遵守与三源延迟取最保守者）与基于 JSON 的暂停/续跑；`CacheMiddleware` 提供 GET 响应磁盘缓存（TTL、离线回放、可调存储目录），`AutoThrottle` 基于 EMA 响应延迟做自适应限速（对齐 Scrapy 语义），运行统计可经 `stats_output` 导出 JSON / JSONL（多次运行聚合分析）。
+- **统一异常体系** — 以 `WebCrawlerError` 为根的异常族（`UnsafeTargetError` / `FetchError` / `ParseError` / `ConfigError` / `InvalidStateError` / `AIProviderError`）：`except WebCrawlerError` 一次捕获库自身的错误，与环境错误精确区分；每个子类同时继承 `ValueError` / `RuntimeError`，既有捕获代码零破坏。
 - **统一 `Response`** — 所有 fetcher 返回同一 `Response` 对象，内置 `.css()` / `.xpath()` / `.json()` / `urljoin()` 辅助方法。
 - **AI 辅助抓取** — `AIExtractor` 把自然语言字段描述转换为校验过的 CSS 选择器（含自愈能力）；`AIScrapeAgent` 编排抓取与抽取，遵守 `robots.txt`，对 429/503 退避（遵循 `Retry-After`），遇到卡死会返回"转人工处理"。
 - **JS 逆向 Agent** — `ReverseAgent` 通过 **观察 → 思考 → 行动** 循环（`CamoufoxFetcher` + DeepSeek-V4.1-Flash）逆向目标站点的加密逻辑：注入 JS Hook（fetch / XHR / cookie / `crypto.subtle` / webpack / console）、捕获网络流量、拆分 webpack 包，再让 LLM 反混淆并在 Python 中重实现签名算法。内置 6 种真实浏览器交互动作（`click` / `type` / `scroll` / `press` / `hover` / `select_option`）、3 种多标签动作（`new_tab` / `switch_tab` / `close_tab`）与人类化输入轨迹；危险点击护栏与选择器注入拦截。同时通过 MCP 服务（`web-crawler-mcp`）、命令行（`web-crawler-reverse`）与 Web UI（SSE 实时推送 `/reverse/stream`）暴露。
@@ -366,6 +368,8 @@ python benchmarks.py --check-regression   # 性能回归检查（CI 模式）
 > 或直接 `pytest`，editable 安装后无需 `PYTHONPATH=src`）。
 
 GitHub Actions 在每次 push 时运行 lint、类型检查、带覆盖率的测试、基准回归检查与文档构建（`--strict`）；标记为 `@pytest.mark.slow` 的慢速测试（如 Camoufox 端到端套件）默认被排除。
+
+覆盖率徽章显示的是两个 CI 门禁值（`--cov-fail-under`：标准 test job 装 dev 依赖、门禁 92；`test-extras` job 装全量可选依赖、门禁 97），**非实时测量数据**——历史实测数字见 [CHANGELOG](CHANGELOG.md)。
 
 ## 合规说明
 

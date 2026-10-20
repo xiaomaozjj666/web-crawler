@@ -22,6 +22,8 @@ import json
 from typing import Any
 from urllib.request import Request, urlopen
 
+from ..exceptions import AIProviderError, ParseError
+
 
 class VisualExtractor:
     """用 VLM（OpenAI 兼容视觉 API）从截图分块中提取内容。
@@ -94,7 +96,7 @@ class VisualExtractor:
             VLM 提取出的文本内容。
         """
         if not tiles:
-            raise ValueError("tiles must not be empty")
+            raise ParseError("tiles must not be empty")
 
         # 限制分块数，保持在典型 VLM 上下文窗口内
         tiles = tiles[:max_tiles]
@@ -162,20 +164,20 @@ class VisualExtractor:
             with urlopen(req, timeout=self.timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except Exception as exc:
-            raise RuntimeError(f"VLM API call failed: {exc}") from exc
+            raise AIProviderError(f"VLM API call failed: {exc}") from exc
 
         # 提取助手消息
         choices = data.get("choices", [])
         if not choices:
             error_msg = data.get("error", {}).get("message", "unknown error")
-            raise RuntimeError(f"VLM API returned no choices: {error_msg}")
+            raise AIProviderError(f"VLM API returned no choices: {error_msg}")
 
         message = choices[0].get("message", {})
         content = message.get("content", "")
         if content is None:
             # 部分模型拒答时返回 null content
             finish = choices[0].get("finish_reason", "unknown")
-            raise RuntimeError(f"VLM returned empty content (finish_reason={finish})")
+            raise AIProviderError(f"VLM returned empty content (finish_reason={finish})")
 
         return str(content).strip()
 
@@ -203,7 +205,7 @@ class VisualExtractor:
             return self.extract(tiles, prompt, temperature=temperature, max_tiles=max_tiles)
 
         if not tiles:
-            raise ValueError("tiles must not be empty")
+            raise ParseError("tiles must not be empty")
 
         tiles = tiles[:max_tiles]
 
@@ -241,11 +243,11 @@ class VisualExtractor:
                 temperature=temperature,
             )
         except Exception as exc:
-            raise RuntimeError(f"VLM client call failed: {exc}") from exc
+            raise AIProviderError(f"VLM client call failed: {exc}") from exc
 
         content = response.choices[0].message.content
         if content is None:
-            raise RuntimeError("VLM returned empty content")
+            raise AIProviderError("VLM returned empty content")
         return str(content).strip()
 
 

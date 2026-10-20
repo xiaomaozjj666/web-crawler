@@ -29,6 +29,7 @@ from urllib.request import HTTPRedirectHandler, Request
 
 from web_crawler._ssrf import host_is_unsafe, is_power_mode, validate_url_host
 from web_crawler.app.crawler_models import ManifestRow, Resource
+from web_crawler.exceptions import UnsafeTargetError
 
 # 与 app.crawler 共用同一个 logger：UI 通过 attach_log_handler 挂到
 # "crawler" logger 的 handler 对所有模块日志生效，行为与拆分前一致。
@@ -253,9 +254,9 @@ class SafeRedirectHandler(HTTPRedirectHandler):
     ) -> Request | None:
         parsed = urlparse(newurl)
         if parsed.scheme not in {"http", "https"}:
-            raise ValueError(f"blocked redirect to non-http(s) URL: {newurl}")
+            raise UnsafeTargetError(f"blocked redirect to non-http(s) URL: {newurl}")
         if not _is_safe_hostname(parsed.hostname):
-            raise ValueError(f"blocked redirect to unsafe host: {newurl}")
+            raise UnsafeTargetError(f"blocked redirect to unsafe host: {newurl}")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 

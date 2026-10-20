@@ -14,6 +14,8 @@ from typing import Any
 
 from typing_extensions import Self
 
+from ..exceptions import InvalidStateError
+
 DEFAULT_DB_PATH = Path.home() / ".web_crawler" / "adaptive.sqlite3"
 
 _SCHEMA = """
@@ -50,7 +52,7 @@ class AdaptiveStorage:
     def _check_open(self) -> None:
         """使用前校验连接仍可用：关闭后给出明确错误而非 ProgrammingError。"""
         if self._closed:
-            raise RuntimeError("AdaptiveStorage has been closed")
+            raise InvalidStateError("AdaptiveStorage has been closed")
 
     def save(
         self,

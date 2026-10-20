@@ -1582,3 +1582,413 @@ async def test_dynamic_fetcher_async_get_alias_delegates_to_async_fetch() -> Non
     result = await DynamicFetcher.async_get(fake_self, "https://example.com/")
     assert result is sentinel
     mock_af.assert_awaited_once_with("https://example.com/")
+
+
+# ---------------------------------------------------------------------------
+# 状态持久化：storage_state / save_storage_state / user_data_dir / cdp_url
+# 组合语义：
+#   - storage_state（注入） + save_storage_state（导出）可组合；
+#   - user_data_dir 与 cdp_url / storage_state 互斥（构造期 ValueError）；
+#   - 全部不传时行为与历史版本完全一致（由上方既有测试零回归保证）。
+# ---------------------------------------------------------------------------
+def test_storage_state_path_passed_to_new_context() -> None:
+    """storage_state 路径原样透传给 new_context（登录态注入）。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+    f = DynamicFetcher(storage_state="auth.json", network_idle=False)
+    page = _make_sync_page()
+    ctx = _make_sync_context(page)
+    browser = _make_sync_browser(ctx)
+
+    f._render_page(browser, "https://example.com/x", None)
+    assert browser.new_context.call_args.kwargs["storage_state"] == "auth.json"
+    f.close()
+
+
+def test_storage_state_dict_passed_to_new_context() -> None:
+    """storage_state 支持内联 dict（同一对象引用透传）。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+    state: dict[str, Any] = {"cookies": [], "origins": []}
+    f = DynamicFetcher(storage_state=state, network_idle=False)
+    page = _make_sync_page()
+    ctx = _make_sync_context(page)
+    browser = _make_sync_browser(ctx)
+
+    f._render_page(browser, "https://example.com/x", None)
+    assert browser.new_context.call_args.kwargs["storage_state"] is state
+    f.close()
+
+
+def test_storage_state_absent_from_new_context_by_default() -> None:
+    """不配置 storage_state 时 new_context 不携带该参数（默认行为不变）。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+    f = DynamicFetcher(network_idle=False)
+    page = _make_sync_page()
+    ctx = _make_sync_context(page)
+    browser = _make_sync_browser(ctx)
+
+    f._render_page(browser, "https://example.com/x", None)
+    assert "storage_state" not in browser.new_context.call_args.kwargs
+    f.close()
+
+
+def test_save_storage_state_exported_before_context_close() -> None:
+    """save_storage_state：渲染结束在 context.close 之前调用 storage_state(path=...)。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+    f = DynamicFetcher(save_storage_state="auth.json", network_idle=False)
+    page = _make_sync_page()
+    ctx = _make_sync_context(page)
+    browser = _make_sync_browser(ctx)
+
+    out = f._render_page(browser, "https://example.com/x", None)
+    ctx.storage_state.assert_called_once_with(path="auth.json")
+    ctx.close.assert_called_once()
+    # 顺序约束：必须先导出再关闭（context 关闭后无法读取状态）
+    names = [c[0] for c in ctx.method_calls]
+    assert names.index("storage_state") < names.index("close")
+    assert out.status == 200
+    f.close()
+
+
+def test_save_storage_state_failure_warns_but_returns_response() -> None:
+    """导出失败仅发 RuntimeWarning，不影响渲染结果，也不阻塞 context.close。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+    f = DynamicFetcher(save_storage_state="auth.json", network_idle=False)
+    page = _make_sync_page()
+    ctx = _make_sync_context(page)
+    ctx.storage_state.side_effect = RuntimeError("disk full")
+    browser = _make_sync_browser(ctx)
+
+    with pytest.warns(RuntimeWarning, match="保存 storage state"):
+        out = f._render_page(browser, "https://example.com/x", None)
+    assert out.status == 200
+    ctx.close.assert_called_once()
+    f.close()
+
+
+def test_storage_state_passed_to_new_context_async() -> None:
+    """异步路径同样把 storage_state 透传给 new_context。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+
+    async def go() -> None:
+        f = DynamicFetcher(storage_state="auth.json", network_idle=False)
+        page = _make_async_page()
+        ctx = _make_async_context(page)
+        browser = _make_async_browser(ctx)
+
+        await f._render_page_async(browser, "https://example.com/x", None)
+        assert browser.new_context.call_args.kwargs["storage_state"] == "auth.json"
+        f.close()
+
+    import asyncio
+
+    asyncio.run(go())
+
+
+def test_save_storage_state_exported_before_close_async() -> None:
+    """异步路径：渲染结束 await context.storage_state(path=...) 且先于 close。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+
+    async def go() -> None:
+        f = DynamicFetcher(save_storage_state="auth.json", network_idle=False)
+        page = _make_async_page()
+        ctx = _make_async_context(page)
+        browser = _make_async_browser(ctx)
+
+        await f._render_page_async(browser, "https://example.com/x", None)
+        ctx.storage_state.assert_awaited_once_with(path="auth.json")
+        ctx.close.assert_awaited_once()
+        f.close()
+
+    import asyncio
+
+    asyncio.run(go())
+
+
+def test_screenshot_tiles_passes_storage_state_to_new_context() -> None:
+    """screenshot_tiles 路径同样注入 storage_state。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+    f = DynamicFetcher(storage_state="auth.json", network_idle=False)
+    page = _make_sync_page()
+    page.evaluate.return_value = {"width": 875.0, "height": 100.0}
+    page.screenshot.return_value = b"PNG"
+    ctx = _make_sync_context(page)
+    browser = _make_sync_browser(ctx)
+    f._browser = browser
+
+    f.screenshot_tiles("https://example.com/")
+    assert browser.new_context.call_args.kwargs["storage_state"] == "auth.json"
+    f.close()
+
+
+# ---------------------------------------------------------------------------
+# user_data_dir：launch_persistent_context（持久化 profile）
+# ---------------------------------------------------------------------------
+@pytest.mark.skipif(not compat.HAS_PLAYWRIGHT, reason="playwright not installed")
+@patch("playwright.sync_api.sync_playwright")
+def test_user_data_dir_uses_launch_persistent_context(mock_sync_pw: MagicMock) -> None:
+    """user_data_dir：走 launch_persistent_context 而非 launch+new_context。"""
+    f = DynamicFetcher(user_data_dir="pw-profile", network_idle=False)
+    page = _make_sync_page()
+    ctx = _make_sync_context(page)
+    mock_driver = MagicMock()
+    mock_driver.chromium.launch_persistent_context.return_value = ctx
+    mock_sync_pw.return_value.start.return_value = mock_driver
+
+    out = f.fetch("https://example.com/x")
+
+    mock_driver.chromium.launch.assert_not_called()
+    mock_driver.chromium.launch_persistent_context.assert_called_once()
+    args, kwargs = mock_driver.chromium.launch_persistent_context.call_args
+    assert args[0] == "pw-profile"
+    assert kwargs["headless"] is True
+    # persistent context 上直接 new_page（不调用 new_context）
+    ctx.new_page.assert_called_once()
+    # 渲染结束不关闭 persistent context（跨 fetch 复用）
+    ctx.close.assert_not_called()
+    assert out.status == 200
+    f.close()
+    ctx.close.assert_called_once()
+
+
+@pytest.mark.skipif(not compat.HAS_PLAYWRIGHT, reason="playwright not installed")
+@patch("playwright.sync_api.sync_playwright")
+def test_user_data_dir_context_reused_across_fetches(mock_sync_pw: MagicMock) -> None:
+    """persistent context 跨 fetch 复用：两次 fetch 仅启动一次、new_page 两次。"""
+    f = DynamicFetcher(user_data_dir="pw-profile", network_idle=False)
+    page = _make_sync_page()
+    ctx = _make_sync_context(page)
+    mock_driver = MagicMock()
+    mock_driver.chromium.launch_persistent_context.return_value = ctx
+    mock_sync_pw.return_value.start.return_value = mock_driver
+
+    f.fetch("https://example.com/a")
+    f.fetch("https://example.com/b")
+
+    assert mock_driver.chromium.launch_persistent_context.call_count == 1
+    assert ctx.new_page.call_count == 2
+    ctx.close.assert_not_called()
+    f.close()
+    ctx.close.assert_called_once()
+
+
+@pytest.mark.skipif(not compat.HAS_PLAYWRIGHT, reason="playwright not installed")
+@patch("playwright.sync_api.sync_playwright")
+def test_user_data_dir_fetch_exports_state_each_render_and_on_close(
+    mock_sync_pw: MagicMock,
+) -> None:
+    """persistent + save_storage_state：每次渲染导出一次，close 前导出最终态。"""
+    f = DynamicFetcher(
+        user_data_dir="pw-profile", save_storage_state="out.json", network_idle=False
+    )
+    page = _make_sync_page()
+    ctx = _make_sync_context(page)
+    mock_driver = MagicMock()
+    mock_driver.chromium.launch_persistent_context.return_value = ctx
+    mock_sync_pw.return_value.start.return_value = mock_driver
+
+    f.fetch("https://example.com/x")
+    # 每次渲染结束都写盘（文件始终是最近一次渲染的状态）
+    ctx.storage_state.assert_called_once_with(path="out.json")
+    ctx.close.assert_not_called()
+
+    f.close()
+    # close 前再次导出最终登录态，且顺序在 close 之前
+    assert ctx.storage_state.call_count == 2
+    names = [c[0] for c in ctx.method_calls]
+    last_export = [i for i, n in enumerate(names) if n == "storage_state"][-1]
+    assert last_export < names.index("close")
+    ctx.close.assert_called_once()
+
+
+def test_close_exports_storage_state_for_persistent_context() -> None:
+    """close() 对 persistent context：先 storage_state(path=...) 再 close。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+    f = DynamicFetcher(user_data_dir="pw-profile", save_storage_state="out.json")
+    ctx = _make_sync_context(_make_sync_page())
+    f._browser = ctx  # 模拟已启动的 persistent context
+
+    f.close()
+    ctx.storage_state.assert_called_once_with(path="out.json")
+    ctx.close.assert_called_once()
+    names = [c[0] for c in ctx.method_calls]
+    assert names.index("storage_state") < names.index("close")
+
+
+def test_aclose_exports_storage_state_for_persistent_context() -> None:
+    """aclose() 对 persistent context 同样先导出登录态再关闭。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+
+    async def go() -> None:
+        f = DynamicFetcher(user_data_dir="pw-profile", save_storage_state="out.json")
+        ctx = _make_async_context(_make_async_page())
+        f._async_browser = ctx  # 模拟已启动的 persistent context
+
+        await f.aclose()
+        ctx.storage_state.assert_awaited_once_with(path="out.json")
+        ctx.close.assert_awaited_once()
+
+    import asyncio
+
+    asyncio.run(go())
+
+
+def test_screenshot_tiles_persistent_reuses_context_and_sets_viewport() -> None:
+    """screenshot_tiles 在 persistent 模式下不 new_context，按需调整 page 视口。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+    f = DynamicFetcher(user_data_dir="pw-profile", network_idle=False)
+    page = _make_sync_page()
+    page.evaluate.return_value = {"width": 875.0, "height": 100.0}
+    page.screenshot.return_value = b"PNG"
+    ctx = _make_sync_context(page)
+    f._browser = ctx  # persistent context（无 browser.new_context）
+
+    tiles = f.screenshot_tiles("https://example.com/", viewport_width=875)
+    ctx.new_page.assert_called_once()
+    page.set_viewport_size.assert_called_once_with({"width": 875, "height": 768})
+    ctx.close.assert_not_called()
+    assert len(tiles) == 1
+    f.close()
+    ctx.close.assert_called_once()
+
+
+@pytest.mark.skipif(not compat.HAS_PLAYWRIGHT, reason="playwright not installed")
+@patch("playwright.async_api.async_playwright")
+def test_user_data_dir_async_uses_launch_persistent_context(mock_async_pw: Any) -> None:
+    """异步路径：user_data_dir 走 launch_persistent_context，context 跨 fetch 复用。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+
+    async def go() -> None:
+        f = DynamicFetcher(user_data_dir="pw-profile", network_idle=False)
+        page = _make_async_page()
+        ctx = _make_async_context(page)
+        mock_driver = AsyncMock()
+        mock_driver.chromium.launch_persistent_context = AsyncMock(return_value=ctx)
+        mock_async_pw.return_value.start = AsyncMock(return_value=mock_driver)
+
+        out = await f.async_fetch("https://example.com/x")
+
+        mock_driver.chromium.launch.assert_not_called()
+        mock_driver.chromium.launch_persistent_context.assert_awaited_once()
+        args, _ = mock_driver.chromium.launch_persistent_context.call_args
+        assert args[0] == "pw-profile"
+        ctx.new_page.assert_awaited_once()
+        ctx.close.assert_not_awaited()
+        assert out.status == 200
+        await f.aclose()
+        ctx.close.assert_awaited_once()
+
+    import asyncio
+
+    asyncio.run(go())
+
+
+# ---------------------------------------------------------------------------
+# cdp_url：connect_over_cdp 接管已有浏览器（优先级最高）
+# ---------------------------------------------------------------------------
+@pytest.mark.skipif(not compat.HAS_PLAYWRIGHT, reason="playwright not installed")
+@patch("playwright.sync_api.sync_playwright")
+def test_cdp_url_connects_over_cdp_and_renders(mock_sync_pw: MagicMock) -> None:
+    """cdp_url：用 connect_over_cdp 连接，渲染仍走 new_context。"""
+    f = DynamicFetcher(cdp_url="http://localhost:9222", network_idle=False)
+    page = _make_sync_page()
+    ctx = _make_sync_context(page)
+    browser = _make_sync_browser(ctx)
+    mock_driver = MagicMock()
+    mock_driver.chromium.connect_over_cdp.return_value = browser
+    mock_sync_pw.return_value.start.return_value = mock_driver
+
+    out = f.fetch("https://example.com/x")
+
+    mock_driver.chromium.connect_over_cdp.assert_called_once_with("http://localhost:9222")
+    mock_driver.chromium.launch.assert_not_called()
+    # CDP 浏览器上正常 new_context 渲染
+    browser.new_context.assert_called_once()
+    ctx.close.assert_called_once()
+    assert out.status == 200
+    f.close()
+    # close 仅断开连接（disconnect），不杀外部浏览器进程
+    browser.close.assert_called_once()
+
+
+@pytest.mark.skipif(not compat.HAS_PLAYWRIGHT, reason="playwright not installed")
+@patch("playwright.async_api.async_playwright")
+def test_cdp_url_async_connects_over_cdp(mock_async_pw: Any) -> None:
+    """异步路径：cdp_url 走 connect_over_cdp，aclose 仅 disconnect。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+
+    async def go() -> None:
+        f = DynamicFetcher(cdp_url="http://localhost:9222", network_idle=False)
+        page = _make_async_page()
+        ctx = _make_async_context(page)
+        browser = _make_async_browser(ctx)
+        mock_driver = AsyncMock()
+        mock_driver.chromium.connect_over_cdp = AsyncMock(return_value=browser)
+        mock_async_pw.return_value.start = AsyncMock(return_value=mock_driver)
+
+        out = await f.async_fetch("https://example.com/x")
+
+        mock_driver.chromium.connect_over_cdp.assert_awaited_once_with("http://localhost:9222")
+        mock_driver.chromium.launch.assert_not_called()
+        browser.new_context.assert_awaited_once()
+        assert out.status == 200
+        await f.aclose()
+        # disconnect 语义：close 被调用，但不杀外部浏览器
+        browser.close.assert_awaited_once()
+
+    import asyncio
+
+    asyncio.run(go())
+
+
+# ---------------------------------------------------------------------------
+# 组合校验与 playwright 缺失降级
+# ---------------------------------------------------------------------------
+def test_cdp_url_with_user_data_dir_raises_value_error() -> None:
+    """cdp_url 与 user_data_dir 互斥；报错信息给出可操作的去向。"""
+    with pytest.raises(ValueError, match="cdp_url 与 user_data_dir"):
+        DynamicFetcher(cdp_url="http://localhost:9222", user_data_dir="pw-profile")
+
+
+def test_user_data_dir_with_storage_state_raises_value_error() -> None:
+    """user_data_dir 与 storage_state 互斥（持久化 profile 自带登录态）。"""
+    with pytest.raises(ValueError, match="user_data_dir 与 storage_state"):
+        DynamicFetcher(user_data_dir="pw-profile", storage_state="auth.json")
+
+
+def test_cdp_url_with_storage_state_is_valid_combination() -> None:
+    """cdp_url + storage_state 合法：CDP 浏览器上 new_context 注入登录态。"""
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+    f = DynamicFetcher(cdp_url="http://localhost:9222", storage_state="auth.json")
+    assert f.cdp_url == "http://localhost:9222"
+    assert f.storage_state == "auth.json"
+    f.close()
+
+
+def test_param_validation_precedes_playwright_missing() -> None:
+    """组合校验先于 require_playwright：参数错误不被 ImportError 掩盖。
+
+    对齐 test_init_raises_when_playwright_missing 的降级 mock 模式——
+    即使 playwright 缺失，互斥参数仍先得到可操作的 ValueError。
+    """
+    with (
+        patch(
+            "web_crawler.fetchers.dynamic.require_playwright",
+            side_effect=ImportError("playwright is required"),
+        ),
+        pytest.raises(ValueError, match="cdp_url 与 user_data_dir"),
+    ):
+        DynamicFetcher(cdp_url="http://localhost:9222", user_data_dir="pw-profile")

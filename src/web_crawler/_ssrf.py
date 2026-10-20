@@ -27,8 +27,9 @@ Power Mode
 scheme 白名单始终保留）。它面向确需访问私网 / 链路本地目标（局域网服务、
 云元数据）的可信个人环境——公开或共享部署切勿开启。
 
-本模块刻意只用标准库，以便 ``web_crawler.fetchers``、``app.crawler_net``
-与测试套件直接导入，而无需引入 lxml / playwright / curl_cffi。
+本模块刻意只用标准库与本包零第三方依赖的 :mod:`web_crawler.exceptions`
+（统一异常体系），以便 ``web_crawler.fetchers``、``app.crawler_net``、
+``mcp`` 门禁与测试套件直接导入，而无需引入 lxml / playwright / curl_cffi。
 """
 
 from __future__ import annotations
@@ -40,6 +41,8 @@ import socket
 import threading
 import time
 from urllib.parse import urlparse
+
+from .exceptions import UnsafeTargetError
 
 _log = logging.getLogger(__name__)
 
@@ -182,11 +185,18 @@ def _ipv4_from_noncanonical(host: str) -> ipaddress.IPv4Address | None:
     return ipaddress.IPv4Address(value)
 
 
-def is_private_ip(host: str) -> bool:
-    """``host`` 是 IP 字面量且落在被拒绝范围时返回 True，否则 False。
+def normalize_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """把 ``host`` 归一化为 IP 地址对象；非 IP 字面量时返回 ``None``。
 
-    除标准点分写法外，也识别 inet_aton 兼容的非点分 IPv4 字面量
-    （``2130706433``/``127.1``/``0177.0.0.1``/``0x7f000001``）。
+    覆盖标准点分 IPv4 / IPv6 字面量、inet_aton 兼容的非点分 IPv4 写法
+    （``2130706433``/``127.1``/``0177.0.0.1``/``0x7f000001``，见
+    :func:`_ipv4_from_noncanonical`）以及 IPv4-mapped IPv6 的显式解包
+    （``::ffff:127.0.0.1`` → :class:`IPv4Address`——旧 CPython <3.12.4
+    上其 ``is_private`` 为 False，不解包即可被误判为公网）；IPv6 zone id
+    （``fe80::1%eth0``）先剥离。
+
+    供 fetchers 钉扎与 MCP 门禁（``mcp/_ssrf_gate.py``）共用同一份
+    归一化，避免多处各写一份而产生判定分叉。
     """
     candidate = host.strip().lower()
     # IPv6 zone id（如 fe80::1%eth0）无法被 ipaddress 解析，先剥离
@@ -196,10 +206,23 @@ def is_private_ip(host: str) -> bool:
         addr: ipaddress.IPv4Address | ipaddress.IPv6Address = ipaddress.ip_address(candidate)
     except ValueError:
         if candidate and set(candidate) <= _IPV4_LITERAL_CHARS:
-            normalized = _ipv4_from_noncanonical(candidate)
-            if normalized is None:
-                return False
-            return _is_blocked_ip(normalized)
+            return _ipv4_from_noncanonical(candidate)
+        return None
+    if isinstance(addr, ipaddress.IPv6Address):
+        mapped = addr.ipv4_mapped
+        if mapped is not None:
+            return mapped
+    return addr
+
+
+def is_private_ip(host: str) -> bool:
+    """``host`` 是 IP 字面量且落在被拒绝范围时返回 True，否则 False。
+
+    除标准点分写法外，也识别 inet_aton 兼容的非点分 IPv4 字面量
+    （``2130706433``/``127.1``/``0177.0.0.1``/``0x7f000001``）。
+    """
+    addr = normalize_ip_literal(host)
+    if addr is None:
         return False
     return _is_blocked_ip(addr)
 
@@ -252,7 +275,12 @@ def host_is_unsafe(host: str | None, *, resolve: bool = False) -> bool:
 
 
 def validate_url_host(url: str, *, resolve: bool = False) -> None:
-    """URL 的 host 不安全（私网/环回/链路本地等）时抛出 :class:`ValueError`。
+    """URL 的 host 不安全（私网/环回/链路本地等）时抛出
+    :class:`~web_crawler.exceptions.UnsafeTargetError`。
+
+    ``UnsafeTargetError`` 同时是 :class:`ValueError` 子类（兼容式异常
+    体系），既有 ``except ValueError`` / ``pytest.raises(ValueError)``
+    断言不受影响；新代码可统一 ``except WebCrawlerError`` 捕获。
 
     Power Mode（``WEB_CRAWLER_POWER_MODE=1``）下放行 host 校验（scheme 白名单
     由 :func:`validate_url_scheme` 独立保证，始终生效）。
@@ -261,7 +289,7 @@ def validate_url_host(url: str, *, resolve: bool = False) -> None:
         return
     host = urlparse(url).hostname
     if host_is_unsafe(host, resolve=resolve):
-        raise ValueError(f"blocked URL with unsafe host: {url}")
+        raise UnsafeTargetError(f"blocked URL with unsafe host: {url}")
 
 
 __all__ = [
@@ -269,5 +297,6 @@ __all__ = [
     "is_power_mode",
     "is_private_ip",
     "is_unsafe_hostname",
+    "normalize_ip_literal",
     "validate_url_host",
 ]

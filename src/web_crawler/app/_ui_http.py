@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import uuid
 from http.server import BaseHTTPRequestHandler
@@ -21,6 +22,7 @@ from ._ui_helpers import (
     DEFAULT_BLOCK_KEYWORDS,
     DEFAULT_OUTPUT,
     PAGE,
+    _is_loopback_host,
     _normalize_imported_config,
     _open_folder,
     _task_config_for_db,
@@ -42,9 +44,91 @@ from ._ui_state import (
 
 _log = logging.getLogger(__name__)
 
+# Host 头主机部分的合法形式：括号 IPv6 字面量（[::1] / [fe80::1%12]）
+# 或常规 reg-name / IPv4（字母数字点横线）。含 / \ ? # @ : 等保留字符的
+# 一律视为畸形，拒绝。
+_HOST_LITERAL_RE = re.compile(r"^(?:\[[0-9a-fA-F:.%]+\]|[0-9a-zA-Z._\-]+)$")
+
+
+def _split_host_port(value: str) -> tuple[str, str]:
+    """拆分 Host 头的 host 与 port 部分；支持 ``[::1]:8765`` 括号 IPv6 形式。
+
+    返回 ``(host, port)``；port 为空字符串表示未携带端口。
+    畸形形式（未闭合括号、裸端口 ``:8765`` 等）原样返回，
+    交由 :func:`_host_header_allowed` 的形式校验统一拒绝。
+    """
+    if value.startswith("["):
+        closing = value.find("]")
+        if closing == -1:
+            return value, ""
+        host = value[: closing + 1]
+        rest = value[closing + 1 :]
+        if rest and not rest.startswith(":"):
+            return "", ""  # 括号后跟杂字符（如 [::1]x），判畸形
+        return host, rest[1:] if rest else ""
+    host, sep, port = value.rpartition(":")
+    if not sep or not host:
+        return value, ""
+    return host, port
+
+
+def _host_header_allowed(host_header: str, bind_host: str, bind_port: int) -> bool:
+    """校验 Host 头是否为服务绑定地址的预期形式（防 DNS rebinding）。
+
+    DNS rebinding 攻击（attacker.com 先解析到攻击者服务器加载恶意页面，
+    TTL 过后再 rebind 到本机绑定地址）下，浏览器发出的 Origin 与 Host
+    同为 ``attacker.com:port``，仅比对 ``Origin == Host`` 无法拦截；
+    必须校验 Host 是否命中本地地址白名单（Jupyter 同款标准防护）。
+
+    校验策略与取舍（「远程可用性」vs「安全」）：
+
+    - 回环绑定（默认 127.0.0.1:8765）：白名单 = ``{127.0.0.1, localhost,
+      [::1]}`` 加绑定地址自身，且端口必须精确匹配绑定端口。rebinding
+      域名不在白名单内，天然被拒。
+    - ``--allow-remote`` 远程绑定（0.0.0.0 等）：远程访问的主机名（局域网
+      IP / NAT 域名 / Docker 宿主机映射名）不可枚举，无法构建白名单。
+      此时保留「非空、无 userinfo 混淆、形式合法、端口匹配」下限校验，
+      挡住畸形与端口混淆请求；rebinding 域名在该模式下与正常远程访问
+      在 Host 上不可区分，安全边界由用户显式 ``--allow-remote`` 时自行
+      承担（控制面无鉴权，仅建议可信网络，与 CLI help 声明一致）。
+    - Host 缺失（HTTP/1.0 客户端）：fail-closed 一律拒绝。HTTP/1.1
+      （RFC 9112 §7.2）强制 Host，现代浏览器与 curl/httpx 默认携带；
+      缺失只可能来自畸形或古老客户端，放行等于打开绕过 Host 校验的
+      口子，而拒绝的可用性损失极小。
+    """
+    host_header = host_header.strip()
+    if not host_header:
+        return False
+    if "@" in host_header:  # userinfo 混淆形式（a@b）不在 Host 头合法语法内
+        return False
+
+    host_part, port_part = _split_host_port(host_header)
+    host_part = host_part.lower()
+    if not _HOST_LITERAL_RE.fullmatch(host_part):
+        return False
+
+    # 端口必须与绑定端口一致；无端口形式仅在服务真监听 80 端口时合法
+    if port_part:
+        if port_part != str(bind_port):
+            return False
+    elif bind_port != 80:
+        return False
+
+    if _is_loopback_host(bind_host):
+        # 绑定主机为 IPv6 时取括号形式（与 Host 头的规范写法一致）
+        bind_norm = f"[{bind_host.lower()}]" if ":" in bind_host else bind_host.lower()
+        allowed = {"127.0.0.1", "localhost", "[::1]", bind_norm}
+        return host_part in allowed
+    # 远程绑定：形式合法 + 端口匹配即放行（取舍见 docstring）
+    return True
+
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
+        # DNS rebinding 防护：所有端点一视同仁，Host 不在白名单直接 403
+        if not self._is_host_allowed():
+            self._reject_host()
+            return
         path = urlparse(self.path).path
         if self.path in {"/", "/index.html"}:
             self.respond(
@@ -165,6 +249,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self) -> None:
+        # DNS rebinding 防护：所有端点一视同仁，Host 不在白名单直接 403
+        if not self._is_host_allowed():
+            self._reject_host()
+            return
         if not self._is_same_origin_request():
             # 先消费请求体再响应：未读尽的 body + keep-alive 会在 Windows 上
             # 触发连接重置（WinError 10053），客户端收不到 JSON 错误
@@ -343,6 +431,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_DELETE(self) -> None:
+        # DNS rebinding 防护：所有端点一视同仁，Host 不在白名单直接 403
+        if not self._is_host_allowed():
+            self._reject_host()
+            return
         if not self._is_same_origin_request():
             self.close_connection = True  # 拒绝后关闭连接，避免 keep-alive 状态错乱
             self.respond_json({"ok": False, "error": "跨站请求被拒绝"})
@@ -360,11 +452,44 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length).decode("utf-8", errors="replace")
         return parse_qs(body)
 
+    def _is_host_allowed(self) -> bool:
+        """Host 头白名单校验入口：取 socket 实际绑定地址后调用纯函数判定。
+
+        绑定地址来自 ``self.server.server_address``（bind 后由
+        ``getsockname()`` 写回实际端口），Handler 无需感知启动参数。
+        """
+        # typeshed 将 BaseServer.server_address 标注为宽类型（str/Buffer 也合法），
+        # ThreadingHTTPServer 实际恒为 (host, port) 二元组，cast 收窄
+        bind_host, bind_port = cast("tuple[str, int]", self.server.server_address)
+        host_header = self.headers.get("Host", "")
+        return _host_header_allowed(host_header, bind_host, bind_port)
+
+    def _reject_host(self) -> None:
+        """Host 白名单校验失败：统一 403 + 简短 JSON 错误体。"""
+        # 先消费请求体再响应：未读尽的 body + keep-alive 会在 Windows 上
+        # 触发连接重置（WinError 10053），客户端收不到 JSON 错误
+        self.close_connection = True
+        if self.command == "POST":
+            try:
+                self.read_form()
+            except (ValueError, OSError):  # pragma: no cover - 畸形请求的兜底
+                pass
+        self.respond_json(
+            {"ok": False, "error": "Host 校验失败，请求被拒绝（DNS rebinding 防护）"},
+            status=403,
+        )
+
     def _is_same_origin_request(self) -> bool:
         """CSRF 防护：校验 Origin/Referer 与请求 Host 同源。
 
         无 Origin/Referer 的请求（curl、本机脚本）放行；
         携带跨站 Origin/Referer 的请求（恶意网页表单/图片）一律拒绝。
+
+        与 Host 白名单（``_is_host_allowed``）构成纵深防御，互不可替代：
+        Host 白名单拦 DNS rebinding（Origin==Host==attacker.com 的场景
+        Host 不在白名单）；本方法拦经典跨站 CSRF（恶意页面直连本机
+        地址，Origin≠Host——此时 Host 合法、白名单放行）。
+        在 Host 校验加固后仍有保留必要。
         """
         host = self.headers.get("Host", "")
         for header_name in ("Origin", "Referer"):
@@ -392,9 +517,9 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return None
 
-    def respond_json(self, payload: dict[str, object]) -> None:
+    def respond_json(self, payload: dict[str, object], status: int = 200) -> None:
         self.respond(
-            200,
+            status,
             json.dumps(payload, ensure_ascii=False).encode("utf-8"),
             "application/json; charset=utf-8",
         )

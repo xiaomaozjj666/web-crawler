@@ -33,6 +33,7 @@ from ..ai.analyzer import JSAnalyzer
 from ..ai.captcha import CaptchaManager
 from ..ai.hooks import HookLibrary, generate_combined_script
 from ..ai.llm import get_provider
+from ..exceptions import UnsafeTargetError
 from ..fetchers.camoufox import CamoufoxFetcher
 
 # ReverseAgent 模块在项目中可能尚未落地，做容错导入；缺失时相关工具降级。
@@ -183,7 +184,7 @@ class ReverseMCPServer(ReverseToolsMixin, PentestToolsMixin, StdioTransportMixin
         """
         gate_error = _check_url(url)
         if gate_error:
-            raise ValueError(gate_error)
+            raise UnsafeTargetError(gate_error)
         fetcher = self._get_fetcher()
         with self._browser_lock:
             # _ensure_browser 是 CamoufoxFetcher 的 protected 方法，这里需要拿到

@@ -1,7 +1,8 @@
 """Scrapling/Scrapy 风格的 spider 框架。
 
 轻量、低依赖的 spider 引擎，以基于回调的请求/响应管道驱动隐身 fetcher，
-提供广度优先调度、域名过滤与落盘的暂停/恢复状态。
+提供广度优先调度、域名过滤、落盘的暂停/恢复状态与 GET 响应磁盘缓存
+（:class:`CacheMiddleware`，支持 TTL 与离线回放）。
 
 Example
 -------
@@ -18,6 +19,8 @@ Example
 
 from __future__ import annotations
 
+from .autothrottle import AutoThrottle
+from .cache import CacheMiddleware
 from .spider import (
     DownloaderMiddleware,
     DropItem,
@@ -31,6 +34,8 @@ from .spider import (
 )
 
 __all__ = [
+    "AutoThrottle",
+    "CacheMiddleware",
     "DownloaderMiddleware",
     "DropItem",
     "DupeFilter",

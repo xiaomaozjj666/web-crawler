@@ -30,6 +30,8 @@ import textwrap
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..exceptions import InvalidStateError
+
 logger = logging.getLogger(__name__)
 
 
@@ -489,7 +491,7 @@ class ReplayRunner:
         """执行已加载的脚本。"""
         replay_fn = self._namespace.get("replay")
         if replay_fn is None:
-            raise RuntimeError("no replay() function loaded; call load_script() first")
+            raise InvalidStateError("no replay() function loaded; call load_script() first")
         return replay_fn(url=url, fetcher=fetcher)
 
 

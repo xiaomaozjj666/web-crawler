@@ -33,16 +33,22 @@
   思考 prompt 组装；
 - ``_reverse_support``：数据结构（``Observation`` / ``Action`` /
   ``ReverseAgentConfig``）、SSRF 校验、hook 记录参数搜索、JS 抓取
-  与最优 fragment 评分等纯助手。
+  与最优 fragment 评分等纯助手；
+- ``_reverse_actions``：动作执行层（``ActionExecutor`` mixin），承载
+  动作分发器 ``_act_async``、降级动作 ``_fallback_action`` 与全部浏览器
+  交互动作（click / type / scroll / press / hover / select_option /
+  new_tab / switch_tab / close_tab 及 humanize 变体），纯移动自本模块、
+  行为零变化。
 
-与 self 状态强耦合的主循环（``run`` / ``arun``）、动作执行
-（``_do_*_async``）与页面监听仍保留在本模块。
+本模块保留 Agent 编排层（对标 browser-use 的编排/执行分层）：主循环
+（``run`` / ``arun``）、观察、思考、Hook 注入、页面创建/恢复/监听、
+截图、checkpoint 与资源清理；``ReverseAgent`` 继承 ``ActionExecutor``
+获得动作执行能力，公开签名与历史导入路径保持不变。
 """
 
 from __future__ import annotations
 
 import asyncio
-import random
 import time
 from pathlib import Path
 from typing import Any
@@ -51,6 +57,7 @@ from typing_extensions import Self
 
 from ..fetchers.camoufox import CamoufoxFetcher
 from ._jsonutil import extract_json as _extract_json
+from ._reverse_actions import ActionExecutor
 from ._reverse_prompt import (
     THINK_SYSTEM_PROMPT as _THINK_SYSTEM_PROMPT,
 )
@@ -67,9 +74,9 @@ from ._reverse_support import (
     Action,
     Observation,
     ReverseAgentConfig,
-    fallback_action,
     fetch_script_fragments,
     is_safe_script_url,
+    js_str,
     list_checkpoint_snapshots,
     merge_hook_data,
     pick_best_fragment,
@@ -77,9 +84,6 @@ from ._reverse_support import (
     safe_page_url,
     sanitize_filename_component,
     search_param_in_records,
-)
-from ._reverse_support import (
-    js_str as _js_str,
 )
 from .analyzer import AnalysisResult, JSAnalyzer, JSFragment
 from .captcha import CaptchaManager, CaptchaType
@@ -116,18 +120,27 @@ from .watchdog import (
 # prompt 实现已迁至 _reverse_prompt（纯函数层），这里保留可导入的历史别名。
 _THINK_USER_TEMPLATE = THINK_USER_TEMPLATE
 
+# _js_str 同样被测试与外部代码 `from web_crawler.ai.reverse_agent import _js_str`
+# 直接引用；其唯一使用方（_do_scroll_async）已随动作执行层迁至
+# _reverse_actions，这里保留可导入的历史别名（与 _THINK_USER_TEMPLATE 同模式）。
+_js_str = js_str
+
 
 # ---------------------------------------------------------------------------
 # 主 Agent
 # ---------------------------------------------------------------------------
 
 
-class ReverseAgent:
+class ReverseAgent(ActionExecutor):
     """JS 逆向 Agent 主循环。
 
     编排浏览器、Hook、AI 分析器、验证码处理，形成"观察-思考-行动"的自主循环。
     同步入口 :meth:`run` 与异步入口 :meth:`arun` 共享同一套配置与分析器，
     适用于定位前端动态生成的加密参数（Anti-Content / X-Bogus / _signature 等）。
+
+    动作执行能力（``_act_async`` / ``_do_*_async`` 等）来自
+    :class:`~web_crawler.ai._reverse_actions.ActionExecutor` mixin
+    （纯移动拆分，行为与异常消息零变化）。
     """
 
     # ------------------------------------------------------------------
@@ -826,290 +839,11 @@ class ReverseAgent:
             )
         return Action.from_dict(data)
 
-    def _fallback_action(self, observation: Observation) -> Action:
-        """AI 分析失败时的降级动作（实现见 _reverse_support.fallback_action）。
-
-        ``observation`` 仅为保持历史签名；降级策略只依赖目标参数配置。
-        """
-        return fallback_action(self.config.target_params)
-
     # ------------------------------------------------------------------
-    # 行动
+    # 行动：动作分发与浏览器交互执行已迁至 _reverse_actions.ActionExecutor
+    # （_act_async / _fallback_action / _do_*_async / _humanize_*_async /
+    # _resolve_tab / _INTERACTION_TIMEOUT 纯移动迁出，行为零变化）
     # ------------------------------------------------------------------
-
-    async def _act_async(self, page: Any, action: Action, *, step: int = 0) -> Any:
-        """异步执行动作。"""
-        atype = action.action_type
-        if atype == "navigate":
-            url = action.params.get("url")
-            if url:
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                await asyncio.sleep(self.config.wait_after_navigate)
-            return None
-        if atype == "inject_hook":
-            hooks = action.params.get("hooks")
-            return await self._inject_hooks_async(page, hooks)
-        if atype == "analyze_js":
-            scripts = action.params.get("script_urls", [])
-            target_params = action.params.get("target_params", self.config.target_params or [])
-            return await self._analyze_captured_js_async(scripts, target_params)
-        if atype == "wait":
-            seconds = float(action.params.get("seconds", 1.0))
-            await asyncio.sleep(max(0.1, min(seconds, 30.0)))
-            return None
-        if atype == "extract":
-            param_name = action.params.get("param_name", "")
-            if not param_name:
-                return None
-            return await self._try_extract_param_async(page, param_name)
-        if atype == "solve_captcha":
-            # CaptchaManager.handle 是同步的，丢到线程池避免阻塞事件循环
-            return await asyncio.to_thread(self.captcha_manager.handle, page)
-        if atype == "click":
-            await self._do_click_async(page, action, step=step)
-            return None
-        if atype == "type":
-            await self._do_type_async(page, action, step=step)
-            return None
-        if atype == "scroll":
-            await self._do_scroll_async(page, action, step=step)
-            return None
-        if atype == "press":
-            await self._do_press_async(page, action, step=step)
-            return None
-        if atype == "hover":
-            await self._do_hover_async(page, action, step=step)
-            return None
-        if atype == "select_option":
-            await self._do_select_option_async(page, action, step=step)
-            return None
-        if atype == "new_tab":
-            await self._do_new_tab_async(page, action, step=step)
-            return None
-        if atype == "switch_tab":
-            await self._do_switch_tab_async(page, action, step=step)
-            return None
-        if atype == "close_tab":
-            await self._do_close_tab_async(page, action, step=step)
-            return None
-        if atype == "done":
-            # done 由主循环在外层处理，_act_async 内不执行
-            return None
-        # 未知动作类型：抛错进入 act_error 路径，写入 history 便于审计
-        raise ValueError(f"未知动作类型: {atype!r}")
-
-    # ------------------------------------------------------------------
-    # 浏览器交互动作（click / type / scroll / press / hover / select_option）
-    # ------------------------------------------------------------------
-
-    # 所有交互动作统一设 10s 超时；超时抛 TimeoutError 由外层 _act 调用处捕获
-    _INTERACTION_TIMEOUT = 10000
-
-    async def _do_click_async(self, page: Any, action: Action, *, step: int) -> None:
-        """异步：点击元素。``humanize_input`` 启用时先 hover 再随机延迟后点击。"""
-        selector = action.params.get("selector", "")
-        if not selector:
-            raise ValueError("click 动作需要 selector 参数")
-        button = action.params.get("button", "left")
-        if self.config.humanize_input:
-            await self._humanize_click_async(page, selector, button=button)
-            self._emit("browser.action.humanized", step=step, action="click")
-        else:
-            await page.click(selector, button=button, timeout=self._INTERACTION_TIMEOUT)
-        self._emit(
-            "browser.action",
-            step=step,
-            action="click",
-            selector=selector,
-            button=button,
-        )
-
-    async def _humanize_click_async(
-        self, page: Any, selector: str, *, button: str = "left"
-    ) -> None:
-        """异步人类化点击：先 hover 移动鼠标，随机延迟 50-200ms 后再 click。"""
-        try:
-            await page.hover(selector, timeout=self._INTERACTION_TIMEOUT)
-        except Exception:
-            pass
-        await asyncio.sleep(random.uniform(0.05, 0.2))
-        await page.click(selector, button=button, timeout=self._INTERACTION_TIMEOUT)
-
-    async def _do_type_async(self, page: Any, action: Action, *, step: int) -> None:
-        """异步：在输入框输入文本（默认先清空）。``humanize_input`` 启用时逐字符随机延迟。"""
-        selector = action.params.get("selector", "")
-        text = action.params.get("text", "")
-        if not selector:
-            raise ValueError("type 动作需要 selector 参数")
-        clear = action.params.get("clear", True)
-        if clear:
-            await page.fill(selector, "", timeout=self._INTERACTION_TIMEOUT)
-        if self.config.humanize_input:
-            await self._humanize_type_async(page, selector, str(text))
-            self._emit("browser.action.humanized", step=step, action="type")
-        else:
-            await page.type(selector, text, timeout=self._INTERACTION_TIMEOUT)
-        self._emit(
-            "browser.action",
-            step=step,
-            action="type",
-            selector=selector,
-            text_length=len(str(text)),
-        )
-
-    async def _humanize_type_async(self, page: Any, selector: str, text: str) -> None:
-        """异步人类化输入：先 focus 元素，随机停顿后用 delay 逐键输入。"""
-        try:
-            await page.focus(selector, timeout=self._INTERACTION_TIMEOUT)
-        except Exception:
-            pass
-        await asyncio.sleep(random.uniform(0.1, 0.3))
-        delay_ms = random.randint(30, 150)
-        try:
-            await page.type(selector, text, delay=delay_ms)
-        except TypeError:
-            await page.type(selector, text)
-
-    async def _do_scroll_async(self, page: Any, action: Action, *, step: int) -> None:
-        """异步：滚动页面或元素。"""
-        selector = action.params.get("selector")
-        x = int(action.params.get("x", 0))
-        y = int(action.params.get("y", 800))
-        if selector:
-            await page.evaluate(f"document.querySelector({_js_str(selector)})?.scrollBy({x}, {y})")
-        else:
-            await page.evaluate(f"window.scrollBy({x}, {y})")
-        self._emit(
-            "browser.action",
-            step=step,
-            action="scroll",
-            selector=selector,
-            x=x,
-            y=y,
-        )
-
-    async def _do_press_async(self, page: Any, action: Action, *, step: int) -> None:
-        """异步：按键（可先聚焦到指定元素）。"""
-        key = action.params.get("key", "Enter")
-        selector = action.params.get("selector")
-        if selector:
-            await page.focus(selector, timeout=self._INTERACTION_TIMEOUT)
-        await page.press(key)
-        self._emit(
-            "browser.action",
-            step=step,
-            action="press",
-            key=key,
-            selector=selector,
-        )
-
-    async def _do_hover_async(self, page: Any, action: Action, *, step: int) -> None:
-        """异步：鼠标悬停。"""
-        selector = action.params.get("selector", "")
-        if not selector:
-            raise ValueError("hover 动作需要 selector 参数")
-        await page.hover(selector, timeout=self._INTERACTION_TIMEOUT)
-        self._emit(
-            "browser.action",
-            step=step,
-            action="hover",
-            selector=selector,
-        )
-
-    async def _do_select_option_async(self, page: Any, action: Action, *, step: int) -> None:
-        """异步：下拉选择。"""
-        selector = action.params.get("selector", "")
-        value = action.params.get("value", "")
-        if not selector:
-            raise ValueError("select_option 动作需要 selector 参数")
-        await page.select_option(selector, value, timeout=self._INTERACTION_TIMEOUT)
-        self._emit(
-            "browser.action",
-            step=step,
-            action="select_option",
-            selector=selector,
-            value=value,
-        )
-
-    # ------------------------------------------------------------------
-    # 多标签页管理（new_tab / switch_tab / close_tab）
-    # ------------------------------------------------------------------
-
-    async def _do_new_tab_async(self, page: Any, action: Action, *, step: int) -> None:
-        """异步：新建标签页并导航到指定 URL，切换 self._page 到新标签。"""
-        url = action.params.get("url", "")
-        name = action.params.get("name") or f"tab_{len(self._tabs)}"
-        assert self._context is not None
-        new_page = await self._context.new_page()
-        try:
-            await self.fetcher._setup_page_async(new_page)  # type: ignore[union-attr]
-        except Exception:
-            pass
-        self._setup_page_listeners(new_page)
-        self._tabs[name] = new_page
-        if "main" not in self._tabs:
-            self._tabs["main"] = page
-        if url:
-            # 深度防御：new_tab 的导航 URL 再走一次护栏检查（循环层已检查 new_tab 动作）
-            nav_check = self.guard.check_navigation_url(url) if self.guard is not None else None
-            if nav_check is not None and nav_check.denied:
-                self._emit(
-                    "guard.deny",
-                    step=step,
-                    matched_rules=nav_check.matched_rules,
-                    details=nav_check.details,
-                )
-            else:
-                await new_page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                await asyncio.sleep(self.config.wait_after_navigate)
-        self._page = new_page
-        self._emit(
-            "browser.action",
-            step=step,
-            action="new_tab",
-            name=name,
-            url=url,
-        )
-
-    async def _do_switch_tab_async(self, page: Any, action: Action, *, step: int) -> None:
-        """异步：切换到指定标签页（按 name 或 index）。"""
-        name = action.params.get("name")
-        index = action.params.get("index")
-        target = self._resolve_tab(name=name, index=index)
-        if target is None:
-            raise ValueError(f"switch_tab: 找不到标签页 (name={name!r}, index={index!r})")
-        self._page = target
-        try:
-            await target.bring_to_front()
-        except Exception:
-            pass
-        self._emit("browser.action", step=step, action="switch_tab", name=name, index=index)
-
-    async def _do_close_tab_async(self, page: Any, action: Action, *, step: int) -> None:
-        """异步：关闭指定标签页。关闭后 self._page 回退到 main（若存在）。"""
-        name = action.params.get("name", "")
-        target = self._tabs.pop(name, None)
-        if target is None:
-            raise ValueError(f"close_tab: 找不到标签页 name={name!r}")
-        try:
-            await target.close()
-        except Exception:
-            pass
-        if self._page is target:
-            self._page = self._tabs.get("main")
-        self._emit("browser.action", step=step, action="close_tab", name=name)
-
-    def _resolve_tab(self, *, name: str | None, index: int | None) -> Any:
-        """按 name 或 index 解析标签页对象。name 优先，index 按 _tabs 插入顺序。"""
-        if name is not None:
-            return self._tabs.get(name)
-        if index is not None:
-            try:
-                key = list(self._tabs.keys())[int(index)]
-            except (IndexError, ValueError):
-                return None
-            return self._tabs.get(key)
-        return None
 
     # ------------------------------------------------------------------
     # Hook 注入
