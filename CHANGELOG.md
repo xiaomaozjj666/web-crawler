@@ -6,6 +6,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`SessionPool`**：池化 `curl_cffi` 会话并让 TLS 指纹随会话轮换
+  （`round_robin` / `random`），带 LIFO 复用、池上限与临时超额、空闲回收、
+  连续失败淘汰与预热；`Fetcher(session_pool=...)` 一行接入，DNS 钉扎在池化
+  会话上同样生效。
+- **`CacheMiddleware`**：GET 响应磁盘缓存中间件，支持 TTL 过期、离线回放、
+  可调存储目录与 `max_body_size` 上限；zlib 压缩存储 + 分块解压防 zlib bomb，
+  原子写 + 命名隔离防投毒。
+- **`AutoThrottle`**：自适应限速，按域跟踪响应延迟 EMA 并换算相邻请求最小
+  间隔（对齐 Scrapy `AutoThrottle` 语义）；失败样本放大惩罚倍率、成功对称
+  衰减；`Spider(autothrottle=...)` 接入。
+- **统一异常体系 `WebCrawlerError` 族**：7 类异常（`WebCrawlerError`（根）、
+  `UnsafeTargetError` / `FetchError` / `ParseError` / `ConfigError` /
+  `InvalidStateError` / `AIProviderError`），`except WebCrawlerError` 一次
+  捕获库自身错误。**兼容式多继承**：每个子类同时继承 `ValueError` 或
+  `RuntimeError`，既有 `except ValueError` / `except RuntimeError` 捕获代码
+  零破坏。三批共 57 处锚点已接入；`spider.py` 的 `SpiderError` /
+  `IgnoreRequest` / `DropItem` 基类化（`SpiderError(WebCrawlerError)`）。
+- **`ImageCaptchaSolver`**：独立图片验证码求解器（不依赖浏览器），支持文本
+  OCR / 滑块缺口定位 / 点选坐标识别，后端按 `ddddocr` → numpy 模板匹配 →
+  LLM Vision 依次降级。
+
 ### Changed
 - **默认模型改为 `deepseek-flash`（DeepSeek-V4.1-Flash）**：`ai/llm.py` 的
   `DEFAULT_MODEL` 由 `deepseek-v4-pro` 改为 `deepseek-flash`，并同步全部默认值

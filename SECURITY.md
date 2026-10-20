@@ -64,6 +64,27 @@
 - 本地 API 具备 Origin / CSRF 校验；任务历史持久化时剔除 Cookie 等敏感请求头。
 - MCP pentest 工具需要显式 `authorization_confirmed=true`，且对私网目标默认拒绝。
 
+### 代理信任模型
+
+当用户配置 `proxy=`（`Fetcher` / `DynamicFetcher` / app 下载器）或设置 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量时，DNS 解析由代理完成，本项目的 host 校验仍在入口生效（对原始 URL 的 host 做静态检查 + DNS 解析复查），但连接的实际目标由代理决定——**代理是信任边界**：
+
+- 代理可见明文 URL 与 Host 头（HTTPS 经 `CONNECT` 隧道后代理不可见 body，但仍可见目标 host）。
+- HTTP 代理可重定向到内网（代理自身的响应 302 到 `127.0.0.1`）；HTTPS 代理经 `CONNECT` 建立隧道后不重写目标。
+- SOCKS5 代理不做 host 校验（SOCKS 协议只转发 IP:port），代理可把任意目标连接到内网。
+- 显式/环境代理路径自动跳过 DNS 钉扎（`_pin.py` 的 TOCTOU 根治不适用，解析由代理完成）——门禁仅覆盖入口 URL 的静态检查 + DNS 解析复查，连接路径由代理掌控。
+
+使用不受信代理时，host 校验不构成充分防护；请在可信网络环境中使用可信代理。
+
+### LLM API key 处理
+
+`ReverseAgent` / `AIExtractor` / `VisualExtractor` 等模块通过环境变量（`DEEPSEEK_API_KEY` / `LLM_API_KEY`）或构造参数接收 API key：
+
+- key 不记入日志（`logging` 调用只输出 host / status / 错误消息，不输出 key）。
+- key 不出现在异常消息中（`AIProviderError` 只说「缺 API key」不泄露 key 值）。
+- `.env` 文件由 `python-dotenv` 可选加载（存在则读，不存在则跳过）；`.env` 已在 `.gitignore` 中，不会入库。
+- key 传入后由调用方管理生命周期——库不持久化 key、不缓存到磁盘、进程结束后随对象回收。
+- `ReverseAgent` 的 `RunRecorder` 事件日志与 checkpoint 只记录动作/观察/思考文本，不记录 HTTP 头中的 `Authorization`。
+
 ### Power Mode
 
 `WEB_CRAWLER_POWER_MODE=1`（或 `allow_private_hosts=True`）会放行私网目标校验，**仅限在自有可控环境中使用**。协议白名单不受 Power Mode 影响。详见 [README](README.md#-power-mode个人全解锁默认关闭)。

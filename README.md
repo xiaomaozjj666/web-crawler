@@ -210,6 +210,68 @@ with Fetcher(proxy=pool, impersonate="chrome131") as f:
     resp = f.get("https://example.com")
 ```
 
+### 会话池
+
+```python
+from web_crawler import Fetcher, SessionPool
+
+with SessionPool(max_size=8, strategy="round_robin") as pool:
+    with Fetcher(session_pool=pool, impersonate="chrome131") as f:
+        # 多个请求复用池化会话，TLS 指纹随会话轮换
+        for url in urls:
+            resp = f.get(url)
+```
+
+### 自适应限速
+
+```python
+from web_crawler import Spider, Fetcher, AutoThrottle
+
+
+class MySpider(Spider):
+    start_urls = ["https://example.com/"]
+
+    def parse(self, response):
+        yield {"title": response.css_first("h1").text}
+
+
+# 站点变慢时自动放慢、变快时自动提速
+throttle = AutoThrottle(target_concurrency=2.0, alpha=0.3)
+items = MySpider(
+    fetcher=Fetcher(impersonate="chrome131"),
+    autothrottle=throttle,
+).run()
+```
+
+### 统一异常处理
+
+```python
+from web_crawler import Fetcher, WebCrawlerError, UnsafeTargetError, FetchError
+
+try:
+    with Fetcher() as f:
+        resp = f.get("https://example.com")
+except UnsafeTargetError as e:
+    print(f"目标不安全: {e}")  # 私网/环回/云元数据等
+except FetchError as e:
+    print(f"抓取失败: {e}")  # 重定向超限/JS 渲染失败等
+except WebCrawlerError as e:
+    print(f"库错误: {e}")  # 其他 web_crawler 自身错误
+# 既有 except ValueError / except RuntimeError 仍原样工作（兼容式多继承）
+```
+
+### 图片验证码识别
+
+```python
+from web_crawler import ImageCaptchaSolver
+
+solver = ImageCaptchaSolver()
+
+text = solver.solve_text(image_bytes)  # 文本 OCR
+gap_x = solver.solve_slider(bg_bytes, puzzle_bytes)  # 滑块缺口 x 坐标
+coords = solver.solve_click(image_bytes, prompt="按文字顺序点击")  # 点选坐标
+```
+
 ## 安装与运行
 
 > 注意：PyPI 上名为 `web-crawler` 的包已被其他项目占用（与本项目无关）。直接 `pip install web-crawler` 会装到错误的包。请使用以下源码安装方式，或先为发行版更名后再发布。

@@ -80,6 +80,8 @@ BASELINE: dict[str, float] = {
     "Fetcher._merge_headers (curl)": 0.001,
     "Fetcher._merge_headers (httpx)": 0.002,
     "Fetcher._retry_errors()": 0.001,
+    "CacheMiddleware._read_body (zlib)": 0.05,
+    "AutoThrottle.note_response": 0.001,
 }
 
 # 回归阈值：当前 ms/op 超过基线的此倍数即视为退化
@@ -278,6 +280,45 @@ def bench_net_hot_paths() -> dict[str, float]:
     return results
 
 
+def bench_cache_read() -> dict[str, float]:
+    """磁盘缓存解压热路径：zlib 分块解压 + max_body_size 上限检查。
+
+    安全关键热路径——zlib bomb 防护在 ``_read_body`` 内以分块解压 +
+    输出累计上限实现，基准守护防回归（优化不能削弱上限检查）。
+    """
+    import tempfile
+    import zlib
+
+    from web_crawler.spider.cache import CacheMiddleware
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mw = CacheMiddleware(tmp)
+        key = "a" * 64  # SHA-256 缓存键
+        mw._body_path(key).write_bytes(zlib.compress(b"x" * 30000))
+
+        print("Cache decompress")
+        return {
+            "CacheMiddleware._read_body (zlib)": _bench(
+                "CacheMiddleware._read_body (zlib)", lambda: mw._read_body(key)
+            )
+        }
+
+
+def bench_autothrottle_ema() -> dict[str, float]:
+    """AutoThrottle EMA 延迟更新热路径（限速核心）。"""
+    from web_crawler.spider import AutoThrottle
+
+    at = AutoThrottle(alpha=0.3, target_concurrency=2.0)
+    print("AutoThrottle EMA")
+    return {
+        "AutoThrottle.note_response": _bench(
+            "AutoThrottle.note_response",
+            lambda: at.note_response("bench.example.com", 0.05, True),
+            iterations=10000,
+        )
+    }
+
+
 def run_all_benchmarks() -> dict[str, float]:
     """运行全部基准，返回 {label: ms/op} 字典。"""
     print(f"web_crawler benchmarks — {len(SAMPLE_HTML)} bytes sample HTML\n")
@@ -289,6 +330,8 @@ def run_all_benchmarks() -> dict[str, float]:
     results.update(bench_fingerprint())
     results.update(bench_adaptive_relocate())
     results.update(bench_net_hot_paths())
+    results.update(bench_cache_read())
+    results.update(bench_autothrottle_ema())
     print("\nDone.")
     return results
 
