@@ -162,6 +162,9 @@ def _use_fake_curl(
 ) -> None:
     """让 Fetcher 走 curl 分支并绑定 fake session（无需安装 curl_cffi）。"""
     monkeypatch.setattr(fetcher_mod, "HAS_CURL_CFFI", True)
+    # 池侧也要打桩：SessionPool 读的是 session 模块内的同名常量，只改 fetcher
+    # 那份会让指纹维度整体降级为 None，与「假装装了 curl_cffi」的自相矛盾。
+    monkeypatch.setattr(session_mod, "HAS_CURL_CFFI", True)
     monkeypatch.setattr(
         fetcher_mod,
         "_load_curl_backend",
@@ -290,7 +293,9 @@ def test_overflow_acquires_ephemeral_sessions() -> None:
 # ── 三、指纹轮换 ─────────────────────────────────────────────────────────────
 
 
-def test_fingerprint_rotation_round_robin() -> None:
+def test_fingerprint_rotation_round_robin(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 轮换算法与是否安装 curl_cffi 无关：显式假定可用，否则结果随装机环境漂移
+    monkeypatch.setattr(session_mod, "HAS_CURL_CFFI", True)
     factory = _RecordingFactory()
     pool = SessionPool(["fp-a", "fp-b", "fp-c"], max_size=8, session_factory=factory)
     handles = [pool.acquire() for _ in range(5)]
@@ -299,7 +304,9 @@ def test_fingerprint_rotation_round_robin() -> None:
     pool.close()
 
 
-def test_fingerprint_rotation_random() -> None:
+def test_fingerprint_rotation_random(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 同 test_fingerprint_rotation_round_robin：假定 curl_cffi 可用
+    monkeypatch.setattr(session_mod, "HAS_CURL_CFFI", True)
     factory = _RecordingFactory()
     pool = SessionPool(["fp-a", "fp-b"], strategy="random", max_size=8, session_factory=factory)
     handles = [pool.acquire() for _ in range(10)]
@@ -307,7 +314,9 @@ def test_fingerprint_rotation_random() -> None:
     pool.close()
 
 
-def test_stats_fingerprint_distribution() -> None:
+def test_stats_fingerprint_distribution(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 同 test_fingerprint_rotation_round_robin：假定 curl_cffi 可用
+    monkeypatch.setattr(session_mod, "HAS_CURL_CFFI", True)
     factory = _RecordingFactory()
     pool = SessionPool(["fp-a", "fp-a", "fp-b"], max_size=8, session_factory=factory)
     for _ in range(3):
@@ -479,7 +488,9 @@ def test_mark_success_rescues_marked_session() -> None:
 # ── 五、预热与统计 ───────────────────────────────────────────────────────────
 
 
-def test_prewarm_builds_sync_sessions_upfront() -> None:
+def test_prewarm_builds_sync_sessions_upfront(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 预热同样按指纹分配会话，故假定 curl_cffi 可用
+    monkeypatch.setattr(session_mod, "HAS_CURL_CFFI", True)
     factory = _RecordingFactory()
     pool = SessionPool(["fp-a", "fp-b", "fp-c"], prewarm=2, session_factory=factory)
     stats = pool.stats()
@@ -641,8 +652,10 @@ async def test_async_idle_reaping_with_fake_clock() -> None:
     await pool.aclose()
 
 
-async def test_async_fingerprint_rotation_independent() -> None:
+async def test_async_fingerprint_rotation_independent(monkeypatch: pytest.MonkeyPatch) -> None:
     """异步侧指纹轮换游标独立：与同步侧互不干扰。"""
+    # 同 test_fingerprint_rotation_round_robin：假定 curl_cffi 可用
+    monkeypatch.setattr(session_mod, "HAS_CURL_CFFI", True)
     factory = _RecordingFactory(_FakeAsyncSession)
     pool = SessionPool(["fp-a", "fp-b"], async_session_factory=factory)
     handles = [await pool.acquire_async() for _ in range(3)]

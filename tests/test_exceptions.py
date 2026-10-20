@@ -32,6 +32,7 @@ from typing import Any
 import pytest
 
 import web_crawler.exceptions as exceptions_module
+from web_crawler import compat as compat_mod
 from web_crawler._ssrf import validate_url_host
 from web_crawler.ai.llm import OpenAICompatibleProvider, get_provider
 from web_crawler.ai.loop import ContextCompressor
@@ -574,6 +575,9 @@ def test_batch2_dynamic_fetch_failure_raises_fetch_error(
     def _boom(browser: object, url: str, proxy_settings: object) -> object:
         raise RuntimeError("render failed")
 
+    # 本用例验的是异常映射，不是 playwright 装没装：构造期会 require_playwright()，
+    # 故显式假定可用（真实渲染路径由装了 extras 的 test-extras job 覆盖）。
+    monkeypatch.setattr(compat_mod, "HAS_PLAYWRIGHT", True)
     df = DynamicFetcher(headless=True)
     monkeypatch.setattr(df, "_ensure_browser", lambda: None)
     monkeypatch.setattr(df, "_render_page", _boom)
