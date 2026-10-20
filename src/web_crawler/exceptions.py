@@ -48,38 +48,42 @@ raise 类型。
   ``fetchers/session.py``（参数校验 7 处）、``fetchers/proxy.py``（策略名）、
   ``fetchers/fetcher.py``（max_redirects）、``ai/loop.py``（compress_to）、
   ``ai/llm.py``（provider 注册 2 处）、``spider/spider.py``（Request.url
-  校验）、``pentest/port_scanner.py``（端口校验）（第二批）
-* :class:`ParseError` — ``spider/cache.py``（缓存 meta 版本不符）、
-  ``parser/visual.py``（tiles 参数 2 处）（第二批）
+  校验）、``pentest/port_scanner.py``（端口校验）（第二批）；
+  ``ai/_reverse_actions.py``（动作类型不合法 / selector 缺失 5 处；
+  switch_tab / close_tab 的「找不到标签页」为运行时状态语义，保持
+  ``ValueError``）（第三批）
+* :class:`ParseError` — ``spider/cache.py``（缓存 meta 版本不符、
+  ``_read_body`` 压缩 / 解压超限与截断 zlib 流 3 处）、
+  ``parser/visual.py``（tiles 参数 2 处）（第二、三批）
 * :class:`InvalidStateError` — ``parser/selector.py``（save/retrieve/
   relocate 需要 adaptive=True）、``parser/storage.py``（AdaptiveStorage 已
   关闭）、``ai/recorder.py``（未 load_script 就 replay）（第二批）
 * :class:`AIProviderError` — ``ai/llm.py``（缺 API key）、
   ``parser/visual.py``（VLM 调用失败 / 空响应 5 处）（第二批）
+* 第三批（收官）：``spider/spider.py`` 三异常基类化 ——
+  ``SpiderError(WebCrawlerError)``、``IgnoreRequest(SpiderError)``、
+  ``DropItem(SpiderError)``（对齐 Scrapy 惯例；既有 ``except`` 捕获点与
+  ``isinstance(e, Exception)`` 判断不受影响）。
 
-**计划接入**（后续任务逐模块替换，遵循同样的兼容式原则）：
-
-* ``ai/_reverse_actions.py``（原路线图 ``ai/reverse_agent.py`` 的动作参数
-  校验锚点，已随 ReverseAgent 拆分迁入该模块）：动作类型 / selector 缺失
-  等 ``ValueError`` → :class:`ConfigError`。
+**计划接入**：无 —— 三批渐进接入已完成，本路线图收官。后续新增锚点
+（如取消专用异常、验证码异常）按「暂不纳入」节的评估结论另行立项。
 
 **暂不纳入 / 待评估**：
 
 * ``fetchers/_pin.py`` 的「DNS resolution returned no addresses」：
   解析结果为空的防御分支（pragma: no cover），语义非「目标不安全」，
   保持 ``ValueError``。
-* ``app/_crawler_core.py`` 的「too many redirects fetching」：现状
-  ``ValueError``，与 :class:`FetchError`（RuntimeError 兼容基类）类型
-  基类不一致，直接切换会破坏既有 ``except ValueError`` 捕获，待评估。
-* ``spider/cache.py`` 的 ``_read_body`` 三处（压缩 / 解压超限、截断
-  zlib 流）：与 meta 版本不符同属损坏条目处理路径，本批仅接入点名
-  锚点，其余待后续统一。
-* ``spider.py`` 的 ``SpiderError`` / ``IgnoreRequest`` / ``DropItem``：
-  并行任务正在重构该文件；后续让 ``class SpiderError(WebCrawlerError)``
-  等（``isinstance(e, Exception)`` 兼容不受影响）。
-* ``ai/recorder.py`` 的「compiled replay script invalid」：现状
-  ``RuntimeError``、语义偏解析失败，接入 :class:`ParseError` 前需评估
-  既有 ``except RuntimeError`` 依赖。
+* ``app/_crawler_core.py`` 的「too many redirects fetching」：第三批
+  评估结论为**保持** ``ValueError`` —— ``tests/test_app_crawler.py`` 两处
+  ``pytest.raises(ValueError, match="too many redirects")`` 依赖该类型，
+  且异常沿 ``fetch()`` 直接上抛无中间转换；与 :class:`FetchError`
+  （RuntimeError 兼容基类）跨族切换的破坏面大于收益。
+* ``ai/recorder.py`` 的「compiled replay script invalid」：第三批
+  评估结论为**保持** ``RuntimeError`` —— 生产调用方（``reverse_agent.py``
+  的 ``compile_error`` 记录路径）虽以 ``except Exception`` 捕获，但
+  ``tests/test_recorder.py`` 存在 ``pytest.raises(RuntimeError,
+  match="compiled replay script invalid")`` 类型断言；``ParseError`` ⊂
+  ``ValueError`` 的跨族切换会破坏该测试。
 * ``app/_crawler_core.py`` / ``app/_ui_runner.py`` 的「cancelled by user」：
   语义独立，未来可考虑专用取消异常类。
 * ``mcp/_host.py`` 的 11 处 ``NotImplementedError``：抽象方法占位
@@ -137,7 +141,8 @@ class ConfigError(WebCrawlerError, ValueError):
 
     典型触发场景：``spider/autothrottle.py`` 与 ``fetchers/session.py``
     的数值范围校验、``fetchers/proxy.py`` 的策略名、``ai/llm.py`` 的
-    provider 注册、``Spider`` 的 ``Request.url`` 非空校验（均已接入）。
+    provider 注册、``Spider`` 的 ``Request.url`` 非空校验、
+    ``ai/_reverse_actions.py`` 的动作类型 / selector 参数校验（均已接入）。
 
     兼容基类 :class:`ValueError`：与「非法参数值」的 Python 惯例一致。
     """
@@ -147,7 +152,7 @@ class ParseError(WebCrawlerError, ValueError):
     """解析层错误：输入内容 / 持久化数据不符合预期的结构或格式。
 
     典型触发场景：``parser/visual.py`` 的 tiles 参数、``spider/cache.py``
-    的缓存 meta 版本不符（均已接入）。
+    的缓存 meta 版本不符与 ``_read_body`` 解压超限 / 截断流（均已接入）。
 
     兼容基类 :class:`ValueError`：解析层失败多为「内容不合法」，
     与既有 ``ValueError`` 断言保持兼容。

@@ -28,6 +28,7 @@ import asyncio
 import random
 from typing import Any
 
+from ..exceptions import ConfigError
 from ..fetchers.camoufox import CamoufoxFetcher
 from ._reverse_support import (
     Action,
@@ -160,7 +161,7 @@ class ActionExecutor:
             # done 由主循环在外层处理，_act_async 内不执行
             return None
         # 未知动作类型：抛错进入 act_error 路径，写入 history 便于审计
-        raise ValueError(f"未知动作类型: {atype!r}")
+        raise ConfigError(f"未知动作类型: {atype!r}")
 
     # ------------------------------------------------------------------
     # 浏览器交互动作（click / type / scroll / press / hover / select_option）
@@ -173,7 +174,7 @@ class ActionExecutor:
         """异步：点击元素。``humanize_input`` 启用时先 hover 再随机延迟后点击。"""
         selector = action.params.get("selector", "")
         if not selector:
-            raise ValueError("click 动作需要 selector 参数")
+            raise ConfigError("click 动作需要 selector 参数")
         button = action.params.get("button", "left")
         if self.config.humanize_input:
             await self._humanize_click_async(page, selector, button=button)
@@ -204,7 +205,7 @@ class ActionExecutor:
         selector = action.params.get("selector", "")
         text = action.params.get("text", "")
         if not selector:
-            raise ValueError("type 动作需要 selector 参数")
+            raise ConfigError("type 动作需要 selector 参数")
         clear = action.params.get("clear", True)
         if clear:
             await page.fill(selector, "", timeout=self._INTERACTION_TIMEOUT)
@@ -271,7 +272,7 @@ class ActionExecutor:
         """异步：鼠标悬停。"""
         selector = action.params.get("selector", "")
         if not selector:
-            raise ValueError("hover 动作需要 selector 参数")
+            raise ConfigError("hover 动作需要 selector 参数")
         await page.hover(selector, timeout=self._INTERACTION_TIMEOUT)
         self._emit(
             "browser.action",
@@ -285,7 +286,7 @@ class ActionExecutor:
         selector = action.params.get("selector", "")
         value = action.params.get("value", "")
         if not selector:
-            raise ValueError("select_option 动作需要 selector 参数")
+            raise ConfigError("select_option 动作需要 selector 参数")
         await page.select_option(selector, value, timeout=self._INTERACTION_TIMEOUT)
         self._emit(
             "browser.action",

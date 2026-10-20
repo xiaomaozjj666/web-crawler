@@ -356,7 +356,7 @@ class CacheMiddleware(DownloaderMiddleware):
         body_path = self._body_path(key)
         compressed_size = body_path.stat().st_size
         if compressed_size > self.max_body_size:
-            raise ValueError(
+            raise ParseError(
                 f"compressed body size {compressed_size} exceeds max_body_size {self.max_body_size}"
             )
         compressed = body_path.read_bytes()
@@ -373,11 +373,11 @@ class CacheMiddleware(DownloaderMiddleware):
                 pos += _DECOMP_CHUNK
             out += dec.decompress(chunk, _DECOMP_CHUNK)
             if len(out) > self.max_body_size:
-                raise ValueError(
+                raise ParseError(
                     f"decompressed body size {len(out)} exceeds max_body_size {self.max_body_size}"
                 )
         if not dec.eof or dec.unused_data:
-            raise ValueError("truncated or padded zlib stream in cache body")
+            raise ParseError("truncated or padded zlib stream in cache body")
         return bytes(out)
 
     def _remove(self, key: str) -> None:

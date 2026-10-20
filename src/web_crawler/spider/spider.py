@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
-from ..exceptions import ConfigError
+from ..exceptions import ConfigError, WebCrawlerError
 from ..response import Response
 from ..robots import RobotsPolicy, fetch_robots_text
 from .autothrottle import AutoThrottle
@@ -55,16 +55,26 @@ class _FetcherLike(Protocol):
     async def async_get(self, url: str, **kwargs: Any) -> Response: ...  # pragma: no cover
 
 
-class SpiderError(Exception):
-    """致命 spider 引擎错误（回调错误、状态损坏）时抛出。"""
+class SpiderError(WebCrawlerError):
+    """致命 spider 引擎错误（回调错误、状态损坏）时抛出。
+
+    统一异常体系成员（第三批接入）：``SpiderError`` ⊂ ``WebCrawlerError``，
+    调用方可用 ``except WebCrawlerError`` 统一收口库内错误。
+    """
 
 
-class IgnoreRequest(Exception):
-    """中间件抛出以丢弃某个请求（计入 ``requests_ignored``，不打断运行）。"""
+class IgnoreRequest(SpiderError):
+    """中间件抛出以丢弃某个请求（计入 ``requests_ignored``，不打断运行）。
+
+    ``SpiderError`` 子类（第三批接入，对齐 Scrapy 惯例）。
+    """
 
 
-class DropItem(Exception):
-    """item 管道抛出以丢弃某条 item（不计入 ``items_scraped``）。"""
+class DropItem(SpiderError):
+    """item 管道抛出以丢弃某条 item（不计入 ``items_scraped``）。
+
+    ``SpiderError`` 子类（第三批接入，对齐 Scrapy 惯例）。
+    """
 
 
 class DownloaderMiddleware:

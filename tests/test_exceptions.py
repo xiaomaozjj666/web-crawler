@@ -21,6 +21,8 @@ import pickle
 import socket
 import subprocess
 import sys
+import time
+import zlib
 from collections.abc import Callable
 from importlib import import_module
 from pathlib import Path
@@ -34,6 +36,7 @@ from web_crawler._ssrf import validate_url_host
 from web_crawler.ai.llm import OpenAICompatibleProvider, get_provider
 from web_crawler.ai.loop import ContextCompressor
 from web_crawler.ai.recorder import ReplayRunner
+from web_crawler.ai.reverse_agent import Action, ReverseAgent, ReverseAgentConfig
 from web_crawler.app import _crawler_core
 from web_crawler.app.crawler_net import SafeRedirectHandler
 from web_crawler.exceptions import (
@@ -58,7 +61,7 @@ from web_crawler.parser.visual import VisualExtractor
 from web_crawler.pentest.port_scanner import PortScanner
 from web_crawler.spider.autothrottle import AutoThrottle
 from web_crawler.spider.cache import _META_VERSION, CacheMiddleware
-from web_crawler.spider.spider import Request
+from web_crawler.spider.spider import DropItem, IgnoreRequest, Request, SpiderError
 
 # (异常类, 兼容基类) 的声明式矩阵——isinstance 兼容承诺的全部内容。
 _EXCEPTION_CASES: list[tuple[type[Exception], type[Exception]]] = [
@@ -650,3 +653,141 @@ def test_batch2_mcp_browser_task_gate_raises_unsafe_target() -> None:
         srv._run_browser_task("http://169.254.169.254/latest/meta-data/", lambda page: None)
     assert isinstance(excinfo.value, ValueError)
     assert isinstance(excinfo.value, WebCrawlerError)
+
+
+# ═══════════════════════════ 第三批接入（id=23，路线图收官） ═══════════════════════════
+
+
+async def test_batch3_reverse_action_unknown_type_raises_config_error() -> None:
+    """_reverse_actions.py 未知动作类型触发 ConfigError（⊂ ValueError）。
+
+    第三批接入锚点：动作参数校验语义（动作类型不合法）。同时以
+    ``pytest.raises(ValueError)`` 形态复跑一次，验证存量断言形态
+    （test_reverse_actions.py 既有写法）原样通过。
+    """
+    cfg = ReverseAgentConfig(enable_screenshot=False)
+    agent = ReverseAgent(config=cfg)
+    try:
+        action = Action(action_type="no_such_action", params={})
+        with pytest.raises(ConfigError, match="未知动作类型: 'no_such_action'") as excinfo:
+            await agent._act_async(None, action, step=1)
+        exc = excinfo.value
+        assert isinstance(exc, ValueError)
+        assert isinstance(exc, WebCrawlerError)
+
+        # 兼容试金石：存量 pytest.raises(ValueError) 断言形态原样通过
+        with pytest.raises(ValueError, match="未知动作类型: 'no_such_action'"):
+            await agent._act_async(None, action, step=1)
+    finally:
+        agent.close()
+
+
+@pytest.mark.parametrize("atype", ["click", "type", "hover", "select_option"])
+async def test_batch3_reverse_action_missing_selector_raises_config_error(
+    atype: str,
+) -> None:
+    """_reverse_actions.py 四个交互动作缺 selector 触发 ConfigError（⊂ ValueError）。
+
+    selector 校验位于 page 交互之前，``page=None`` 即可触发，无需真实浏览器。
+    """
+    cfg = ReverseAgentConfig(enable_screenshot=False)
+    agent = ReverseAgent(config=cfg)
+    try:
+        action = Action(action_type=atype, params={})
+        with pytest.raises(ConfigError, match="selector") as excinfo:
+            await agent._act_async(None, action, step=1)
+        exc = excinfo.value
+        assert isinstance(exc, ValueError)
+        assert isinstance(exc, WebCrawlerError)
+        assert f"{atype} 动作需要 selector 参数" in str(exc)
+    finally:
+        agent.close()
+
+
+def test_batch3_cache_read_body_truncated_stream_raises_parse_error(tmp_path: Path) -> None:
+    """cache.py _read_body 截断 zlib 流触发 ParseError（⊂ ValueError）。
+
+    第三批接入锚点：持久化数据损坏语义（与 meta 版本不符同族）。
+    """
+    mw = CacheMiddleware(tmp_path)
+    key = "feedface" * 8
+    mw._body_path(key).write_bytes(zlib.compress(b"payload")[:4])  # 截断流
+    with pytest.raises(ParseError, match="truncated or padded zlib stream") as excinfo:
+        mw._read_body(key)
+    assert isinstance(excinfo.value, ValueError)
+    assert isinstance(excinfo.value, WebCrawlerError)
+
+
+def test_batch3_cache_read_body_size_limit_raises_parse_error(tmp_path: Path) -> None:
+    """cache.py _read_body 压缩体超限触发 ParseError（⊂ ValueError）。"""
+    mw = CacheMiddleware(tmp_path, max_body_size=8)
+    key = "feedface" * 8
+    mw._body_path(key).write_bytes(zlib.compress(b"x" * 64))
+    with pytest.raises(ParseError, match="compressed body size") as excinfo:
+        mw._read_body(key)
+    assert isinstance(excinfo.value, ValueError)
+    assert isinstance(excinfo.value, WebCrawlerError)
+
+
+def test_batch3_cache_corrupt_body_load_treats_as_miss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_read_body 的 ParseError 被 _load 的既有 except 元组继续捕获（行为不变）。
+
+    meta 合法 + body 截断 → 损坏条目就地清理并按 miss 返回（322 行
+    ``except (OSError, ValueError, ...)`` 对 ParseError ⊂ ValueError 的
+    兼容性证明）；类型断言经 ``_remove`` spy 以 ``sys.exc_info()`` 取出
+    正在处理的异常对象（同上批 meta 版本测试手法）。
+    """
+    mw = CacheMiddleware(tmp_path)
+    key = "feedface" * 8
+    mw._meta_path(key).write_text(
+        json.dumps(
+            {
+                "version": _META_VERSION,
+                "url": "https://example.com/",
+                "status": 200,
+                "stored_at": time.time(),
+                "headers": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    mw._body_path(key).write_bytes(zlib.compress(b"payload")[:4])
+    captured: list[BaseException | None] = []
+    monkeypatch.setattr(mw, "_remove", lambda k: captured.append(sys.exc_info()[1]))
+    assert mw._load(key) is None  # 既有行为：损坏条目按 miss 处理
+    exc = captured[0]
+    assert exc is not None
+    assert isinstance(exc, ParseError)
+    assert isinstance(exc, ValueError)
+    assert isinstance(exc, WebCrawlerError)
+    assert "truncated or padded zlib stream" in str(exc)
+
+
+def test_batch3_spider_exception_hierarchy() -> None:
+    """第三批基类化：SpiderError ⊂ WebCrawlerError，IgnoreRequest/DropItem ⊂ SpiderError。
+
+    对齐 Scrapy 惯例后，既有 ``except DropItem`` / ``except IgnoreRequest``
+    捕获点与 ``isinstance(e, Exception)`` 判断均不受影响；新增
+    ``except WebCrawlerError`` 可统一收口 spider 层三异常。
+    """
+    assert issubclass(SpiderError, WebCrawlerError)
+    assert issubclass(SpiderError, Exception)
+    assert issubclass(IgnoreRequest, SpiderError)
+    assert issubclass(DropItem, SpiderError)
+    # 三重身份：子类实例同时是 SpiderError 与 WebCrawlerError
+    assert isinstance(IgnoreRequest("x"), SpiderError)
+    assert isinstance(IgnoreRequest("x"), WebCrawlerError)
+    assert isinstance(DropItem("x"), SpiderError)
+    assert isinstance(DropItem("x"), WebCrawlerError)
+    assert isinstance(SpiderError("x"), Exception)
+    # 捕获形态：except WebCrawlerError / except SpiderError 统一收口子类
+    try:
+        raise IgnoreRequest("offline replay miss")
+    except WebCrawlerError:
+        pass
+    try:
+        raise DropItem("filtered by pipeline")
+    except SpiderError:
+        pass
