@@ -61,7 +61,4 @@ coverage_final.txt
 coverage_out.txt
 crawler_data.db*
 
-# 多代理流水线过程产物（审查报告/会话记录/工具产出，不随仓库分发）
-.agent-reports/
-.arts/
 report/
