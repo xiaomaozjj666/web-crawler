@@ -62,3 +62,9 @@ coverage_out.txt
 crawler_data.db*
 
 report/
+
+# 根目录下划线前缀的本地临时脚本与导出：只在本地用，不随仓库分发
+# （锚定根目录，不影响 src/ 与 tests/ 下的同名下划线模块）
+/_*.py
+/_*.txt
+/_*.json
