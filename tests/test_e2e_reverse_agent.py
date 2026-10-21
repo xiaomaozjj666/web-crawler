@@ -45,11 +45,11 @@ _E2E_TEST_HTML = """<!DOCTYPE html>
     // 的实测限制注释。保留它用于复现该时序，不作为捕获断言的目标。
     var sign = window.__sign('test');
     fetch('/api?sign=' + sign).catch(function() {});
-    // 600ms 后再发一次：此时 Hook 已安装，用于验证「安装之后发出的请求
-    // 确实能被捕获」——这才是该引擎上可达的能力。
+    // 2s 后再发一次：该引擎的 Hook 在 1s 量级才装好（实测界于 0.6s 与 1.5s 之间），
+    // 这一发用于验证「安装之后发出的请求确实能被捕获」——该引擎上可达的能力。
     setTimeout(function () {
       fetch('/api?sign=' + window.__sign('later') + '&phase=late').catch(function() {});
-    }, 600);
+    }, 2000);
   </script>
 </body>
 </html>"""
@@ -210,7 +210,7 @@ def test_e2e_reverse_agent_full_loop(e2e_server_url: str) -> None:
         planner_interval=None,
         # 禁用人类化输入以加速测试
         humanize_input=False,
-        wait_after_navigate=1.5,
+        wait_after_navigate=3.0,
     )
     provider = _make_stub_provider()
     agent = ReverseAgent(config=config, provider=provider)
@@ -253,7 +253,7 @@ def test_e2e_reverse_agent_hook_capture(e2e_server_url: str) -> None:
         enable_screenshot=False,
         planner_interval=None,
         humanize_input=False,
-        wait_after_navigate=1.5,
+        wait_after_navigate=3.0,
     )
     # 只做 inject_hook 然后 done
     provider = StubProvider(
