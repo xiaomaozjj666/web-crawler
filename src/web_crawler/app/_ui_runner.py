@@ -49,6 +49,7 @@ def run_job(job: JobState) -> None:
         with job.lock:
             job.exit_code = 1
             job.status = "error"
+            job.error = str(exc)
         job.append(f"\n任务出错：{exc}\n")
     finally:
         # 卸载日志 handler：任务结束后 crawler 日志不再写入该 job
@@ -64,6 +65,7 @@ def run_job(job: JobState) -> None:
                 processed_resources=job.processed_resources,
                 pages_scanned=job.pages_scanned,
                 current_url=job.current_url,
+                error_message=job.error or None,
             )
             # 采集成功时导入结果清单
             if job.status == "done":

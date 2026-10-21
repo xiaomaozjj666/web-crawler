@@ -27,6 +27,7 @@ from ._ui_helpers import (
     _open_folder,
     _task_config_for_db,
     build_args,
+    build_args_from_task,
     build_reverse_config,
     output_path,
 )
@@ -292,6 +293,42 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 config = _task_config_for_db(args)
                 database.create_task(job_id, args.url, config, job.output_dir)
+            except Exception:  # pragma: no cover
+                _log.debug("db create_task failed", exc_info=True)
+            threading.Thread(target=run_job, args=(job,), daemon=True).start()
+            self.respond_json({"id": job_id, "status": "running"})
+            return
+        if path == "/retry":
+            # 用库里的任务记录重跑一次：配置来自入库白名单，不碰 Cookie
+            task_id = query.get("id", [""])[0]
+            retry_task = database.get_task(task_id)
+            if not retry_task:
+                self.respond_json({"ok": False, "error": "任务不存在"})
+                return
+            try:
+                args = build_args_from_task(retry_task)
+            except ValueError as exc:
+                self.respond_json({"ok": False, "error": str(exc)})
+                return
+            with JOBS_LOCK:
+                if any(j.status in ("running", "paused") for j in JOBS.values()):
+                    self.respond_json(
+                        {
+                            "ok": False,
+                            "error": "已有采集任务正在运行，请等待完成或先取消",
+                        }
+                    )
+                    return
+                job_id = uuid.uuid4().hex[:12]
+                job = JobState(id=job_id, args=args, output_dir=str(Path(args.out).resolve()))
+                JOBS[job_id] = job
+                if len(JOBS) > MAX_JOBS:
+                    for jid in list(JOBS.keys()):
+                        j = JOBS[jid]
+                        if j.status in ("done", "error", "cancelled"):
+                            del JOBS[jid]
+            try:
+                database.create_task(job_id, args.url, _task_config_for_db(args), job.output_dir)
             except Exception:  # pragma: no cover
                 _log.debug("db create_task failed", exc_info=True)
             threading.Thread(target=run_job, args=(job,), daemon=True).start()

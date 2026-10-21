@@ -2159,3 +2159,115 @@ class TestTaskConfigForDb:
         assert "header" not in config
         assert "session=secret" not in json.dumps(config)
         assert "Bearer tok" not in json.dumps(config)
+
+
+# ========== #47：失败原因落库 + 一键重试 ==========
+
+
+def _seed_task(task_id: str, url: str, config: dict[str, Any], out_dir: str) -> None:
+    """可重复运行的建任务：测试共用同一个 DB，先清掉同名残留再插入。"""
+    from web_crawler.app import db as database
+
+    database.delete_task(task_id)
+    database.create_task(task_id, url, config, out_dir)
+
+
+class TestBuildArgsFromTask:
+    """build_args_from_task：用库里的任务记录重建采集参数。"""
+
+    def test_rebuilds_namespace(self) -> None:
+        task = {
+            "url": "https://example.com/a",
+            "output_dir": "/tmp/out",
+            "config": {"out": "/tmp/old", "max_pages": 3, "workers": 4},
+        }
+        args = _ui_helpers.build_args_from_task(task)
+        assert args.url == "https://example.com/a"
+        # output_dir 以库记录为准（用户可能改过保存目录）
+        assert args.out == "/tmp/out"
+        assert args.max_pages == 3
+        assert args.workers == 4
+
+    def test_rejects_missing_config(self) -> None:
+        with pytest.raises(ValueError, match="配置"):
+            _ui_helpers.build_args_from_task({"url": "https://e.com", "config": {}})
+
+    def test_rejects_missing_url(self) -> None:
+        with pytest.raises(ValueError, match="URL"):
+            _ui_helpers.build_args_from_task({"url": "", "config": {"out": "."}})
+
+    def test_rejects_missing_output_dir(self) -> None:
+        task = {"url": "https://e.com", "output_dir": "", "config": {"out": ""}}
+        with pytest.raises(ValueError, match="输出目录"):
+            _ui_helpers.build_args_from_task(task)
+
+    def test_fills_fields_missing_from_legacy_config(self) -> None:
+        """早期版本存下的配置字段更窄：重建出来的参数也要能安全入库。"""
+        task = {"url": "https://e.com/a", "output_dir": "/tmp/o", "config": {"max_pages": 2}}
+        args = _ui_helpers.build_args_from_task(task)
+        assert args.max_pages == 2
+        # 不该抛 AttributeError
+        assert isinstance(_ui_helpers._task_config_for_db(args), dict)
+
+
+class TestRetryEndpoint:
+    """POST /retry：复用入库白名单里的配置重跑，不重新读表单、不带 Cookie。"""
+
+    def test_missing_task(self, http_server: str) -> None:
+        body = httpx.post(f"{http_server}/retry?id=nonexistent").json()
+        assert body["ok"] is False
+        assert "任务不存在" in body["error"]
+
+    def test_rejects_when_another_job_running(self, http_server: str) -> None:
+
+        _seed_task("retry-busy", "https://e.com/a", {"out": ".", "url": "https://e.com/a"}, ".")
+        ui.JOBS["busy1"] = _make_job_state(id="busy1")
+        body = httpx.post(f"{http_server}/retry?id=retry-busy").json()
+        assert body["ok"] is False
+        assert "正在运行" in body["error"]
+
+    def test_rejects_task_without_config(self, http_server: str) -> None:
+
+        _seed_task("retry-nocfg", "https://e.com/a", {}, ".")
+        body = httpx.post(f"{http_server}/retry?id=retry-nocfg").json()
+        assert body["ok"] is False
+        assert "配置" in body["error"]
+
+    def test_starts_new_job_from_stored_config(self, http_server: str) -> None:
+        from web_crawler.app import db as database
+
+        # 真实形态：配置就是 /run 时由 build_args + _task_config_for_db 写进去的那一份
+        args = build_args({"url": ["https://e.com/a"], "out": ["out"], "max_pages": ["7"]})
+        stored = _ui_helpers._task_config_for_db(args)
+        _seed_task("retry-ok", "https://e.com/a", stored, "out")
+        with patch.object(_ui_http, "run_job") as fake_run:
+            body = httpx.post(f"{http_server}/retry?id=retry-ok").json()
+        assert body["status"] == "running"
+        new_id = body["id"]
+        assert new_id in ui.JOBS
+        assert ui.JOBS[new_id].args.url == "https://e.com/a"
+        assert ui.JOBS[new_id].args.max_pages == 7
+        # 新任务也写进了库，历史里能看到
+        assert database.get_task(new_id) is not None
+        fake_run.assert_called_once()
+
+
+class TestTaskErrorMessage:
+    """tasks.error_message：失败原因要能落库、并出现在历史列表里。"""
+
+    def test_roundtrip_through_get_and_list(self, http_server: str) -> None:
+        from web_crawler.app import db as database
+
+        _seed_task("err-1", "https://e.com/x", {"out": "."}, ".")
+        database.update_task_status("err-1", "error", exit_code=1, error_message="DNS 解析失败")
+        assert database.get_task("err-1")["error_message"] == "DNS 解析失败"
+        tasks = database.list_tasks(page=1, page_size=50)["tasks"]
+        row = next(item for item in tasks if item["id"] == "err-1")
+        assert row["error_message"] == "DNS 解析失败"
+
+    def test_long_message_is_truncated(self, http_server: str) -> None:
+        from web_crawler.app import db as database
+
+        _seed_task("err-2", "https://e.com/y", {"out": "."}, ".")
+        database.update_task_status("err-2", "error", error_message="x" * 5000)
+        assert len(database.get_task("err-2")["error_message"]) == 4000

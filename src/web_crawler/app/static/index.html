@@ -201,6 +201,7 @@
     .task-card .task-main { flex: 1; min-width: 0; }
     .task-card .task-url { font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .task-meta { display: flex; flex-wrap: wrap; gap: 2px 10px; margin-top: 3px; font-size: 12px; color: var(--text-muted); }
+    .task-error { margin-top: 4px; font-size: 12px; line-height: 1.5; color: var(--danger-text); word-break: break-word; }
     .task-meta span { white-space: nowrap; }
     .task-actions { display: flex; gap: 6px; flex-shrink: 0; }
     .task-actions button { padding: 4px 10px; border-radius: 4px; font-size: 12px; background: var(--bg-card); }
@@ -1562,9 +1563,11 @@
                   '<span>' + (t.processed_resources || 0) + '/' + (t.total_resources || 0) + ' 资源</span>' +
                   '<span>' + (t.pages_scanned || 0) + ' 页</span>' +
                 '</div>' +
+                ((t.status === 'error' && t.error_message) ? '<div class="task-error" title="失败原因">' + escapeHtml(t.error_message) + '</div>' : '') +
               '</div>' +
               '<span class="status-badge ' + historyStatusClass(t.status) + '">' + escapeHtml(historyStatusLabel(t.status)) + '</span>' +
               '<div class="task-actions">' +
+                ((t.status === 'error' || t.status === 'cancelled') ? '<button type="button" data-retry-id="' + escapeHtml(t.id) + '" class="btn-secondary">重试</button>' : '') +
                 (t.status === 'done' ? '<button type="button" data-results-id="' + escapeHtml(t.id) + '" data-results-url="' + escapeHtml(t.url || '') + '" class="btn-results">查看结果</button>' : '') +
                 '<button type="button" data-delete-id="' + escapeHtml(t.id) + '" class="btn-delete">删除</button>' +
               '</div>';
@@ -1631,8 +1634,25 @@
       } else if (btn.classList.contains('btn-delete')) {
         if (!window.confirm('确定删除该任务记录吗？（已下载的文件不受影响）')) return;
         deleteTask(btn.dataset.deleteId);
+      } else if (btn.dataset.retryId) {
+        retryTask(btn.dataset.retryId, btn);
       }
     });
+
+    /* 用库里的任务记录重跑：后端只读入库白名单（不含 Cookie），前端只负责发起与反馈 */
+    function retryTask(taskId, btn) {
+      if (btn) { btn.disabled = true; btn.textContent = '重试中…'; }
+      fetch('/retry?id=' + encodeURIComponent(taskId), { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          if (d.ok === false) { throw new Error(d.error || '重试失败'); }
+          loadHistory(historyPage);
+        })
+        .catch(function(err) {
+          if (btn) { btn.disabled = false; btn.textContent = '重试'; }
+          window.alert('重试失败：' + err.message);
+        });
+    }
 
     var lastResultsTrigger = null;
     function showResults(taskId, url) {

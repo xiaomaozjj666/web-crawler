@@ -11,7 +11,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from web_crawler.app import crawler as web_resource_crawler
 
@@ -251,6 +251,37 @@ _DB_CONFIG_FIELDS = (
 def _task_config_for_db(args: argparse.Namespace) -> dict[str, object]:
     """把任务参数序列化为可入库 dict（白名单字段,不含 Cookie 等敏感头）。"""
     return {name: getattr(args, name) for name in _DB_CONFIG_FIELDS}
+
+
+def build_args_from_task(task: dict[str, Any]) -> argparse.Namespace:
+    """用库里的任务记录重建采集参数，供「重试」复用。
+
+    只依赖入库时白名单保存的字段（``_task_config_for_db``），**不读表单、不含
+    Cookie** —— 重试等价于"用同一份配置再跑一次"，不会把敏感头重新带进来。
+
+    Args:
+        task: ``database.get_task()`` 的返回值（``config`` 已解析成 dict）。
+
+    Raises:
+        ValueError: 记录里没有可用配置，或配置结构与当前版本不兼容。
+    """
+    config = task.get("config")
+    if not isinstance(config, dict) or not config:
+        raise ValueError("原任务没有可复用的配置")
+    args = argparse.Namespace(**config)
+    args.url = task.get("url") or getattr(args, "url", "")
+    if not args.url:
+        raise ValueError("原任务没有记录目标 URL")
+    out = task.get("output_dir") or getattr(args, "out", "")
+    if not out:
+        raise ValueError("原任务没有记录输出目录")
+    args.out = out
+    # 老记录可能缺字段（早期版本白名单更窄）；补齐成 None 再入库，
+    # 否则 _task_config_for_db 的 getattr 会抛 AttributeError、写库静默失败
+    for name in _DB_CONFIG_FIELDS:
+        if not hasattr(args, name):
+            setattr(args, name, None)
+    return args
 
 
 def build_reverse_config(form: dict[str, list[str]]) -> dict[str, object]:

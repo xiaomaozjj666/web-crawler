@@ -150,6 +150,7 @@ def init_db() -> None:
                     output_dir  TEXT NOT NULL,
                     status      TEXT NOT NULL DEFAULT 'running',
                     exit_code   INTEGER,
+                    error_message TEXT DEFAULT '',
                     log         TEXT DEFAULT '',
                     total_resources   INTEGER DEFAULT 0,
                     processed_resources INTEGER DEFAULT 0,
@@ -182,6 +183,13 @@ def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
                 """
             )
+            # 轻量迁移：老库没有 error_message 列就补上（不改历史数据）
+            try:
+                cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+                if "error_message" not in cols:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN error_message TEXT DEFAULT ''")
+            except sqlite3.Error:  # pragma: no cover - 迁移失败不阻塞启动
+                pass
             conn.commit()
         finally:
             pass  # 连接已登记于 _all_conns，进程退出时由 close_all_connections() 统一关闭
@@ -210,6 +218,7 @@ def update_task_status(
     status: str,
     exit_code: int | None = None,
     log: str | None = None,
+    error_message: str | None = None,
     total_resources: int | None = None,
     processed_resources: int | None = None,
     pages_scanned: int | None = None,
@@ -224,6 +233,9 @@ def update_task_status(
     if log is not None:
         sets.append("log = ?")
         vals.append(log[-80000:])
+    if error_message is not None:
+        sets.append("error_message = ?")
+        vals.append(error_message[-4000:])
     if total_resources is not None:
         sets.append("total_resources = ?")
         vals.append(total_resources)
@@ -340,7 +352,7 @@ def list_tasks(
     total = conn.execute(count_sql, params).fetchone()[0]
 
     list_sql = (
-        f"SELECT id, url, status, exit_code, output_dir, "
+        f"SELECT id, url, status, exit_code, error_message, output_dir, "
         f"total_resources, processed_resources, pages_scanned, "
         f"created_at, finished_at "
         f"FROM tasks {where} "
@@ -356,6 +368,7 @@ def list_tasks(
                 "url": r["url"],
                 "status": r["status"],
                 "exit_code": r["exit_code"],
+                "error_message": r["error_message"],
                 "output_dir": r["output_dir"],
                 "total_resources": r["total_resources"],
                 "processed_resources": r["processed_resources"],
@@ -380,6 +393,7 @@ def get_task(task_id: str) -> dict[str, Any] | None:
         "output_dir": r["output_dir"],
         "status": r["status"],
         "exit_code": r["exit_code"],
+        "error_message": r["error_message"],
         "log": r["log"],
         "total_resources": r["total_resources"],
         "processed_resources": r["processed_resources"],

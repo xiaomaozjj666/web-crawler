@@ -40,6 +40,8 @@ class JobState:
     current_url: str = ""
     pages_scanned: int = 0
     exit_code: int | None = None
+    # 失败原因（一句话）：落库供「任务历史」直接展示，避免用户只能翻日志
+    error: str = ""
     pause_event: threading.Event = field(default_factory=threading.Event)
     stop_event: threading.Event = field(default_factory=threading.Event)
     lock: threading.Lock = field(default_factory=threading.Lock)
