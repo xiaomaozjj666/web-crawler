@@ -40,16 +40,9 @@ _E2E_TEST_HTML = """<!DOCTYPE html>
   <script>
     // 加密参数生成逻辑（模拟 X-Bogus / Anti-Content 等）
     window.__sign = function(x) { return btoa(x); };
-    // 加载时立刻发一次。camoufox（Playwright-Firefox）的 add_init_script 晚于
-    // 文档自身脚本生效，所以这一发**捕不到**——见 src/web_crawler/ai/hooks.py
-    // 的实测限制注释。保留它用于复现该时序，不作为捕获断言的目标。
+    // 页面加载时发出请求，携带 sign 参数（被 fetch_hook 捕获）
     var sign = window.__sign('test');
     fetch('/api?sign=' + sign).catch(function() {});
-    // 600ms 后再发一次：此时 Hook 已安装，用于验证「安装之后发出的请求
-    // 确实能被捕获」——这才是该引擎上可达的能力。
-    setTimeout(function () {
-      fetch('/api?sign=' + window.__sign('later') + '&phase=late').catch(function() {});
-    }, 600);
   </script>
 </body>
 </html>"""
