@@ -49,6 +49,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from pathlib import Path
 from typing import Any
@@ -114,6 +115,8 @@ from .watchdog import (
 # ---------------------------------------------------------------------------
 # 历史兼容 re-export
 # ---------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
 
 # _THINK_USER_TEMPLATE 被 tests 与外部代码直接
 # `from web_crawler.ai.reverse_agent import _THINK_USER_TEMPLATE` 引用；
@@ -937,8 +940,10 @@ class ReverseAgent(ActionExecutor):
         combined = generate_combined_script(hook_names or self.config.hooks)
         try:
             await context.add_init_script(combined)
-        except Exception:
-            pass
+        except Exception as exc:
+            # 不再静默：注入失败会让整轮 Hook 捕获失效（hook_count 恒为 0），
+            # 而症状与「页面确实没发请求」一模一样，排查成本极高。
+            logger.warning("context.add_init_script 失败，Hook 未注入: %s", exc)
         page = await context.new_page()
         try:
             await self.fetcher._setup_page_async(page)
