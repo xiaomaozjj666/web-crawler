@@ -165,6 +165,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   的 `ruff>=0.17.0` 下限一致，避免钩子与 CI 用两个版本跑同一份代码。
 - **`Docs` 工作流改为只在 PR 上取消旧运行**：推送 master 触发的 gh-pages 部署
   改为排队而不是互相取消（被中断的部署会留下半成品站点）。
+- **逆向页左栏操作条常驻**：`.reverse-left` 是独立滚动区（`max-height:
+  calc(100vh - 200px); overflow-y: auto`），长表单会把「启动 Agent」滚出可视区，
+  而中栏空态还写着「点击"启动 Agent"开始任务」—— 用户照着点却找不到按钮。
+  现在按钮组包进 `.rev-actions` 常驻左栏底部（`position: sticky; bottom: 0`），
+  并给按钮加 `white-space: nowrap` 避免窄栏里被拆成「清空日/志」。
+  实测 1440×900 下按钮 y=688（视口 900）常驻可见；移动端左栏没有内部滚动
+  （`max-height: none`），按正常页面滚动触达。
 - **Web UI 可用性整改（三端实测）**：主操作按钮原在 1928px 长表单底部，
   1440/834/390 三档**首屏都看不见**；现改为 `position: sticky` 操作条，
   进度、状态与按钮常驻，任务结束后按钮自动恢复可用（此前要保持刷新页面才能再跑）。

@@ -104,6 +104,13 @@
     .reverse-panel { display: flex; flex-direction: column; gap: 16px; }
     .reverse-grid { display: grid; grid-template-columns: 320px 1fr 340px; gap: 16px; align-items: start; }
     .reverse-left, .reverse-right { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; box-shadow: var(--shadow); max-height: calc(100vh - 200px); overflow-y: auto; }
+    /* 逆向页左栏是独立滚动区，长表单会把「启动 Agent」滚出可视区，
+       而中栏空态还写着「点击"启动 Agent"开始任务」⇒ 按钮组常驻底部。
+       不用负 margin，避免 overflow-y:auto 的另一轴被算成 auto 后出现横向滚动条。 */
+    .rev-actions { position: sticky; bottom: 0; z-index: 6; margin-top: 10px; padding-top: 10px; background: var(--card); border-top: 1px solid var(--border); }
+    /* 左栏只有 ~200px 宽，按钮文字会被拆成两行（「清空日/志」）⇒ 整块换行，不拆字 */
+    .rev-actions .buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+    .rev-actions .buttons button { white-space: nowrap; }
     .reverse-center { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; box-shadow: var(--shadow); min-height: 500px; display: flex; flex-direction: column; }
     .reverse-left h3, .reverse-right h3, .reverse-center h3 { font-size: 14px; margin: 16px 0 10px; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 6px; }
     .reverse-left h3:first-child, .reverse-right h3:first-child, .reverse-center h3:first-child { margin-top: 0; }
@@ -492,15 +499,17 @@
                 </fieldset>
               </details>
 
-              <div class="buttons">
-                <button type="submit" class="btn-primary">启动 Agent</button>
-                <button type="button" id="reverse-stop" class="btn-danger" disabled>停止</button>
-                <button type="button" id="reverse-clear-log" class="btn-secondary">清空日志</button>
-              </div>
-              <div class="config-io-bar">
-                <button type="button" id="rev-config-export" class="btn-secondary">导出配置</button>
-                <button type="button" id="rev-config-import-btn" class="btn-secondary">导入配置</button>
-                <input type="file" id="rev-config-file" accept="application/json,.json" style="display:none">
+              <div class="rev-actions">
+                <div class="buttons">
+                  <button type="submit" class="btn-primary">启动 Agent</button>
+                  <button type="button" id="reverse-stop" class="btn-danger" disabled>停止</button>
+                  <button type="button" id="reverse-clear-log" class="btn-secondary">清空日志</button>
+                </div>
+                <div class="config-io-bar">
+                  <button type="button" id="rev-config-export" class="btn-secondary">导出配置</button>
+                  <button type="button" id="rev-config-import-btn" class="btn-secondary">导入配置</button>
+                  <input type="file" id="rev-config-file" accept="application/json,.json" style="display:none">
+                </div>
               </div>
             </form>
           </aside>
