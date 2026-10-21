@@ -11,6 +11,11 @@ updates:
     ignore:
       - dependency-name: playwright
         versions: [">=1.61"]
+      # Pillow 13 是跨大版本：pyproject 已钉 <13，Dependabot 反复尝试推 13 时
+      # 会在容器里丢 unknown_error（2026-10-20 实测）。挡掉 >=13 不影响 12.x
+      # 的安全更新照常提 PR。
+      - dependency-name: pillow
+        versions: [">=13"]
     commit-message:
       prefix: "chore(deps)"
   - package-ecosystem: github-actions

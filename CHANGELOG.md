@@ -165,6 +165,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   的 `ruff>=0.17.0` 下限一致，避免钩子与 CI 用两个版本跑同一份代码。
 - **`Docs` 工作流改为只在 PR 上取消旧运行**：推送 master 触发的 gh-pages 部署
   改为排队而不是互相取消（被中断的部署会留下半成品站点）。
+- **依赖地板抬到当前最新**：`cssselect` 1.5.0→1.6.0、`mkdocstrings[python]`
+  1.0.6→1.0.8（都在原有 `<2` 区间内）；同时按既有写法给 `pillow` 加了
+  `versions: [">=13"]` 的精确 ignore —— 13 是跨大版本、`pyproject.toml` 已钉 `<13`，
+  Dependabot 反复尝试推 13 时会在自己的容器里丢 `unknown_error`（2026-10-20 实测），
+  挡掉跨大版本不影响 12.x 的安全更新照常提 PR。
 - **失败任务给出原因与一键重试**：`tasks` 表新增 `error_message`（含老库
   `ALTER TABLE` 迁移），任务失败时把一句话原因落库（最多 4000 字），
   「任务历史」卡片直接显示在 URL 下方，并出现「重试」按钮。
