@@ -71,6 +71,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `allow_private_hosts=True` 可显式放行（与 fetcher 同名选项语义一致）。
 - **pentest：目标 scheme 白名单**：`pentest_recon` 的 target 解析层拒绝
   `file://`/`ftp://` 等非 http(s) scheme（纵深防御，与 fetcher 入口对齐）。
+- **`CurlResolvePinner` 并发竞态**：`entries_for` 原把「LRU 维护」与「快照构造」
+  放在两个独立临界区，中间的空隙足以让并发线程把本次 host 淘汰出去 ⇒ 返回的
+  快照缺调用方自己的 `CURLOPT_RESOLVE` 条目，SSRF DNS rebinding 的 TOCTOU
+  窗口重新打开。改为在单个临界区内完成（A/B 压测：旧实现 6 轮里有 1 轮出现
+  55 次快照缺失，修复后 0 次）。
+- **异步 reverse agent 的验证码探测全程失效**：`_observe_async` 调的是同步的
+  `CaptchaDetector.detect()`，而异步 page 的 `query_selector()` 返回协程，
+  随后 `el.get_attribute(...)` 必抛 `AttributeError`，每步 observe 都失败。
+  新增 `detect_async` 及四个 `_detect_*_async` 分支（语义与同步版逐条对应）。
+- **`robots.txt` 的 `Crawl-delay` 跨 Python 版本不一致**：标准库自 3.13 起把
+  「多个同名组」的选择由「首个」改成「末个」（同一份文件 3.12 得 5、3.13 得 9），
+  节流值随解释器漂移。改为本模块自行扫描原文判定。
+- **Windows 上缓存原子替换的并发共享冲突**：`os.replace` 并发替换同一目标会
+  抛 `PermissionError [WinError 5]`，原 5 次≈10 ms 的递增退避在密集争用下会被
+  打穿。加模块级 `_REPLACE_LOCK`，只串行化 `os.replace` 这一步（写临时文件仍在
+  锁外），CI 的 Windows 矩阵由稳定失败转为通过。
+- **Hook 注入失败不再静默**：`context.add_init_script()` 的异常原被
+  `except Exception: pass` 完全吞掉，而注入失败的症状与「页面确实没发请求」
+  一模一样。改为 `logger.warning` 并补上该模块缺失的模块级 logger；同时在
+  `hooks.py` 记录实测限制 —— camoufox（Playwright-Firefox）的 init script
+  晚于文档自身脚本生效，只保证捕获安装**之后**发出的请求，两条 e2e 据此标记
+  为 `xfail` 并写明原因。
 
 ### Changed
 - **sync/async 镜像代码去重（第一批）**：spider 的 run()/stream() 抽出共享
@@ -139,6 +161,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   永远无法结束的僵尸任务。
 - **`.gitignore` 移除本机工具目录条目**：该目录改由本机全局忽略规则承担，
   仓库内不再维护。
+- **`pre-commit` 的 ruff 对齐到 0.17.1**（原 `v0.16.0`）：与 `pyproject.toml`
+  的 `ruff>=0.17.0` 下限一致，避免钩子与 CI 用两个版本跑同一份代码。
+- **`Docs` 工作流改为只在 PR 上取消旧运行**：推送 master 触发的 gh-pages 部署
+  改为排队而不是互相取消（被中断的部署会留下半成品站点）。
+
+### Removed
+- **根目录本地草稿文件（19 个）**：`_dump_*.txt` / `_d_test_*.txt` /
+  `_gen_*.py` / `_inspect_funcs.py` / `_map.json` 属本地一次性脚本与导出，
+  曾被误提交进仓库；一并加根目录锚定的 `/_*.py`、`/_*.txt`、`/_*.json`、
+  `/.tmp_*/` 忽略规则防复发。
 
 ## [0.5.1] - 2026-08-28
 
