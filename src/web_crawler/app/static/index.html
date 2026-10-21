@@ -256,6 +256,8 @@
     .results-table td { padding: 8px; border-bottom: 1px solid var(--border); }
     .results-table td.cell-url { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .results-table td.cell-size { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .results-table td.cell-path, .results-table td.cell-page { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 12px; }
+    .results-table .muted { color: var(--text-muted); }
     .results-table th.num { text-align: right; }
     .results-table td.cell-status { white-space: nowrap; font-size: 12px; }
     .results-table .status-ok { color: var(--ok-text); }
@@ -362,7 +364,8 @@
           <div class="opt-group">
             <h4>下载行为</h4>
             <div class="grid">
-              <label class="check"><input type="checkbox" name="list_only" checked> 只生成清单，不下载文件</label>
+              <label class="check"><input type="checkbox" name="list_only"> 只生成清单，不下载文件</label>
+          <div class="hint">默认会下载资源；勾上则只在清单里登记地址（省磁盘、对目标站压力小）</div>
               <label class="check"><input type="checkbox" name="video_mode"> 生成视频资源清单</label>
               <label class="check"><input type="checkbox" name="video_only"> 只处理视频相关资源</label>
               <label class="check"><input type="checkbox" name="resume" checked> 断点续传（文件下到一半断了，接着下）</label>
@@ -384,7 +387,7 @@
 
           <div class="action-dock">
             <div class="progress-wrap"><div id="progress-bar" class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="采集进度"></div></div>
-            <div id="status" class="status" role="status" aria-live="polite">等待开始：填写网页 URL 后点「开始采集」（默认只生成清单，不下载文件）</div>
+            <div id="status" class="status" role="status" aria-live="polite">等待开始：填写网页 URL 后点「开始采集」（默认下载资源；想只要清单就勾上「只生成清单」）</div>
             <div class="buttons">
               <button id="run-button" type="submit" class="btn-primary">开始采集</button>
               <button id="pause-button" type="button" class="btn-secondary" disabled>暂停</button>
@@ -808,11 +811,12 @@
     }
 
     function renderStep(s) {
-      var colorMap = { navigate: '#3b82f6', inject_hook: '#a855f7', analyze_js: '#f97316',
+      /* 步骤类型调色板：全局唯一一份，第二个 script 块也复用它（原来两份内容完全相同） */
+    var STEP_COLORS = { navigate: '#3b82f6', inject_hook: '#a855f7', analyze_js: '#f97316',
                        wait: '#6b7280', extract: '#22c55e', solve_captcha: '#eab308', done: '#16a34a',
                        click: '#06b6d4', type: '#8b5cf6', scroll: '#64748b',
                        press: '#f59e0b', hover: '#ec4899', select_option: '#14b8a6' };
-      var color = colorMap[s.action_type] || '#6b7280';
+      var color = STEP_COLORS[s.action_type] || '#6b7280';
       var confColor = '#6b7280';
       if (s.confidence != null) {
         confColor = s.confidence >= 0.7 ? '#22c55e' : s.confidence >= 0.4 ? '#eab308' : '#ef4444';
@@ -1059,8 +1063,7 @@
         var conf = s.confidence;
         var card = document.createElement('div');
         card.className = 'trace-step';
-        var colorMap = {navigate:'#3b82f6',inject_hook:'#a855f7',analyze_js:'#f97316',wait:'#6b7280',extract:'#22c55e',solve_captcha:'#eab308',done:'#16a34a',click:'#06b6d4',type:'#8b5cf6',scroll:'#64748b',press:'#f59e0b',hover:'#ec4899',select_option:'#14b8a6'};
-        var color = colorMap[actionType] || '#6b7280';
+        var color = STEP_COLORS[actionType] || '#6b7280';
         card.style.borderLeftColor = color;
         var html = '<div class="step-header"><span class="step-num">Step ' + step + '</span>' +
           '<span class="action-badge" style="background:' + color + '">' + escapeHtml(actionType) + '</span>';
@@ -1456,6 +1459,8 @@
             <thead>
               <tr>
                 <th scope="col">URL</th>
+                <th scope="col">保存路径</th>
+                <th scope="col">来源页面</th>
                 <th scope="col">类型</th>
                 <th scope="col" class="num">大小</th>
                 <th scope="col">分类</th>
@@ -1673,7 +1678,7 @@
             var hint = search
               ? '没有匹配「' + escapeHtml(search) + '」的结果，换个关键词试试。'
               : '这次任务没有记录到资源。若开启了「只生成清单，不下载」，可到保存目录查看清单文件。';
-            body.innerHTML = '<tr><td colspan="5" style="padding:28px;text-align:center;color:var(--text-muted)">' + hint + '</td></tr>';
+            body.innerHTML = '<tr><td colspan="7" style="padding:28px;text-align:center;color:var(--text-muted)">' + hint + '</td></tr>';
           }
           data.results.forEach(function(r) {
             var tr = document.createElement('tr');
@@ -1681,8 +1686,12 @@
             var st = resultStatusInfo(r.status);
             tr.innerHTML =
               '<td class="cell-url" title="' + escapeHtml(r.url || '') + '">' + escapeHtml(r.url || '-') + '</td>' +
+              '<td class="cell-path" title="' + escapeHtml(r.saved_path || '') + '">' + escapeHtml(r.saved_path || '—') + '</td>' +
+              '<td class="cell-page" title="' + escapeHtml(r.page_url || '') + '">' + escapeHtml(r.page_url || '—') + '</td>' +
               '<td>' + escapeHtml(r.content_type || '-') + '</td>' +
-              '<td class="cell-size">' + fmtSize(r.bytes || 0) + '</td>' +
+              /* 清单模式只登记不下载：bytes=0 且没有 saved_path，显示 0 B 会被误读成"空文件" */
+              '<td class="cell-size" title="' + (r.bytes ? '' : '清单模式：只登记了资源地址，未下载文件') + '">' +
+                (r.bytes ? fmtSize(r.bytes) : '<span class="muted">未下载</span>') + '</td>' +
               '<td>' + escapeHtml(r.category || '-') + '</td>' +
               '<td class="cell-status ' + st.cls + '"' + (st.title ? ' title="' + escapeHtml(st.title) + '"' : '') + '>' + escapeHtml(st.text) + '</td>';
             body.appendChild(tr);
@@ -1704,7 +1713,7 @@
         })
         .catch(function(err) {
           var body = document.getElementById('results-body');
-          body.innerHTML = '<tr><td colspan="5" style="padding:24px;text-align:center;color:var(--danger-text)">加载失败：' + escapeHtml(err.message) + '。关闭弹窗后重试，或确认服务仍在运行。</td></tr>';
+          body.innerHTML = '<tr><td colspan="7" style="padding:24px;text-align:center;color:var(--danger-text)">加载失败：' + escapeHtml(err.message) + '。关闭弹窗后重试，或确认服务仍在运行。</td></tr>';
         });
     }
 
@@ -1719,11 +1728,30 @@
     document.getElementById('results-modal').addEventListener('click', function(e) {
       if (e.target === this) { closeResults(); }
     });
-    /* Esc 关闭 */
+    /* 焦点陷阱：弹窗打开时 Tab 只在弹窗内循环 —— 否则键盘用户会被带到背后页面上，
+       屏幕阅读器也会读错上下文。只在弹窗可见时生效，不引入额外的绑定/解绑簿记。 */
+    function trapResultsFocus(modal, e) {
+      if (e.key !== 'Tab') { return; }
+      var nodes = modal.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      );
+      var list = Array.prototype.filter.call(nodes, function(el) {
+        return el.offsetWidth > 0 || el.offsetHeight > 0 || el === document.activeElement;
+      });
+      if (!list.length) { return; }
+      var first = list[0];
+      var last = list[list.length - 1];
+      var inside = modal.contains(document.activeElement);
+      if (!inside) { e.preventDefault(); first.focus(); return; }
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+    /* Esc 关闭 + Tab 焦点循环 */
     document.addEventListener('keydown', function(e) {
-      if (e.key === 'Escape' && document.getElementById('results-modal').classList.contains('show')) {
-        closeResults();
-      }
+      var modal = document.getElementById('results-modal');
+      if (!modal.classList.contains('show')) { return; }
+      if (e.key === 'Escape') { closeResults(); return; }
+      trapResultsFocus(modal, e);
     });
 
     // 切换到历史 Tab 时自动加载
