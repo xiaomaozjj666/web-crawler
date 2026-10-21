@@ -71,11 +71,13 @@ class ItemSpider(Spider):
 
 
 def test_request_validates_url() -> None:
+    """request 校验 URL。"""
     with pytest.raises(ValueError):
         Request(url="")
 
 
 def test_request_defaults() -> None:
+    """request 默认值正确。"""
     r = Request("https://x")
     assert r.method == "GET"
     assert r.callback == "parse"
@@ -84,6 +86,7 @@ def test_request_defaults() -> None:
 
 
 def test_spider_collects_items_and_follows_links() -> None:
+    """spider 收集条目并跟进链接。"""
     spider = ItemSpider(fetcher=FakeFetcher(PAGES))
     items = spider.run()
     names = [it["name"] for it in items]
@@ -94,6 +97,7 @@ def test_spider_collects_items_and_follows_links() -> None:
 
 
 def test_spider_respects_allowed_domains() -> None:
+    """spider 遵守允许的域名。"""
     pages = {
         "https://shop.example.com/": b'<a href="https://other.example/x">ext</a>',
         "https://other.example/x": b"<p>should not be fetched</p>",
@@ -114,6 +118,7 @@ def test_spider_respects_allowed_domains() -> None:
 
 
 def test_spider_deduplicates_requests() -> None:
+    """spider 对请求去重。"""
     pages = {
         "https://shop.example.com/": b'<a href="/">loop</a><a href="/page2">p2</a>',
         "https://shop.example.com/page2": b'<a href="/">home</a>',
@@ -135,18 +140,21 @@ def test_spider_deduplicates_requests() -> None:
 
 
 def test_spider_max_requests_cap() -> None:
+    """spider 遵守最大请求数上限。"""
     spider = ItemSpider(fetcher=FakeFetcher(PAGES))
     spider.run(max_requests=1)
     assert spider.stats.pages_crawled == 1
 
 
 def test_spider_requires_fetcher() -> None:
+    """spider 要求提供 fetcher。"""
     spider = ItemSpider()
     with pytest.raises(SpiderError, match="fetcher"):
         spider.run()
 
 
 def test_spider_failed_request_does_not_abort_run() -> None:
+    """spider 单个请求失败不中止运行。"""
     fetcher = FakeFetcher({})  # all URLs 404 but still returns a Response
     spider = ItemSpider(fetcher=fetcher)
     items = spider.run()
@@ -156,6 +164,8 @@ def test_spider_failed_request_does_not_abort_run() -> None:
 
 
 def test_spider_callback_error_raises_spider_error() -> None:
+    """spider 回调出错时抛出 SpiderError。"""
+
     class Bad(Spider):
         start_urls = ["https://shop.example.com/"]
 
@@ -168,6 +178,8 @@ def test_spider_callback_error_raises_spider_error() -> None:
 
 
 def test_spider_missing_callback_raises() -> None:
+    """spider 缺少回调时抛出异常。"""
+
     class S(Spider):
         start_urls = ["https://shop.example.com/"]
 
@@ -179,6 +191,7 @@ def test_spider_missing_callback_raises() -> None:
 
 
 def test_spider_pause_and_resume(tmp_path: Path) -> None:
+    """spider 暂停后可恢复。"""
     state_file = tmp_path / "state.json"
 
     class PausingSpider(Spider):
@@ -225,6 +238,8 @@ def test_spider_pause_and_resume(tmp_path: Path) -> None:
 
 
 def test_spider_priority_ordering() -> None:
+    """spider 按优先级排序请求。"""
+
     class S(Spider):
         start_urls = ["https://shop.example.com/"]
 
@@ -249,6 +264,7 @@ def test_spider_priority_ordering() -> None:
 
 
 def test_spider_async_run() -> None:
+    """spider 异步运行正确。"""
     spider = ItemSpider(fetcher=FakeFetcher(PAGES))
     items = asyncio.run(spider.async_run())
     names = [it["name"] for it in items]
@@ -305,6 +321,8 @@ def test_spider_stream_with_download_delay(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_spider_meta_passes_between_requests() -> None:
+    """spider 在请求间传递 meta。"""
+
     class S(Spider):
         start_urls = ["https://shop.example.com/"]
 
@@ -324,6 +342,7 @@ def test_spider_meta_passes_between_requests() -> None:
 
 
 def test_spider_stats_as_dict() -> None:
+    """spider stats 转字典正确。"""
     spider = ItemSpider(fetcher=FakeFetcher(PAGES))
     spider.run()
     d = spider.stats.as_dict()
@@ -333,6 +352,7 @@ def test_spider_stats_as_dict() -> None:
 
 
 def test_spider_stream_yields_items() -> None:
+    """spider stream 产出条目。"""
     spider = ItemSpider(fetcher=FakeFetcher(PAGES))
 
     async def collect() -> list[Any]:
@@ -349,6 +369,7 @@ def test_spider_stream_yields_items() -> None:
 
 
 def test_spider_stream_requires_fetcher() -> None:
+    """spider stream 要求提供 fetcher。"""
     spider = ItemSpider()
 
     async def go() -> None:
@@ -360,6 +381,7 @@ def test_spider_stream_requires_fetcher() -> None:
 
 
 def test_spider_stream_respects_max_requests() -> None:
+    """spider stream 遵守最大请求数。"""
     spider = ItemSpider(fetcher=FakeFetcher(PAGES))
 
     async def collect() -> list[Any]:

@@ -55,6 +55,7 @@ def _public_getaddrinfo(host: str, *args: object, **kwargs: object) -> list[tupl
     ],
 )
 def test_rejects_cloud_metadata(url: str) -> None:
+    """拒绝云元数据地址。"""
     with pytest.raises(ValueError, match="unsafe host"):
         validate_url_host(url)
     assert host_is_unsafe("169.254.169.254")
@@ -72,6 +73,7 @@ def test_rejects_cloud_metadata(url: str) -> None:
     ],
 )
 def test_rejects_loopback_ips(host: str) -> None:
+    """拒绝回环 IP。"""
     with pytest.raises(ValueError, match="unsafe host"):
         validate_url_host(_url_for_host(host))
     assert is_private_ip(host)
@@ -144,6 +146,7 @@ def test_public_and_hostname_forms_are_not_blocked(host: str) -> None:
     ],
 )
 def test_rejects_private_and_link_local_ips(host: str) -> None:
+    """拒绝私有与链路本地 IP。"""
     with pytest.raises(ValueError, match="unsafe host"):
         validate_url_host(_url_for_host(host, "/x"))
     assert host_is_unsafe(host)
@@ -165,6 +168,7 @@ def test_rejects_private_and_link_local_ips(host: str) -> None:
     ],
 )
 def test_rejects_localhost_and_mdns_hostnames(host: str) -> None:
+    """拒绝 localhost 与 mDNS 主机名。"""
     with pytest.raises(ValueError, match="unsafe host"):
         validate_url_host(f"http://{host}/")
     assert is_unsafe_hostname(host)
@@ -172,6 +176,7 @@ def test_rejects_localhost_and_mdns_hostnames(host: str) -> None:
 
 
 def test_empty_or_missing_host_is_unsafe() -> None:
+    """主机为空或缺失时不安全。"""
     assert host_is_unsafe(None)
     assert host_is_unsafe("")
     with pytest.raises(ValueError, match="unsafe host"):
@@ -195,6 +200,7 @@ def test_empty_or_missing_host_is_unsafe() -> None:
 )
 def test_allows_public_urls(url: str) -> None:
     # 默认不触发 DNS 解析：纯静态检查即可放行公开 hostname/IP
+    """允许公开 URL。"""
     validate_url_host(url)
     assert not host_is_unsafe("example.com")
     assert not is_private_ip("8.8.8.8")

@@ -34,6 +34,7 @@ from web_crawler.ai.watchdog import (
 
 
 def test_agent_event_to_dict_roundtrip() -> None:
+    """AgentEvent 与字典往返转换一致。"""
     event = AgentEvent(type=EVENT_STEP_START, step=3, payload={"k": "v"})
     d = event.to_dict()
     assert d["type"] == EVENT_STEP_START
@@ -43,6 +44,7 @@ def test_agent_event_to_dict_roundtrip() -> None:
 
 
 def test_agent_event_defaults() -> None:
+    """AgentEvent 默认字段值正确。"""
     event = AgentEvent(type=EVENT_DONE)
     assert event.step == 0
     assert event.payload == {}
@@ -55,6 +57,7 @@ def test_agent_event_defaults() -> None:
 
 
 def test_event_bus_subscribe_and_publish_broadcasts_to_all() -> None:
+    """EventBus 发布事件广播给所有订阅者。"""
     bus = EventBus()
     received_a: list[AgentEvent] = []
     received_b: list[AgentEvent] = []
@@ -71,6 +74,7 @@ def test_event_bus_subscribe_and_publish_broadcasts_to_all() -> None:
 
 
 def test_event_bus_unsubscribe_removes_subscriber() -> None:
+    """EventBus 退订后移除订阅者。"""
     bus = EventBus()
     received: list[AgentEvent] = []
     unsub = bus.subscribe(received.append)
@@ -132,6 +136,7 @@ def test_event_bus_emit_convenience_method() -> None:
 
 
 def test_event_bus_published_count_increments() -> None:
+    """EventBus 发布后计数递增。"""
     bus = EventBus()
     assert bus.published_count == 0
     bus.publish(AgentEvent(type=EVENT_DONE))
@@ -140,6 +145,7 @@ def test_event_bus_published_count_increments() -> None:
 
 
 def test_event_bus_no_subscribers_publish_is_noop() -> None:
+    """EventBus 无订阅者时发布为空操作。"""
     bus = EventBus()
     bus.publish(AgentEvent(type=EVENT_DONE))
     assert bus.published_count == 1
@@ -151,16 +157,19 @@ def test_event_bus_no_subscribers_publish_is_noop() -> None:
 
 
 def test_heartbeat_max_interval_clamped_to_minimum_one() -> None:
+    """Heartbeat max_interval 钳制到最小 1。"""
     hb = Heartbeat(max_interval=0.5)
     assert hb.max_interval == 1.0
 
 
 def test_heartbeat_max_interval_zero_clamped() -> None:
+    """Heartbeat max_interval 为 0 时被钳制。"""
     hb = Heartbeat(max_interval=0)
     assert hb.max_interval == 1.0
 
 
 def test_heartbeat_tick_updates_step_and_resets_stall_flag() -> None:
+    """Heartbeat tick 更新 step 并重置 stall 标志。"""
     hb = Heartbeat(max_interval=10.0)
     hb.tick(5)
     assert hb._last_tick_step == 5
@@ -168,6 +177,7 @@ def test_heartbeat_tick_updates_step_and_resets_stall_flag() -> None:
 
 
 def test_heartbeat_check_stall_false_when_recent() -> None:
+    """Heartbeat 最近有 tick 时 check_stall 返回 False。"""
     hb = Heartbeat(max_interval=100.0)
     hb.tick(1)
     assert hb.check_stall(step=2) is False
@@ -219,6 +229,7 @@ def test_heartbeat_on_stall_exception_handled(capsys: pytest.CaptureFixture[str]
 
 
 def test_heartbeat_reset_clears_state() -> None:
+    """Heartbeat reset 清空状态。"""
     hb = Heartbeat(max_interval=1.0)
     hb.tick(5)
     hb._stall_reported = True
@@ -260,16 +271,19 @@ def test_heartbeat_no_callback_still_reports_stall() -> None:
 
 
 def test_crash_recovery_max_retries_clamped_to_zero() -> None:
+    """CrashRecovery max_retries 钳制到最小 0。"""
     cr = CrashRecovery(max_retries=-5)
     assert cr.max_retries == 0
 
 
 def test_crash_recovery_attempts_starts_at_zero() -> None:
+    """CrashRecovery attempts 初始为 0。"""
     cr = CrashRecovery(max_retries=3)
     assert cr.attempts == 0
 
 
 def test_crash_recovery_reset() -> None:
+    """CrashRecovery reset 重置计数。"""
     cr = CrashRecovery(max_retries=3)
     cr._attempts = 2
     cr.reset()
@@ -277,6 +291,7 @@ def test_crash_recovery_reset() -> None:
 
 
 def test_crash_recovery_success_returns_true_and_resets() -> None:
+    """CrashRecovery 成功时返回 True 并重置。"""
     cr = CrashRecovery(max_retries=3)
     result = cr.attempt(lambda: True, step=1)
     assert result is True
@@ -284,6 +299,7 @@ def test_crash_recovery_success_returns_true_and_resets() -> None:
 
 
 def test_crash_recovery_success_emits_recover_event() -> None:
+    """CrashRecovery 成功时发出 recover 事件。"""
     bus = EventBus()
     received: list[AgentEvent] = []
     bus.subscribe(received.append)
@@ -299,6 +315,7 @@ def test_crash_recovery_success_emits_recover_event() -> None:
 
 
 def test_crash_recovery_failure_under_limit_returns_true_to_retry() -> None:
+    """CrashRecovery 失败未超限时返回 True 以重试。"""
     cr = CrashRecovery(max_retries=3)
     result = cr.attempt(lambda: False, step=1)
     # 失败但未超限 → 返回 True 继续
@@ -307,6 +324,7 @@ def test_crash_recovery_failure_under_limit_returns_true_to_retry() -> None:
 
 
 def test_crash_recovery_failure_emits_recover_event_with_success_false() -> None:
+    """CrashRecovery 失败时发出 success=False 的 recover 事件。"""
     bus = EventBus()
     received: list[AgentEvent] = []
     bus.subscribe(received.append)
@@ -344,6 +362,7 @@ def test_crash_recovery_already_at_limit_returns_false_immediately() -> None:
 
 
 def test_crash_recovery_at_limit_emits_recover_failed() -> None:
+    """CrashRecovery 达上限时发出 recover_failed 事件。"""
     bus = EventBus()
     received: list[AgentEvent] = []
     bus.subscribe(received.append)
@@ -358,6 +377,7 @@ def test_crash_recovery_at_limit_emits_recover_failed() -> None:
 
 
 def test_crash_recovery_recovery_fn_exception_returns_false() -> None:
+    """CrashRecovery 恢复函数抛异常时返回 False。"""
     bus = EventBus()
     received: list[AgentEvent] = []
     bus.subscribe(received.append)
@@ -390,6 +410,7 @@ def test_crash_recovery_no_bus_does_not_emit() -> None:
 
 
 def test_crash_recovery_success_after_failures_resets_counter() -> None:
+    """CrashRecovery 失败后成功重置计数器。"""
     cr = CrashRecovery(max_retries=3)
     cr.attempt(lambda: False)  # attempts=1
     cr.attempt(lambda: False)  # attempts=2
@@ -405,6 +426,7 @@ def test_crash_recovery_success_after_failures_resets_counter() -> None:
 
 
 def test_event_bus_logger_writes_json_line() -> None:
+    """EventBusLogger 写入 JSON 行。"""
     stream = MagicMock()
     logger = EventBusLogger(stream)
     event = AgentEvent(type=EVENT_STEP_START, step=1, payload={"a": 1})
@@ -416,6 +438,7 @@ def test_event_bus_logger_writes_json_line() -> None:
 
 
 def test_event_bus_logger_default_stream_is_stderr() -> None:
+    """EventBusLogger 默认流为 stderr。"""
     import sys
 
     logger = EventBusLogger()
@@ -437,11 +460,13 @@ def test_event_bus_logger_exception_swallowed() -> None:
 
 
 def test_collect_metrics_empty_returns_count_zero() -> None:
+    """collect_metrics 空输入返回 count 为 0。"""
     result = collect_metrics([])
     assert result == {"count": 0}
 
 
 def test_collect_metrics_aggregates_counts() -> None:
+    """collect_metrics 聚合各事件计数。"""
     events = [
         AgentEvent(type=EVENT_STEP_START, step=1, timestamp=100.0),
         AgentEvent(type=EVENT_STEP_END, step=1, timestamp=101.0),
@@ -473,6 +498,7 @@ def test_collect_metrics_counts_errors() -> None:
 
 
 def test_collect_metrics_accepts_generator() -> None:
+    """collect_metrics 接受生成器输入。"""
     events = (AgentEvent(type=EVENT_DONE, step=i) for i in range(3))
     result = collect_metrics(events)
     assert result["count"] == 3

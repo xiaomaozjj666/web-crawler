@@ -79,6 +79,7 @@ var __webpack_modules__ = [
 
 
 def test_js_fragment_defaults() -> None:
+    """JsFragment 默认字段值正确。"""
     frag = JSFragment(source="var a = 1;")
     assert frag.source == "var a = 1;"
     assert frag.url == ""
@@ -87,6 +88,7 @@ def test_js_fragment_defaults() -> None:
 
 
 def test_extract_webpack_modules_object() -> None:
+    """extract 提取对象形式 webpack 模块。"""
     analyzer = JSAnalyzer(provider=_StubProvider())
     modules = analyzer.extract_webpack_modules(_WEBPACK_OBJECT_SOURCE)
 
@@ -100,6 +102,7 @@ def test_extract_webpack_modules_object() -> None:
 
 
 def test_extract_webpack_modules_array() -> None:
+    """extract 提取数组形式 webpack 模块。"""
     analyzer = JSAnalyzer(provider=_StubProvider())
     modules = analyzer.extract_webpack_modules(_WEBPACK_ARRAY_SOURCE)
 
@@ -110,6 +113,7 @@ def test_extract_webpack_modules_array() -> None:
 
 
 def test_identify_entry_point() -> None:
+    """identify 识别入口点。"""
     analyzer = JSAnalyzer(provider=_StubProvider())
     modules = analyzer.extract_webpack_modules(_WEBPACK_OBJECT_SOURCE)
     # 100 依赖 200，200 被依赖；入口应是未被依赖的 100
@@ -117,6 +121,7 @@ def test_identify_entry_point() -> None:
 
 
 def test_trace_signing_flow() -> None:
+    """trace 追踪签名流程。"""
     analyzer = JSAnalyzer(provider=_StubProvider())
     modules = analyzer.extract_webpack_modules(_WEBPACK_OBJECT_SOURCE)
     # "sign" 仅在模块 100 出现；依赖在前、产出者在后
@@ -125,6 +130,7 @@ def test_trace_signing_flow() -> None:
 
 
 def test_truncate_code() -> None:
+    """truncate 截断代码。"""
     analyzer = JSAnalyzer(provider=_StubProvider(), max_chars=10)
     # 超长代码前后截断，中间插入 TRUNCATED 标记
     out = analyzer._truncate_code("a" * 30)
@@ -136,12 +142,14 @@ def test_truncate_code() -> None:
 
 
 def test_extract_json_plain() -> None:
+    """extract 提取纯 JSON。"""
     data = _extract_json('{"algorithm": "MD5", "confidence": 0.9}')
     assert data["algorithm"] == "MD5"
     assert data["confidence"] == 0.9
 
 
 def test_extract_json_codeblock() -> None:
+    """extract 提取代码块中的 JSON。"""
     text = '```json\n{"algorithm": "AES", "inputs": ["k"]}\n```'
     data = _extract_json(text)
     assert data["algorithm"] == "AES"

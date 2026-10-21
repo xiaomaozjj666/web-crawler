@@ -8,6 +8,7 @@ from web_crawler import AdaptiveStorage, Selector
 
 
 def test_save_and_retrieve_roundtrip(tmp_storage: AdaptiveStorage) -> None:
+    """save/retrieve 往返一致。"""
     page = Selector(
         '<div><a id="p1" class="product">Widget</a></div>',
         url="https://shop.example.com",
@@ -24,12 +25,14 @@ def test_save_and_retrieve_roundtrip(tmp_storage: AdaptiveStorage) -> None:
 
 
 def test_retrieve_missing_returns_none(tmp_storage: AdaptiveStorage) -> None:
+    """retrieve 缺失时返回 None。"""
     page = Selector("<div>x</div>", url="https://x.example", adaptive=True, storage=tmp_storage)
     assert page.retrieve("nope") is None
 
 
 def test_relocate_finds_element_after_markup_change(tmp_storage: AdaptiveStorage) -> None:
     # v1: element with id
+    """relocate 在 markup 变更后找到元素。"""
     page1 = Selector(
         '<div><a id="p1" class="product">Widget</a></div>',
         url="https://shop.example.com",
@@ -55,6 +58,7 @@ def test_relocate_finds_element_after_markup_change(tmp_storage: AdaptiveStorage
 
 
 def test_relocate_accepts_selector_input(tmp_storage: AdaptiveStorage) -> None:
+    """relocate 接受选择器输入。"""
     page1 = Selector(
         '<div><a id="p1" class="product">Gadget</a></div>',
         url="https://shop.example.com",
@@ -75,6 +79,7 @@ def test_relocate_accepts_selector_input(tmp_storage: AdaptiveStorage) -> None:
 
 
 def test_relocate_returns_empty_below_threshold(tmp_storage: AdaptiveStorage) -> None:
+    """relocate 在低于阈值时返回空。"""
     page1 = Selector(
         '<div><a id="p1" class="product">Widget</a></div>',
         url="https://shop.example.com",
@@ -96,18 +101,21 @@ def test_relocate_returns_empty_below_threshold(tmp_storage: AdaptiveStorage) ->
 
 
 def test_save_requires_adaptive_mode() -> None:
+    """save 要求自适应模式。"""
     page = Selector("<div><a>x</a></div>", adaptive=False)
     with pytest.raises(RuntimeError, match="adaptive"):
         page.save(page.css_first("a"), "id")
 
 
 def test_retrieve_requires_adaptive_mode() -> None:
+    """retrieve 要求自适应模式。"""
     page = Selector("<div>x</div>", adaptive=False)
     with pytest.raises(RuntimeError, match="adaptive"):
         page.retrieve("id")
 
 
 def test_relocate_requires_adaptive_mode() -> None:
+    """relocate 要求自适应模式。"""
     page = Selector("<div>x</div>", adaptive=False)
     with pytest.raises(RuntimeError, match="adaptive"):
         page.relocate({}, threshold=0.5)

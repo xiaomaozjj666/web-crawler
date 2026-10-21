@@ -18,6 +18,7 @@ def _el(html: str) -> etree._Element:
 
 
 def test_fingerprint_is_json_string() -> None:
+    """fingerprint 为 JSON 字符串。"""
     fp = compute_fingerprint(_el('<a class="x">hi</a>'))
     assert isinstance(fp, str)
     import json
@@ -29,29 +30,34 @@ def test_fingerprint_is_json_string() -> None:
 
 
 def test_fingerprint_identical_elements_score_one() -> None:
+    """相同元素的 fingerprint 评分为 1。"""
     a = compute_fingerprint(_el('<a class="x">hi</a>'))
     b = compute_fingerprint(_el('<a class="x">hi</a>'))
     assert similarity_score(a, b) == 1.0
 
 
 def test_fingerprint_completely_different_score_low() -> None:
+    """完全不同元素的 fingerprint 评分较低。"""
     a = compute_fingerprint(_el('<a class="x">hi</a>'))
     b = compute_fingerprint(_el('<div class="y"><span>bye</span></div>'))
     assert similarity_score(a, b) < 0.5
 
 
 def test_fingerprint_class_token_order_invariant() -> None:
+    """fingerprint 对 class token 顺序不变。"""
     a = compute_fingerprint(_el('<a class="c b a">x</a>'))
     b = compute_fingerprint(_el('<a class="a b c">x</a>'))
     assert similarity_score(a, b) == 1.0
 
 
 def test_similarity_score_handles_invalid_json() -> None:
+    """similarity_score 处理无效 JSON。"""
     assert similarity_score("not json", "{}") == 0.0
     assert similarity_score("{}", "") == 0.0
 
 
 def test_best_match_returns_best_above_threshold() -> None:
+    """best_match 返回高于阈值的最佳匹配。"""
     stored = compute_fingerprint(_el('<a class="product">Product 1</a>'))
     candidates = [
         _el('<a class="product new">Product 1</a>'),
@@ -65,6 +71,7 @@ def test_best_match_returns_best_above_threshold() -> None:
 
 
 def test_best_match_returns_none_below_threshold() -> None:
+    """best_match 在低于阈值时返回 None。"""
     stored = compute_fingerprint(_el('<a class="product">Product 1</a>'))
     candidates = [_el("<div>totally different</div>")]
     best, _score = best_match(candidates, stored, threshold=0.9)
@@ -72,6 +79,7 @@ def test_best_match_returns_none_below_threshold() -> None:
 
 
 def test_storage_save_load_roundtrip(tmp_storage: AdaptiveStorage) -> None:
+    """storage save/load 往返一致。"""
     fp = compute_fingerprint(_el('<a id="x">text</a>'))
     tmp_storage.save("example.com", "#x", fp, tag="a", text="text", url="https://example.com")
     record = tmp_storage.load("example.com", "#x")
@@ -82,6 +90,7 @@ def test_storage_save_load_roundtrip(tmp_storage: AdaptiveStorage) -> None:
 
 
 def test_storage_save_overwrites_on_conflict(tmp_storage: AdaptiveStorage) -> None:
+    """storage save 在冲突时覆盖。"""
     tmp_storage.save("d", "id", "fp1", tag="a")
     tmp_storage.save("d", "id", "fp2", tag="b")
     record = tmp_storage.load("d", "id")
@@ -91,10 +100,12 @@ def test_storage_save_overwrites_on_conflict(tmp_storage: AdaptiveStorage) -> No
 
 
 def test_storage_load_missing_returns_none(tmp_storage: AdaptiveStorage) -> None:
+    """storage load 缺失时返回 None。"""
     assert tmp_storage.load("nope", "missing") is None
 
 
 def test_storage_load_all_and_delete(tmp_storage: AdaptiveStorage) -> None:
+    """storage load_all 与 delete 正确。"""
     tmp_storage.save("d1", "a", "fpa")
     tmp_storage.save("d1", "b", "fpb")
     tmp_storage.save("d2", "c", "fpc")
@@ -107,6 +118,7 @@ def test_storage_load_all_and_delete(tmp_storage: AdaptiveStorage) -> None:
 
 
 def test_storage_context_manager(tmp_path) -> None:
+    """storage 上下文管理器正确。"""
     path = tmp_path / "ctx.sqlite3"
     with AdaptiveStorage(path) as s:
         s.save("d", "i", "fp")
@@ -117,6 +129,7 @@ def test_storage_context_manager(tmp_path) -> None:
 
 def test_similarity_weighted_towards_text_and_tag() -> None:
     # Same tag + text but different attrs should still score high.
+    """similarity 加权偏向 text 与 tag。"""
     a = compute_fingerprint(_el('<a id="1" class="c">Same</a>'))
     b = compute_fingerprint(_el('<a id="2" data-x="y">Same</a>'))
     assert similarity_score(a, b) > 0.7

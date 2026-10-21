@@ -6,6 +6,7 @@ from web_crawler.crawler import Crawler
 
 
 def test_extract_links_keeps_same_domain_only() -> None:
+    """extract_links 仅保留相同域名链接。"""
     html = (
         '<a href="/about">about</a>'
         '<a href="https://other.com/x">external</a>'
@@ -18,6 +19,7 @@ def test_extract_links_keeps_same_domain_only() -> None:
 
 
 def test_extract_links_handles_no_anchors() -> None:
+    """extract_links 处理无锚点情况。"""
     assert Crawler._extract_links("https://example.com/", "<p>hi</p>") == []
 
 
@@ -36,17 +38,20 @@ def test_extract_links_deduplicates_absolute_and_relative() -> None:
 
 
 def test_can_fetch_no_robots_returns_true() -> None:
+    """无 robots.txt 时 can_fetch 返回 True。"""
     crawler = Crawler(respect_robots=False)
     assert crawler.respect_robots is False
 
 
 def test_robot_parser_default_allow() -> None:
+    """robot parser 默认允许。"""
     rp = RobotFileParser()
     rp.parse([])
     assert rp.can_fetch("*", "https://example.com/") is True
 
 
 def test_robot_parser_block_all() -> None:
+    """robot parser 禁止全部。"""
     rp = RobotFileParser()
     rp.parse(["User-agent: *", "Disallow: /"])
     assert rp.can_fetch("*", "https://example.com/") is False

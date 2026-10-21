@@ -81,12 +81,14 @@ class _CaptchaStub:
 
 class TestSubGoal:
     def test_default_fields(self) -> None:
+        """默认字段值正确。"""
         sg = SubGoal(description="d")
         assert sg.description == "d"
         assert sg.success_criteria == ""
         assert sg.completed is False
 
     def test_to_dict(self) -> None:
+        """to_dict 转字典正确。"""
         sg = SubGoal(description="d", success_criteria="c", completed=True)
         d = sg.to_dict()
         assert d == {
@@ -98,11 +100,13 @@ class TestSubGoal:
 
 class TestPlan:
     def test_empty_plan_current_subgoal_is_none(self) -> None:
+        """空计划的 current_subgoal 为 None。"""
         p = Plan()
         assert p.current_subgoal is None
         assert p.is_complete is True  # all([]) == True
 
     def test_current_subgoal_returns_first_when_index_zero(self) -> None:
+        """index 为 0 时 current_subgoal 返回首个子目标。"""
         sg1 = SubGoal(description="first")
         sg2 = SubGoal(description="second")
         p = Plan(subgoals=[sg1, sg2])
@@ -110,6 +114,7 @@ class TestPlan:
         assert p.is_complete is False
 
     def test_advance_marks_current_complete_and_moves_to_next(self) -> None:
+        """advance 标记当前子目标完成并移到下一个。"""
         sg1 = SubGoal(description="first")
         sg2 = SubGoal(description="second")
         p = Plan(subgoals=[sg1, sg2])
@@ -119,6 +124,7 @@ class TestPlan:
         assert p.current_index == 1
 
     def test_advance_past_end_returns_none(self) -> None:
+        """advance 超过末尾时返回 None。"""
         sg = SubGoal(description="only")
         p = Plan(subgoals=[sg])
         p.advance()
@@ -128,16 +134,19 @@ class TestPlan:
         assert p.is_complete is True
 
     def test_is_complete_when_all_subgoals_completed(self) -> None:
+        """所有子目标完成时 is_complete 为 True。"""
         sg1 = SubGoal(description="a", completed=True)
         sg2 = SubGoal(description="b", completed=True)
         p = Plan(subgoals=[sg1, sg2])
         assert p.is_complete is True
 
     def test_is_complete_when_current_index_exceeds_length(self) -> None:
+        """current_index 超过长度时 is_complete 为 True。"""
         p = Plan(subgoals=[SubGoal(description="a")], current_index=5)
         assert p.is_complete is True
 
     def test_to_dict_includes_subgoals_index_and_step(self) -> None:
+        """to_dict 包含 subgoals、index 和 step。"""
         sg = SubGoal(description="d", success_criteria="c")
         p = Plan(subgoals=[sg], current_index=0, created_at_step=3)
         d = p.to_dict()
@@ -154,24 +163,29 @@ class TestPlan:
 
 class TestPlannerInit:
     def test_default_interval_is_five(self) -> None:
+        """默认 interval 为 5。"""
         p = Planner(_FakeProvider())
         assert p.planner_interval == 5
 
     def test_interval_below_one_clamped_to_one(self) -> None:
+        """interval 低于 1 时钳制到 1。"""
         p = Planner(_FakeProvider(), planner_interval=0)
         assert p.planner_interval == 1
 
     def test_negative_interval_clamped_to_one(self) -> None:
+        """interval 为负数时钳制到 1。"""
         p = Planner(_FakeProvider(), planner_interval=-10)
         assert p.planner_interval == 1
 
     def test_custom_interval_preserved(self) -> None:
+        """自定义 interval 被保留。"""
         p = Planner(_FakeProvider(), planner_interval=10)
         assert p.planner_interval == 10
 
 
 class TestPlannerBuildPrompt:
     def test_prompt_includes_task_target_observation_fields(self) -> None:
+        """prompt 包含 task、target、observation 字段。"""
         prompt = Planner._build_prompt(
             "locate sign param",
             _Observation(
@@ -193,6 +207,7 @@ class TestPlannerBuildPrompt:
         assert "previous summary" in prompt
 
     def test_prompt_uses_unspecified_when_fields_missing(self) -> None:
+        """字段缺失时 prompt 使用未指定占位。"""
         prompt = Planner._build_prompt("", _Observation(), "", None)
         assert "(未指定)" in prompt  # task 与 target_params 都未指定
         assert "(无)" in prompt  # history_summary 为空

@@ -37,6 +37,7 @@ _HTML_FULL = """
 
 
 def test_dom_pruner_extracts_candidates_and_truncates() -> None:
+    """DOM pruner 提取候选并截断。"""
     pruner = DomPruner(max_chars=600, max_candidates=10)
     result = pruner.prune(_HTML_FULL)
     assert result.element_count > 0
@@ -46,6 +47,7 @@ def test_dom_pruner_extracts_candidates_and_truncates() -> None:
 
 
 def test_dom_pruner_prioritizes_crypto_keywords() -> None:
+    """DOM pruner 优先加密关键字。"""
     pruner = DomPruner(max_chars=8000, max_candidates=20)
     result = pruner.prune(_HTML_FULL)
     # top_score 应该比较高，因为页面有 anti_content / sign 等关键词
@@ -53,6 +55,7 @@ def test_dom_pruner_prioritizes_crypto_keywords() -> None:
 
 
 def test_dom_pruner_handles_empty_html() -> None:
+    """DOM pruner 处理空 HTML。"""
     pruner = DomPruner()
     result = pruner.prune("")
     assert result.text == ""

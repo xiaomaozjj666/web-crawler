@@ -189,16 +189,19 @@ def _use_fake_curl(
     ],
 )
 def test_constructor_rejects_bad_arguments(kwargs: dict[str, Any]) -> None:
+    """构造器拒绝非法参数。"""
     with pytest.raises(ValueError):
         SessionPool(**kwargs)
 
 
 def test_constructor_rejects_empty_fingerprints() -> None:
+    """构造器拒绝空指纹列表。"""
     with pytest.raises(ValueError, match="non-empty"):
         SessionPool([])
 
 
 def test_acquire_release_roundtrip() -> None:
+    """acquire/release 往返一致。"""
     factory = _RecordingFactory()
     pool = SessionPool(session_factory=factory)
     handle = pool.acquire()
@@ -214,6 +217,7 @@ def test_acquire_release_roundtrip() -> None:
 
 
 def test_acquire_reuses_released_session() -> None:
+    """acquire 复用已释放的会话。"""
     factory = _RecordingFactory()
     pool = SessionPool(session_factory=factory)
     first = pool.acquire()
@@ -295,6 +299,7 @@ def test_overflow_acquires_ephemeral_sessions() -> None:
 
 def test_fingerprint_rotation_round_robin(monkeypatch: pytest.MonkeyPatch) -> None:
     # 轮换算法与是否安装 curl_cffi 无关：显式假定可用，否则结果随装机环境漂移
+    """指纹按轮询方式轮换。"""
     monkeypatch.setattr(session_mod, "HAS_CURL_CFFI", True)
     factory = _RecordingFactory()
     pool = SessionPool(["fp-a", "fp-b", "fp-c"], max_size=8, session_factory=factory)
@@ -306,6 +311,7 @@ def test_fingerprint_rotation_round_robin(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_fingerprint_rotation_random(monkeypatch: pytest.MonkeyPatch) -> None:
     # 同 test_fingerprint_rotation_round_robin：假定 curl_cffi 可用
+    """指纹按随机方式轮换。"""
     monkeypatch.setattr(session_mod, "HAS_CURL_CFFI", True)
     factory = _RecordingFactory()
     pool = SessionPool(["fp-a", "fp-b"], strategy="random", max_size=8, session_factory=factory)
@@ -316,6 +322,7 @@ def test_fingerprint_rotation_random(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_stats_fingerprint_distribution(monkeypatch: pytest.MonkeyPatch) -> None:
     # 同 test_fingerprint_rotation_round_robin：假定 curl_cffi 可用
+    """stats 反映指纹分布。"""
     monkeypatch.setattr(session_mod, "HAS_CURL_CFFI", True)
     factory = _RecordingFactory()
     pool = SessionPool(["fp-a", "fp-a", "fp-b"], max_size=8, session_factory=factory)
@@ -351,6 +358,7 @@ def test_default_fingerprints_accepted_by_curl_cffi() -> None:
 
 @pytest.mark.skipif(not HAS_CURL_CFFI, reason="curl_cffi not installed")
 def test_default_factory_builds_curl_session() -> None:
+    """默认工厂构建 curl 会话。"""
     pool = SessionPool(["chrome131"])
     handle = pool.acquire()
     try:
@@ -364,6 +372,7 @@ def test_default_factory_builds_curl_session() -> None:
 
 
 def test_default_factory_falls_back_to_httpx(monkeypatch: pytest.MonkeyPatch) -> None:
+    """默认工厂回退到 httpx。"""
     monkeypatch.setattr(session_mod, "HAS_CURL_CFFI", False)
     pool = SessionPool()
     handle = pool.acquire()
@@ -381,6 +390,7 @@ def test_default_factory_falls_back_to_httpx(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_idle_reaping_after_max_idle() -> None:
+    """超过最大空闲时间后回收会话。"""
     clock = _FakeClock()
     factory = _RecordingFactory()
     pool = SessionPool(session_factory=factory, max_idle=60.0, clock=clock)
@@ -433,6 +443,7 @@ def test_release_failure_evicts_after_threshold() -> None:
 
 
 def test_release_success_resets_failure_streak() -> None:
+    """release 成功时重置失败连续计数。"""
     factory = _RecordingFactory()
     pool = SessionPool(session_factory=factory, max_failures=2)
     handle = pool.acquire()
@@ -447,6 +458,7 @@ def test_release_success_resets_failure_streak() -> None:
 
 
 def test_mark_failed_marks_stale_then_evicts_on_release() -> None:
+    """mark_failed 标记过期并在 release 时驱逐。"""
     factory = _RecordingFactory()
     pool = SessionPool(session_factory=factory, max_failures=2)
     handle = pool.acquire()
@@ -472,6 +484,7 @@ def test_mark_failed_ignores_released_handle() -> None:
 
 
 def test_mark_success_rescues_marked_session() -> None:
+    """mark_success 救回已标记的会话。"""
     factory = _RecordingFactory()
     pool = SessionPool(session_factory=factory, max_failures=2)
     handle = pool.acquire()
@@ -490,6 +503,7 @@ def test_mark_success_rescues_marked_session() -> None:
 
 def test_prewarm_builds_sync_sessions_upfront(monkeypatch: pytest.MonkeyPatch) -> None:
     # 预热同样按指纹分配会话，故假定 curl_cffi 可用
+    """prewarm 预先构建同步会话。"""
     monkeypatch.setattr(session_mod, "HAS_CURL_CFFI", True)
     factory = _RecordingFactory()
     pool = SessionPool(["fp-a", "fp-b", "fp-c"], prewarm=2, session_factory=factory)
@@ -504,6 +518,7 @@ def test_prewarm_builds_sync_sessions_upfront(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_stats_structure() -> None:
+    """stats 返回的结构正确。"""
     pool = SessionPool(["fp-a"], max_size=3, max_idle=10.0)
     stats = pool.stats()
     assert set(stats) == {
@@ -530,6 +545,7 @@ def test_stats_structure() -> None:
 
 
 def test_len_counts_pooled_sessions() -> None:
+    """len 统计池化会话数量。"""
     factory = _RecordingFactory()
     pool = SessionPool(session_factory=factory, max_size=4)
     assert len(pool) == 0
@@ -542,12 +558,14 @@ def test_len_counts_pooled_sessions() -> None:
 
 
 def test_repr_contains_strategy() -> None:
+    """repr 包含策略信息。"""
     pool = SessionPool(strategy="round_robin")
     assert "round_robin" in repr(pool)
     pool.close()
 
 
 def test_bind_factories_is_first_wins() -> None:
+    """bind_factories 先注册的工厂胜出。"""
     factory = _RecordingFactory()
     pool = SessionPool()
     pool.bind_factories(session_factory=factory, async_session_factory=factory)
@@ -564,6 +582,7 @@ def test_bind_factories_is_first_wins() -> None:
 
 
 def test_close_closes_all_sessions_and_is_idempotent() -> None:
+    """close 关闭所有会话且幂等。"""
     factory = _RecordingFactory()
     pool = SessionPool(session_factory=factory, max_size=4)
     h1, _ = pool.acquire(), pool.acquire()
@@ -579,6 +598,7 @@ def test_close_closes_all_sessions_and_is_idempotent() -> None:
 
 
 def test_sync_context_manager_closes() -> None:
+    """同步上下文管理器退出时关闭。"""
     factory = _RecordingFactory()
     with SessionPool(session_factory=factory, prewarm=1) as pool:
         assert pool.stats()["idle"] == 1

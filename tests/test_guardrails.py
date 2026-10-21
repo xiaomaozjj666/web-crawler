@@ -4,6 +4,7 @@ from __future__ import annotations
 
 
 def test_guard_denies_localhost_navigation() -> None:
+    """guard 拒绝 localhost 导航。"""
     from web_crawler.ai.guardrails import ActionGuard
 
     guard = ActionGuard(allow_localhost=False)
@@ -14,6 +15,7 @@ def test_guard_denies_localhost_navigation() -> None:
 
 
 def test_guard_denies_non_https_url() -> None:
+    """guard 拒绝非 HTTPS URL。"""
     from web_crawler.ai.guardrails import ActionGuard
 
     guard = ActionGuard(allow_localhost=False)
@@ -23,6 +25,7 @@ def test_guard_denies_non_https_url() -> None:
 
 
 def test_guard_allows_https_url() -> None:
+    """guard 允许 HTTPS URL。"""
     from web_crawler.ai.guardrails import ActionGuard
 
     guard = ActionGuard()
@@ -32,6 +35,7 @@ def test_guard_allows_https_url() -> None:
 
 
 def test_guard_domain_whitelist() -> None:
+    """guard 按域名白名单放行。"""
     from web_crawler.ai.guardrails import ActionGuard
 
     guard = ActionGuard(allowed_domains=["*.example.com", "cdn.test.com"])
@@ -48,6 +52,7 @@ def test_guard_domain_whitelist() -> None:
 
 
 def test_guard_blocks_dangerous_script_injection() -> None:
+    """guard 阻止危险的脚本注入。"""
     from web_crawler.ai.guardrails import ActionGuard
 
     guard = ActionGuard()
@@ -61,6 +66,7 @@ def test_guard_blocks_dangerous_script_injection() -> None:
 
 
 def test_guard_custom_rule_and_confirm_callback() -> None:
+    """guard 自定义规则与确认回调。"""
     from web_crawler.ai.guardrails import (
         ActionGuard,
         GuardrailAction,

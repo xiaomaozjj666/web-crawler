@@ -29,6 +29,8 @@ def test_async_fetcher_has_no_sync_methods() -> None:
 
 
 def test_async_fetcher_get_returns_response(local_server: str) -> None:
+    """AsyncFetcher.get 返回响应。"""
+
     async def go() -> Response:
         async with AsyncFetcher(timeout=10.0) as f:
             return await f.get(local_server + "/")
@@ -40,6 +42,8 @@ def test_async_fetcher_get_returns_response(local_server: str) -> None:
 
 
 def test_async_fetcher_post(local_server: str) -> None:
+    """AsyncFetcher.post 发送请求。"""
+
     async def go() -> Response:
         async with AsyncFetcher(timeout=10.0) as f:
             return await f.post(local_server + "/")
@@ -49,6 +53,8 @@ def test_async_fetcher_post(local_server: str) -> None:
 
 
 def test_async_fetcher_context_manager() -> None:
+    """AsyncFetcher 上下文管理器正确。"""
+
     async def go() -> None:
         async with AsyncFetcher(timeout=5.0) as f:
             assert f._async_session is None  # not yet created
@@ -59,6 +65,8 @@ def test_async_fetcher_context_manager() -> None:
 
 
 def test_async_fetcher_aclose_idempotent() -> None:
+    """AsyncFetcher.aclose 幂等。"""
+
     async def go() -> None:
         f = AsyncFetcher(timeout=5.0)
         await f.aclose()

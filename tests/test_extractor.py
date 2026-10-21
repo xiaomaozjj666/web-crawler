@@ -36,6 +36,7 @@ def _response() -> Response:
 
 
 def test_extractor_generates_and_validates_selectors() -> None:
+    """extractor 生成并校验选择器。"""
     provider = FakeProvider(['{"title": "h1.title", "link": "a.more::attr(href)"}'])
     extractor = AIExtractor(provider=provider)
     result = extractor.extract(_response(), {"title": "heading", "link": "the link"})
@@ -48,6 +49,7 @@ def test_extractor_generates_and_validates_selectors() -> None:
 
 def test_extractor_self_heals_failing_field() -> None:
     # First reply has a wrong selector for `title`; heal round fixes it.
+    """extractor 自修复失败字段。"""
     provider = FakeProvider(
         [
             '{"title": "h1.wrong", "link": "a.more::attr(href)"}',
@@ -63,6 +65,7 @@ def test_extractor_self_heals_failing_field() -> None:
 
 
 def test_extractor_reports_missing_when_unhealable() -> None:
+    """无法修复时 extractor 报告缺失。"""
     provider = FakeProvider(['{"title": "h1.nope"}'])
     extractor = AIExtractor(provider=provider, max_heal_rounds=0)
     result = extractor.extract(_response(), {"title": "heading"})
@@ -72,6 +75,7 @@ def test_extractor_reports_missing_when_unhealable() -> None:
 
 
 def test_extractor_accepts_selector_directly() -> None:
+    """extractor 直接接受选择器。"""
     provider = FakeProvider(['{"title": "h1.title"}'])
     extractor = AIExtractor(provider=provider)
     sel = Selector(_HTML, url="https://example.com")

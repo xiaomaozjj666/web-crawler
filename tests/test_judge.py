@@ -93,6 +93,7 @@ class _Observation:
 
 class TestJudgeResult:
     def test_default_fields(self) -> None:
+        """默认字段值正确。"""
         r = JudgeResult(verified=True)
         assert r.verified is True
         assert r.missing == []
@@ -100,10 +101,12 @@ class TestJudgeResult:
         assert r.raw == {}
 
     def test_passed_is_alias_for_verified(self) -> None:
+        """passed 为 verified 的别名。"""
         assert JudgeResult(verified=True).passed is True
         assert JudgeResult(verified=False).passed is False
 
     def test_to_dict_returns_full_dict(self) -> None:
+        """to_dict 返回完整字典。"""
         r = JudgeResult(
             verified=False,
             missing=["a", "b"],
@@ -134,10 +137,12 @@ class TestJudgeResult:
 
 class TestTaskJudgeInit:
     def test_default_strict_is_true(self) -> None:
+        """默认 strict 为 True。"""
         judge = TaskJudge(_FakeProvider())
         assert judge.strict is True
 
     def test_strict_can_be_disabled(self) -> None:
+        """strict 可被禁用。"""
         judge = TaskJudge(_FakeProvider(), strict=False)
         assert judge.strict is False
 

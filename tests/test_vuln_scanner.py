@@ -540,6 +540,7 @@ def test_vuln_finding_to_dict_roundtrip() -> None:
 
 
 def test_vuln_finding_to_dict_preserves_path_traversal() -> None:
+    """VulnFinding.to_dict 保留路径遍历字段。"""
     f = VulnFinding(
         type="path_traversal",
         param="file",

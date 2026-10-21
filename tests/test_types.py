@@ -8,21 +8,25 @@ from web_crawler._types import Attrs, ResultList, TextHandler, ensure_list, iter
 
 
 def test_text_handler_clean_collapses_whitespace() -> None:
+    """TextHandler.clean 合并连续空白。"""
     assert str(TextHandler("  hello   world  ").clean()) == "hello world"
 
 
 def test_text_handler_chainable_returns_text_handler() -> None:
+    """TextHandler 链式方法返回 TextHandler。"""
     result = TextHandler("  hi  ").clean()
     assert isinstance(result, TextHandler)
     assert str(result) == "hi"
 
 
 def test_text_handler_remove_and_trim() -> None:
+    """TextHandler.remove 去除并修剪空白。"""
     assert str(TextHandler("a-b-c").remove("-")) == "abc"
     assert str(TextHandler("  x  ").trim()) == "x"
 
 
 def test_text_handler_starts_ends() -> None:
+    """TextHandler starts/ends 判断首尾。"""
     t = TextHandler("hello world")
     assert t.starts_with("hello")
     assert t.ends_with("world")
@@ -30,6 +34,7 @@ def test_text_handler_starts_ends() -> None:
 
 
 def test_attrs_case_insensitive() -> None:
+    """Attrs 按大小写不敏感访问属性。"""
     a = Attrs({"Class": "btn", "ID": "x"})
     assert a.get("class") == "btn"
     assert a.get("CLASS") == "btn"
@@ -39,11 +44,13 @@ def test_attrs_case_insensitive() -> None:
 
 
 def test_attrs_non_str_key_not_in() -> None:
+    """Attrs 非字符串键不在属性中。"""
     a = Attrs({"x": "1"})
     assert (123) not in a  # type: ignore[operator]
 
 
 def test_result_list_first_last() -> None:
+    """ResultList first/last 返回首末元素。"""
     rl: ResultList[int] = ResultList([1, 2, 3])
     # Scrapling-style property access (no parens)
     assert rl.first == 1
@@ -53,6 +60,8 @@ def test_result_list_first_last() -> None:
 
 
 def test_result_list_text_concatenates() -> None:
+    """ResultList text 拼接所有文本。"""
+
     class FakeSel:
         def __init__(self, t: str) -> None:
             self.text = t
@@ -63,6 +72,7 @@ def test_result_list_text_concatenates() -> None:
 
 
 def test_ensure_list() -> None:
+    """ensure_list 将输入规整为列表。"""
     assert ensure_list(None) == []
     assert ensure_list(5) == [5]
     assert ensure_list([1, 2]) == [1, 2]
@@ -70,33 +80,39 @@ def test_ensure_list() -> None:
 
 
 def test_iter_chunks() -> None:
+    """iter_chunks 按块迭代。"""
     chunks = list(iter_chunks([1, 2, 3, 4, 5], 2))
     assert chunks == [[1, 2], [3, 4], [5]]
 
 
 def test_result_list_get_default_when_empty() -> None:
+    """ResultList.get 在空列表时返回默认值。"""
     rl: ResultList[int] = ResultList()
     assert rl.get(99) == 99
 
 
 def test_result_list_get_returns_first_when_non_empty() -> None:
+    """ResultList.get 非空时返回首个元素。"""
     rl: ResultList[str] = ResultList(["a", "b"])
     assert rl.get() == "a"
 
 
 def test_result_list_getall() -> None:
+    """ResultList.getall 返回全部值。"""
     rl: ResultList[int] = ResultList([1, 2, 3])
     assert rl.getall() == [1, 2, 3]
     assert ResultList[int]().getall() == []
 
 
 def test_result_list_length_property() -> None:
+    """ResultList length 属性返回长度。"""
     rl: ResultList[int] = ResultList([1, 2, 3])
     assert rl.length == 3
     assert ResultList[int]().length == 0
 
 
 def test_result_list_slice_preserves_type() -> None:
+    """ResultList 切片保留类型。"""
     rl: ResultList[int] = ResultList([1, 2, 3, 4])
     sliced = rl[1:3]
     assert isinstance(sliced, ResultList)
@@ -104,12 +120,14 @@ def test_result_list_slice_preserves_type() -> None:
 
 
 def test_result_list_index_access_returns_item() -> None:
+    """ResultList 索引访问返回元素。"""
     rl: ResultList[int] = ResultList([10, 20])
     assert rl[0] == 10
     assert rl[-1] == 20
 
 
 def test_result_list_to_json_returns_string() -> None:
+    """ResultList.to_json 返回 JSON 字符串。"""
     rl: ResultList[dict] = ResultList([{"a": 1}, {"b": 2}])
     text = rl.to_json()
     assert '"a": 1' in text
@@ -117,6 +135,7 @@ def test_result_list_to_json_returns_string() -> None:
 
 
 def test_result_list_to_json_writes_file(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """ResultList.to_json 写入文件。"""
     rl: ResultList[dict] = ResultList([{"x": 1}])
     path = tmp_path / "out.json"
     rl.to_json(path)
@@ -127,6 +146,7 @@ def test_result_list_to_json_writes_file(tmp_path) -> None:  # type: ignore[no-u
 
 
 def test_result_list_to_jsonl_returns_string() -> None:
+    """ResultList.to_jsonl 返回 JSONL 字符串。"""
     rl: ResultList[dict] = ResultList([{"a": 1}, {"b": 2}])
     text = rl.to_jsonl()
     lines = text.strip().split("\n")
@@ -135,6 +155,7 @@ def test_result_list_to_jsonl_returns_string() -> None:
 
 
 def test_result_list_to_jsonl_writes_file(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """ResultList.to_jsonl 写入文件。"""
     rl: ResultList[dict] = ResultList([{"x": 1}, {"x": 2}])
     path = tmp_path / "out.jsonl"
     rl.to_jsonl(path)
@@ -144,6 +165,7 @@ def test_result_list_to_jsonl_writes_file(tmp_path) -> None:  # type: ignore[no-
 
 
 def test_result_list_to_json_coerces_dataclass() -> None:
+    """ResultList.to_json 强制转换 dataclass。"""
     from dataclasses import dataclass
 
     @dataclass

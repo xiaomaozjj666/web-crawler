@@ -91,6 +91,7 @@ def redirect_server() -> str:
 
 
 def test_fetcher_constructs_with_curl_cffi() -> None:
+    """Fetcher 用 curl_cffi 构造。"""
     if not compat.HAS_CURL_CFFI:
         pytest.skip("curl_cffi not installed")
     with Fetcher(impersonate="chrome131", timeout=5.0) as f:
@@ -100,6 +101,7 @@ def test_fetcher_constructs_with_curl_cffi() -> None:
 
 
 def test_fetcher_get_returns_response(local_server: str) -> None:
+    """Fetcher.get 返回响应。"""
     with Fetcher(timeout=10.0) as f:
         resp = f.get(local_server + "/")
     assert isinstance(resp, Response)
@@ -112,12 +114,14 @@ def test_fetcher_get_returns_response(local_server: str) -> None:
 
 
 def test_fetcher_get_json(local_server: str) -> None:
+    """Fetcher.get 解析 JSON 响应。"""
     with Fetcher(timeout=10.0) as f:
         resp = f.get(local_server + "/json")
     assert resp.json() == {"ok": True, "n": 42}
 
 
 def test_fetcher_get_404(local_server: str) -> None:
+    """Fetcher.get 处理 404 响应。"""
     with Fetcher(timeout=10.0) as f:
         resp = f.get(local_server + "/404")
     assert resp.status == 404
@@ -125,12 +129,14 @@ def test_fetcher_get_404(local_server: str) -> None:
 
 
 def test_fetcher_context_manager_closes(local_server: str) -> None:
+    """Fetcher 上下文管理器退出时关闭。"""
     with Fetcher(timeout=10.0) as f:
         f.get(local_server + "/")
     assert f._session is None
 
 
 def test_fetcher_post(local_server: str) -> None:
+    """Fetcher.post 发送 POST 请求。"""
     with Fetcher(timeout=10.0) as f:
         resp = f.post(local_server + "/")
     # http.server returns 501 for unimplemented methods
@@ -138,6 +144,7 @@ def test_fetcher_post(local_server: str) -> None:
 
 
 def test_fetcher_async_get(local_server: str) -> None:
+    """Fetcher 异步 get 请求。"""
     import asyncio
 
     async def go() -> Response:
@@ -152,6 +159,7 @@ def test_fetcher_async_get(local_server: str) -> None:
 def test_fetcher_with_proxy_pool_is_consulted_per_request() -> None:
     # The fetcher must ask the pool for a proxy on each request. We verify the
     # pool is wired up by spying on its internal counter (no network needed).
+    """Fetcher 每次请求 consulted 代理池。"""
     pool = ProxyPool(["http://127.0.0.1:8080", "http://127.0.0.1:8081"])
     with Fetcher(proxy=pool, timeout=2.0, retries=0) as f:
         # _resolve_proxy is the integration point between fetcher and pool.
@@ -164,6 +172,7 @@ def test_fetcher_with_proxy_pool_is_consulted_per_request() -> None:
 
 
 def test_fetcher_request_headers_merged(local_server: str) -> None:
+    """Fetcher.request 合并请求头。"""
     with Fetcher(timeout=10.0, extra_headers={"X-Test": "abc"}) as f:
         merged = f._merge_headers({"X-Per": "req"})
     # User headers preserved
@@ -173,11 +182,13 @@ def test_fetcher_request_headers_merged(local_server: str) -> None:
 
 def test_fetcher_retries_on_server_error(monkeypatch, local_server: str) -> None:
     # Force 500s by monkeypatching is hard; instead verify retries arg is stored.
+    """Fetcher 在服务器错误时重试。"""
     with Fetcher(retries=2, timeout=10.0) as f:
         assert f.retries == 2
 
 
 def test_parse_retry_after_seconds() -> None:
+    """parse_retry_after 解析秒数。"""
     from web_crawler.fetchers.fetcher import _parse_retry_after
 
     assert _parse_retry_after("120") == 120.0
@@ -185,6 +196,7 @@ def test_parse_retry_after_seconds() -> None:
 
 
 def test_parse_retry_after_caps_at_300() -> None:
+    """parse_retry_after 封顶 300 秒。"""
     from web_crawler.fetchers.fetcher import _parse_retry_after
 
     # 超过 5 分钟上限会被截断
@@ -192,6 +204,7 @@ def test_parse_retry_after_caps_at_300() -> None:
 
 
 def test_parse_retry_after_none_or_invalid() -> None:
+    """parse_retry_after 处理 None 或无效输入。"""
     from web_crawler.fetchers.fetcher import _parse_retry_after
 
     assert _parse_retry_after(None) is None
@@ -200,6 +213,7 @@ def test_parse_retry_after_none_or_invalid() -> None:
 
 
 def test_parse_retry_after_http_date() -> None:
+    """parse_retry_after 解析 HTTP 日期。"""
     from datetime import datetime, timedelta, timezone
     from email.utils import format_datetime
 
@@ -213,6 +227,7 @@ def test_parse_retry_after_http_date() -> None:
 
 
 def test_fetcher_default_headers_are_realistic() -> None:
+    """Fetcher 默认请求头贴近真实浏览器。"""
     with Fetcher() as f:
         headers = f._default_headers()
     assert "Accept-Language" in headers
@@ -221,6 +236,7 @@ def test_fetcher_default_headers_are_realistic() -> None:
 
 
 def test_fetcher_build_response_carries_adaptive() -> None:
+    """Fetcher.build_response 携带自适应信息。"""
     with Fetcher(adaptive=True) as f:
         resp = f._build_response("https://x.example", 200, b"<a id='p'>x</a>", {})
     assert resp.selector.adaptive is True
@@ -2712,6 +2728,7 @@ def test_pin_url_rewrites_hostname_preserving_parts(monkeypatch: pytest.MonkeyPa
 
 
 def test_pin_url_ipv6_is_bracketed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """pin_url 对 IPv6 地址加括号。"""
     monkeypatch.setattr(
         _pin_mod.socket,
         "getaddrinfo",

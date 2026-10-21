@@ -54,6 +54,7 @@ def test_selector_is_lazily_resolved() -> None:
 
 
 def test_unknown_attribute_raises() -> None:
+    """访问未知属性时抛出异常。"""
     import web_crawler
 
     with pytest.raises(AttributeError, match="DoesNotExist"):
@@ -61,6 +62,7 @@ def test_unknown_attribute_raises() -> None:
 
 
 def test_dir_includes_all_public_names() -> None:
+    """dir 包含所有公开名称。"""
     import web_crawler
 
     names = dir(web_crawler)
@@ -69,6 +71,7 @@ def test_dir_includes_all_public_names() -> None:
 
 
 def test_adaptor_alias_equals_selector() -> None:
+    """adaptor 别名等于 selector。"""
     import web_crawler
 
     assert web_crawler.Adaptor is web_crawler.Selector
@@ -78,6 +81,7 @@ def test_adaptor_alias_equals_selector() -> None:
 
 
 def test_adaptors_exported() -> None:
+    """adaptor 已导出。"""
     import web_crawler
 
     assert hasattr(web_crawler, "Adaptors")
@@ -87,6 +91,7 @@ def test_adaptors_exported() -> None:
 
 
 def test_async_fetcher_exported_and_distinct() -> None:
+    """async_fetcher 已导出且独立。"""
     import web_crawler
 
     assert hasattr(web_crawler, "AsyncFetcher")
@@ -94,6 +99,7 @@ def test_async_fetcher_exported_and_distinct() -> None:
 
 
 def test_version_is_string() -> None:
+    """version 为字符串。"""
     import web_crawler
 
     assert isinstance(web_crawler.__version__, str)

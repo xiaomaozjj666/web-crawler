@@ -26,22 +26,26 @@ def test_require_curl_cffi_raises_when_missing(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_require_playwright_passes_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    """playwright 可用时 require_playwright 通过。"""
     monkeypatch.setattr(compat, "HAS_PLAYWRIGHT", True)
     compat.require_playwright()
 
 
 def test_require_playwright_raises_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """playwright 缺失时 require_playwright 抛出异常。"""
     monkeypatch.setattr(compat, "HAS_PLAYWRIGHT", False)
     with pytest.raises(ImportError, match="playwright"):
         compat.require_playwright()
 
 
 def test_require_camoufox_passes_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    """camoufox 可用时 require_camoufox 通过。"""
     monkeypatch.setattr(compat, "HAS_CAMOUFOX", True)
     compat.require_camoufox()
 
 
 def test_require_camoufox_raises_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """camoufox 缺失时 require_camoufox 抛出异常。"""
     monkeypatch.setattr(compat, "HAS_CAMOUFOX", False)
     with pytest.raises(ImportError, match="camoufox"):
         compat.require_camoufox()

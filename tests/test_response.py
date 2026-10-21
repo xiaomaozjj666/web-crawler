@@ -6,16 +6,19 @@ from web_crawler import Response
 
 
 def test_response_text_decodes_content() -> None:
+    """Response.text 解码内容。"""
     r = Response("https://x.example", 200, b"hello world")
     assert r.text == "hello world"
 
 
 def test_response_text_handles_encoding() -> None:
+    """Response.text 处理编码。"""
     r = Response("https://x.example", 200, "café".encode("latin-1"), encoding="latin-1")
     assert r.text == "café"
 
 
 def test_response_ok_status() -> None:
+    """Response.ok 判断状态码。"""
     assert Response("u", 200, b"").ok is True
     assert Response("u", 301, b"").ok is True
     assert Response("u", 404, b"").ok is False
@@ -23,11 +26,13 @@ def test_response_ok_status() -> None:
 
 
 def test_response_json() -> None:
+    """Response.json 解析 JSON。"""
     r = Response("u", 200, b'{"k": 42}')
     assert r.json() == {"k": 42}
 
 
 def test_response_css_and_xpath_delegate_to_selector() -> None:
+    """Response css/xpath 委托给 selector。"""
     r = Response("https://shop.example.com", 200, b"<div><a id='x'>Hi</a></div>")
     assert str(r.css_first("#x").text) == "Hi"
     assert str(r.xpath_first("//a").text) == "Hi"
@@ -41,6 +46,7 @@ def test_response_xpath_returns_list() -> None:
 
 
 def test_response_selector_is_lazy_and_cached() -> None:
+    """Response.selector 惰性且缓存。"""
     r = Response("u", 200, b"<p>x</p>")
     assert r._selector is None
     _ = r.selector
@@ -50,6 +56,7 @@ def test_response_selector_is_lazy_and_cached() -> None:
 
 
 def test_response_urljoin() -> None:
+    """Response.urljoin 拼接 URL。"""
     r = Response("https://example.com/a/b/", 200, b"")
     assert r.urljoin("c") == "https://example.com/a/b/c"
     assert r.urljoin("/d") == "https://example.com/d"
@@ -57,6 +64,7 @@ def test_response_urljoin() -> None:
 
 
 def test_response_meta_is_dict() -> None:
+    """Response.meta 为字典。"""
     r = Response("u", 200, b"")
     assert isinstance(r.meta, dict)
     r.meta["key"] = "value"
@@ -64,15 +72,18 @@ def test_response_meta_is_dict() -> None:
 
 
 def test_response_repr() -> None:
+    """Response repr 正确。"""
     assert repr(Response("https://x", 200, b"")) == "<Response 200 https://x>"
 
 
 def test_response_headers_default_empty() -> None:
+    """Response.headers 默认为空。"""
     r = Response("u", 200, b"")
     assert r.headers == {}
     assert r.request_headers == {}
 
 
 def test_response_adaptive_propagated_to_selector() -> None:
+    """Response adaptive 信息传播到 selector。"""
     r = Response("https://shop.example.com", 200, b"<a id='p'>x</a>", adaptive=True)
     assert r.selector.adaptive is True

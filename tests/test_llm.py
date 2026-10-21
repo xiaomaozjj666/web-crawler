@@ -52,6 +52,7 @@ class FakeProvider:
 
 
 def test_normalize_messages_accepts_str_dict_and_message() -> None:
+    """normalize_messages 接受 str、dict 与 Message。"""
     out = _normalize_messages([LLMMessage("system", "s"), {"role": "user", "content": "u"}, "bare"])
     assert out == [
         {"role": "system", "content": "s"},
@@ -462,6 +463,7 @@ def test_qwen_provider_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_get_provider_defaults_to_deepseek_flash() -> None:
+    """get_provider 默认为 deepseek-flash。"""
     provider = get_provider(api_key="dummy")
     assert isinstance(provider, DeepSeekProvider)
     assert provider.model == "deepseek-flash"
@@ -490,12 +492,14 @@ def test_get_provider_case_insensitive() -> None:
 
 
 def test_register_custom_provider() -> None:
+    """register 注册自定义 provider。"""
     register_provider("fakereg", lambda **kw: FakeProvider(["{}"]))
     assert "fakereg" in available_providers()
     assert isinstance(get_provider("fakereg"), FakeProvider)
 
 
 def test_available_providers_contains_all_builtins() -> None:
+    """available_providers 包含所有内建 provider。"""
     names = available_providers()
     for n in ("anthropic", "deepseek", "openai", "openai-compatible", "qwen"):
         assert n in names

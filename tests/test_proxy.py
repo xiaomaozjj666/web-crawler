@@ -8,22 +8,26 @@ from web_crawler.fetchers.proxy import ProxyPool
 
 
 def test_empty_pool_returns_none() -> None:
+    """空代理池返回 None。"""
     assert ProxyPool().get() is None
     assert len(ProxyPool()) == 0
 
 
 def test_round_robin_cycles_in_order() -> None:
+    """轮询策略按顺序轮转。"""
     pool = ProxyPool(["a", "b", "c"], strategy="round_robin")
     assert [pool.get() for _ in range(5)] == ["a", "b", "c", "a", "b"]
 
 
 def test_random_strategy_returns_member() -> None:
+    """随机策略返回池中成员。"""
     pool = ProxyPool(["a", "b", "c"], strategy="random")
     for _ in range(20):
         assert pool.get() in {"a", "b", "c"}
 
 
 def test_invalid_strategy_raises() -> None:
+    """无效策略抛出异常。"""
     import pytest
 
     with pytest.raises(ValueError, match="unknown strategy"):
@@ -31,6 +35,7 @@ def test_invalid_strategy_raises() -> None:
 
 
 def test_mark_failed_cools_down_after_threshold() -> None:
+    """mark_failed 在超过阈值后冷却。"""
     pool = ProxyPool(["a", "b"], max_failures=3, cooldown=10.0)
     pool.mark_failed("a")
     pool.mark_failed("a")
@@ -43,6 +48,7 @@ def test_mark_failed_cools_down_after_threshold() -> None:
 
 
 def test_mark_success_resets_failures() -> None:
+    """mark_success 重置失败计数。"""
     pool = ProxyPool(["a", "b"], max_failures=2)
     pool.mark_failed("a")
     pool.mark_failed("a")  # cooled down
@@ -52,6 +58,7 @@ def test_mark_success_resets_failures() -> None:
 
 
 def test_add_and_remove() -> None:
+    """add/remove 添加与移除代理。"""
     pool = ProxyPool(["a"])
     assert len(pool) == 1
     pool.add("b")
@@ -65,6 +72,7 @@ def test_add_and_remove() -> None:
 
 
 def test_cooldown_expires() -> None:
+    """冷却到期后恢复可用。"""
     pool = ProxyPool(["a", "b"], max_failures=1, cooldown=0.05)
     pool.mark_failed("a")  # immediately cooled down for 0.05s
     assert pool.get() == "b"
@@ -92,6 +100,7 @@ def test_cooldown_expiry_resets_failure_count() -> None:
 
 
 def test_repr_contains_strategy() -> None:
+    """repr 包含策略信息。"""
     pool = ProxyPool(["a"], strategy="round_robin")
     assert "round_robin" in repr(pool)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 
 def test_checkpoint_roundtrip(tmp_path) -> None:
+    """checkpoint 保存与加载往返一致。"""
     from web_crawler.ai.checkpoint import Checkpoint, CheckpointStore
 
     store = CheckpointStore(tmp_path / "cps", keep=3)
@@ -30,6 +31,7 @@ def test_checkpoint_roundtrip(tmp_path) -> None:
 
 
 def test_checkpoint_rotation_keeps_recent(tmp_path) -> None:
+    """checkpoint 轮转保留最近记录。"""
     from web_crawler.ai.checkpoint import Checkpoint, CheckpointStore
 
     store = CheckpointStore(tmp_path / "cps", keep=2)
@@ -44,6 +46,7 @@ def test_checkpoint_rotation_keeps_recent(tmp_path) -> None:
 
 
 def test_checkpoint_load_at_specific_step(tmp_path) -> None:
+    """checkpoint 加载指定步骤。"""
     from web_crawler.ai.checkpoint import Checkpoint, CheckpointStore
 
     store = CheckpointStore(tmp_path / "cps")
@@ -57,6 +60,7 @@ def test_checkpoint_load_at_specific_step(tmp_path) -> None:
 
 
 def test_checkpoint_manager_disabled_returns_none() -> None:
+    """checkpoint 管理器禁用时返回 None。"""
     from web_crawler.ai.checkpoint import CheckpointManager
 
     mgr = CheckpointManager(enable=False)
@@ -65,6 +69,7 @@ def test_checkpoint_manager_disabled_returns_none() -> None:
 
 
 def test_checkpoint_clear(tmp_path) -> None:
+    """checkpoint clear 清空记录。"""
     from web_crawler.ai.checkpoint import Checkpoint, CheckpointStore
 
     store = CheckpointStore(tmp_path / "cps")

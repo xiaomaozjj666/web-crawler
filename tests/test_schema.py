@@ -24,6 +24,7 @@ from web_crawler.ai.schema import (
 
 
 def test_field_error_to_dict_copies_loc() -> None:
+    """FieldError.to_dict 复制 loc 字段。"""
     err = FieldError(loc=["a", "b"], msg="bad", type="value_error")
     d = err.to_dict()
     assert d == {"loc": ["a", "b"], "msg": "bad", "type": "value_error"}
@@ -33,11 +34,13 @@ def test_field_error_to_dict_copies_loc() -> None:
 
 
 def test_field_error_default_type_is_empty() -> None:
+    """FieldError 默认 type 为空字符串。"""
     err = FieldError(loc=["x"], msg="required")
     assert err.type == ""
 
 
 def test_validation_result_error_messages_format() -> None:
+    """ValidationResult 错误消息格式正确。"""
     result = ValidationResult(
         valid=False,
         errors=[
@@ -49,11 +52,13 @@ def test_validation_result_error_messages_format() -> None:
 
 
 def test_validation_result_error_messages_empty_when_valid() -> None:
+    """ValidationResult 有效时错误消息为空。"""
     result = ValidationResult(valid=True)
     assert result.error_messages == []
 
 
 def test_validation_result_to_dict_with_serializable_raw() -> None:
+    """ValidationResult.to_dict 序列化 raw 字段。"""
     result = ValidationResult(valid=True, coerced={"a": 1}, raw={"x": 2})
     d = result.to_dict()
     assert d["valid"] is True
@@ -71,6 +76,7 @@ def test_validation_result_to_dict_with_non_serializable_raw_returns_none() -> N
 
 
 def test_validation_result_to_dict_includes_errors() -> None:
+    """ValidationResult.to_dict 包含 errors 字段。"""
     result = ValidationResult(
         valid=False,
         errors=[FieldError(loc=["k"], msg="missing", type="missing")],
@@ -88,6 +94,7 @@ def test_validation_result_to_dict_includes_errors() -> None:
 
 
 def test_extracted_params_defaults() -> None:
+    """ExtractedParams 默认字段值正确。"""
     obj = ExtractedParams()
     assert obj.params == {}
     assert obj.confidence == 0.0
@@ -101,6 +108,7 @@ def test_extracted_params_allows_extra_fields() -> None:
 
 
 def test_hook_record_defaults() -> None:
+    """HookRecord 默认字段值正确。"""
     obj = HookRecord()
     assert obj.type == ""
     assert obj.url == ""
@@ -111,6 +119,7 @@ def test_hook_record_defaults() -> None:
 
 
 def test_web_page_state_requires_url() -> None:
+    """WebPageState 要求 url 字段。"""
     obj = WebPageState(url="https://example.com")
     assert obj.url == "https://example.com"
     assert obj.title == ""
@@ -119,6 +128,7 @@ def test_web_page_state_requires_url() -> None:
 
 
 def test_web_page_state_missing_url_fails_validation() -> None:
+    """WebPageState 缺少 url 时校验失败。"""
     validator = SchemaValidator(WebPageState)
     result = validator.validate({"title": "no url"})
     assert result.valid is False
@@ -131,6 +141,7 @@ def test_web_page_state_missing_url_fails_validation() -> None:
 
 
 def test_validator_with_basemodel_validates_and_coerces() -> None:
+    """Validator 对 BaseModel 校验并强制转换。"""
     validator = SchemaValidator(ExtractedParams)
     result = validator.validate({"params": {"q": "x"}, "confidence": 0.8})
     assert result.valid is True
@@ -148,6 +159,7 @@ def test_validator_with_basemodel_coerces_string_to_float() -> None:
 
 
 def test_validator_with_basemodel_invalid_returns_field_errors() -> None:
+    """Validator 对无效 BaseModel 返回字段错误。"""
     validator = SchemaValidator(ExtractedParams)
     result = validator.validate({"confidence": "not-a-number"})
     assert result.valid is False
@@ -185,6 +197,7 @@ def test_validator_adapter_construction_failure_falls_back() -> None:
 
 
 def test_validator_with_none_schema_uses_fallback() -> None:
+    """Validator 在 schema 为 None 时使用回退校验。"""
     validator = SchemaValidator(None)
     assert validator._adapter is None
     result = validator.validate({"a": 1})
@@ -215,6 +228,7 @@ async def test_validate_async_invalid_data() -> None:
 
 
 def test_fallback_no_required_keys_dict_passes() -> None:
+    """回退校验无必填键时字典通过。"""
     validator = SchemaValidator(None)
     result = validator.validate({"a": 1})
     assert result.valid is True
@@ -223,6 +237,7 @@ def test_fallback_no_required_keys_dict_passes() -> None:
 
 
 def test_fallback_no_required_keys_non_dict_wraps_value() -> None:
+    """回退校验无必填键时非字典值被包装。"""
     validator = SchemaValidator(None)
     result = validator.validate(123)
     assert result.valid is True
@@ -230,6 +245,7 @@ def test_fallback_no_required_keys_non_dict_wraps_value() -> None:
 
 
 def test_fallback_with_required_keys_all_present_passes() -> None:
+    """回退校验必填键齐全时通过。"""
     validator = SchemaValidator(None, required_keys=["name", "age"])
     result = validator.validate({"name": "x", "age": 18, "extra": True})
     assert result.valid is True
@@ -237,6 +253,7 @@ def test_fallback_with_required_keys_all_present_passes() -> None:
 
 
 def test_fallback_with_required_keys_non_dict_fails() -> None:
+    """回退校验必填键时非字典值失败。"""
     validator = SchemaValidator(None, required_keys=["name"])
     result = validator.validate("not a dict")
     assert result.valid is False
@@ -246,6 +263,7 @@ def test_fallback_with_required_keys_non_dict_fails() -> None:
 
 
 def test_fallback_with_required_keys_missing_key_fails() -> None:
+    """回退校验缺少必填键时失败。"""
     validator = SchemaValidator(None, required_keys=["name", "age"])
     result = validator.validate({"name": "x"})
     assert result.valid is False
@@ -256,6 +274,7 @@ def test_fallback_with_required_keys_missing_key_fails() -> None:
 
 
 def test_fallback_with_required_keys_empty_value_fails() -> None:
+    """回退校验必填键值为空时失败。"""
     validator = SchemaValidator(None, required_keys=["name"])
     result = validator.validate({"name": ""})
     assert result.valid is False
@@ -265,6 +284,7 @@ def test_fallback_with_required_keys_empty_value_fails() -> None:
 
 
 def test_fallback_with_required_keys_none_value_fails() -> None:
+    """回退校验必填键值为 None 时失败。"""
     validator = SchemaValidator(None, required_keys=["name"])
     result = validator.validate({"name": None})
     assert result.valid is False
@@ -272,6 +292,7 @@ def test_fallback_with_required_keys_none_value_fails() -> None:
 
 
 def test_fallback_with_required_keys_empty_list_fails() -> None:
+    """回退校验必填键值为空列表时失败。"""
     validator = SchemaValidator(None, required_keys=["items"])
     result = validator.validate({"items": []})
     assert result.valid is False
@@ -291,6 +312,7 @@ def test_fallback_empty_required_keys_list_treated_as_no_constraints() -> None:
 
 
 def test_validate_and_repair_prompt_valid_returns_empty_prompt() -> None:
+    """validate_and_repair_prompt 有效时返回空提示。"""
     validator = SchemaValidator(ExtractedParams)
     result, prompt = validator.validate_and_repair_prompt({"params": {"q": "x"}, "confidence": 0.5})
     assert result.valid is True
@@ -298,6 +320,7 @@ def test_validate_and_repair_prompt_valid_returns_empty_prompt() -> None:
 
 
 def test_validate_and_repair_prompt_invalid_returns_repair_instructions() -> None:
+    """validate_and_repair_prompt 无效时返回修复指令。"""
     validator = SchemaValidator(ExtractedParams)
     data = {"confidence": "bad"}
     result, prompt = validator.validate_and_repair_prompt(data)
@@ -312,6 +335,7 @@ def test_validate_and_repair_prompt_invalid_returns_repair_instructions() -> Non
 
 
 def test_validate_and_repair_prompt_with_none_data_includes_null() -> None:
+    """validate_and_repair_prompt 数据为 None 时包含 null 标记。"""
     validator = SchemaValidator(None, required_keys=["name"])
     result, prompt = validator.validate_and_repair_prompt(None)
     assert result.valid is False

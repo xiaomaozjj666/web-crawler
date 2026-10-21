@@ -127,6 +127,7 @@ def test_scorer_init_novelty_window_clamped() -> None:
 
 
 def test_confidence_high_score_for_well_formed_action() -> None:
+    """合法动作的 confidence 评分为高。"""
     scorer = ConfidenceScorer(min_confidence=0.5)
     action = {
         "action_type": "extract",
@@ -139,6 +140,7 @@ def test_confidence_high_score_for_well_formed_action() -> None:
 
 
 def test_confidence_low_score_for_invalid_action() -> None:
+    """无效动作的 confidence 评分为低。"""
     scorer = ConfidenceScorer(min_confidence=0.5)
     action = {"action_type": "unknown_action", "params": {}, "reasoning": ""}
     result = scorer.score(action)
@@ -147,6 +149,7 @@ def test_confidence_low_score_for_invalid_action() -> None:
 
 
 def test_confidence_dedup_history_penalizes_repeat() -> None:
+    """confidence 对重复历史进行惩罚。"""
     scorer = ConfidenceScorer(min_confidence=0.5)
     action = {
         "action_type": "navigate",

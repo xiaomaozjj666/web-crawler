@@ -187,6 +187,7 @@ class TestJobState:
 
 class TestReverseJobState:
     def test_initial_state(self) -> None:
+        """JobState 初始字段正确。"""
         rjob = _make_reverse_job()
         assert rjob.status == "running"
         assert rjob.events == []
@@ -631,9 +632,11 @@ class TestValidateFields:
 
 class TestSerializeAnalysis:
     def test_none(self) -> None:
+        """事件 payload 为 None 时正确序列化。"""
         assert _serialize_analysis(None) == ""
 
     def test_str(self) -> None:
+        """事件转字符串表示正确。"""
         assert _serialize_analysis("plain text") == "plain text"
 
     def test_dataclass(self) -> None:
@@ -669,6 +672,7 @@ class _FakeEvent:
 
 class TestReverseAgentRunnerOnEvent:
     def test_step_start(self) -> None:
+        """step_start 事件正确构造。"""
         runner = ReverseAgentRunner()
         rjob = _make_reverse_job()
         runner._on_event(rjob, _FakeEvent("step.start", step=1), agent=Mock())
@@ -676,6 +680,7 @@ class TestReverseAgentRunnerOnEvent:
         assert 1 in rjob._step_starts
 
     def test_action_event(self) -> None:
+        """action 事件正确构造。"""
         runner = ReverseAgentRunner()
         rjob = _make_reverse_job()
         runner._on_event(
@@ -690,6 +695,7 @@ class TestReverseAgentRunnerOnEvent:
         assert rjob.steps[0]["reasoning"] == "go to page"
 
     def test_observation_event(self) -> None:
+        """observation 事件正确构造。"""
         runner = ReverseAgentRunner()
         rjob = _make_reverse_job()
         runner._on_event(
@@ -704,6 +710,7 @@ class TestReverseAgentRunnerOnEvent:
         assert rjob.current_observation["hook_count"] == 3
 
     def test_confidence_low_event(self) -> None:
+        """confidence 低时发出对应事件。"""
         runner = ReverseAgentRunner()
         rjob = _make_reverse_job()
         runner._on_event(
@@ -718,6 +725,7 @@ class TestReverseAgentRunnerOnEvent:
         assert rjob.last_confidence["reasons"] == ["reason1", "reason2"]
 
     def test_guard_deny_event(self) -> None:
+        """guard 拒绝时发出对应事件。"""
         runner = ReverseAgentRunner()
         rjob = _make_reverse_job()
         runner._on_event(
@@ -732,6 +740,7 @@ class TestReverseAgentRunnerOnEvent:
         assert rjob.guard_blocks[0]["rule"] == "block_submit"
 
     def test_judge_result_event(self) -> None:
+        """judge 结果事件正确构造。"""
         runner = ReverseAgentRunner()
         rjob = _make_reverse_job()
         runner._on_event(
@@ -745,6 +754,7 @@ class TestReverseAgentRunnerOnEvent:
         assert rjob.judge_result["verified"] is True
 
     def test_checkpoint_resume_event(self) -> None:
+        """checkpoint 恢复事件正确构造。"""
         runner = ReverseAgentRunner()
         rjob = _make_reverse_job()
         runner._on_event(
@@ -757,6 +767,7 @@ class TestReverseAgentRunnerOnEvent:
         assert rjob.checkpoints[0]["url"] == "https://example.com/step3"
 
     def test_screenshot_event(self) -> None:
+        """截图事件正确构造。"""
         runner = ReverseAgentRunner()
         rjob = _make_reverse_job()
         runner._on_event(
@@ -1767,6 +1778,7 @@ class TestCsrfOriginCheck:
     """跨站请求（Origin/Referer 非本机）应被拒绝。"""
 
     def test_post_run_cross_origin_rejected(self, http_server: str) -> None:
+        """POST run 跨源请求被拒绝。"""
         with patch.object(_ui_http, "run_job") as mock_run:
             resp = httpx.post(
                 f"{http_server}/run",
@@ -1778,6 +1790,7 @@ class TestCsrfOriginCheck:
         mock_run.assert_not_called()
 
     def test_post_run_cross_origin_referer_rejected(self, http_server: str) -> None:
+        """POST run 跨源 Referer 被拒绝。"""
         with patch.object(_ui_http, "run_job") as mock_run:
             resp = httpx.post(
                 f"{http_server}/run",
@@ -1788,6 +1801,7 @@ class TestCsrfOriginCheck:
         mock_run.assert_not_called()
 
     def test_post_run_same_origin_allowed(self, http_server: str) -> None:
+        """POST run 同源请求被允许。"""
         with patch.object(_ui_http, "run_job"):
             resp = httpx.post(
                 f"{http_server}/run",
@@ -1797,6 +1811,7 @@ class TestCsrfOriginCheck:
         assert resp.json().get("ok") is not False
 
     def test_delete_cross_origin_rejected(self, http_server: str) -> None:
+        """DELETE 跨源请求被拒绝。"""
         resp = httpx.delete(
             f"{http_server}/jobs/some-id",
             headers={"Origin": "https://evil.example.com"},
@@ -1974,17 +1989,20 @@ class TestHostHeaderAllowedUnit:
 
 class TestLoopbackHost:
     def test_loopback_hosts_allowed(self) -> None:
+        """回环主机被允许访问。"""
         assert ui._is_loopback_host("127.0.0.1") is True
         assert ui._is_loopback_host("localhost") is True
         assert ui._is_loopback_host("::1") is True
         assert ui._is_loopback_host("127.0.0.2") is True
 
     def test_non_loopback_hosts_rejected(self) -> None:
+        """非回环主机被拒绝访问。"""
         assert ui._is_loopback_host("0.0.0.0") is False
         assert ui._is_loopback_host("192.168.1.10") is False
         assert ui._is_loopback_host("example.com") is False
 
     def test_main_rejects_non_loopback_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """main 拒绝非回环主机。"""
         monkeypatch.setattr("sys.argv", ["ui", "--host", "0.0.0.0"])
         with pytest.raises(SystemExit):
             ui.main()
@@ -1994,6 +2012,7 @@ class TestRunValidation:
     """表单数字字段服务端校验（防止线程爆炸/SystemExit 杀 handler）。"""
 
     def test_workers_out_of_range(self, http_server: str) -> None:
+        """workers 超出范围时被拒绝。"""
         resp = httpx.post(
             f"{http_server}/run",
             data={"url": "https://example.com", "workers": "100000", "out": ""},
@@ -2002,6 +2021,7 @@ class TestRunValidation:
         assert "workers" in resp.json()["error"]
 
     def test_workers_non_numeric(self, http_server: str) -> None:
+        """workers 非数值时被拒绝。"""
         resp = httpx.post(
             f"{http_server}/run",
             data={"url": "https://example.com", "workers": "abc", "out": ""},
@@ -2010,6 +2030,7 @@ class TestRunValidation:
         assert "workers" in resp.json()["error"]
 
     def test_retries_negative(self, http_server: str) -> None:
+        """retries 为负数时被拒绝。"""
         resp = httpx.post(
             f"{http_server}/run",
             data={"url": "https://example.com", "retries": "-1", "out": ""},
@@ -2018,6 +2039,7 @@ class TestRunValidation:
         assert "retries" in resp.json()["error"]
 
     def test_valid_bounds_accepted(self, http_server: str) -> None:
+        """有效边界值被接受。"""
         with patch.object(_ui_http, "run_job"):
             resp = httpx.post(
                 f"{http_server}/run",
@@ -2044,6 +2066,7 @@ class TestRunValidation:
         assert "id" in resp.json()
 
     def test_delay_negative_rejected(self, http_server: str) -> None:
+        """delay 为负数时被拒绝。"""
         resp = httpx.post(
             f"{http_server}/run",
             data={"url": "https://example.com", "delay": "-1", "out": ""},
@@ -2052,6 +2075,7 @@ class TestRunValidation:
         assert "delay" in resp.json()["error"]
 
     def test_timeout_too_small_rejected(self, http_server: str) -> None:
+        """timeout 过小时被拒绝。"""
         resp = httpx.post(
             f"{http_server}/run",
             data={"url": "https://example.com", "timeout": "0", "out": ""},
@@ -2064,6 +2088,7 @@ class TestSingleCrawlGuard:
     """同一时间只允许一个采集任务,防止日志/共享 opener 串线。"""
 
     def test_run_rejected_while_running(self, http_server: str) -> None:
+        """运行中再次 run 被拒绝。"""
         job = _make_job_state(id="busy1")
         ui.JOBS["busy1"] = job  # status 默认为 running
         with patch.object(_ui_http, "run_job") as mock_run:
@@ -2076,6 +2101,7 @@ class TestSingleCrawlGuard:
         mock_run.assert_not_called()
 
     def test_run_allowed_after_terminal(self, http_server: str) -> None:
+        """终止后允许再次 run。"""
         job = _make_job_state(id="done1")
         job.status = "done"
         ui.JOBS["done1"] = job
@@ -2091,6 +2117,7 @@ class TestJobLogHandler:
     """crawler 日志经 JobLogHandler 转发到 job.log（替代失效的 redirect_stdout）。"""
 
     def test_crawler_logs_captured(self, tmp_path: Path) -> None:
+        """crawler 日志被正确捕获。"""
         job = _make_job_state(output_dir=str(tmp_path))
         job.args = Mock()
         logger = ui.web_resource_crawler._log
@@ -2109,6 +2136,7 @@ class TestJobLogHandler:
         assert "hello from crawler logger" in job.log
 
     def test_handler_detached_after_run(self, tmp_path: Path) -> None:
+        """run 结束后 handler 被分离。"""
         job = _make_job_state(output_dir=str(tmp_path))
         job.args = Mock()
         with patch.object(ui.web_resource_crawler, "crawl", return_value=0):

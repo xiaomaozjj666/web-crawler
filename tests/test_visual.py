@@ -29,11 +29,13 @@ def test_init_strips_trailing_slash_from_base_url() -> None:
 
 
 def test_init_keeps_base_url_without_slash() -> None:
+    """init 保留不含尾斜杠的 base_url。"""
     extractor = VisualExtractor(api_key="k", base_url="https://api.x.com/v1")
     assert extractor.base_url == "https://api.x.com/v1"
 
 
 def test_init_custom_parameters() -> None:
+    """init 接受自定义参数。"""
     extractor = VisualExtractor(
         api_key="secret",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -53,6 +55,7 @@ def test_init_custom_parameters() -> None:
 
 
 def test_extract_empty_tiles_raises_value_error() -> None:
+    """extract 在空分块时抛出 ValueError。"""
     extractor = VisualExtractor(api_key="k")
     with pytest.raises(ValueError, match="tiles must not be empty"):
         extractor.extract([])
@@ -93,6 +96,7 @@ def test_extract_multiple_tiles_inserts_section_annotations() -> None:
 
 
 def test_extract_uses_default_prompt_when_none_given() -> None:
+    """extract 在 prompt 为 None 时使用默认提示。"""
     extractor = VisualExtractor(api_key="k")
     with patch.object(extractor, "_call_api", return_value="ok") as mock_call:
         extractor.extract([{"b64": "A"}])
@@ -115,6 +119,7 @@ def test_extract_caps_tiles_to_max_tiles() -> None:
 
 
 def test_extract_passes_temperature_to_call_api() -> None:
+    """extract 将 temperature 传递给 call_api。"""
     extractor = VisualExtractor(api_key="k")
     with patch.object(extractor, "_call_api", return_value="ok") as mock_call:
         extractor.extract([{"b64": "A"}], "p", temperature=0.7)
@@ -136,6 +141,7 @@ def _make_urlopen_response(payload: dict[str, Any]) -> MagicMock:
 
 
 def test_call_api_success_returns_stripped_content() -> None:
+    """call_api 成功时返回去除空白的 content。"""
     extractor = VisualExtractor(api_key="key", base_url="https://api.x.com/v1")
     payload = {"choices": [{"message": {"content": "  extracted text  "}, "finish_reason": "stop"}]}
     with patch(
@@ -156,6 +162,7 @@ def test_call_api_success_returns_stripped_content() -> None:
 
 
 def test_call_api_urlopen_exception_raises_runtime_error() -> None:
+    """call_api 在 urlopen 异常时抛出 RuntimeError。"""
     extractor = VisualExtractor(api_key="k")
     with (
         patch("web_crawler.parser.visual.urlopen", side_effect=ConnectionError("net down")),
@@ -165,6 +172,7 @@ def test_call_api_urlopen_exception_raises_runtime_error() -> None:
 
 
 def test_call_api_no_choices_with_error_message_raises_runtime_error() -> None:
+    """call_api 无 choices 且有 error 时抛出 RuntimeError。"""
     extractor = VisualExtractor(api_key="k")
     payload = {"choices": [], "error": {"message": "rate limited"}}
     with (
@@ -175,6 +183,7 @@ def test_call_api_no_choices_with_error_message_raises_runtime_error() -> None:
 
 
 def test_call_api_no_choices_without_error_key_uses_unknown_error() -> None:
+    """call_api 无 choices 且无 error 键时使用 unknown error。"""
     extractor = VisualExtractor(api_key="k")
     payload = {"choices": []}
     with (
@@ -218,6 +227,7 @@ def _make_openai_response(content: str | None) -> MagicMock:
 
 
 def test_extract_with_client_none_falls_back_to_extract() -> None:
+    """extract 在 client 为 None 时回退到 extract。"""
     extractor = VisualExtractor(api_key="k")
     with patch.object(extractor, "extract", return_value="fallback") as mock_extract:
         result = extractor.extract_with_client([{"b64": "A"}], "p", client=None)
@@ -226,6 +236,7 @@ def test_extract_with_client_none_falls_back_to_extract() -> None:
 
 
 def test_extract_with_client_empty_tiles_raises_value_error() -> None:
+    """extract 在 client 模式空分块时抛出 ValueError。"""
     extractor = VisualExtractor(api_key="k")
     client = MagicMock()
     with pytest.raises(ValueError, match="tiles must not be empty"):
@@ -233,6 +244,7 @@ def test_extract_with_client_empty_tiles_raises_value_error() -> None:
 
 
 def test_extract_with_client_success_returns_content() -> None:
+    """extract 在 client 模式成功时返回内容。"""
     extractor = VisualExtractor(api_key="k", model="gpt-4o")
     client = MagicMock()
     client.chat.completions.create.return_value = _make_openai_response("  result  ")
@@ -250,6 +262,7 @@ def test_extract_with_client_success_returns_content() -> None:
 
 
 def test_extract_with_client_multiple_tiles_annotates_sections() -> None:
+    """extract 在多分块时标注各段落。"""
     extractor = VisualExtractor(api_key="k")
     client = MagicMock()
     client.chat.completions.create.return_value = _make_openai_response("ok")
@@ -265,6 +278,7 @@ def test_extract_with_client_multiple_tiles_annotates_sections() -> None:
 
 
 def test_extract_with_client_exception_raises_runtime_error() -> None:
+    """extract 在 client 异常时抛出 RuntimeError。"""
     extractor = VisualExtractor(api_key="k")
     client = MagicMock()
     client.chat.completions.create.side_effect = RuntimeError("timeout")
@@ -274,6 +288,7 @@ def test_extract_with_client_exception_raises_runtime_error() -> None:
 
 
 def test_extract_with_client_null_content_raises_runtime_error() -> None:
+    """extract 在 content 为 null 时抛出 RuntimeError。"""
     extractor = VisualExtractor(api_key="k")
     client = MagicMock()
     client.chat.completions.create.return_value = _make_openai_response(None)
@@ -283,6 +298,7 @@ def test_extract_with_client_null_content_raises_runtime_error() -> None:
 
 
 def test_extract_with_client_passes_temperature_and_max_tiles() -> None:
+    """extract 传递 temperature 与 max_tiles。"""
     extractor = VisualExtractor(api_key="k")
     client = MagicMock()
     client.chat.completions.create.return_value = _make_openai_response("ok")

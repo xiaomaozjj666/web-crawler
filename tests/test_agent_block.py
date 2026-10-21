@@ -55,6 +55,7 @@ def _response() -> Response:
 
 
 def test_detect_block_on_captcha_body() -> None:
+    """在验证码主体上检测到阻断。"""
     from web_crawler.ai.agent import detect_block
 
     resp = Response("https://x.example", 200, b"<html>Please complete the captcha</html>")
@@ -62,6 +63,7 @@ def test_detect_block_on_captcha_body() -> None:
 
 
 def test_detect_block_on_forbidden_status() -> None:
+    """在禁止状态码上检测到阻断。"""
     from web_crawler.ai.agent import detect_block
 
     resp = Response("https://x.example", 403, b"<html>nope</html>")
@@ -69,13 +71,14 @@ def test_detect_block_on_forbidden_status() -> None:
 
 
 def test_detect_block_none_on_normal_page() -> None:
+    """正常页面检测阻断返回 None。"""
     from web_crawler.ai.agent import detect_block
 
     assert detect_block(_response()) is None
 
 
 def test_agent_hands_off_to_human_on_block() -> None:
-
+    """阻断时 agent 交给人工处理。"""
     captcha = Response("https://x.example", 200, b"<html>hcaptcha challenge</html>")
     fetcher = FakeFetcher(captcha)
     seen: list[Any] = []
@@ -96,7 +99,7 @@ def test_agent_hands_off_to_human_on_block() -> None:
 
 
 def test_agent_extracts_normally_when_not_blocked() -> None:
-
+    """未阻断时 agent 正常提取。"""
     fetcher = FakeFetcher(_response())
     agent = AIScrapeAgent(
         fetcher=fetcher,

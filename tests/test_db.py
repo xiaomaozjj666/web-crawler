@@ -39,6 +39,7 @@ class TestInitDb:
 
 class TestCreateTask:
     def test_create_task_inserts_row(self) -> None:
+        """create_task 插入一行记录。"""
         db.create_task("t1", "https://example.com", {"workers": 4}, "/tmp/out")
         task = db.get_task("t1")
         assert task is not None
@@ -47,6 +48,7 @@ class TestCreateTask:
         assert task["config"]["workers"] == 4
 
     def test_create_task_with_empty_config(self) -> None:
+        """create_task 在空配置时正常插入。"""
         db.create_task("t2", "https://test.com", {}, "/tmp")
         task = db.get_task("t2")
         assert task is not None
@@ -55,12 +57,14 @@ class TestCreateTask:
 
 class TestUpdateTaskStatus:
     def test_update_status_only(self) -> None:
+        """仅更新 status 字段。"""
         db.create_task("u1", "https://x.com", {}, "/tmp")
         db.update_task_status("u1", "paused")
         task = db.get_task("u1")
         assert task["status"] == "paused"
 
     def test_update_with_all_fields(self) -> None:
+        """更新全部字段。"""
         db.create_task("u2", "https://x.com", {}, "/tmp")
         db.update_task_status(
             "u2",
@@ -96,11 +100,13 @@ class TestUpdateTaskStatus:
 
 class TestListTasks:
     def test_list_empty(self) -> None:
+        """无任务时 list 返回空。"""
         result = db.list_tasks()
         assert result["tasks"] == []
         assert result["total"] == 0
 
     def test_list_with_tasks(self) -> None:
+        """有任务时 list 返回任务列表。"""
         for i in range(5):
             db.create_task(f"l{i}", f"https://l{i}.com", {}, "/tmp")
         result = db.list_tasks(page=1, page_size=3)
@@ -108,6 +114,7 @@ class TestListTasks:
         assert result["total"] == 5
 
     def test_list_status_filter(self) -> None:
+        """list 按 status 过滤。"""
         db.create_task("f1", "https://a.com", {}, "/tmp")
         db.create_task("f2", "https://b.com", {}, "/tmp")
         db.update_task_status("f2", "done", exit_code=0)
@@ -116,6 +123,7 @@ class TestListTasks:
         assert result["tasks"][0]["id"] == "f2"
 
     def test_list_status_all(self) -> None:
+        """list 在 status 为 all 时返回全部。"""
         db.create_task("a1", "https://a.com", {}, "/tmp")
         db.update_task_status("a1", "done", exit_code=0)
         db.create_task("a2", "https://b.com", {}, "/tmp")
@@ -123,6 +131,7 @@ class TestListTasks:
         assert result["total"] == 2
 
     def test_pagination(self) -> None:
+        """list 分页正确。"""
         for i in range(10):
             db.create_task(f"p{i}", f"https://p{i}.com", {}, "/tmp")
         page1 = db.list_tasks(page=1, page_size=4)
@@ -135,26 +144,31 @@ class TestListTasks:
 
 class TestGetTask:
     def test_get_existing(self) -> None:
+        """get 返回已存在任务。"""
         db.create_task("g1", "https://g.com", {"k": "v"}, "/out")
         task = db.get_task("g1")
         assert task is not None
         assert task["url"] == "https://g.com"
 
     def test_get_nonexistent(self) -> None:
+        """get 返回不存在的任务为 None。"""
         assert db.get_task("nonexistent") is None
 
 
 class TestDeleteTask:
     def test_delete_existing(self) -> None:
+        """delete 删除已存在任务。"""
         db.create_task("d1", "https://d.com", {}, "/tmp")
         assert db.delete_task("d1") is True
         assert db.get_task("d1") is None
 
     def test_delete_nonexistent(self) -> None:
+        """delete 删除不存在任务为空操作。"""
         assert db.delete_task("nonexistent") is False
 
     def test_delete_cascades_results(self, tmp_path: Path) -> None:
         # 先创建 manifest 文件
+        """delete 级联删除结果。"""
         jsonl = tmp_path / "resources_manifest.jsonl"
         jsonl.write_text(
             json.dumps({"url": "https://d.com/r.png", "bytes": 100, "status": "ok"}) + "\n",
@@ -173,6 +187,7 @@ class TestDeleteTask:
 
 class TestImportResults:
     def test_import_from_jsonl(self, tmp_path: Path) -> None:
+        """从 JSONL 导入任务。"""
         jsonl = tmp_path / "resources_manifest.jsonl"
         jsonl.write_text(
             json.dumps(
@@ -218,6 +233,7 @@ class TestImportResults:
         assert results["total"] == 2
 
     def test_import_from_csv(self, tmp_path: Path) -> None:
+        """从 CSV 导入任务。"""
         csv_file = tmp_path / "resources_manifest.csv"
         csv_file.write_text(
             "url,saved_path,content_type,bytes,category,found_in,kind,page_url,page_title,sha256,status,diagnostic\n"
@@ -229,6 +245,7 @@ class TestImportResults:
         assert count == 1
 
     def test_import_no_manifest(self, tmp_path: Path) -> None:
+        """无清单时导入为空操作。"""
         db.create_task("i3", "https://c.com", {}, str(tmp_path))
         count = db.import_results("i3", str(tmp_path))
         assert count == 0
@@ -236,12 +253,14 @@ class TestImportResults:
 
 class TestGetResults:
     def test_get_results_empty(self) -> None:
+        """无结果时 get_results 返回空。"""
         db.create_task("r1", "https://r.com", {}, "/tmp")
         result = db.get_results("r1")
         assert result["results"] == []
         assert result["total"] == 0
 
     def test_get_results_with_search(self, tmp_path: Path) -> None:
+        """get_results 按关键字搜索。"""
         jsonl = tmp_path / "resources_manifest.jsonl"
         jsonl.write_text(
             json.dumps({"url": "https://a.com/image.png", "bytes": 100, "status": "ok"})
@@ -261,6 +280,7 @@ class TestGetResults:
         assert result["total"] == 1
 
     def test_get_results_pagination(self, tmp_path: Path) -> None:
+        """get_results 分页正确。"""
         jsonl = tmp_path / "resources_manifest.jsonl"
         lines = [
             json.dumps({"url": f"https://x.com/r{i}.png", "bytes": i, "status": "ok"})
@@ -416,6 +436,7 @@ class TestFailStaleRunningTasks:
     """fail_stale_running_tasks:启动时清理上次进程遗留的僵尸任务。"""
 
     def test_marks_running_and_paused_as_error(self) -> None:
+        """将运行中和已暂停任务标记为错误。"""
         conn = db._get_conn()
         conn.execute(
             "INSERT INTO tasks (id, url, config, output_dir, status, created_at) VALUES"
@@ -442,6 +463,7 @@ class TestFailStaleRunningTasks:
         assert rows["t-done"] == "done"
 
     def test_appends_reason_to_log(self) -> None:
+        """将原因追加到日志。"""
         conn = db._get_conn()
         conn.execute(
             "INSERT INTO tasks (id, url, config, output_dir, status, log, created_at) VALUES"
@@ -456,4 +478,5 @@ class TestFailStaleRunningTasks:
         assert "启动清理" in log
 
     def test_noop_when_no_stale_tasks(self) -> None:
+        """无过期任务时为空操作。"""
         assert db.fail_stale_running_tasks() == 0

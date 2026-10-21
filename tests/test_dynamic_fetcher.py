@@ -104,6 +104,7 @@ def _make_async_browser(context: AsyncMock | None = None) -> AsyncMock:
 # 原有构造与纯函数测试
 # ---------------------------------------------------------------------------
 def test_dynamic_fetcher_constructs_when_playwright_available() -> None:
+    """playwright 可用时 DynamicFetcher 正常构造。"""
     if not compat.HAS_PLAYWRIGHT:
         pytest.skip("playwright not installed")
     f = DynamicFetcher(headless=True, timeout=15.0, block_images=True)
@@ -114,6 +115,7 @@ def test_dynamic_fetcher_constructs_when_playwright_available() -> None:
 
 
 def test_parse_proxy_simple() -> None:
+    """parse_proxy 解析简单代理。"""
     if not compat.HAS_PLAYWRIGHT:
         pytest.skip("playwright not installed")
     f = DynamicFetcher()
@@ -123,6 +125,7 @@ def test_parse_proxy_simple() -> None:
 
 
 def test_parse_proxy_with_auth() -> None:
+    """parse_proxy 解析带认证的代理。"""
     if not compat.HAS_PLAYWRIGHT:
         pytest.skip("playwright not installed")
     f = DynamicFetcher()
@@ -134,6 +137,7 @@ def test_parse_proxy_with_auth() -> None:
 
 
 def test_parse_proxy_none_returns_none() -> None:
+    """parse_proxy 在输入为 None 时返回 None。"""
     if not compat.HAS_PLAYWRIGHT:
         pytest.skip("playwright not installed")
     f = DynamicFetcher()
@@ -143,6 +147,7 @@ def test_parse_proxy_none_returns_none() -> None:
 
 
 def test_blocked_types_empty_by_default() -> None:
+    """默认 blocked_types 为空。"""
     if not compat.HAS_PLAYWRIGHT:
         pytest.skip("playwright not installed")
     f = DynamicFetcher(block_images=False, disable_resources=False)
@@ -151,6 +156,7 @@ def test_blocked_types_empty_by_default() -> None:
 
 
 def test_blocked_types_images_only() -> None:
+    """仅图片时 blocked_types 正确。"""
     if not compat.HAS_PLAYWRIGHT:
         pytest.skip("playwright not installed")
     f = DynamicFetcher(block_images=True, disable_resources=False)
@@ -159,6 +165,7 @@ def test_blocked_types_images_only() -> None:
 
 
 def test_blocked_types_disable_resources() -> None:
+    """禁用资源时 blocked_types 正确。"""
     if not compat.HAS_PLAYWRIGHT:
         pytest.skip("playwright not installed")
     f = DynamicFetcher(block_images=True, disable_resources=True)
@@ -170,6 +177,7 @@ def test_blocked_types_disable_resources() -> None:
 
 
 def test_route_handler_aborts_blocked_and_continues_others() -> None:
+    """route_handler 中止被阻断类型并继续其余。"""
     if not compat.HAS_PLAYWRIGHT:
         pytest.skip("playwright not installed")
     f = DynamicFetcher(block_images=True)
@@ -200,12 +208,14 @@ def test_route_handler_aborts_blocked_and_continues_others() -> None:
 
 
 def test_stealthy_fetcher_inherits_dynamic() -> None:
+    """StealthyFetcher 继承 DynamicFetcher。"""
     if not compat.HAS_PLAYWRIGHT:
         pytest.skip("playwright not installed")
     assert issubclass(StealthyFetcher, DynamicFetcher)
 
 
 def test_stealthy_fetcher_defaults_are_more_aggressive() -> None:
+    """StealthyFetcher 默认值更激进。"""
     if not compat.HAS_PLAYWRIGHT:
         pytest.skip("playwright not installed")
     f = StealthyFetcher()
@@ -219,6 +229,7 @@ def test_stealthy_fetcher_defaults_are_more_aggressive() -> None:
 
 
 def test_stealthy_js_constant_is_substantial() -> None:
+    """stealthy JS 常量内容充分。"""
     from web_crawler.fetchers.stealthy import _STEALTH_JS
 
     # The stealth script must patch the key browser-fingerprint surfaces.
@@ -230,6 +241,7 @@ def test_stealthy_js_constant_is_substantial() -> None:
 
 
 def test_stealthy_fetcher_overrides_hooks() -> None:
+    """StealthyFetcher 覆盖钩子。"""
     if not compat.HAS_PLAYWRIGHT:
         pytest.skip("playwright not installed")
     f = StealthyFetcher()
