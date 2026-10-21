@@ -14,6 +14,9 @@
       --accent-purple: #a855f7; --accent-orange: #f97316; --accent-blue: #3b82f6;
       --accent-green: #22c55e; --accent-yellow: #eab308; --accent-red: #ef4444;
       --shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
+      /* 状态文字：在白底彩色淡底上仍需 ≥4.5:1（#16a34a 仅 2.9:1，不能用作正文） */
+      --ok-text: #166534; --danger-text: #b91c1c; --info-text: #1d4ed8; --neutral-text: #4b5563;
+      --warn-text: #854d0e;
       /* 历史 Tab / 结果弹窗（与 --card/--muted 同值，保持深色一致） */
       --bg-card: #fff; --text-muted: #5b6472;
     }
@@ -23,6 +26,8 @@
       --primary: #3b82f6; --primary-hover: #60a5fa; --danger: #ef4444;
       --bar-bg: #334155; --bar-fill: #22c55e;
       --shadow: 0 1px 3px rgba(0,0,0,.3), 0 1px 2px rgba(0,0,0,.2);
+      --ok-text: #86efac; --danger-text: #fca5a5; --info-text: #93c5fd; --neutral-text: #cbd5e1;
+      --warn-text: #fde047;
       --bg-card: #1e293b; --text-muted: #94a3b8;
     }
     * { box-sizing: border-box; }
@@ -64,6 +69,9 @@
     .section { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border); }
     .buttons { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
     button { border: 0; border-radius: 6px; padding: 10px 16px; font-size: 14px; font-weight: 700; cursor: pointer; }
+    /* 键盘焦点：默认轮廓在蓝底按钮上几乎看不见，统一成高对比描边 */
+    :focus-visible { outline: 3px solid var(--info-text); outline-offset: 2px; }
+    [data-theme="dark"] :focus-visible { outline-color: #93c5fd; }
     .btn-primary { background: var(--primary); color: white; }
     .btn-primary:hover { background: var(--primary-hover); }
     .btn-secondary { background: #475569; color: white; }
@@ -73,7 +81,24 @@
     .progress-bar { width: 0%; height: 100%; background: var(--bar-fill); transition: width .25s ease; border-radius: 999px; }
     .status { margin-top: 10px; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
     pre { margin-top: 14px; padding: 14px; min-height: 190px; max-height: 500px; overflow: auto; background: var(--log-bg); color: var(--log-text); border-radius: 8px; font-size: 13px; line-height: 1.55; }
+    pre.log-empty { color: #94a3b8; }
     .hint { margin-top: 6px; font-size: 13px; color: var(--muted); }
+
+    /* 表单底部操作条：长表单（390px 宽时约 2700px）里让「开始采集」和进度始终在首屏 */
+    .action-dock {
+      position: sticky; bottom: 0; z-index: 20;
+      margin: 18px -20px -20px; padding: 12px 20px;
+      background: var(--card); border-top: 1px solid var(--border);
+      border-radius: 0 0 8px 8px; box-shadow: 0 -6px 16px rgba(15, 23, 42, .08);
+    }
+    .action-dock .buttons { margin-top: 10px; }
+    .action-dock .progress-wrap { margin-top: 0; height: 8px; }
+    .action-dock .status { margin-top: 8px; min-height: 20px; }
+    @media (max-width: 480px) {
+      .action-dock { padding: 10px 20px; }
+      .action-dock .buttons { gap: 8px; }
+      .action-dock .buttons button { flex: 1 1 auto; padding: 10px 12px; }
+    }
 
     /* ========== JS 逆向 Agent 面板 ========== */
     .reverse-panel { display: flex; flex-direction: column; gap: 16px; }
@@ -101,10 +126,12 @@
     .step-counter { font-size: 14px; color: var(--muted); }
     .step-counter strong { color: var(--text); font-size: 16px; }
     .status-badge { padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
-    .status-badge.running { background: rgba(59,130,246,.15); color: var(--accent-blue); }
-    .status-badge.done { background: rgba(34,197,94,.15); color: var(--accent-green); }
-    .status-badge.error { background: rgba(239,68,68,.15); color: var(--accent-red); }
-    .status-badge.cancelled { background: rgba(107,114,128,.15); color: #6b7280; }
+    .status-badge.running { background: rgba(59,130,246,.15); color: var(--info-text); }
+    .status-badge.done { background: rgba(34,197,94,.18); color: var(--ok-text); }
+    .status-badge.error { background: rgba(239,68,68,.15); color: var(--danger-text); }
+    .status-badge.cancelled { background: rgba(107,114,128,.15); color: var(--neutral-text); }
+    .status-badge.paused { background: rgba(234,179,8,.18); color: var(--warn-text); }
+    .status-badge.stopped { background: rgba(107,114,128,.15); color: var(--neutral-text); }
 
     /* 执行轨迹 */
     .trace-list { flex: 1; overflow-y: auto; padding-right: 4px; }
@@ -156,6 +183,27 @@
     .history-step { color: var(--muted); font-size: 11px; flex-shrink: 0; }
     .history-empty { color: var(--muted); text-align: center; padding: 12px 0; font-size: 12px; }
 
+    /* ========== 任务历史：工具栏 / 卡片 / 空状态 ========== */
+    .history-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+    .history-toolbar label { margin: 0; font-size: 13px; font-weight: 600; color: var(--muted); }
+    .history-toolbar select { width: auto; min-width: 150px; padding: 8px 12px; }
+    .history-toolbar .btn-toolbar { padding: 8px 16px; font-weight: 600; background: var(--bg-card); color: var(--text); border: 1px solid var(--border); }
+    .history-toolbar .btn-toolbar:hover { border-color: var(--primary); color: var(--primary); }
+    .history-total { margin-left: auto; color: var(--text-muted); font-size: 14px; }
+    .task-card { padding: 12px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-card); display: flex; align-items: center; gap: 12px; }
+    .task-card .task-main { flex: 1; min-width: 0; }
+    .task-card .task-url { font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .task-meta { display: flex; flex-wrap: wrap; gap: 2px 10px; margin-top: 3px; font-size: 12px; color: var(--text-muted); }
+    .task-meta span { white-space: nowrap; }
+    .task-actions { display: flex; gap: 6px; flex-shrink: 0; }
+    .task-actions button { padding: 4px 10px; border-radius: 4px; font-size: 12px; background: var(--bg-card); }
+    .task-actions .btn-results { border: 1px solid var(--border); color: var(--text); }
+    .task-actions .btn-delete { border: 1px solid var(--danger-text); color: var(--danger-text); }
+    .empty-state { text-align: center; padding: 48px 20px; border: 1px dashed var(--border); border-radius: 10px; background: var(--bg-card); }
+    .empty-state .empty-title { margin: 0 0 8px; font-size: 17px; font-weight: 700; color: var(--text); }
+    .empty-state .empty-text { margin: 0 auto 16px; max-width: 460px; font-size: 14px; line-height: 1.7; color: var(--muted); }
+    .empty-state .btn-primary { padding: 9px 18px; }
+
     /* ========== 任务模板按钮 ========== */
     .template-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
     .template-btn { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 12px; font-weight: 600; cursor: pointer; color: var(--text); transition: background .12s, border-color .12s, color .12s; }
@@ -187,6 +235,37 @@
     .config-io-bar { display: flex; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
     .config-io-bar button { flex: 1; padding: 8px 10px; font-size: 12px; }
 
+    /* ========== 采集结果弹窗 ========== */
+    .results-mask { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 9999; overflow: auto; padding: 20px 12px; }
+    .results-mask.show { display: block; }
+    .results-panel { max-width: 1100px; margin: 0 auto; background: var(--bg-card); border-radius: 12px; padding: 20px; box-shadow: 0 8px 32px rgba(0,0,0,.2); }
+    .results-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+    .results-head h3 { margin: 0; flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+    .results-head input { flex: 0 1 240px; min-width: 0; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-card); color: var(--text); }
+    .results-head .btn-close { flex-shrink: 0; padding: 6px 16px; border-radius: 6px; border: 0; background: #b91c1c; color: #fff; cursor: pointer; }
+    .results-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    table.results-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .results-table th { padding: 8px; text-align: left; white-space: nowrap; border-bottom: 2px solid var(--border); }
+    .results-table td { padding: 8px; border-bottom: 1px solid var(--border); }
+    .results-table td.cell-url { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .results-table td.cell-size { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .results-table th.num { text-align: right; }
+    .results-table td.cell-status { white-space: nowrap; font-size: 12px; }
+    .results-table .status-ok { color: var(--ok-text); }
+    .results-table .status-bad { color: var(--danger-text); }
+    .results-table .status-idle { color: var(--muted); }
+    .pager { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 16px; }
+    .pager button { padding: 4px 12px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-card); color: var(--text); cursor: pointer; font-size: 13px; }
+    .pager button.current { background: var(--primary); border-color: var(--primary); color: #fff; }
+    .pager span { padding: 4px; color: var(--muted); font-size: 13px; }
+    .table-hint { display: none; margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+    @media (max-width: 640px) {
+      .results-panel { padding: 14px; }
+      .results-head input { flex: 1 1 100%; order: 3; }
+      .results-head .btn-close { order: 2; }
+      .table-hint { display: block; }
+    }
+
     /* 滚动条美化 */
     ::-webkit-scrollbar { width: 8px; height: 8px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -205,25 +284,25 @@
   <main>
     <div class="page-header">
       <h1>Web Crawler 控制台</h1>
+      <button class="theme-toggle" type="button" onclick="toggleTheme()" title="切换明暗主题" aria-label="切换明暗主题">主题</button>
     </div>
-    <div class="tabs">
-      <button class="tab active" data-tab="crawler">网页采集</button>
-      <button class="tab" data-tab="reverse">JS 逆向 Agent</button>
-      <button class="tab" data-tab="history">任务历史</button>
-      <button class="theme-toggle" type="button" onclick="toggleTheme()" title="切换主题">主题</button>
+    <div class="tabs" role="tablist" aria-label="功能页签">
+      <button class="tab active" id="tabbtn-crawler" role="tab" aria-selected="true" aria-controls="tab-crawler" data-tab="crawler">网页采集</button>
+      <button class="tab" id="tabbtn-reverse" role="tab" aria-selected="false" aria-controls="tab-reverse" data-tab="reverse">JS 逆向 Agent</button>
+      <button class="tab" id="tabbtn-history" role="tab" aria-selected="false" aria-controls="tab-history" data-tab="history">任务历史</button>
     </div>
 
     <!-- ========== Tab 1: 网页资源采集器 ========== -->
-    <div id="tab-crawler" class="tab-content active">
+    <div id="tab-crawler" class="tab-content active" role="tabpanel" aria-labelledby="tabbtn-crawler">
       <div class="crawler-inner">
         <p class="subtitle">图片/CSS/JS/视频/字体 · 并发下载 · 自适应限速 · 内容去重</p>
         <div class="tags">
-          <span class="tag">并发</span>
-          <span class="tag">限速</span>
-          <span class="tag">去重</span>
-          <span class="tag">断点续传</span>
-          <span class="tag">清单</span>
-          <span class="tag">离线页面</span>
+          <span class="tag" title="并发：同时下载多个文件，速度快但更占带宽">并发</span>
+          <span class="tag" title="限速：根据站点响应自动放慢请求，避免被封">限速</span>
+          <span class="tag" title="去重：相同内容（SHA256 一致）只保存一份">去重</span>
+          <span class="tag" title="断点续传：下载中断后，从已下载的部分接着下，不用重头再来">断点续传</span>
+          <span class="tag" title="清单：只记录资源地址和类型，不下载文件本身">清单</span>
+          <span class="tag" title="离线页面：把网页 HTML 和资源改写成可离线打开的形式">离线页面</span>
         </div>
 
         <form id="crawler-form">
@@ -270,16 +349,16 @@
               <label class="check"><input type="checkbox" name="sitemap"> 从 Sitemap 发现页面</label>
               <label class="check"><input type="checkbox" name="expand_playlists"> 展开播放清单</label>
               <label class="check"><input type="checkbox" name="respect_robots" checked> 遵守 robots.txt</label>
-              <label class="check"><input type="checkbox" name="resume_crawl"> 断点续爬（任务中断后恢复）</label>
+              <label class="check"><input type="checkbox" name="resume_crawl"> 断点续爬（扫到一半停了，下次接着扫）</label>
             </div>
           </div>
           <div class="opt-group">
             <h4>下载行为</h4>
             <div class="grid">
-              <label class="check"><input type="checkbox" name="list_only" checked> 只生成清单，不下载</label>
+              <label class="check"><input type="checkbox" name="list_only" checked> 只生成清单，不下载文件</label>
               <label class="check"><input type="checkbox" name="video_mode"> 生成视频资源清单</label>
               <label class="check"><input type="checkbox" name="video_only"> 只处理视频相关资源</label>
-              <label class="check"><input type="checkbox" name="resume" checked> 断点续传（大文件分块续下）</label>
+              <label class="check"><input type="checkbox" name="resume" checked> 断点续传（文件下到一半断了，接着下）</label>
               <label class="check"><input type="checkbox" name="dedup" checked> 内容去重（SHA256）</label>
               <label class="check"><input type="checkbox" name="stealth"> 隐身抓取（TLS 指纹）</label>
             </div>
@@ -296,23 +375,29 @@
             </div>
           </div>
 
-          <div class="buttons">
-            <button id="run-button" type="submit" class="btn-primary">开始采集</button>
-            <button id="pause-button" type="button" class="btn-secondary" disabled>暂停</button>
-            <button id="resume-button" type="button" class="btn-secondary" disabled>继续</button>
-            <button id="cancel-button" type="button" class="btn-danger" disabled>取消</button>
-            <button id="open-button" type="button" class="btn-secondary">打开输出文件夹</button>
+          <div class="action-dock">
+            <div class="progress-wrap"><div id="progress-bar" class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="采集进度"></div></div>
+            <div id="status" class="status" role="status" aria-live="polite">等待开始：填写网页 URL 后点「开始采集」（默认只生成清单，不下载文件）</div>
+            <div class="buttons">
+              <button id="run-button" type="submit" class="btn-primary">开始采集</button>
+              <button id="pause-button" type="button" class="btn-secondary" disabled>暂停</button>
+              <button id="resume-button" type="button" class="btn-secondary" disabled>继续</button>
+              <button id="cancel-button" type="button" class="btn-danger" disabled>取消</button>
+              <button id="open-button" type="button" class="btn-secondary">打开输出文件夹</button>
+            </div>
           </div>
         </form>
 
-        <div class="progress-wrap"><div id="progress-bar" class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div></div>
-        <div id="status" class="status" role="status" aria-live="polite">等待开始...</div>
-        <pre id="log">等待开始...</pre>
+        <pre id="log" class="log-empty" aria-label="运行日志">运行日志会显示在这里。点击「开始采集」后，依次可以看到：
+  1. 扫描到的页面与发现的资源
+  2. 下载 / 去重 / 跳过的结果
+  3. 清单与报告的输出路径
+任务完成后，可到「任务历史」查看每次采集的结果。</pre>
       </div>
     </div>
 
     <!-- ========== Tab 2: JS 逆向 Agent ========== -->
-    <div id="tab-reverse" class="tab-content">
+    <div id="tab-reverse" class="tab-content" role="tabpanel" aria-labelledby="tabbtn-reverse">
       <div class="reverse-panel">
         <div class="reverse-grid">
           <!-- 左栏：任务配置 -->
@@ -347,7 +432,7 @@
 
               <div class="row">
                 <div><label for="rev-max-steps">最大步数</label><input id="rev-max-steps" name="max_steps" type="number" value="20" min="1" aria-describedby="rev-max-steps-hint"></div>
-                <div><label for="rev-os-name">OS 指纹</label>
+                <div><label for="rev-os-name">浏览器指纹（OS）</label>
                   <select id="rev-os-name" name="os_name">
                     <option value="windows">windows</option>
                     <option value="macos">macos</option>
@@ -359,7 +444,7 @@
 
               <div class="row">
                 <div><label for="rev-proxy">代理</label><input id="rev-proxy" name="proxy" type="text" placeholder="http://u:p@host:port"></div>
-                <div><label for="rev-headless">headless</label>
+                <div><label for="rev-headless">无头模式（headless）</label>
                   <select id="rev-headless" name="headless">
                     <option value="false">否（可见浏览器）</option>
                     <option value="true">是（无头）</option>
@@ -368,7 +453,7 @@
               </div>
 
               <details>
-                <summary>高级配置（DomPruner / Checkpoint / Confidence / Guard / Screenshot）</summary>
+                <summary>高级配置（页面裁剪 / 断点续跑 / 置信度 / 护栏 / 截图）</summary>
                 <fieldset>
                   <legend>DOM 焦点裁剪</legend>
                   <label class="check"><input type="checkbox" name="dom_prune" value="1"> 启用 DOM 裁剪</label>
@@ -378,7 +463,7 @@
                 </fieldset>
 
                 <fieldset>
-                  <legend>断点续跑 (Checkpoint)</legend>
+                  <legend>断点续跑（Checkpoint：每步保存进度快照）</legend>
                   <label class="check"><input type="checkbox" name="enable_checkpoint" value="1" checked> 启用</label>
                   <label for="rev-checkpoint-interval">保存间隔（步）</label>
                   <input id="rev-checkpoint-interval" name="checkpoint_interval" type="number" value="1">
@@ -423,7 +508,7 @@
           <!-- 中栏：实时执行轨迹 -->
           <section class="reverse-center">
             <div class="reverse-status-bar">
-              <span class="step-counter">步数 <strong id="rev-current-step">0</strong>/<span id="rev-max-steps">20</span></span>
+              <span class="step-counter">步数 <strong id="rev-current-step">0</strong>/<span id="rev-max-steps-display">20</span></span>
               <span class="status-badge" id="rev-status" role="status" aria-live="polite">等待启动</span>
             </div>
             <h3>执行轨迹 (Trace)</h3>
@@ -455,14 +540,14 @@
             <h3>护栏拦截</h3>
             <div id="rev-guard-blocks" class="guard-list">无</div>
 
-            <h3>Checkpoints</h3>
-            <div id="rev-checkpoints" class="checkpoint-list">无</div>
+            <h3>检查点（Checkpoint）</h3>
+            <div id="rev-checkpoints" class="checkpoint-list">暂无检查点</div>
 
             <h3>目标参数</h3>
-            <div id="rev-target-params" class="target-params">--</div>
+            <div id="rev-target-params-found" class="target-params">--</div>
 
-            <h3>Hook 捕获 <span id="rev-hook-count" class="count-badge">0</span></h3>
-            <div id="rev-hooks" class="hook-list">无数据</div>
+            <h3>Hook 捕获（加密参数） <span id="rev-hook-count" class="count-badge">0</span></h3>
+            <div id="rev-hooks" class="hook-list">暂无捕获</div>
           </aside>
         </div>
 
@@ -478,7 +563,7 @@
           <h3>任务结果</h3>
           <div class="result-grid">
             <div><strong>状态</strong>: <span id="rev-result-status">--</span></div>
-            <div><strong>Judge 验证</strong>: <span id="rev-judge">--</span></div>
+            <div><strong>自动校验（Judge）</strong>: <span id="rev-judge">--</span></div>
             <div><strong>成功路径脚本</strong>: <button id="rev-download-script" class="btn-secondary">下载 .py</button></div>
           </div>
           <details>
@@ -513,13 +598,31 @@
     }
 
     /* ========== Tab 切换 ========== */
+    function activateTab(tab) {
+      document.querySelectorAll('.tab').forEach(function(t) {
+        var on = (t === tab);
+        t.classList.toggle('active', on);
+        t.setAttribute('aria-selected', on ? 'true' : 'false');
+        t.tabIndex = on ? 0 : -1;
+      });
+      document.querySelectorAll('.tab-content').forEach(function(c) { c.classList.remove('active'); });
+      document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+    }
     document.querySelectorAll('.tab').forEach(function(tab) {
-      tab.onclick = function() {
-        document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
-        document.querySelectorAll('.tab-content').forEach(function(c) { c.classList.remove('active'); });
-        tab.classList.add('active');
-        document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
-      };
+      tab.tabIndex = tab.classList.contains('active') ? 0 : -1;
+      tab.onclick = function() { activateTab(tab); };
+    });
+    /* 页签键盘操作：左右方向键切换（role=tab 的无障碍惯例） */
+    document.querySelector('.tabs').addEventListener('keydown', function(e) {
+      var step = e.key === 'ArrowRight' ? 1 : (e.key === 'ArrowLeft' ? -1 : 0);
+      if (!step) { return; }
+      var tabs = Array.prototype.slice.call(document.querySelectorAll('.tab'));
+      var i = tabs.indexOf(document.activeElement);
+      if (i < 0) { return; }
+      e.preventDefault();
+      var next = tabs[(i + step + tabs.length) % tabs.length];
+      next.focus();
+      activateTab(next);
     });
 
     /* ========== 采集器逻辑（原有） ========== */
@@ -559,6 +662,30 @@
     /* 状态查询失败重试计数器：连续失败 3 次后停止轮询 */
     var POLL_FAIL_COUNT = 0;
     var POLL_FAIL_MAX = 3;
+    /* 后端状态值 → 中文（后端仍返回英文枚举，这里只做展示层翻译） */
+    var STATUS_LABELS = { running: '运行中', paused: '已暂停', done: '已完成', error: '失败', cancelled: '已取消', missing: '任务已不存在', stopped: '已停止' };
+    var STATUS_HINTS = {
+      running: '正在采集，可「暂停」或「取消」',
+      paused: '已暂停，点「继续」接着跑',
+      done: '可在「任务历史」查看本次结果',
+      error: '原因见下方日志，修改参数后可重试',
+      cancelled: '任务已取消，修改参数后可重新开始',
+      missing: '任务记录已丢失（服务可能重启过），请重新开始'
+    };
+    function formatStatus(data) {
+      var st = data.status || '';
+      var label = STATUS_LABELS[st] || st || '等待开始';
+      var total = data.total_resources || 0;
+      var processed = data.processed_resources || 0;
+      var parts = [label];
+      if (total > 0) { parts.push('资源 ' + processed + '/' + total); }
+      else if (processed > 0) { parts.push('资源 ' + processed); }
+      parts.push('页面 ' + (data.pages_scanned || 0));
+      var text = parts.join(' · ');
+      if (data.current_url) { text += ' · 当前：' + data.current_url; }
+      if (STATUS_HINTS[st]) { text += '（' + STATUS_HINTS[st] + '）'; }
+      return text;
+    }
     async function poll() {
       if (!jobId) return;
       var result;
@@ -578,14 +705,19 @@
         }
         return;
       }
-      log.textContent = result.log || '';
+      var logText = result.log || '';
+      log.textContent = logText || '正在启动采集进程，日志马上出现…';
+      log.classList.toggle('log-empty', !logText);
       var pct = result.percent || 0;
       bar.style.width = pct + '%';
       bar.setAttribute('aria-valuenow', String(pct));
-      statusEl.textContent = (result.status || '') + ' | ' + (result.processed_resources || 0) + '/' + (result.total_resources || 0) + ' | 页面 ' + (result.pages_scanned || 0) + ' | ' + (result.current_url || '');
+      statusEl.textContent = formatStatus(result);
       if (result.status === 'paused') { pauseButton.disabled = true; resumeButton.disabled = false; }
       else if (['done', 'error', 'cancelled', 'missing'].indexOf(result.status) >= 0) {
-        pauseButton.disabled = true; resumeButton.disabled = true;
+        /* 任务结束：恢复「开始采集」可再次提交，并停掉轮询 */
+        setRunning(false);
+        resumeButton.disabled = true;
+        if (timer) { clearInterval(timer); timer = null; }
       }
       else { pauseButton.disabled = false; resumeButton.disabled = true; }
     }
@@ -600,7 +732,9 @@
       }
       setRunning(true);
       resumeButton.disabled = true;
-      log.textContent = '正在启动任务...\\n';
+      log.textContent = '正在启动采集进程，日志马上出现…';
+      log.classList.add('log-empty');
+      statusEl.textContent = '正在启动采集…';
       bar.style.width = '0%';
       bar.setAttribute('aria-valuenow', '0');
       POLL_FAIL_COUNT = 0;
@@ -613,7 +747,7 @@
         await poll();
       } catch(e) {
         setRunning(false);
-        statusEl.textContent = '启动失败：' + e.message;
+        statusEl.textContent = '启动失败：' + e.message + '（检查网页 URL 与参数后重试）';
       }
     });
     async function ctrl(path) {
@@ -791,7 +925,7 @@
     function showReverseResult(data) {
       var section = document.getElementById('rev-result-section');
       section.style.display = 'block';
-      document.getElementById('rev-result-status').textContent = data.status || '--';
+      document.getElementById('rev-result-status').textContent = STATUS_LABELS[data.status] || data.status || '--';
       if (data.error) { document.getElementById('rev-result-status').textContent += ' (' + data.error + ')'; }
       var judge = data.judge_result || {};
       var judgeText = '--';
@@ -945,9 +1079,9 @@
     function updateReverseUI(data) {
       if (!data) return;
       document.getElementById('rev-current-step').textContent = data.current_step || 0;
-      document.getElementById('rev-max-steps').textContent = data.max_steps || 20;
+      document.getElementById('rev-max-steps-display').textContent = data.max_steps || 20;
       var statusBadge = document.getElementById('rev-status');
-      statusBadge.textContent = data.status || '--';
+      statusBadge.textContent = STATUS_LABELS[data.status] || data.status || '--';
       statusBadge.className = 'status-badge ' + (data.status || '');
       /* 运行中确保停止可用：页面刷新后按钮初始为 disabled,轮询恢复时重新启用 */
       if (data.status === 'running' && reverseStopBtn) { reverseStopBtn.disabled = false; }
@@ -987,7 +1121,7 @@
         var found = data.target_params_found && data.target_params_found[p];
         return '<div class="param-item ' + (found ? 'found' : '') + '">' + (found ? '[OK] ' : '[..] ') + escapeHtml(p) + (found ? ': ' + escapeHtml(found) : '') + '</div>';
       }).join('');
-      document.getElementById('rev-target-params').innerHTML = tpHtml || '--';
+      document.getElementById('rev-target-params-found').innerHTML = tpHtml || '--';
       document.getElementById('rev-hook-count').textContent = data.hook_count || 0;
       var hookHtml = (data.hook_records || []).slice(-10).map(function(h) {
         return '<div class="hook-item">' + escapeHtml(JSON.stringify(h)) + '</div>';
@@ -1050,7 +1184,7 @@
         var tsStr = ts.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         var successMark = j.success ? ' [OK]' : '';
         return '<div class="history-item' + isActive + '" data-job-id="' + escapeHtml(j.id) + '">' +
-          '<span class="history-status status-badge ' + statusClass + '">' + escapeHtml(j.status) + '</span>' +
+          '<span class="history-status status-badge ' + statusClass + '">' + escapeHtml(STATUS_LABELS[j.status] || j.status) + '</span>' +
           '<span class="history-url" title="' + escapeHtml(j.url) + '">' + escapeHtml(j.url) + escapeHtml(successMark) + '</span>' +
           '<span class="history-step">' + tsStr + ' S' + (j.current_step || 0) + '/' + (j.max_steps || 0) + '</span>' +
           '</div>';
@@ -1280,11 +1414,12 @@
   </script>
 
   <!-- ========== Tab 3: 任务历史 ========== -->
-  <div id="tab-history" class="tab-content">
+  <div id="tab-history" class="tab-content" role="tabpanel" aria-labelledby="tabbtn-history">
     <div style="max-width:1200px;margin:0 auto;padding:16px">
       <h2 style="margin:0 0 12px">任务历史</h2>
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
-        <select id="history-filter" onchange="loadHistory(1)" style="padding:6px 12px;border-radius:6px;border:1px solid var(--border,#ddd);background:var(--bg-card,#fff);color:var(--text,#222)">
+      <div class="history-toolbar">
+        <label for="history-filter">状态筛选</label>
+        <select id="history-filter" onchange="loadHistory(1)">
           <option value="all">全部状态</option>
           <option value="done">已完成</option>
           <option value="running">运行中</option>
@@ -1292,36 +1427,37 @@
           <option value="error">出错</option>
           <option value="cancelled">已取消</option>
         </select>
-        <button onclick="loadHistory()" style="padding:6px 16px;border-radius:6px;border:1px solid var(--border,#ddd);background:var(--bg-card,#fff);color:var(--text,#222);cursor:pointer">刷新</button>
-        <span id="history-total" style="margin-left:auto;color:var(--text-muted,#888);font-size:14px"></span>
+        <button type="button" onclick="loadHistory()" class="btn-toolbar">刷新列表</button>
+        <span id="history-total" class="history-total"></span>
       </div>
       <div id="history-list" style="display:flex;flex-direction:column;gap:8px"></div>
-      <div id="history-pagination" style="display:flex;gap:8px;justify-content:center;margin-top:16px"></div>
+      <div id="history-pagination" class="pager"></div>
     </div>
 
     <!-- 结果查看模态 -->
-    <div id="results-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:9999;overflow:auto">
-      <div style="max-width:1100px;margin:20px auto;background:var(--bg-card,#fff);border-radius:12px;padding:20px;box-shadow:0 8px 32px rgba(0,0,0,0.2)">
-        <div style="display:flex;align-items:center;margin-bottom:12px">
-          <h3 id="results-title" style="margin:0;flex:1">采集结果</h3>
-          <input id="results-search" placeholder="搜索 URL/路径/类型..." oninput="loadResults(1)" style="padding:6px 12px;border-radius:6px;border:1px solid var(--border,#ddd);background:var(--bg-card,#fff);color:var(--text,#222);width:240px">
-          <button onclick="closeResults()" style="margin-left:12px;padding:6px 16px;border-radius:6px;border:none;background:#ef4444;color:#fff;cursor:pointer">关闭</button>
+    <div id="results-modal" class="results-mask" role="dialog" aria-modal="true" aria-labelledby="results-title" aria-hidden="true">
+      <div class="results-panel">
+        <div class="results-head">
+          <h3 id="results-title">采集结果</h3>
+          <input id="results-search" type="search" placeholder="搜索 URL/路径/类型" aria-label="搜索采集结果" oninput="loadResults(1)">
+          <button type="button" class="btn-close" onclick="closeResults()" aria-label="关闭采集结果">关闭</button>
         </div>
-        <div style="overflow-x:auto">
-          <table id="results-table" style="width:100%;border-collapse:collapse;font-size:13px">
+        <div class="results-table-wrap">
+          <table id="results-table" class="results-table">
             <thead>
-              <tr style="text-align:left;border-bottom:2px solid var(--border,#ddd)">
-                <th style="padding:8px">URL</th>
-                <th style="padding:8px">类型</th>
-                <th style="padding:8px">大小</th>
-                <th style="padding:8px">分类</th>
-                <th style="padding:8px">状态</th>
+              <tr>
+                <th scope="col">URL</th>
+                <th scope="col">类型</th>
+                <th scope="col" class="num">大小</th>
+                <th scope="col">分类</th>
+                <th scope="col">状态</th>
               </tr>
             </thead>
             <tbody id="results-body"></tbody>
           </table>
         </div>
-        <div id="results-pagination" style="display:flex;gap:8px;justify-content:center;margin-top:12px"></div>
+        <p class="table-hint">表格较宽，可左右滑动查看完整内容。</p>
+        <div id="results-pagination" class="pager"></div>
       </div>
     </div>
   </div>
@@ -1342,42 +1478,81 @@
       var d = new Date(ts * 1000);
       return d.toLocaleString();
     }
+    /* 状态圆点用的高饱和色（只是装饰条，不承载文字对比度） */
     function statusColor(s) {
       return {done:'#16a34a',running:'#3b82f6',error:'#ef4444',cancelled:'#6b7280',paused:'#eab308'}[s] || '#6b7280';
+    }
+    function historyStatusLabel(s) {
+      return {running:'运行中',done:'已完成',error:'出错',cancelled:'已取消',paused:'已暂停'}[s] || s || '未知';
+    }
+    function historyStatusClass(s) {
+      return ['running','done','error','cancelled','paused'].indexOf(s) >= 0 ? s : 'cancelled';
+    }
+    function goToCrawlerTab() {
+      var tab = document.querySelector('.tab[data-tab="crawler"]');
+      if (tab) { tab.click(); }
+    }
+    function resetHistoryFilter() {
+      document.getElementById('history-filter').value = 'all';
+      loadHistory(1);
+    }
+    function historyEmptyHtml(filter) {
+      if (filter !== 'all') {
+        return '<div class="empty-state">' +
+          '<p class="empty-title">当前筛选下没有任务</p>' +
+          '<p class="empty-text">把「状态筛选」切回「全部状态」，可以看到所有历史任务。</p>' +
+          '<button type="button" class="btn-primary" onclick="resetHistoryFilter()">查看全部任务</button>' +
+        '</div>';
+      }
+      return '<div class="empty-state">' +
+        '<p class="empty-title">还没有采集任务</p>' +
+        '<p class="empty-text">在「网页采集」页填写要采集的网页 URL，点「开始采集」。任务结束后，这里会列出每次任务的状态、资源数量和采集结果。</p>' +
+        '<button type="button" class="btn-primary" onclick="goToCrawlerTab()">去「网页采集」新建任务</button>' +
+      '</div>';
     }
 
     function loadHistory(page) {
       if (page) historyPage = page;
       var filter = document.getElementById('history-filter').value;
-      function statusLabel(s) { return {running:'运行中',done:'已完成',error:'出错',cancelled:'已取消',paused:'已暂停'}[s] || s; }
       var list = document.getElementById('history-list');
-      list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted,#888)">加载中...</div>';
+      list.innerHTML = '<div class="empty-state"><p class="empty-text">正在加载任务列表…</p></div>';
       fetch('/jobs?page=' + historyPage + '&page_size=15&status=' + encodeURIComponent(filter))
         .then(function(r) {
           if (!r.ok) { throw new Error('HTTP ' + r.status); }
           return r.json();
         })
         .then(function(data) {
-          list.innerHTML = '';
           if (!data.tasks.length) {
-            list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted,#888)">暂无任务</div>';
+            if (data.total > 0) {
+              /* 翻过了最后一页 / 刚删完本页：不要说成「还没有任务」 */
+              list.innerHTML = '<div class="empty-state">' +
+                '<p class="empty-title">这一页没有任务</p>' +
+                '<p class="empty-text">任务总数为 ' + data.total + ' 个，可能是刚删除完本页或翻过了最后一页。</p>' +
+                '<button type="button" class="btn-primary" onclick="loadHistory(1)">回到第 1 页</button>' +
+              '</div>';
+            } else {
+              list.innerHTML = historyEmptyHtml(filter);
+            }
+          } else {
+            list.innerHTML = '';
           }
           data.tasks.forEach(function(t) {
             var card = document.createElement('div');
-            card.style.cssText = 'padding:12px 16px;border-radius:8px;border:1px solid var(--border,#e0e0e0);background:var(--bg-card,#fff);display:flex;align-items:center;gap:12px';
-            var pct = t.total_resources ? Math.round(t.processed_resources * 100 / t.total_resources) : 0;
+            card.className = 'task-card';
             card.innerHTML =
               '<div style="width:8px;height:36px;border-radius:4px;background:' + statusColor(t.status) + ';flex-shrink:0"></div>' +
-              '<div style="flex:1;min-width:0">' +
-                '<div style="font-weight:600;color:var(--text,#222);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(t.url || '-') + '</div>' +
-                '<div style="font-size:12px;color:var(--text-muted,#888);margin-top:2px">' +
-                  fmtTime(t.created_at) + ' · ' + t.processed_resources + '/' + t.total_resources + ' 资源 · ' + t.pages_scanned + ' 页' +
+              '<div class="task-main">' +
+                '<div class="task-url" title="' + escapeHtml(t.url || '') + '">' + escapeHtml(t.url || '-') + '</div>' +
+                '<div class="task-meta">' +
+                  '<span>' + fmtTime(t.created_at) + '</span>' +
+                  '<span>' + (t.processed_resources || 0) + '/' + (t.total_resources || 0) + ' 资源</span>' +
+                  '<span>' + (t.pages_scanned || 0) + ' 页</span>' +
                 '</div>' +
               '</div>' +
-              '<span style="font-size:12px;font-weight:600;color:' + statusColor(t.status) + ';padding:2px 8px;border-radius:4px;background:' + statusColor(t.status) + '15">' + escapeHtml(statusLabel(t.status)) + '</span>' +
-              '<div style="display:flex;gap:6px">' +
-                (t.status === 'done' ? '<button data-results-id="' + escapeHtml(t.id) + '" data-results-url="' + escapeHtml(t.url || '') + '" class="btn-results" style="padding:4px 10px;border-radius:4px;border:1px solid var(--border,#ddd);background:var(--bg-card,#fff);color:var(--text,#222);cursor:pointer;font-size:12px">查看结果</button>' : '') +
-                '<button data-delete-id="' + escapeHtml(t.id) + '" class="btn-delete" style="padding:4px 10px;border-radius:4px;border:1px solid #ef4444;background:transparent;color:#ef4444;cursor:pointer;font-size:12px">删除</button>' +
+              '<span class="status-badge ' + historyStatusClass(t.status) + '">' + escapeHtml(historyStatusLabel(t.status)) + '</span>' +
+              '<div class="task-actions">' +
+                (t.status === 'done' ? '<button type="button" data-results-id="' + escapeHtml(t.id) + '" data-results-url="' + escapeHtml(t.url || '') + '" class="btn-results">查看结果</button>' : '') +
+                '<button type="button" data-delete-id="' + escapeHtml(t.id) + '" class="btn-delete">删除</button>' +
               '</div>';
             list.appendChild(card);
           });
@@ -1401,21 +1576,25 @@
               if (p === '…') {
                 var gap = document.createElement('span');
                 gap.textContent = '…';
-                gap.style.cssText = 'padding:4px 4px;color:var(--text-muted,#888);font-size:13px';
                 pg.appendChild(gap);
                 return;
               }
               var btn = document.createElement('button');
+              btn.type = 'button';
               btn.textContent = p;
+              if (p === historyPage) { btn.className = 'current'; btn.setAttribute('aria-current', 'page'); }
               btn.onclick = function(pp) { return function() { loadHistory(pp); }; }(p);
-              btn.style.cssText = 'padding:4px 12px;border-radius:4px;border:1px solid var(--border,#ddd);background:' + (p === historyPage ? '#3b82f6' : 'var(--bg-card,#fff)') + ';color:' + (p === historyPage ? '#fff' : 'var(--text,#222)') + ';cursor:pointer;font-size:13px';
               pg.appendChild(btn);
             });
           }
           document.getElementById('history-total').textContent = '共 ' + data.total + ' 个任务';
         })
         .catch(function(err) {
-          list.innerHTML = '<div style="text-align:center;padding:40px;color:#ef4444">加载失败：' + escapeHtml(err.message) + '，请刷新重试</div>';
+          list.innerHTML = '<div class="empty-state">' +
+            '<p class="empty-title">任务列表加载失败</p>' +
+            '<p class="empty-text">' + escapeHtml(err.message) + '。请确认服务仍在运行，然后点下方按钮重试。</p>' +
+            '<button type="button" class="btn-primary" onclick="loadHistory()">重试</button>' +
+          '</div>';
         });
     }
 
@@ -1441,13 +1620,31 @@
       }
     });
 
+    var lastResultsTrigger = null;
     function showResults(taskId, url) {
       resultsTaskId = taskId;
       resultsPage = 1;
+      lastResultsTrigger = document.activeElement;
       document.getElementById('results-search').value = '';
       document.getElementById('results-title').textContent = '采集结果 - ' + (url || taskId);
-      document.getElementById('results-modal').style.display = 'block';
+      var modal = document.getElementById('results-modal');
+      modal.classList.add('show');
+      modal.setAttribute('aria-hidden', 'false');
+      document.body.style.overflow = 'hidden';
+      var closeBtn = modal.querySelector('.btn-close');
+      if (closeBtn) { closeBtn.focus(); }
       loadResults(1);
+    }
+
+    /* 后端结果状态是英文枚举/自由文本，这里翻译成中文并保留原文作悬停说明 */
+    function resultStatusInfo(s) {
+      var raw = String(s || '');
+      if (!raw) { return { text: '未知', cls: 'status-idle', title: '' }; }
+      if (raw.indexOf('ok') === 0) { return { text: '成功', cls: 'status-ok', title: raw }; }
+      if (raw.indexOf('listed only') === 0) { return { text: '仅清单（未下载）', cls: 'status-idle', title: raw }; }
+      if (raw.indexOf('skipped by robots') === 0) { return { text: 'robots 协议禁止', cls: 'status-idle', title: raw }; }
+      if (raw.indexOf('error') === 0) { return { text: '失败', cls: 'status-bad', title: raw }; }
+      return { text: raw, cls: '', title: raw };
     }
 
     function loadResults(page) {
@@ -1464,18 +1661,21 @@
           var body = document.getElementById('results-body');
           body.innerHTML = '';
           if (!data.results.length) {
-            body.innerHTML = '<tr><td colspan="5" style="padding:24px;text-align:center;color:var(--text-muted,#888)">无结果</td></tr>';
+            var hint = search
+              ? '没有匹配「' + escapeHtml(search) + '」的结果，换个关键词试试。'
+              : '这次任务没有记录到资源。若开启了「只生成清单，不下载」，可到保存目录查看清单文件。';
+            body.innerHTML = '<tr><td colspan="5" style="padding:28px;text-align:center;color:var(--text-muted)">' + hint + '</td></tr>';
           }
           data.results.forEach(function(r) {
             var tr = document.createElement('tr');
-            tr.style.borderBottom = '1px solid var(--border,#eee)';
             /* 结果字段来自被抓站点（content_type/status/url 等），必须转义防存储型 XSS */
+            var st = resultStatusInfo(r.status);
             tr.innerHTML =
-              '<td style="padding:8px;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(r.url || '') + '">' + escapeHtml(r.url || '-') + '</td>' +
-              '<td style="padding:8px">' + escapeHtml(r.content_type || '-') + '</td>' +
-              '<td style="padding:8px">' + fmtSize(r.bytes || 0) + '</td>' +
-              '<td style="padding:8px">' + escapeHtml(r.category || '-') + '</td>' +
-              '<td style="padding:8px;font-size:12px;color:' + (String(r.status).startsWith('ok') ? '#16a34a' : '#ef4444') + '">' + escapeHtml(r.status || '-') + '</td>';
+              '<td class="cell-url" title="' + escapeHtml(r.url || '') + '">' + escapeHtml(r.url || '-') + '</td>' +
+              '<td>' + escapeHtml(r.content_type || '-') + '</td>' +
+              '<td class="cell-size">' + fmtSize(r.bytes || 0) + '</td>' +
+              '<td>' + escapeHtml(r.category || '-') + '</td>' +
+              '<td class="cell-status ' + st.cls + '"' + (st.title ? ' title="' + escapeHtml(st.title) + '"' : '') + '>' + escapeHtml(st.text) + '</td>';
             body.appendChild(tr);
           });
           // 分页（0 条时不渲染页码）
@@ -1485,22 +1685,37 @@
           if (totalPages > 0) {
             for (var i = 1; i <= totalPages; i++) {
               var btn = document.createElement('button');
+              btn.type = 'button';
               btn.textContent = i;
+              if (i === resultsPage) { btn.className = 'current'; btn.setAttribute('aria-current', 'page'); }
               btn.onclick = function(p) { return function() { loadResults(p); }; }(i);
-              btn.style.cssText = 'padding:4px 12px;border-radius:4px;border:1px solid var(--border,#ddd);background:' + (i === resultsPage ? '#3b82f6' : 'var(--bg-card,#fff)') + ';color:' + (i === resultsPage ? '#fff' : 'var(--text,#222)') + ';cursor:pointer;font-size:13px';
               pg.appendChild(btn);
             }
           }
         })
         .catch(function(err) {
           var body = document.getElementById('results-body');
-          body.innerHTML = '<tr><td colspan="5" style="padding:24px;text-align:center;color:#ef4444">加载失败：' + escapeHtml(err.message) + '</td></tr>';
+          body.innerHTML = '<tr><td colspan="5" style="padding:24px;text-align:center;color:var(--danger-text)">加载失败：' + escapeHtml(err.message) + '。关闭弹窗后重试，或确认服务仍在运行。</td></tr>';
         });
     }
 
     function closeResults() {
-      document.getElementById('results-modal').style.display = 'none';
+      var modal = document.getElementById('results-modal');
+      modal.classList.remove('show');
+      modal.setAttribute('aria-hidden', 'true');
+      document.body.style.overflow = '';
+      if (lastResultsTrigger && lastResultsTrigger.focus) { lastResultsTrigger.focus(); }
     }
+    /* 点遮罩空白处关闭（移动端按钮不在视野内时的兜底） */
+    document.getElementById('results-modal').addEventListener('click', function(e) {
+      if (e.target === this) { closeResults(); }
+    });
+    /* Esc 关闭 */
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape' && document.getElementById('results-modal').classList.contains('show')) {
+        closeResults();
+      }
+    });
 
     // 切换到历史 Tab 时自动加载
     document.querySelectorAll('.tab').forEach(function(tab) {
