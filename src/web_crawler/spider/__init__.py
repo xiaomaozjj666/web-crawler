@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from .autothrottle import AutoThrottle
 from .cache import CacheMiddleware
+from .feed import FeedExportPipeline
 from .spider import (
     DownloaderMiddleware,
     DropItem,
@@ -39,6 +40,7 @@ __all__ = [
     "DownloaderMiddleware",
     "DropItem",
     "DupeFilter",
+    "FeedExportPipeline",
     "IgnoreRequest",
     "ItemPipeline",
     "Request",

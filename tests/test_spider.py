@@ -6,6 +6,7 @@ import asyncio
 import base64
 import itertools
 import json
+import logging
 import time
 import urllib.robotparser
 from pathlib import Path
@@ -1267,8 +1268,9 @@ def test_spider_run_retries_failed_request_then_succeeds(
     assert fetcher.attempts == 2
     assert spider.stats.requests_failed == 0
     assert spider.stats.pages_crawled == 1
-    # 第一次重试的退避为 0.5s（0.5 * 2^0）
-    assert sleeps == [0.5]
+    # 第一次重试的退避：0.5s 基数 + [0, 0.5) 全抖动（防同步重试风暴）
+    assert len(sleeps) == 1
+    assert 0.5 <= sleeps[0] < 1.0
 
 
 def test_spider_run_retry_exhaustion_counts_failure(
@@ -1294,8 +1296,10 @@ def test_spider_run_retry_exhaustion_counts_failure(
     assert items == []
     assert spider.stats.requests_failed == 1
     assert spider.stats.pages_crawled == 0
-    # 指数退避：0.5, 1.0
-    assert sleeps == [0.5, 1.0]
+    # 指数退避基数 0.5、1.0，各叠加 [0, 0.5) 全抖动
+    assert len(sleeps) == 2
+    assert 0.5 <= sleeps[0] < 1.0
+    assert 1.0 <= sleeps[1] < 1.5
 
 
 def test_spider_stream_retries_failed_request_then_succeeds(
@@ -1634,6 +1638,43 @@ def test_item_pipeline_class_attribute_instantiated() -> None:
     assert isinstance(spider._item_pipelines[0], _UpperPipeline)
     items = spider.run()
     assert [it["name"] for it in items] == ["A", "B", "C"]
+
+
+def test_item_pipeline_close_hook_called_after_run() -> None:
+    """实现了 close(spider) 的管道在 run() 结束时被调用（getattr 通用探测）。"""
+
+    class _ClosingPipeline(ItemPipeline):
+        def __init__(self) -> None:
+            self.closed_with: str | None = None
+
+        def close(self, spider: Spider) -> None:
+            self.closed_with = spider.name
+
+    pipe = _ClosingPipeline()
+    spider = ItemSpider(fetcher=FakeFetcher(PAGES))
+    spider._item_pipelines = [pipe]
+    spider.run()
+    assert pipe.closed_with == "item"
+
+
+def test_item_pipeline_close_failure_does_not_break_finalization(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """管道 close 抛异常只记 warning：finally 链后续（stats 导出）照常执行。"""
+    stats_path = tmp_path / "stats.json"
+
+    class _ExplodingPipeline(ItemPipeline):
+        def close(self, spider: Spider) -> None:
+            raise RuntimeError("close boom")
+
+    spider = ItemSpider(fetcher=FakeFetcher(PAGES), stats_output=stats_path)
+    spider._item_pipelines = [_ExplodingPipeline()]
+    with caplog.at_level(logging.WARNING, logger="web_crawler.spider.spider"):
+        items = spider.run()
+    assert len(items) == 3
+    # close 失败未打断 finally 链：stats 导出仍完成
+    assert stats_path.exists()
+    assert any("pipeline close" in rec.getMessage() for rec in caplog.records)
 
 
 def test_stream_schedules_new_requests_while_slow_one_in_flight() -> None:

@@ -14,8 +14,9 @@
   random），空闲回收与失败淘汰。
 - :class:`Spider` / :class:`Request` — 回调驱动的 spider 框架，支持
   暂停/恢复、:class:`CacheMiddleware` 磁盘缓存（TTL / 离线回放）、
-  :class:`AutoThrottle` 自适应限速、robots ``Crawl-delay`` 遵守与
-  stats JSON/JSONL 导出。
+  :class:`AutoThrottle` 自适应限速、robots ``Crawl-delay`` 遵守、
+  stats JSON/JSONL 导出与 :class:`FeedExportPipeline` item 落盘导出
+  （JSON 快照 / JSONL 追加 / CSV，``feed_output=`` 便捷参数直达）。
 - :class:`WebCrawlerError` — 统一异常体系根（子类兼容
   ``ValueError`` / ``RuntimeError``），可用 ``except WebCrawlerError``
   一次捕获库自身的错误。
@@ -78,6 +79,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "DupeFilter": ("web_crawler.spider.spider", "DupeFilter"),
     "DownloaderMiddleware": ("web_crawler.spider.spider", "DownloaderMiddleware"),
     "DropItem": ("web_crawler.spider.spider", "DropItem"),
+    "FeedExportPipeline": ("web_crawler.spider.feed", "FeedExportPipeline"),
     "IgnoreRequest": ("web_crawler.spider.spider", "IgnoreRequest"),
     "ItemPipeline": ("web_crawler.spider.spider", "ItemPipeline"),
     "Request": ("web_crawler.spider.spider", "Request"),
@@ -135,6 +137,7 @@ __all__ = [
     "DupeFilter",
     "DynamicFetcher",
     "ExtractionResult",
+    "FeedExportPipeline",
     "FetchError",
     "Fetcher",
     # ai — JS 逆向 Agent 套件
@@ -243,6 +246,7 @@ if TYPE_CHECKING:
     from .response import Response
     from .spider.autothrottle import AutoThrottle
     from .spider.cache import CacheMiddleware
+    from .spider.feed import FeedExportPipeline
     from .spider.spider import (
         DownloaderMiddleware,
         DropItem,

@@ -46,6 +46,7 @@ plugins:
 
 markdown_extensions:
   - admonition
+  - attr_list
   - pymdownx.details
   - pymdownx.superfences
   - pymdownx.highlight:
@@ -56,6 +57,12 @@ markdown_extensions:
 
 nav:
   - 首页: index.md
+  - 快速开始: quickstart.md
+  - API 参考: api-reference.md
+  - 进阶指南:
+      - Spider 爬虫框架: guides/spider.md
+      - 隐身与网络: guides/stealth.md
+      - AI 能力: guides/ai.md
   - 架构说明: architecture.md
   - JS 逆向 Agent: reverse-agent.md
-  - API 参考: api-reference.md
+  - 更新日志: https://github.com/xiaomaozjj666/web-crawler/blob/master/CHANGELOG.md

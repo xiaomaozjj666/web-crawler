@@ -16,6 +16,7 @@ import hashlib
 import heapq
 import json
 import logging
+import random
 import time
 from collections import deque
 from collections.abc import AsyncIterator, Iterator
@@ -213,6 +214,14 @@ class Spider:
     download_delay: float = 0.0
     # 下载失败后的最大重试次数（指数退避）；0 表示不重试，保持旧行为
     max_retries: int = 0
+    # 触发 Spider 层重试的 HTTP 状态码（业务级失败：限流与网关错误）。
+    # 设为 set() 关闭状态码重试。重试语义分两层且独立生效：
+    # Fetch 层（fetcher.retries）重传输错误（连接失败/超时）并遵守
+    # Retry-After；Spider 层（max_retries + retry_http_status）对到达的
+    # 429/5xx 网关类响应做指数退避重试——fetcher.retries=0 时状态码
+    # 重试依然由本属性驱动。达到 max_retries 后 Response 放行交回调
+    # （计入 requests_failed）。
+    retry_http_status: set[int] = {429, 502, 503, 504}
     # 是否遵守目标站点 robots.txt（对回调产出的请求生效；拉取失败视为允许）
     respect_robots: bool = False
     # robots.txt 检查使用的 User-Agent（"*" 表示对所有 UA 的规则取并集的保守判定）
@@ -233,6 +242,7 @@ class Spider:
         dupefilter: DupeFilter | None = None,
         autothrottle: AutoThrottle | None = None,
         stats_output: str | Path | None = None,
+        feed_output: str | Path | None = None,
     ) -> None:
         # ``fetcher`` 允许延迟提供，spider 可先定义后绑定。
         self.fetcher = fetcher
@@ -252,6 +262,14 @@ class Spider:
         self._item_pipelines: list[ItemPipeline] = [
             pipe() if isinstance(pipe, type) else pipe for pipe in self.item_pipelines
         ]
+        # feed 导出便捷参数：非 None 时把 FeedExportPipeline 追加到管道
+        # 尾部（先经声明管道变换、最后落盘，对齐 Scrapy FEEDS 的挂载位）。
+        # 延迟导入避免 spider ←→ feed 循环依赖（feed 的 ItemPipeline 基类
+        # 在本模块）。None = 不挂载，行为与旧版逐字一致。
+        if feed_output is not None:
+            from .feed import FeedExportPipeline
+
+            self._item_pipelines.append(FeedExportPipeline(feed_output))
         self._robots_policy = RobotsPolicy(self.user_agent)
         self._domain_last_ts: dict[str, float] = {}
         self._domain_locks: dict[str, asyncio.Lock] = {}
@@ -566,8 +584,14 @@ class Spider:
         return queue
 
     def _retry_backoff(self, retries: int) -> float:
-        """第 ``retries`` 次重试前的指数退避秒数（0.5s 起步，封顶 8s）。"""
-        return min(0.5 * 2 ** (retries - 1), 8.0)
+        """第 ``retries`` 次重试前的指数退避秒数（0.5s 起步，封顶 8s）。
+
+        在退避基数上叠加 ``[0, 0.5)`` 全抖动（full jitter）：多实例 /
+        多 worker 同时进入退避时错开唤醒时刻，避免同步重试风暴放大
+        目标站点的瞬时压力。返回值域为 ``[基数, 基数 + 0.5)``。
+        """
+        base = min(0.5 * 2 ** (retries - 1), 8.0)
+        return base + random.uniform(0.0, 0.5)
 
     def _schedule_retry(
         self, request: Request, queue: list[tuple[int, int, Request]], exc: Exception
@@ -591,6 +615,24 @@ class Spider:
             self.max_retries,
         )
         return True
+
+    def _schedule_status_retry(
+        self, response: Response, request: Request, queue: list[tuple[int, int, Request]]
+    ) -> bool:
+        """响应状态命中 :attr:`retry_http_status` 时安排重试（返回 True）。
+
+        走与下载异常完全相同的重试路径（:meth:`_schedule_retry` 的
+        计数 / 入队 / 日志）。返回 False 有两种情形，调用方均放行
+        Response 交回调：状态未命中（正常响应），或命中但重试耗尽
+        （``requests_failed`` 已在调度时计数）。覆盖下载与中间件短路
+        两条来源的响应——任何即将交给回调的 Response 都受同一策略
+        约束，缓存短路命中旧 5xx 时也只是有限次重试后放行。
+        """
+        if not self.retry_http_status or response.status not in self.retry_http_status:
+            return False
+        return self._schedule_retry(
+            request, queue, SpiderError(f"HTTP {response.status} in retry_http_status")
+        )
 
     def _finalize_state(
         self,
@@ -640,6 +682,25 @@ class Spider:
                 )
         except OSError as exc:
             logger.warning("stats export to %s failed: %s", path, exc)
+
+    def _close_item_pipelines(self) -> None:
+        """运行结束时调用各 item 管道的 ``close(spider)`` 收尾钩子。
+
+        通用 ``getattr`` 探测：未实现 close 的管道（含 :class:`ItemPipeline`
+        基类及其全部存量子类）直接跳过，不要求升级既有管道。单个管道
+        收尾失败只记 warning（对齐 :meth:`_export_stats` 的"导出绝不
+        连累已抓数据"模式）：close 处于 run()/stream() 的 finally 链上，
+        异常穿透会打断后续收尾步骤（stats 导出），把可避免的收尾故障
+        放大成数据丢失。
+        """
+        for pipe in self._item_pipelines:
+            close = getattr(pipe, "close", None)
+            if not callable(close):
+                continue
+            try:
+                close(self)
+            except Exception as exc:
+                logger.warning("pipeline close() failed: %s", exc)
 
     # -- public API --------------------------------------------------------
     def pause(self) -> None:
@@ -717,6 +778,14 @@ class Spider:
                                 time.sleep(delay)
                         continue
                     self._note_throttle(request.url, time.monotonic() - fetch_started, response.ok)
+                # 命中 retry_http_status 的响应走与下载异常相同的重试路径
+                # （含退避睡眠）；重试耗尽则落到正常流程，Response 照常交
+                # 回调（requests_failed 已在调度时计数）
+                if self._schedule_status_retry(response, request, queue):
+                    delay = self._retry_backoff(request.retries)
+                    if delay:
+                        time.sleep(delay)
+                    continue
                 response = self._apply_response_middlewares(response, request)
 
                 self.stats.pages_crawled += 1
@@ -745,8 +814,10 @@ class Spider:
             if self.autothrottle is not None:
                 self.stats.autothrottle = self.autothrottle.stats()
             self._finalize_state(queue, path, manage_state, owns_state)
-            # 状态持久化优先于可观测性导出（前者防丢请求），导出自身
-            # 吞掉 OSError（见 _export_stats），不会让 finally 链断裂
+            # 收尾顺序：状态持久化（防丢请求）→ feed 数据落盘（运行的全部
+            # 产出）→ stats 可观测性导出。后两者各自吞掉收尾异常（见
+            # _close_item_pipelines / _export_stats），不会让 finally 链断裂
+            self._close_item_pipelines()
             self._export_stats()
         return items
 
@@ -845,6 +916,13 @@ class Spider:
                             await asyncio.sleep(delay)
                     return
                 self._note_throttle(request.url, time.monotonic() - fetch_started, response.ok)
+            # 与 run() 同源的状态码重试：命中则重新入队并退避（worker 内
+            # 自旋改为 return，让主循环统一调度）；耗尽则放行交回调
+            if self._schedule_status_retry(response, request, queue):
+                delay = self._retry_backoff(request.retries)
+                if delay:
+                    await asyncio.sleep(delay)
+                return
             response = self._apply_response_middlewares(response, request)
             self.stats.pages_crawled += 1
             if self.download_delay:
@@ -907,8 +985,10 @@ class Spider:
             if self.autothrottle is not None:
                 self.stats.autothrottle = self.autothrottle.stats()
             self._finalize_state(queue, path, manage_state, owns_state)
-            # 与 run() 同源：消费方提前 break（aclose）、回调异常或暂停
-            # 走到这里的每条路径都要完成 stats 导出
+            # 与 run() 同源：状态持久化 → feed 数据落盘 → stats 导出，
+            # 消费方提前 break（aclose）、回调异常或暂停走到这里的每条
+            # 路径都完成两级导出，且各自吞掉收尾异常
+            self._close_item_pipelines()
             self._export_stats()
 
 
