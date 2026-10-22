@@ -274,7 +274,14 @@ coords = solver.solve_click(image_bytes, prompt="按文字顺序点击")  # 点�
 
 ## 安装与运行
 
-> 注意：PyPI 上名为 `web-crawler` 的包已被其他项目占用（与本项目无关）。直接 `pip install web-crawler` 会装到错误的包。请使用以下源码安装方式，或先为发行版更名后再发布。
+> **发行版名与导入名**：PyPI 上 `web-crawler` 与 `webcrawler` 均已被无关项目占用，本项目以 **`stealth-web-crawler`** 为发行版名（`pip` 安装），导入名保持 `web_crawler` 不变——与 `beautifulsoup4`/`bs4` 同款惯例。发行版发布后即可：
+
+```bash
+pip install stealth-web-crawler            # 核心（解析 + Spider 框架）
+pip install "stealth-web-crawler[all]"     # + curl_cffi TLS 隐身 + Playwright JS 渲染
+```
+
+发布前的开发安装（源码方式）：
 
 ```bash
 python -m venv .venv

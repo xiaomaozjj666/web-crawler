@@ -1,0 +1,68 @@
+# PyPI 发行：tag（v*）触发构建与发布。
+#
+# 发行版名 stealth-web-crawler（导入名 web_crawler 不变，README 安装节
+# 有说明）；PyPI 上 web-crawler / webcrawler / stealth-crawler 均已被
+# 无关项目占用（2026-10 核实）。
+#
+# 发布前提（二选一，只需配置一次）：
+# 1. Trusted Publishing（推荐，无需 secret）：在 PyPI 的
+#    https://pypi.org/manage/account/publishing/ 登记 publisher——
+#    owner: xiaomaozjj666 / repository: web-crawler /
+#    workflow: pypi.yml / environment: 留空；
+#    首次发布前还需在 PyPI 注册 stealth-web-crawler 项目名
+#    （publisher 首次运行会自动创建，若项目名被抢注则需手动认领）。
+# 2. API Token：在仓库 Settings → Secrets → Actions 配置 PYPI_API_TOKEN
+#    （值为 pypi-AgEIcHl... 形式的 token），并删掉下方 permissions 段
+#    与 id-token: write，改用 password: ${{ secrets.PYPI_API_TOKEN }}。
+name: PyPI
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pypi-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install build twine
+      - name: Build sdist and wheel
+        run: python -m build
+      - name: Check metadata
+        run: twine check dist/*
+      - name: Upload distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: pypi
+    permissions:
+      # Trusted Publishing 所需的 OIDC 令牌
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+      # 使用 Trusted Publishing（无 secret）；若改用 API token 方案见文件头注释
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

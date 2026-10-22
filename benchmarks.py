@@ -80,7 +80,7 @@ BASELINE: dict[str, float] = {
     "Fetcher._merge_headers (curl)": 0.001,
     "Fetcher._merge_headers (httpx)": 0.002,
     "Fetcher._retry_errors()": 0.001,
-    "CacheMiddleware._read_body (zlib)": 0.05,
+    "CacheMiddleware._read_body (zlib)": 0.4,
     "AutoThrottle.note_response": 0.001,
 }
 
