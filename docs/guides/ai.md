@@ -34,7 +34,7 @@ from web_crawler import get_provider, register_provider, available_providers
 print(available_providers())
 # ['deepseek', 'openai', 'openai-compatible', 'qwen', ...]
 
-provider = get_provider()                      # 默认 DeepSeek / DeepSeek-V4.1-Flash
+provider = get_provider()  # 默认 DeepSeek / DeepSeek-V4.1-Flash
 provider = get_provider("deepseek", model="deepseek-flash")
 ```
 
@@ -43,12 +43,15 @@ provider = get_provider("deepseek", model="deepseek-flash")
 ```python
 from web_crawler import OpenAICompatibleProvider, register_provider
 
-register_provider("my-gateway", lambda **kw: OpenAICompatibleProvider(
-    base_url="https://llm.internal.example.com/v1",
-    model="my-model",
-    api_key_env="LLM_API_KEY",
-    **kw,
-))
+register_provider(
+    "my-gateway",
+    lambda **kw: OpenAICompatibleProvider(
+        base_url="https://llm.internal.example.com/v1",
+        model="my-model",
+        api_key_env="LLM_API_KEY",
+        **kw,
+    ),
+)
 
 provider = get_provider("my-gateway")
 ```
@@ -78,14 +81,14 @@ schema = {
     "availability": "库存状态文案",
 }
 
-extractor = AIExtractor()          # 默认 DeepSeek；也可传 provider=
+extractor = AIExtractor()  # 默认 DeepSeek；也可传 provider=
 resp = Fetcher(impersonate="chrome131").get("https://shop.example.com/item/42")
 
 result = extractor.extract(resp, schema)
-print(result.ok)                   # 全部字段命中时为 True
-print(result.data)                 # {"title": ..., "price": ...}
-print(result.selectors)            # {"title": "h1.product-name", ...}  可复用！
-print(result.missing)              # 仍未能解析的字段名
+print(result.ok)  # 全部字段命中时为 True
+print(result.data)  # {"title": ..., "price": ...}
+print(result.selectors)  # {"title": "h1.product-name", ...}  可复用！
+print(result.missing)  # 仍未能解析的字段名
 ```
 
 要点：
@@ -106,16 +109,19 @@ print(result.missing)              # 仍未能解析的字段名
 from web_crawler import AIScrapeAgent
 
 agent = AIScrapeAgent(
-    min_delay=1.0,          # 相邻请求最小间隔
-    respect_robots=True,    # 跳过 robots.txt 禁止的 URL（默认开）
-    max_retries=3,          # 429/503 指数退避重试，遵循 Retry-After
-    detect_blocks=True,     # 检测反爬/验证码墙 → 移交人工而非硬闯
+    min_delay=1.0,  # 相邻请求最小间隔
+    respect_robots=True,  # 跳过 robots.txt 禁止的 URL（默认开）
+    max_retries=3,  # 429/503 指数退避重试，遵循 Retry-After
+    detect_blocks=True,  # 检测反爬/验证码墙 → 移交人工而非硬闯
 )
 
-result = agent.scrape("https://example.com/product/42", {
-    "title": "商品标题",
-    "price": "售价",
-})
+result = agent.scrape(
+    "https://example.com/product/42",
+    {
+        "title": "商品标题",
+        "price": "售价",
+    },
+)
 
 if result.ok:
     print(result.data, result.selectors)
@@ -137,10 +143,10 @@ LLM Vision 依次降级：
 ```python
 from web_crawler import ImageCaptchaSolver
 
-solver = ImageCaptchaSolver()   # 传入支持 vision 的 provider 可解锁点选题
+solver = ImageCaptchaSolver()  # 传入支持 vision 的 provider 可解锁点选题
 
-text = solver.solve_text(image_bytes)                      # 文本 OCR（4-8 位）
-gap_x = solver.solve_slider(bg_bytes, puzzle_bytes)        # 滑块缺口 x 坐标
+text = solver.solve_text(image_bytes)  # 文本 OCR（4-8 位）
+gap_x = solver.solve_slider(bg_bytes, puzzle_bytes)  # 滑块缺口 x 坐标
 coords = solver.solve_click(image_bytes, prompt="按文字顺序点击")  # 点选坐标
 ```
 
@@ -171,8 +177,8 @@ config = ReverseAgentConfig(
     headless=True,
     target_params=["anti_content", "sign"],
     max_steps=20,
-    enable_checkpoint=True,      # 断点续跑
-    enable_screenshot=True,      # 每步截图
+    enable_checkpoint=True,  # 断点续跑
+    enable_screenshot=True,  # 每步截图
 )
 agent = ReverseAgent(config=config)
 result = agent.run("https://target.example.com", task="提取签名参数")

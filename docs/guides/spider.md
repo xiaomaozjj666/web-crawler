@@ -52,6 +52,7 @@ items = QuotesSpider(fetcher=Fetcher(impersonate="chrome131")).run()
 def parse(self, response):
     yield Request(detail_url, callback="parse_detail", meta={"source": response.url})
 
+
 def parse_detail(self, response):
     yield {"source": response.meta["source"], "title": response.css_first("h1").text}
 ```
@@ -85,7 +86,7 @@ spider = MySpider(fetcher=f, dupefilter=DiskDupeFilter("seen.txt"))
 
 ```python
 class RobustSpider(Spider):
-    max_retries = 2   # 下载失败后的最大重试次数（指数退避）；默认 0 不重试
+    max_retries = 2  # 下载失败后的最大重试次数（指数退避）；默认 0 不重试
 ```
 
 重试针对**下载失败**（网络错误、非 2xx 状态码），带指数退避；回调内抛出的
@@ -105,6 +106,7 @@ class RobustSpider(Spider):
 class SlowSpider(Spider):
     per_domain_delay = {"example.com": 1.0, "api.example.com": 0.5}
 
+
 # 自适应：站点变慢自动放慢、变快自动提速（对齐 Scrapy AutoThrottle 语义）
 from web_crawler import AutoThrottle
 
@@ -120,8 +122,8 @@ items = MySpider(fetcher=Fetcher(), autothrottle=throttle).run()
 
 ```python
 class PoliteSpider(Spider):
-    respect_robots = True     # 回调产出的请求先过 robots.txt（默认关闭）
-    user_agent = "my-bot"     # robots.txt 检查使用的 UA（"*" 取所有 UA 规则的保守并集）
+    respect_robots = True  # 回调产出的请求先过 robots.txt（默认关闭）
+    user_agent = "my-bot"  # robots.txt 检查使用的 UA（"*" 取所有 UA 规则的保守并集）
 ```
 
 行为细节：robots 拉取失败时保守视为允许（不让一次瞬时故障拦截整个爬取），
@@ -150,7 +152,7 @@ class BlockListMiddleware(DownloaderMiddleware):
 
 
 class MySpider(Spider):
-    middlewares = [BlockListMiddleware]   # 类或实例均可
+    middlewares = [BlockListMiddleware]  # 类或实例均可
 ```
 
 ### 内置缓存：CacheMiddleware
@@ -198,7 +200,7 @@ class CleanPipeline(ItemPipeline):
 
 
 class MySpider(Spider):
-    item_pipelines = [CleanPipeline]   # 类或实例均可，按声明顺序执行
+    item_pipelines = [CleanPipeline]  # 类或实例均可，按声明顺序执行
 ```
 
 ## 暂停与续跑
@@ -222,13 +224,14 @@ items = MySpider(fetcher=Fetcher()).run(state_file="state.json", resume=True)
 
 ```python
 spider = QuotesSpider(fetcher=Fetcher(impersonate="chrome131"), feed_output="quotes.jsonl")
-items = spider.run()   # item 逐条追加到 quotes.jsonl
+items = spider.run()  # item 逐条追加到 quotes.jsonl
 ```
 
 也可声明在 `item_pipelines` 上与其他管道串联（先变换、后落盘）：
 
 ```python
 from web_crawler import FeedExportPipeline
+
 
 class QuotesSpider(Spider):
     item_pipelines = [CleanPipeline, FeedExportPipeline("quotes.jsonl")]
@@ -251,6 +254,7 @@ class QuotesSpider(Spider):
 ```python
 from web_crawler import CrawlSpider, Rule, LinkExtractor
 
+
 class ArticleSpider(CrawlSpider):
     start_urls = ["https://blog.example.com/"]
     allowed_domains = ["blog.example.com"]
@@ -263,6 +267,7 @@ class ArticleSpider(CrawlSpider):
 
     def parse_article(self, response):
         return {"title": response.css_first("h1::text")}
+
 
 items = ArticleSpider(fetcher=Fetcher(impersonate="chrome131")).run()
 ```
@@ -302,7 +307,7 @@ import asyncio
 async def consume():
     spider = QuotesSpider(fetcher=Fetcher(impersonate="chrome131"))
     async for item in spider.stream():
-        print(item)   # 边爬边消费，不必等全部完成
+        print(item)  # 边爬边消费，不必等全部完成
 
 
 asyncio.run(consume())

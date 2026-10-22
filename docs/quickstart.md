@@ -65,8 +65,8 @@ fetcher，`.css()` / `.xpath()` / `.json()` 助手全都可用：
 for link in resp.css("a"):
     print(link.attr("href"))
 
-data = resp.json()          # JSON 响应直接解析
-abs_url = resp.urljoin("../about")   # 相对 URL 拼接
+data = resp.json()  # JSON 响应直接解析
+abs_url = resp.urljoin("../about")  # 相对 URL 拼接
 ```
 
 ## 解析：自适应选择器
@@ -123,9 +123,9 @@ print(f"共抓取 {len(items)} 条 quote")
 ```python
 class RobustSpider(Spider):
     start_urls = ["https://example.com/"]
-    max_retries = 2                    # 失败指数退避重试
-    per_domain_delay = {"example.com": 1.0}   # 同域最小间隔（秒）
-    respect_robots = True              # 回调产出的请求先过 robots.txt
+    max_retries = 2  # 失败指数退避重试
+    per_domain_delay = {"example.com": 1.0}  # 同域最小间隔（秒）
+    respect_robots = True  # 回调产出的请求先过 robots.txt
 ```
 
 ## 遇到 JS 重页面？
@@ -155,9 +155,9 @@ try:
     with Fetcher() as f:
         resp = f.get("https://example.com")
 except UnsafeTargetError as e:
-    print(f"目标不安全: {e}")   # 私网/环回/云元数据等
+    print(f"目标不安全: {e}")  # 私网/环回/云元数据等
 except FetchError as e:
-    print(f"抓取失败: {e}")     # 重定向超限/渲染失败等
+    print(f"抓取失败: {e}")  # 重定向超限/渲染失败等
 except WebCrawlerError as e:
     print(f"其他库错误: {e}")
 ```

@@ -62,8 +62,8 @@ from web_crawler import Fetcher, ProxyPool
 pool = ProxyPool(
     ["http://u:p@proxy1:8080", "http://proxy2:3128"],
     strategy="round_robin",
-    max_failures=3,    # 连续失败 3 次后进入冷却
-    cooldown=60,       # 冷却 60 秒后再放回轮换
+    max_failures=3,  # 连续失败 3 次后进入冷却
+    cooldown=60,  # 冷却 60 秒后再放回轮换
 )
 with Fetcher(proxy=pool, impersonate="chrome131") as f:
     resp = f.get("https://example.com")
