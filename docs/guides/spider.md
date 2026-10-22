@@ -242,31 +242,39 @@ class QuotesSpider(Spider):
 权限）只记 warning 不抛异常，item 照常通过管道；父目录不存在时自动逐级
 创建；未知后缀在构造时抛 `ConfigError`。
 
-## feed 导出：item 落盘
+## 规则跟随：LinkExtractor + CrawlSpider
 
-`stats_output` 落的是运行度量，`feed_output` 落的是业务数据本身。一行便捷
-参数即可把 item 导出为 JSON / JSONL / CSV（对标 Scrapy `FEEDS`）：
-
-```python
-spider = QuotesSpider(fetcher=Fetcher(), feed_output="quotes.jsonl")
-items = spider.run()   # item 逐条追加写入 quotes.jsonl
-```
-
-也可声明在 `item_pipelines` 上与其他管道串联（先变换、后落盘）：
+整站遍历不必在 `parse` 里手写 `css("a")` + `urljoin` + 去重样板——
+`LinkExtractor` 提取并过滤链接，`CrawlSpider` 用 `rules` 声明「哪些链接
+跟进、命中后交给哪个回调」（对标 Scrapy 同名概念）：
 
 ```python
-from web_crawler import FeedExportPipeline
+from web_crawler import CrawlSpider, Rule, LinkExtractor
 
+class ArticleSpider(CrawlSpider):
+    start_urls = ["https://blog.example.com/"]
+    allowed_domains = ["blog.example.com"]
+    rules = [
+        # 列表页与翻页：只跟进，不产 item
+        Rule(LinkExtractor(allow=(r"/posts/$", r"/page/\d+/"))),
+        # 文章详情页：提取 item；follow=False 不再从文章页继续提取
+        Rule(LinkExtractor(allow=(r"/posts/\d+/$")), callback="parse_article", follow=False),
+    ]
 
-class QuotesSpider(Spider):
-    item_pipelines = [CleanPipeline, FeedExportPipeline("quotes.jsonl")]
+    def parse_article(self, response):
+        return {"title": response.css_first("h1::text")}
+
+items = ArticleSpider(fetcher=Fetcher(impersonate="chrome131")).run()
 ```
 
-格式语义：`.json` 单次快照（覆盖写，空运行产出 `[]`）；`.jsonl` 逐条追加
-（`ensure_ascii=False`，多次运行天然聚合，适合断点续爬累积数据）；`.csv`
-首条 item 定列，缺失列补空串、多余列记 warning 丢弃。导出容错与统计导出
-同源——写盘失败（磁盘满 / 权限）只记 warning 不抛异常，绝不连累已抓数据；
-父目录自动逐级创建；未知后缀在构造时抛 `ConfigError`。
+`LinkExtractor` 的过滤参数：`allow` / `deny`（URL 正则白/黑名单，`re.search`
+语义，deny 优先）、`allow_domains` / `deny_domains`（后缀匹配，`example.com`
+命中 `sub.example.com`）、`unique`（按规范化 URL 去重保序）、`canonicalize`
+（查询参数排序 + 去 fragment）。跟随请求自动经过 Spider 基类的域过滤 /
+`DupeFilter` 去重 / robots 检查链路——环路（A→B→A）不会死循环。
+
+`CrawlSpider` 继承 `Spider` 全部能力（`feed_output` / `autothrottle` /
+`CacheMiddleware` / 暂停续跑等均可直接组合）。
 
 ## 统计导出
 

@@ -96,6 +96,14 @@ API；指纹引擎与存储独立成模块，可单独复用。
 
 ::: web_crawler.parser.visual.VisualExtractor
 
+`LinkExtractor` — 超链接提取与过滤（`allow`/`deny` 正则、域白/黑名单、
+去重保序、canonicalize），对标 Scrapy LinkExtractor；`Link` 是其产出的
+数据类（url / text / attrs）。
+
+::: web_crawler.parser.links.LinkExtractor
+
+::: web_crawler.parser.links.Link
+
 ## Spider 框架 {: #spider-framework }
 
 回调驱动的爬虫框架：优先级调度、域名过滤、指纹去重、失败重试、robots 遵守、
@@ -162,6 +170,14 @@ API；指纹引擎与存储独立成模块，可单独复用。
 `IgnoreRequest` / `DropItem` 的父类。
 
 ::: web_crawler.spider.spider.SpiderError
+
+`CrawlSpider` — 规则驱动的跟随爬虫（对标 Scrapy CrawlSpider）：`rules`
+声明 `Rule(link_extractor, callback, follow)` 即得递归遍历，跟随请求自动
+经基类域过滤 / 去重 / robots 链路。
+
+::: web_crawler.spider.crawl.CrawlSpider
+
+::: web_crawler.spider.crawl.Rule
 
 ## 异常体系 {: #exceptions }
 

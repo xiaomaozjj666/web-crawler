@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-10-22
 
 ### Added
 - **`SessionPool`**：池化 `curl_cffi` 会话并让 TLS 指纹随会话轮换
@@ -27,6 +27,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ImageCaptchaSolver`**：独立图片验证码求解器（不依赖浏览器），支持文本
   OCR / 滑块缺口定位 / 点选坐标识别，后端按 `ddddocr` → numpy 模板匹配 →
   LLM Vision 依次降级。
+- **`FeedExportPipeline` item 导出**：`Spider(feed_output=...)` 一行把抓取
+  结果落盘（`.json` 覆盖快照 / `.jsonl` 逐条追加（断点续爬天然聚合） /
+  `.csv` 首条定列），写盘失败绝不连累已抓数据；亦可作为 `ItemPipeline`
+  与自定义管道组合。
+- **`LinkExtractor` + `CrawlSpider`**：对标 Scrapy 的链接提取与规则跟随
+  爬虫——`LinkExtractor` 支持 `allow`/`deny` 正则、域白/黑名单（后缀匹配）、
+  `unique` 去重保序与 `canonicalize`（查询参数排序 + 去 fragment）；
+  `CrawlSpider.rules` 声明 `Rule(link_extractor, callback, follow)` 即得
+  递归遍历，跟随请求自动经基类域过滤 / 去重 / robots 链路。
+- **Spider 重试补强**：`retry_http_status` 类属性（默认 `{429, 502, 503,
+  504}`）让命中状态的响应走 Spider 层重试（与 `fetcher.retries` 的传输层
+  重试两层独立生效）；重试退避加全抖动 jitter（防多实例同步重试风暴）。
+- **文档站扩容**：API 参考覆盖全部公共符号（按 8 组分类），新增快速开始
+  与进阶指南（Spider 深度 / 隐身与网络 / AI 能力）三页。
 
 ### Changed
 - **默认模型改为 `deepseek-flash`（DeepSeek-V4.1-Flash）**：`ai/llm.py` 的
@@ -38,63 +52,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `deepseek-flash` 或 `deepseek-v4-pro`（2026-10-15 真实调用实测返回
   `model = deepseek-flash`）。需要旧行为的用户可显式传
   `model="deepseek-v4-pro"`。
-
-### Fixed
-- **SSRF：恢复库级 fetcher 的 DNS 解析复查默认开启**：`Fetcher`/`DynamicFetcher`/
-  `StealthyFetcher`/`CamoufoxFetcher` 构造参数 `resolve_hosts` 默认值由 `False`
-  恢复为基类声明的安全默认 `True`（与文档"库层默认开启"一致）——原默认下
-  攻击者把自己的域名解析到 `169.254.169.254` 即可绕过静态检查直连云元数据，
-  无需任何重绑定技巧。可选依赖用户如确需关闭，可显式传 `resolve_hosts=False`。
-- **SSRF：非点分 IPv4 字面量归一化**：`is_private_ip` 现识别 inet_aton 兼容
-  写法（`2130706433`/`127.1`/`0177.0.0.1`/`0x7f000001`）——Linux glibc 与
-  libcurl 会把这些形式解析到对应 IPv4 地址，此前静态检查全部放行。
-- **SSRF：httpx 兜底路径连接层 DNS 钉扎（TOCTOU 根治）**：新增
-  `fetchers/_pin.py`，发送前自行解析并把 URL host 替换为已逐一校验的 IP，
-  配合 httpcore `sni_hostname` 扩展保持 SNI/证书校验仍针对原始主机名——
-  门禁校验的地址即连接的地址，check-then-connect 窗口归零。显式/环境代理
-  路径自动跳过（解析由代理完成）。curl_cffi 主路径因上游未暴露按请求的
-  `CURLOPT_RESOLVE` 暂无法钉扎，维持入口复查 + 短缓存缓解（边界已写入
-  SECURITY.md）。
-- **SSRF：MCP 浏览器捕获出口过滤**：`capture_network_requests` 对捕获记录
-  做二次 host 校验（`_filter_private_egress`，按 host 缓存解析判定）——
-  页面自驱动的请求指向非公网目标时记录整体打码并计数上报，不再回传内网
-  响应内容；门禁只覆盖初始 URL 的边界已在工具文档与 SECURITY.md 声明。
-- **httpx 兜底路径 brotli 解码错误**：仿真默认请求头广告了 `br`，但 httpx
-  未装 brotli 包时收到 brotli body 无法解码（实测复现）；现按运行时实际
-  可解压的编码收缩 `Accept-Encoding`（curl 路径原生支持不受影响）。
-- **种子 URL 被静默丢弃**：`normalize_url` 拒绝不合法/内网种子 URL 时补
-  warning 日志（含 Power Mode 提示）——此前只返回空串，日志仅见
-  "no resources found"，无从排查。
-- **pentest：HeaderChecker 重定向逐跳 SSRF 校验**：安全头检测关闭传输层自动
-  重定向，改为手动逐跳跟随并对每跳重做 host 检查（私网/环回/链路本地拒绝），
-  防止已授权公网目标 302 到内网/云元数据、把内网响应头带回报告；
-  `allow_private_hosts=True` 可显式放行（与 fetcher 同名选项语义一致）。
-- **pentest：目标 scheme 白名单**：`pentest_recon` 的 target 解析层拒绝
-  `file://`/`ftp://` 等非 http(s) scheme（纵深防御，与 fetcher 入口对齐）。
-- **`CurlResolvePinner` 并发竞态**：`entries_for` 原把「LRU 维护」与「快照构造」
-  放在两个独立临界区，中间的空隙足以让并发线程把本次 host 淘汰出去 ⇒ 返回的
-  快照缺调用方自己的 `CURLOPT_RESOLVE` 条目，SSRF DNS rebinding 的 TOCTOU
-  窗口重新打开。改为在单个临界区内完成（A/B 压测：旧实现 6 轮里有 1 轮出现
-  55 次快照缺失，修复后 0 次）。
-- **异步 reverse agent 的验证码探测全程失效**：`_observe_async` 调的是同步的
-  `CaptchaDetector.detect()`，而异步 page 的 `query_selector()` 返回协程，
-  随后 `el.get_attribute(...)` 必抛 `AttributeError`，每步 observe 都失败。
-  新增 `detect_async` 及四个 `_detect_*_async` 分支（语义与同步版逐条对应）。
-- **`robots.txt` 的 `Crawl-delay` 跨 Python 版本不一致**：标准库自 3.13 起把
-  「多个同名组」的选择由「首个」改成「末个」（同一份文件 3.12 得 5、3.13 得 9），
-  节流值随解释器漂移。改为本模块自行扫描原文判定。
-- **Windows 上缓存原子替换的并发共享冲突**：`os.replace` 并发替换同一目标会
-  抛 `PermissionError [WinError 5]`，原 5 次≈10 ms 的递增退避在密集争用下会被
-  打穿。加模块级 `_REPLACE_LOCK`，只串行化 `os.replace` 这一步（写临时文件仍在
-  锁外），CI 的 Windows 矩阵由稳定失败转为通过。
-- **Hook 注入失败不再静默**：`context.add_init_script()` 的异常原被
-  `except Exception: pass` 完全吞掉，而注入失败的症状与「页面确实没发请求」
-  一模一样。改为 `logger.warning` 并补上该模块缺失的模块级 logger；同时在
-  `hooks.py` 记录实测限制 —— camoufox（Playwright-Firefox）的 init script
-  晚于文档自身脚本生效，只保证捕获安装**之后**发出的请求，两条 e2e 据此标记
-  为 `xfail` 并写明原因。
-
-### Changed
 - **sync/async 镜像代码去重（第一批）**：spider 的 run()/stream() 抽出共享
   的 `_bootstrap_queue`/`_schedule_retry`/`_retry_backoff`/`_finalize_state`
   （队列引导、重试入队与退避公式、状态文件收尾双路径同源，消除改一边漏
@@ -202,6 +159,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   （right=471）现可见并支持 Esc/点遮罩关闭、状态徽标对比度由 2.78–3.10:1
   提到 5.32–6.03:1（WCAG AA）、补 `:focus-visible` 与页签 tab 语义、
   修 2 个重复 id。
+
+### Fixed
+- **SSRF：恢复库级 fetcher 的 DNS 解析复查默认开启**：`Fetcher`/`DynamicFetcher`/
+  `StealthyFetcher`/`CamoufoxFetcher` 构造参数 `resolve_hosts` 默认值由 `False`
+  恢复为基类声明的安全默认 `True`（与文档"库层默认开启"一致）——原默认下
+  攻击者把自己的域名解析到 `169.254.169.254` 即可绕过静态检查直连云元数据，
+  无需任何重绑定技巧。可选依赖用户如确需关闭，可显式传 `resolve_hosts=False`。
+- **SSRF：非点分 IPv4 字面量归一化**：`is_private_ip` 现识别 inet_aton 兼容
+  写法（`2130706433`/`127.1`/`0177.0.0.1`/`0x7f000001`）——Linux glibc 与
+  libcurl 会把这些形式解析到对应 IPv4 地址，此前静态检查全部放行。
+- **SSRF：httpx 兜底路径连接层 DNS 钉扎（TOCTOU 根治）**：新增
+  `fetchers/_pin.py`，发送前自行解析并把 URL host 替换为已逐一校验的 IP，
+  配合 httpcore `sni_hostname` 扩展保持 SNI/证书校验仍针对原始主机名——
+  门禁校验的地址即连接的地址，check-then-connect 窗口归零。显式/环境代理
+  路径自动跳过（解析由代理完成）。curl_cffi 主路径因上游未暴露按请求的
+  `CURLOPT_RESOLVE` 暂无法钉扎，维持入口复查 + 短缓存缓解（边界已写入
+  SECURITY.md）。
+- **SSRF：MCP 浏览器捕获出口过滤**：`capture_network_requests` 对捕获记录
+  做二次 host 校验（`_filter_private_egress`，按 host 缓存解析判定）——
+  页面自驱动的请求指向非公网目标时记录整体打码并计数上报，不再回传内网
+  响应内容；门禁只覆盖初始 URL 的边界已在工具文档与 SECURITY.md 声明。
+- **httpx 兜底路径 brotli 解码错误**：仿真默认请求头广告了 `br`，但 httpx
+  未装 brotli 包时收到 brotli body 无法解码（实测复现）；现按运行时实际
+  可解压的编码收缩 `Accept-Encoding`（curl 路径原生支持不受影响）。
+- **种子 URL 被静默丢弃**：`normalize_url` 拒绝不合法/内网种子 URL 时补
+  warning 日志（含 Power Mode 提示）——此前只返回空串，日志仅见
+  "no resources found"，无从排查。
+- **pentest：HeaderChecker 重定向逐跳 SSRF 校验**：安全头检测关闭传输层自动
+  重定向，改为手动逐跳跟随并对每跳重做 host 检查（私网/环回/链路本地拒绝），
+  防止已授权公网目标 302 到内网/云元数据、把内网响应头带回报告；
+  `allow_private_hosts=True` 可显式放行（与 fetcher 同名选项语义一致）。
+- **pentest：目标 scheme 白名单**：`pentest_recon` 的 target 解析层拒绝
+  `file://`/`ftp://` 等非 http(s) scheme（纵深防御，与 fetcher 入口对齐）。
+- **`CurlResolvePinner` 并发竞态**：`entries_for` 原把「LRU 维护」与「快照构造」
+  放在两个独立临界区，中间的空隙足以让并发线程把本次 host 淘汰出去 ⇒ 返回的
+  快照缺调用方自己的 `CURLOPT_RESOLVE` 条目，SSRF DNS rebinding 的 TOCTOU
+  窗口重新打开。改为在单个临界区内完成（A/B 压测：旧实现 6 轮里有 1 轮出现
+  55 次快照缺失，修复后 0 次）。
+- **异步 reverse agent 的验证码探测全程失效**：`_observe_async` 调的是同步的
+  `CaptchaDetector.detect()`，而异步 page 的 `query_selector()` 返回协程，
+  随后 `el.get_attribute(...)` 必抛 `AttributeError`，每步 observe 都失败。
+  新增 `detect_async` 及四个 `_detect_*_async` 分支（语义与同步版逐条对应）。
+- **`robots.txt` 的 `Crawl-delay` 跨 Python 版本不一致**：标准库自 3.13 起把
+  「多个同名组」的选择由「首个」改成「末个」（同一份文件 3.12 得 5、3.13 得 9），
+  节流值随解释器漂移。改为本模块自行扫描原文判定。
+- **Windows 上缓存原子替换的并发共享冲突**：`os.replace` 并发替换同一目标会
+  抛 `PermissionError [WinError 5]`，原 5 次≈10 ms 的递增退避在密集争用下会被
+  打穿。加模块级 `_REPLACE_LOCK`，只串行化 `os.replace` 这一步（写临时文件仍在
+  锁外），CI 的 Windows 矩阵由稳定失败转为通过。
+- **Hook 注入失败不再静默**：`context.add_init_script()` 的异常原被
+  `except Exception: pass` 完全吞掉，而注入失败的症状与「页面确实没发请求」
+  一模一样。改为 `logger.warning` 并补上该模块缺失的模块级 logger；同时在
+  `hooks.py` 记录实测限制 —— camoufox（Playwright-Firefox）的 init script
+  晚于文档自身脚本生效，只保证捕获安装**之后**发出的请求，两条 e2e 据此标记
+  为 `xfail` 并写明原因。
 
 ### Removed
 - **根目录本地草稿文件（19 个）**：`_dump_*.txt` / `_d_test_*.txt` /

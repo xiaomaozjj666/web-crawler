@@ -57,7 +57,7 @@ flowchart TB
 - **反爬处理** — `StealthyFetcher` 注入指纹补丁 JS、人类化鼠标/滚动轨迹，并对 Cloudflare 挑战做尽力而为的处理。
 - **代理轮换** — `ProxyPool` 支持轮询/随机策略与按代理失败次数冷却。
 - **会话池** — `SessionPool` 池化 `curl_cffi` 会话并让 TLS 指纹随会话轮换（round_robin / random），带 LIFO 复用、池上限与临时超额、空闲回收、连续失败淘汰与预热；`Fetcher(session_pool=...)` 一行接入，DNS 钉扎在池化会话上同样生效。
-- **Spider 框架** — `Spider` / `Request` 提供回调分发、优先级调度、域名过滤、指纹去重（method+url+body，`DupeFilter` 可插拔）、失败重试（指数退避）、可选 `robots.txt` 遵守（含 `Crawl-delay` 遵守与三源延迟取最保守者）与基于 JSON 的暂停/续跑；`CacheMiddleware` 提供 GET 响应磁盘缓存（TTL、离线回放、可调存储目录），`AutoThrottle` 基于 EMA 响应延迟做自适应限速（对齐 Scrapy 语义），运行统计可经 `stats_output` 导出 JSON / JSONL（多次运行聚合分析）。
+- **Spider 框架** — `Spider` / `Request` 提供回调分发、优先级调度、域名过滤、指纹去重（method+url+body，`DupeFilter` 可插拔）、失败重试（指数退避 + jitter 抖动，`retry_http_status` 响应级业务重试与 `fetcher.retries` 传输层重试两层独立）、可选 `robots.txt` 遵守（含 `Crawl-delay` 遵守与三源延迟取最保守者）与基于 JSON 的暂停/续跑；`CacheMiddleware` 提供 GET 响应磁盘缓存（TTL、离线回放、可调存储目录），`AutoThrottle` 基于 EMA 响应延迟做自适应限速（对齐 Scrapy 语义），运行统计可经 `stats_output` 导出 JSON / JSONL（多次运行聚合分析），`feed_output` 一行把抓取结果落盘（JSON 快照 / JSONL 追加 / CSV）；`LinkExtractor`（allow/deny 正则、域白/黑名单、去重保序、URL 规范化）+ `CrawlSpider`（`rules` 规则引擎递归跟随遍历，对标 Scrapy 同名概念）。
 - **统一异常体系** — 以 `WebCrawlerError` 为根的异常族（`UnsafeTargetError` / `FetchError` / `ParseError` / `ConfigError` / `InvalidStateError` / `AIProviderError`）：`except WebCrawlerError` 一次捕获库自身的错误，与环境错误精确区分；每个子类同时继承 `ValueError` / `RuntimeError`，既有捕获代码零破坏。
 - **统一 `Response`** — 所有 fetcher 返回同一 `Response` 对象，内置 `.css()` / `.xpath()` / `.json()` / `urljoin()` 辅助方法。
 - **AI 辅助抓取** — `AIExtractor` 把自然语言字段描述转换为校验过的 CSS 选择器（含自愈能力）；`AIScrapeAgent` 编排抓取与抽取，遵守 `robots.txt`，对 429/503 退避（遵循 `Retry-After`），遇到卡死会返回"转人工处理"。
