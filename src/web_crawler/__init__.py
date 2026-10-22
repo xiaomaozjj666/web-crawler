@@ -15,8 +15,10 @@
 - :class:`Spider` / :class:`Request` — 回调驱动的 spider 框架，支持
   暂停/恢复、:class:`CacheMiddleware` 磁盘缓存（TTL / 离线回放）、
   :class:`AutoThrottle` 自适应限速、robots ``Crawl-delay`` 遵守、
-  stats JSON/JSONL 导出与 :class:`FeedExportPipeline` item 落盘导出
-  （JSON 快照 / JSONL 追加 / CSV，``feed_output=`` 便捷参数直达）。
+  stats JSON/JSONL 导出、:class:`FeedExportPipeline` item 落盘导出
+  （JSON 快照 / JSONL 追加 / CSV，``feed_output=`` 便捷参数直达）与
+  :class:`ValidationPipeline` item 校验管道（pydantic 模型或零依赖
+  dict schema，失败丢弃并计数 ``items_dropped``）。
 - :class:`LinkExtractor` / :class:`Link` — Scrapy 风格的链接提取与过滤
   （allow/deny 正则、域白/黑名单、规范化去重）。
 - :class:`CrawlSpider` / :class:`Rule` — 规则驱动的跟随爬虫（对标
@@ -96,6 +98,8 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "Spider": ("web_crawler.spider.spider", "Spider"),
     "SpiderError": ("web_crawler.spider.spider", "SpiderError"),
     "SpiderStats": ("web_crawler.spider.spider", "SpiderStats"),
+    # spider / item 校验管道
+    "ValidationPipeline": ("web_crawler.spider.validation", "ValidationPipeline"),
     # spider / 规则驱动跟随爬虫
     "CrawlSpider": ("web_crawler.spider.crawl", "CrawlSpider"),
     "Rule": ("web_crawler.spider.crawl", "Rule"),
@@ -192,6 +196,8 @@ __all__ = [
     "SpiderStats",
     "StealthyFetcher",
     "UnsafeTargetError",
+    # spider / item 校验管道
+    "ValidationPipeline",
     # 可视化提取（PixelRAG 风格）
     "VisualExtractor",
     "WebCrawlerError",
@@ -281,5 +287,6 @@ if TYPE_CHECKING:
         SpiderError,
         SpiderStats,
     )
+    from .spider.validation import ValidationPipeline
 
     Adaptor = Selector

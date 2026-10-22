@@ -140,6 +140,11 @@ class SpiderStats:
     requests_scheduled: int = 0
     requests_failed: int = 0
     requests_ignored: int = 0
+    # item 管道抛 DropItem 丢弃的条数（ValidationPipeline 等校验管道的
+    # 丢弃汇入此处，与 items_scraped 互补）。as_dict 条件导出：丢弃 > 0
+    # 时才出现该键——默认无丢弃路径的输出与旧版逐字一致（与上方
+    # autothrottle 快照同款「键按需出现」惯例）
+    items_dropped: int = 0
     start_time: float = 0.0
     end_time: float = 0.0
     # 运行结束时的 autothrottle 快照（未开启时保持 None，as_dict 不透出
@@ -164,6 +169,8 @@ class SpiderStats:
         }
         if self.autothrottle is not None:
             d["autothrottle"] = self.autothrottle
+        if self.items_dropped:
+            d["items_dropped"] = self.items_dropped
         return d
 
 
@@ -506,6 +513,9 @@ class Spider:
             try:
                 item = pipe.process_item(item, self)
             except DropItem:
+                # 丢弃计数与 items_scraped 互补（对齐 requests_ignored 的
+                # 计数位）：item 不进结果，但在运行统计中可见
+                self.stats.items_dropped += 1
                 return None
             if item is None:
                 return None

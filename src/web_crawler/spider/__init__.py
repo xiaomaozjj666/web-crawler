@@ -35,6 +35,7 @@ from .spider import (
     SpiderError,
     SpiderStats,
 )
+from .validation import ValidationPipeline
 
 __all__ = [
     "AutoThrottle",
@@ -52,4 +53,5 @@ __all__ = [
     "Spider",
     "SpiderError",
     "SpiderStats",
+    "ValidationPipeline",
 ]

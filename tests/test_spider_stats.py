@@ -693,3 +693,15 @@ def test_stats_counters_after_run() -> None:
     assert spider.stats.requests_scheduled == 2
     assert spider.stats.requests_failed == 0
     assert spider.stats.requests_ignored == 0
+
+
+def test_stats_as_dict_items_dropped_conditional() -> None:
+    """items_dropped 条件导出：无丢弃时键不出现（与旧版逐字一致），
+    有丢弃时透出计数（与 autothrottle 快照同款「键按需出现」惯例）。"""
+    spider = _export_spider(None)
+    spider.run()
+    assert "items_dropped" not in spider.stats.as_dict()
+
+    spider2 = _export_spider(None)
+    spider2.stats.items_dropped = 3
+    assert spider2.stats.as_dict()["items_dropped"] == 3
