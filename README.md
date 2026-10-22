@@ -274,14 +274,14 @@ coords = solver.solve_click(image_bytes, prompt="按文字顺序点击")  # 点�
 
 ## 安装与运行
 
-> **发行版名与导入名**：PyPI 上 `web-crawler` 与 `webcrawler` 均已被无关项目占用，本项目以 **`stealth-web-crawler`** 为发行版名（`pip` 安装），导入名保持 `web_crawler` 不变——与 `beautifulsoup4`/`bs4` 同款惯例。发行版发布后即可：
+> **发行版名与导入名**：PyPI 上 `web-crawler` 与 `webcrawler` 均已被无关项目占用，本项目以 **`stealth-web-crawler`** 为发行版名（已发布到 [PyPI](https://pypi.org/project/stealth-web-crawler/)），导入名保持 `web_crawler` 不变——与 `beautifulsoup4`/`bs4` 同款惯例。安装：
 
 ```bash
 pip install stealth-web-crawler            # 核心（解析 + Spider 框架）
 pip install "stealth-web-crawler[all]"     # + curl_cffi TLS 隐身 + Playwright JS 渲染
 ```
 
-发布前的开发安装（源码方式）：
+开发安装（源码方式）：
 
 ```bash
 python -m venv .venv
