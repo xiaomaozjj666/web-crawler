@@ -1,10 +1,15 @@
-"""crawler 基础层:日志挂钩、AES/分段密钥、opener、stealth 下载与 fetch。
+"""crawler 基础层:日志挂钩、AES/分段密钥、库级 Fetcher 桥接与 fetch。
 
 从 ``crawler.py`` 下沉的底层能力;阶段子模块(:mod:`_crawler_discovery` /
 :mod:`_crawler_download` / :mod:`_crawler_scan` / :mod:`_crawler_post`)与编排层
 (:mod:`crawler`)统一从本模块按属性访问(``cr.fetch(...)``),保证对
-``_crawler_core`` 全局名(fetch / should_stop / HAS_AES / _get_opener 等)的
+``_crawler_core`` 全局名(fetch / should_stop / HAS_AES / _get_app_fetcher 等)的
 patch 对全部阶段生效。
+
+网络传输已整体下沉到库级 :class:`web_crawler.fetchers.Fetcher`(curl_cffi
+TLS 指纹主路径 + httpx 兜底):本模块只保留应用层横切关注点——SSRF 入口
+校验、请求头基底、域级限速、429 退避与暂停/取消钩子;流式断点续传、
+重试退避、代理、会话池与 DNS 钉扎全部由库层请求管线承担。
 """
 
 from __future__ import annotations
@@ -16,25 +21,13 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin, urlparse
-from urllib.request import (
-    HTTPHandler,
-    HTTPSHandler,
-    OpenerDirector,
-    ProxyHandler,
-    Request,
-    build_opener,
-)
+
+from httpx import HTTPError as _HttpxTransportError
 
 from web_crawler._ssrf import is_power_mode, validate_url_host
 from web_crawler.app._crawler_context import DEFAULT_USER_AGENT
-from web_crawler.app.crawler_net import (
-    DomainRateLimiter,
-    SafeRedirectHandler,
-    _is_safe_hostname,
-)
-from web_crawler.exceptions import FetchError, UnsafeTargetError
+from web_crawler.app.crawler_net import DomainRateLimiter
+from web_crawler.exceptions import FetchError
 
 _log = logging.getLogger("crawler")
 
@@ -94,42 +87,14 @@ def get_segment_key(url: str) -> tuple[bytes, bytes] | None:
         return _segment_keys.get(url)
 
 
-# ── HTTP opener（连接复用）──────────────────────────────────────────
+# ── HTTP 网络层（库级 Fetcher 桥接）──────────────────────────────────
 
-# opener 按代理 URL 缓存（"" 表示直连）：同一代理的请求复用连接池与
-# TLS 会话。原实现代理路径每次调用都 build_opener——重定向的每一跳、
-# 每次重试都全新握手，挂代理抓取的吞吐显著下降。进程内代理数量很少，
-# dict 无界增长的风险可忽略。
-_openers: dict[str, OpenerDirector] = {}
-_openers_lock = threading.Lock()
-
-# 重定向最大跳数（与 urllib 默认一致），防止无限跳转
+# 重定向最大跳数（与历史 urllib 行为一致），传给库级 Fetcher 的 max_redirects；
+# 每一跳由库层重新校验目标 scheme + host（SSRF 防护）。
 _MAX_REDIRECTS = 10
 
 
-def _get_opener(proxy: str | None = None) -> OpenerDirector:
-    key = proxy or ""
-    with _openers_lock:
-        cached = _openers.get(key)
-        if cached is not None:
-            return cached
-        handlers: list[Any] = [SafeRedirectHandler(), HTTPSHandler(), HTTPHandler()]
-        if proxy:
-            handlers.append(ProxyHandler({"http": proxy, "https": proxy}))
-        opener = build_opener(*handlers)
-        _openers[key] = opener
-        return opener
-
-
-# ── 隐身 fetcher 桥接（复用 src/web_crawler 库）─────────────────────────
-#
-# 设置 ``--stealth`` 后，不需要流式断点续传的页面/资源抓取会改走
-# ``web_crawler.fetchers.Fetcher``（curl_cffi TLS 指纹伪装），让请求在
-# 网络层与真实浏览器无法区分，破解拦截普通 urllib 的 JA3/JA4 指纹检测。
-# 大文件/可续传下载仍走原有流式路径。
-
-
-def _import_stealth_fetcher() -> Any:
+def _import_lib_fetcher() -> Any:
     """延迟导入库级 ``Fetcher``；不可用时返回 None。"""
     try:
         from web_crawler import Fetcher  # type: ignore[import-not-found]
@@ -144,238 +109,65 @@ def _import_stealth_fetcher() -> Any:
             from web_crawler import Fetcher  # type: ignore[import-not-found]
         except ImportError:
             _log.warning(
-                "stealth mode requested but web_crawler.Fetcher is not importable; "
-                "falling back to urllib. Install the library or run with PYTHONPATH=src."
+                "web_crawler.Fetcher is not importable; install the library or run "
+                "with PYTHONPATH=src."
             )
             return None
     return Fetcher
 
 
-# 模块级隐身 fetcher 缓存：同一任务内的多次请求复用 curl_cffi 的 TLS 会话，
-# 而不是每次调用重建。
-_stealth_fetcher: Any = None
-_stealth_fetcher_key: tuple[str, str | None, str] = ("", None, "")
+# 应用 fetcher 按线程缓存：下载/抓取跑在 ThreadPoolExecutor 里，同一
+# fetcher 的 curl 会话不可跨线程并发使用（有状态资源）；threading.local
+# 让每个 worker 线程持有独立会话，线程结束时随 local 存储一起回收。
+# 键为 (impersonate, proxy, timeout)：任一变化即换新实例。
+_fetchers_local = threading.local()
 
 
-def _get_stealth_fetcher(
-    impersonate: str,
+def _get_app_fetcher(
+    impersonate: str | None,
     timeout: float,
     proxy: str | None,
 ) -> Any:
-    """返回与 *impersonate*/*timeout*/*proxy* 匹配的缓存 :class:`Fetcher`。
+    """返回与 *impersonate*/*timeout*/*proxy* 匹配的线程本地库级 ``Fetcher``。
 
-    返回对象支持 ``get(url, headers=…)``，可在会话伪装默认值之上叠加
-    每次请求单独传入的 headers。
+    ``impersonate=None``（默认抓取路径）不做 TLS 指纹伪装——User-Agent
+    语义与历史 urllib 路径一致；``--stealth`` 时传入目标指纹走 curl_cffi
+    伪装。``retries=0``：应用层 fetch() 自持重试循环（429 退避 / 域级
+    限速自适应在应用层），库层不做内建重试。
     """
-    global _stealth_fetcher, _stealth_fetcher_key
+    cache: dict[tuple[str | None, str | None, str], Any] | None = getattr(
+        _fetchers_local, "cache", None
+    )
+    if cache is None:
+        cache = {}
+        _fetchers_local.cache = cache
     key = (impersonate, proxy, str(timeout))
-    if _stealth_fetcher is not None and _stealth_fetcher_key == key:
-        return _stealth_fetcher
-    if _stealth_fetcher is not None:
-        try:
-            _stealth_fetcher.close()
-        except Exception:
-            pass
-    Fetcher_cls = _import_stealth_fetcher()
-    if Fetcher_cls is None:
-        raise FetchError("stealth fetcher unavailable")
-    _stealth_fetcher = Fetcher_cls(
+    if key in cache:
+        return cache[key]
+    fetcher_cls = _import_lib_fetcher()
+    if fetcher_cls is None:
+        raise FetchError("web_crawler.Fetcher unavailable; install the library")
+    cache[key] = fetcher_cls(
         impersonate=impersonate,
         timeout=float(timeout),
         proxy=proxy,
         retries=0,
-        follow_redirects=False,  # 重定向由 _stealth_fetch 手动跟随并逐跳校验（防 SSRF）
+        follow_redirects=True,  # 库层手动逐跳跟随并校验（scheme + host，防 SSRF）
+        max_redirects=_MAX_REDIRECTS,
     )
-    _stealth_fetcher_key = key
-    return _stealth_fetcher
+    return cache[key]
 
 
-def _stealth_fetch(
-    url: str,
-    headers: dict[str, str],
-    timeout: int,
-    proxy: str | None,
-    impersonate: str,
-    max_bytes: int | None = None,
-) -> tuple[bytes, str, int]:
-    """通过 curl_cffi TLS 指纹伪装 GET ``url``。
-
-    返回 ``(content, content_type, status)``；传输错误会抛异常，
-    由调用方的重试循环统一处理。
-
-    底层 ``Fetcher``（TLS 会话）缓存于模块级，重复隐身请求复用同一连接池。
-
-    注：curl_cffi 会话默认整包缓冲,无法真正按块计数;这里用 Content-Length
-    做预检（超过 max_bytes 直接拒绝,不等整包缓冲完成）,实际长度由调用方
-    在返回后再校验一次兜底。
-    """
-    fetcher = _get_stealth_fetcher(impersonate, float(timeout), proxy)
-    # 手动跟随重定向并逐跳校验目标（fetcher 以 follow_redirects=False 构造）
-    current_url = url
-    for _hop in range(_MAX_REDIRECTS + 1):
-        resp = fetcher.get(current_url, headers=headers)
-        status = int(resp.status)
-        if status in (301, 302, 303, 307, 308):
-            location = resp.headers.get("location") or resp.headers.get("Location")
-            if not location:
-                break
-            next_url = urljoin(current_url, location.strip())
-            parsed = urlparse(next_url)
-            if parsed.scheme not in {"http", "https"} or not _is_safe_hostname(parsed.hostname):
-                raise UnsafeTargetError(f"blocked redirect to unsafe URL: {next_url}")
-            current_url = next_url
-            continue
-        # Content-Length 预检：明显超限直接拒绝,避免整包缓冲后才失败
-        if max_bytes:
-            content_length = resp.headers.get("content-length") or resp.headers.get(
-                "Content-Length"
-            )
-            if content_length:
-                try:
-                    declared = int(content_length)
-                except ValueError:
-                    declared = None  # 非数字 Content-Length 忽略,由调用方按实际长度兜底
-                if declared is not None and declared > max_bytes:
-                    raise ValueError(f"file exceeds --max-bytes ({max_bytes})")
-        content_type = resp.headers.get("content-type", "") or resp.headers.get("Content-Type", "")
-        return resp.content, content_type, status
-    raise ValueError(f"too many redirects fetching {url}")
-
-
-# ── Fetch（增强：429 处理、连接复用、流式下载）─────────────────────
-
-
-def fetch(
-    url: str,
-    timeout: int,
-    headers: dict[str, str],
-    retries: int,
-    max_bytes: int | None,
-    resume_path: Path | None = None,
-    rate_limiter: DomainRateLimiter | None = None,
-    control_args: argparse.Namespace | None = None,
-) -> tuple[bytes, str]:
-    # SSRF 防护：请求前校验 host，拒绝私网/环回/链路本地目标（含云元数据地址）；
-    # 重定向目标由 SafeRedirectHandler / _stealth_fetch 逐跳校验。
-    # Power Mode（WEB_CRAWLER_POWER_MODE=1）放行 host 校验（仅保留 scheme 白名单）。
-    # resolve=True：主机名先做 DNS 解析复查（防重绑定），结果带缓存防重复解析。
-    if not is_power_mode():
-        validate_url_host(url, resolve=True)
-    last_error: Exception | None = None
-    method_headers = dict(headers)
-
-    for attempt in range(retries + 1):
-        try:
-            # 等待域级限速
-            if rate_limiter:
-                rate_limiter.wait_if_needed(url)
-
-            # 隐身路径：不需要断点续传的抓取（页面 HTML 发现 + 小资源）走
-            # curl_cffi TLS 指纹 fetcher。流式续传仍走下方 urllib 路径，
-            # 因为隐身 fetcher 会把整个 body 缓冲在内存里。
-            stealth = bool(control_args and getattr(control_args, "stealth", False))
-            if stealth and resume_path is None:
-                impersonate = (
-                    getattr(control_args, "impersonate", "chrome131")
-                    if control_args
-                    else "chrome131"
-                )
-                proxy = getattr(control_args, "proxy", None) if control_args else None
-                content, content_type, _status = _stealth_fetch(
-                    url, method_headers, timeout, proxy, impersonate, max_bytes=max_bytes
-                )
-                if max_bytes and len(content) > max_bytes:
-                    raise ValueError(f"file exceeds --max-bytes ({max_bytes})")
-                if rate_limiter:
-                    rate_limiter.record_request(url)
-                return content, content_type
-
-            part_path: Path | None = None
-            existing_size = 0
-            mode = "wb"
-            if resume_path is not None:
-                part_path = resume_path.with_name(resume_path.name + ".part")
-                if part_path.exists():
-                    existing_size = part_path.stat().st_size
-                    if existing_size > 0:
-                        method_headers["Range"] = f"bytes={existing_size}-"
-                        mode = "ab"
-
-            request_headers = {
-                "User-Agent": method_headers.get("User-Agent", DEFAULT_USER_AGENT),
-                "Accept": "*/*",
-                **{k: v for k, v in method_headers.items() if k.lower() != "user-agent"},
-            }
-            if "referer" not in {k.lower() for k in request_headers}:
-                request_headers["Referer"] = url
-
-            request = Request(url, headers=request_headers)
-            proxy = getattr(control_args, "proxy", None) if control_args else None
-            opener = _get_opener(proxy)
-            response = opener.open(request, timeout=timeout)
-
-            content_type = response.headers.get("content-type", "")
-            if existing_size and getattr(response, "status", None) != 206:
-                existing_size = 0
-                mode = "wb"
-            total = existing_size
-            file_handle = part_path.open(mode) if part_path else None
-            chunks: list[bytes] | None = [] if not file_handle else None
-            while True:
-                wait_if_paused(control_args)
-                if should_stop(control_args):
-                    raise RuntimeError("cancelled by user")
-                chunk = response.read(1024 * 64)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if max_bytes and total > max_bytes:
-                    raise ValueError(f"file exceeds --max-bytes ({max_bytes})")
-                if file_handle:
-                    file_handle.write(chunk)
-                elif chunks is not None:
-                    chunks.append(chunk)
-
-            if file_handle:
-                file_handle.close()
-                if part_path is not None and resume_path is not None:
-                    part_path.replace(resume_path)
-
-            if rate_limiter:
-                rate_limiter.record_request(url)
-            if chunks is not None:
-                return b"".join(chunks), content_type
-            return b"", content_type
-
-        except HTTPError as exc:
-            status = exc.code
-            if status == 429 and rate_limiter:
-                retry_after = exc.headers.get("Retry-After")
-                delay = rate_limiter.handle_429(url, retry_after)
-                if delay and attempt < retries:
-                    wait_if_paused(control_args)  # 退避期间暂停/取消同样生效
-                    time.sleep(min(delay, 30))
-                    continue
-            last_error = exc
-            if attempt < retries and status not in (401, 403, 404):
-                wait_if_paused(control_args)
-                time.sleep(1 + attempt * 2)
-
-        except (URLError, TimeoutError, OSError) as exc:
-            last_error = exc
-            if attempt < retries:
-                wait_if_paused(control_args)
-                time.sleep(1 + attempt * 2)
-
-        finally:
-            try:
-                if "file_handle" in locals() and file_handle:
-                    file_handle.close()
-            except Exception as _close_err:
-                _log.warning("file handle close error: %s", _close_err)
-
-    assert last_error is not None
-    raise last_error
+def _request_headers(url: str, headers: dict[str, str]) -> dict[str, str]:
+    """构造请求头基底：默认 User-Agent + Accept + Referer（历史语义）。"""
+    request_headers = {
+        "User-Agent": headers.get("User-Agent", DEFAULT_USER_AGENT),
+        "Accept": "*/*",
+        **{k: v for k, v in headers.items() if k.lower() != "user-agent"},
+    }
+    if "referer" not in {k.lower() for k in request_headers}:
+        request_headers["Referer"] = url
+    return request_headers
 
 
 def should_stop(args: argparse.Namespace | None) -> bool:
@@ -393,6 +185,135 @@ def report_progress(args: argparse.Namespace | None, **payload: object) -> None:
     callback = getattr(args, "progress_callback", None) if args is not None else None
     if callback:
         callback(payload)
+
+
+# ── Fetch（应用层横切关注点 + 库级网络管线）─────────────────────
+
+
+def fetch(
+    url: str,
+    timeout: int,
+    headers: dict[str, str],
+    retries: int,
+    max_bytes: int | None,
+    resume_path: Path | None = None,
+    rate_limiter: DomainRateLimiter | None = None,
+    control_args: argparse.Namespace | None = None,
+) -> tuple[bytes, str]:
+    """抓取 ``url``：``resume_path`` 时流式落盘（断点续传），否则整包返回。
+
+    网络传输全部走库级 :class:`~web_crawler.fetchers.Fetcher`——SSRF 校验/
+    代理/会话池/DNS 钉扎/流式断点续传在库层管线内生效；本函数保留应用层
+    职责——入口 SSRF 校验、请求头基底、域级限速、429 退避与暂停/取消钩子。
+
+    返回 ``(body, content_type)``；落盘路径 body 为 ``b""``（内容在盘上）。
+    """
+    # SSRF 防护：请求前校验 host，拒绝私网/环回/链路本地目标（含云元数据地址）；
+    # 重定向目标由库层 Fetcher 逐跳校验（scheme + host）。
+    # Power Mode（WEB_CRAWLER_POWER_MODE=1）放行 host 校验（仅保留 scheme 白名单）。
+    # resolve=True：主机名先做 DNS 解析复查（防重绑定），结果带缓存防重复解析。
+    if not is_power_mode():
+        validate_url_host(url, resolve=True)
+
+    stealth = bool(control_args and getattr(control_args, "stealth", False))
+    impersonate: str | None = getattr(control_args, "impersonate", "chrome131") if stealth else None
+    proxy = getattr(control_args, "proxy", None) if control_args else None
+    request_headers = _request_headers(url, headers)
+
+    # 最终响应头暂存（on_headers 回调写入）：content_type 供返回值，
+    # Retry-After 供 429 退避使用。
+    response_meta: dict[str, str] = {}
+
+    def _on_headers(status: int, resp_headers: Any) -> None:
+        content_type = resp_headers.get("content-type") or resp_headers.get("Content-Type") or ""
+        response_meta["content_type"] = str(content_type)
+        retry_after = resp_headers.get("Retry-After") or resp_headers.get("retry-after") or ""
+        response_meta["retry_after"] = str(retry_after)
+
+    def _should_abort() -> bool:
+        # 每分块写入前的暂停/取消探针：先阻塞等待暂停解除，再返回是否取消。
+        wait_if_paused(control_args)
+        return should_stop(control_args)
+
+    last_error: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            # 等待域级限速
+            if rate_limiter:
+                rate_limiter.wait_if_needed(url)
+
+            fetcher = _get_app_fetcher(impersonate, float(timeout), proxy)
+            if resume_path is not None:
+                # 流式落盘路径：断点续传 / 分块写盘 / max_bytes / 取消钩子全部
+                # 由库层 download() 承担（暂停经 _should_abort 每分块生效）。
+                fetcher.download(
+                    url,
+                    resume_path,
+                    chunk_size=1024 * 64,
+                    resume=True,
+                    max_bytes=max_bytes,
+                    headers=request_headers,
+                    should_abort=_should_abort,
+                    on_headers=_on_headers,
+                )
+                if rate_limiter:
+                    rate_limiter.record_request(url)
+                return b"", response_meta.get("content_type", "")
+
+            # 内存路径：整包抓取（页面/robots/sitemap/CSS 等需要完整内容的资源）
+            resp = fetcher.get(url, headers=request_headers)
+            if resp.status >= 400:
+                exc = FetchError(f"HTTP Error {resp.status}")
+                exc.status = resp.status  # type: ignore[attr-defined]
+                if resp.status == 429:
+                    retry_after = (
+                        resp.headers.get("Retry-After") or resp.headers.get("retry-after") or ""
+                    )
+                    response_meta["retry_after"] = str(retry_after)
+                raise exc
+            content = resp.content
+            if max_bytes and len(content) > max_bytes:
+                raise ValueError(f"file exceeds --max-bytes ({max_bytes})")
+            if rate_limiter:
+                rate_limiter.record_request(url)
+            content_type = resp.headers.get("content-type") or resp.headers.get("Content-Type")
+            return content, str(content_type or "")
+
+        except FetchError as exc:
+            message = str(exc)
+            if "aborted" in message:
+                # 用户主动中止（download 的 should_abort 探针触发）
+                raise RuntimeError("cancelled by user") from exc
+            if "max_bytes" in message:
+                # 保留历史 ValueError 语义（max-bytes 超限不重试，直接上抛）
+                raise ValueError(f"file exceeds --max-bytes ({max_bytes})") from exc
+            status = getattr(exc, "status", None)
+            if status is not None:
+                if status == 429 and rate_limiter:
+                    delay = rate_limiter.handle_429(url, response_meta.get("retry_after"))
+                    if delay and attempt < retries:
+                        wait_if_paused(control_args)  # 退避期间暂停/取消同样生效
+                        time.sleep(min(delay, 30))
+                        continue
+                last_error = exc
+                if attempt < retries and status not in (401, 403, 404):
+                    wait_if_paused(control_args)
+                    time.sleep(1 + attempt * 2)
+            else:
+                last_error = exc
+                if attempt < retries:
+                    wait_if_paused(control_args)
+                    time.sleep(1 + attempt * 2)
+
+        except (OSError, _HttpxTransportError) as exc:
+            # 网络层错误（URLError/TimeoutError/curl_cffi/httpx 的传输异常）
+            last_error = exc
+            if attempt < retries:
+                wait_if_paused(control_args)
+                time.sleep(1 + attempt * 2)
+
+    assert last_error is not None
+    raise last_error
 
 
 # ── 抓取主函数 ───────────────────────────────────────────────────────

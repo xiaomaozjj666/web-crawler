@@ -23,6 +23,7 @@ from .autothrottle import AutoThrottle
 from .cache import CacheMiddleware
 from .crawl import CrawlSpider, Rule
 from .feed import FeedExportPipeline
+from .sitemap import SitemapSpider
 from .spider import (
     DownloaderMiddleware,
     DropItem,
@@ -47,6 +48,7 @@ __all__ = [
     "ItemPipeline",
     "Request",
     "Rule",
+    "SitemapSpider",
     "Spider",
     "SpiderError",
     "SpiderStats",

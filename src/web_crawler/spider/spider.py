@@ -229,6 +229,12 @@ class Spider:
     # 按域名限速：{域名: 同域相邻请求的最小间隔秒数}。空 dict 不影响行为；
     # 设置了延迟的域在 stream() 中会被串行化（同域并发降为 1）
     per_domain_delay: dict[str, float] = {}
+    # 按域并发槽位：{域名: stream() 中该域允许的最大在途请求数}。空 dict
+    # 不影响行为；多条配置命中同一 host 时取最保守（最小值）。与
+    # per_domain_delay 独立叠加——延迟照常补足同域间隔、槽位钳制同域
+    # 在途下载数，语义上取更保守约束。同步 run() 本身串行执行，不受
+    # 该参数影响（见 per-domain 并发槽位测试）
+    per_domain_concurrency: dict[str, int] = {}
     # 下载中间件（类或实例均可，按声明顺序执行）
     middlewares: list[type[DownloaderMiddleware] | DownloaderMiddleware] = []
     # item 管道（类或实例均可，按声明顺序执行）
@@ -273,10 +279,18 @@ class Spider:
         self._robots_policy = RobotsPolicy(self.user_agent)
         self._domain_last_ts: dict[str, float] = {}
         self._domain_locks: dict[str, asyncio.Lock] = {}
+        # per_domain_concurrency 的域级信号量（与 _domain_locks 同模式：
+        # 惰性创建、按胜出的配置域复用；stream() 单事件循环内创建原子）
+        self._domain_semaphores: dict[str, asyncio.Semaphore] = {}
         self._paused = False
         self._heap_counter = 0
         if not self.name:
             self.name = self.__class__.__name__
+        # 槽位值构造期校验（快失败）：值 < 1 的信号量没有合法语义
+        # （0 会永久死锁、负数直接 ValueError），不等到 stream() 才炸
+        for domain, limit in self.per_domain_concurrency.items():
+            if limit < 1:
+                raise ConfigError(f"per_domain_concurrency[{domain!r}] must be >= 1, got {limit!r}")
 
     # -- user hooks --------------------------------------------------------
     def start_requests(self) -> Iterator[Request]:
@@ -346,6 +360,32 @@ class Spider:
             if (host == d or host.endswith("." + d)) and delay > best_delay:
                 best_delay, best_domain = delay, d
         return best_delay, best_domain
+
+    def _domain_semaphore_for(self, url: str) -> asyncio.Semaphore | None:
+        """返回 ``url`` 所在域的并发槽位信号量（未配置该域则 None）。
+
+        匹配语义与 :meth:`_domain_delay_for` 同族：精确或子域后缀命中；
+        多条配置同时命中时取**最保守**（并发数最小）的一条——与延迟制
+        「取最大延迟」镜像对称，两者统一为「多配置命中取更保守约束」。
+        信号量按胜出的配置域惰性创建并复用：同域不同子域（a.x.com /
+        b.x.com）共享同一份并发预算，与延迟账本的记账粒度一致。本方法
+        内部无 ``await``，在 stream() 的单事件循环里创建即原子。
+        """
+        host = _throttle_host(url)
+        if not host or not self.per_domain_concurrency:
+            return None
+        best_limit, best_domain = -1, ""
+        for domain, limit in self.per_domain_concurrency.items():
+            d = domain.lower()
+            if (host == d or host.endswith("." + d)) and (best_limit < 0 or limit < best_limit):
+                best_limit, best_domain = limit, d
+        if best_limit < 0:
+            return None
+        sem = self._domain_semaphores.get(best_domain)
+        if sem is None:
+            sem = asyncio.Semaphore(best_limit)
+            self._domain_semaphores[best_domain] = sem
+        return sem
 
     def _throttle_delay_for(self, url: str) -> tuple[float, str]:
         """统一节流入口：返回 ``(延迟秒数, 节流账本键)``。
@@ -885,37 +925,51 @@ class Spider:
                 logger.info("request ignored by middleware: %s", request.url)
                 return
             if response is None:
-                delay, domain_key = self._throttle_delay_for(request.url)
-                if delay > 0:
-                    lock = self._domain_locks.get(domain_key)
-                    if lock is None:
-                        lock = asyncio.Lock()
-                        self._domain_locks[domain_key] = lock
-                    # precomputed：两次三源计算之间无 await（严格等价），
-                    # 省掉每请求一次的重复三源延迟计算
-                    await self._throttle_domain_async(
-                        request.url, lock, precomputed=(delay, domain_key)
-                    )
-                # elapsed 只度量下载本身（不含上面的节流等待），
-                # 供 autothrottle 估计站点真实服务能力
-                fetch_started = time.monotonic()
+                # 同域并发槽位：acquire 覆盖「节流等待 + 下载」整段——配了
+                # per_domain_concurrency 的域，同域在途（含延迟等待中的请求）
+                # 不超上限，与 per_domain_delay 叠加时取更保守约束。acquire
+                # 被取消时尚未持有槽位（CancelledError 从 acquire 本身抛出、
+                # try 未进入），不会误 release；持有期间的全部退出路径
+                # （IgnoreRequest / 重试入队 / 正常完成 / 取消）都经 finally
+                # 归还槽位
+                slot = self._domain_semaphore_for(request.url)
+                if slot is not None:
+                    await slot.acquire()
                 try:
-                    response = await self._fetch_async(request)
-                except IgnoreRequest:
-                    self.stats.requests_ignored += 1
-                    logger.info("request ignored by middleware: %s", request.url)
-                    return
-                except Exception as exc:
-                    # 失败也反馈真实耗时：请求失败本身就该放大该域惩罚
-                    self._note_throttle(request.url, time.monotonic() - fetch_started, False)
-                    # 与 run() 一致的重试语义：push 回队列而非在 worker 内自旋，
-                    # 让主循环统一控制调度与暂停检查
-                    if self._schedule_retry(request, queue, exc):
-                        delay = self._retry_backoff(request.retries)
-                        if delay:
-                            await asyncio.sleep(delay)
-                    return
-                self._note_throttle(request.url, time.monotonic() - fetch_started, response.ok)
+                    delay, domain_key = self._throttle_delay_for(request.url)
+                    if delay > 0:
+                        lock = self._domain_locks.get(domain_key)
+                        if lock is None:
+                            lock = asyncio.Lock()
+                            self._domain_locks[domain_key] = lock
+                        # precomputed：两次三源计算之间无 await（严格等价），
+                        # 省掉每请求一次的重复三源延迟计算
+                        await self._throttle_domain_async(
+                            request.url, lock, precomputed=(delay, domain_key)
+                        )
+                    # elapsed 只度量下载本身（不含上面的节流等待），
+                    # 供 autothrottle 估计站点真实服务能力
+                    fetch_started = time.monotonic()
+                    try:
+                        response = await self._fetch_async(request)
+                    except IgnoreRequest:
+                        self.stats.requests_ignored += 1
+                        logger.info("request ignored by middleware: %s", request.url)
+                        return
+                    except Exception as exc:
+                        # 失败也反馈真实耗时：请求失败本身就该放大该域惩罚
+                        self._note_throttle(request.url, time.monotonic() - fetch_started, False)
+                        # 与 run() 一致的重试语义：push 回队列而非在 worker 内自旋，
+                        # 让主循环统一控制调度与暂停检查
+                        if self._schedule_retry(request, queue, exc):
+                            delay = self._retry_backoff(request.retries)
+                            if delay:
+                                await asyncio.sleep(delay)
+                        return
+                    self._note_throttle(request.url, time.monotonic() - fetch_started, response.ok)
+                finally:
+                    if slot is not None:
+                        slot.release()
             # 与 run() 同源的状态码重试：命中则重新入队并退避（worker 内
             # 自旋改为 return，让主循环统一调度）；耗尽则放行交回调
             if self._schedule_status_retry(response, request, queue):

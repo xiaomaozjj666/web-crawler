@@ -17,8 +17,9 @@ import asyncio
 import random
 import time
 import warnings
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlparse
 
@@ -27,6 +28,7 @@ from typing_extensions import Self
 from ..compat import HAS_CURL_CFFI, HAS_HTTPX
 from ..exceptions import ConfigError, FetchError
 from ._base import BaseFetcher
+from ._download import StreamContext, download_async, download_sync
 from ._pin import (
     CurlResolvePinner,
     apply_curl_resolve,
@@ -151,7 +153,7 @@ class _FetcherCore(BaseFetcher):
     def __init__(
         self,
         *,
-        impersonate: str = "chrome131",
+        impersonate: str | None = "chrome131",
         timeout: float = 30.0,
         proxy: str | ProxyPool | None = None,
         retries: int = 0,
@@ -604,6 +606,71 @@ class _FetcherCore(BaseFetcher):
         await self._release_pooled_async(handle, success=True)
         return raw
 
+    # -- 共享异步流式原语（download 用；Fetcher 与 AsyncFetcher 共用） --------
+    async def _stream_once_async(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        proxy: str | None,
+        timeout: float,
+        verify: bool,
+    ) -> StreamContext:
+        """打开异步流式请求（``stream=True``，不消费 body），返回统一包装。
+
+        与 :meth:`_send_once_async` 走完全相同的校验链（会话池借出、DNS
+        钉扎、代理客户端选择），仅两处差异：响应 body 保持未读状态由调用
+        方分块消费；池化句柄**不**在请求返回时归还——归还延迟到流关闭
+        （:meth:`StreamContext.aclose <web_crawler.fetchers._download.StreamContext.aclose>`），
+        流式读取期间会话保持独占。重定向由 :meth:`_stream_with_redirects_async`
+        手动跟随（恒以 ``allow_redirects=False`` 发送，逐跳校验目标）。
+        """
+        if self._use_curl:
+            handle = await self._acquire_pooled_async(proxy)
+            try:
+                session = handle.session if handle is not None else self._ensure_async_session()
+                # 连接级 DNS 钉扎（CURLOPT_RESOLVE）：DNS 翻转到私网时抛
+                # ValueError 即时中止，否则 libcurl 强制用已校验 IP 连接
+                self._pin_curl_session(session, url, proxy)
+                raw = await session.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    proxy=proxy,
+                    timeout=timeout,
+                    allow_redirects=False,
+                    verify=verify,
+                    stream=True,
+                )
+            except BaseException:
+                await self._release_pooled_async(handle, success=False)
+                raise
+            return StreamContext(raw, handle, fetcher=self, use_curl=True)
+        # httpx 异步兜底：无代理复用共享会话（或池化会话）；代理客户端按 proxy 缓存复用
+        handle = await self._acquire_pooled_async(proxy)
+        try:
+            client = (
+                (handle.session if handle is not None else self._ensure_async_session())
+                if proxy is None
+                else self._ensure_proxied_async_client(proxy)
+            )
+            request_url, extra_headers, extensions = self._pin_target(url, proxy)
+            if extra_headers:
+                headers = {**headers, **extra_headers}
+            raw = await client.request(
+                method=method,
+                url=request_url,
+                headers=headers,
+                timeout=timeout,
+                follow_redirects=False,
+                extensions=extensions,
+                stream=True,
+            )
+        except BaseException:
+            await self._release_pooled_async(handle, success=False)
+            raise
+        return StreamContext(raw, handle, fetcher=self, use_curl=False)
+
     # -- 重定向跟随（逐跳 SSRF scheme 校验） ----------------------------------
     def _next_redirect(
         self, raw: Any, current_url: str, method: str, headers: dict[str, str]
@@ -686,6 +753,123 @@ class _FetcherCore(BaseFetcher):
             )
             if not self._advance_redirect(state, raw):
                 return raw
+        raise FetchError(f"too many redirects (max {self.max_redirects}) for {url}")
+
+    async def _stream_with_redirects_async(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        proxy: str | None,
+        timeout: float,
+        verify: bool,
+    ) -> StreamContext:
+        """打开异步流式请求并手动跟随重定向（每跳校验 scheme/host）。
+
+        对齐 :meth:`_send_with_redirects_async` 的状态机（复用
+        :class:`_RedirectState` 与 :meth:`_advance_redirect`），差异仅在
+        3xx 跳转时需要先关闭上一跳的流（未消费的流式响应不关会泄漏连接），
+        以及最终返回 :class:`StreamContext` 而非整包响应。
+        """
+        state = _RedirectState(url, method, None, None, None, headers)
+        for _ in range(self.max_redirects + 1):
+            stream = await self._stream_once_async(
+                state.method, state.url, state.headers, proxy, timeout, verify
+            )
+            if not self._advance_redirect(state, stream.raw):
+                return stream
+
+            await stream.aclose()
+        raise FetchError(f"too many redirects (max {self.max_redirects}) for {url}")
+
+    def _stream_once_sync(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        proxy: str | None,
+        timeout: float,
+        verify: bool,
+    ) -> StreamContext:
+        """打开同步流式请求（``stream=True``，不消费 body），返回统一包装。
+
+        与 :meth:`_send_once_sync` 走完全相同的校验链（会话池借出、DNS
+        钉扎、代理客户端选择），仅两处差异：响应 body 保持未读状态由调用
+        方分块消费；池化句柄**不**在请求返回时归还——归还延迟到流关闭
+        （:meth:`StreamContext.close <web_crawler.fetchers._download.StreamContext.close>`），
+        流式读取期间会话保持独占。重定向由 :meth:`_stream_with_redirects_sync`
+        手动跟随（恒以 ``allow_redirects=False`` 发送，逐跳校验目标）。
+        """
+        if self._use_curl:
+            handle = self._acquire_pooled(proxy)
+            try:
+                session = handle.session if handle is not None else self._ensure_sync_session()
+                # 连接级 DNS 钉扎（CURLOPT_RESOLVE）：DNS 翻转到私网时抛
+                # ValueError 即时中止，否则 libcurl 强制用已校验 IP 连接
+                self._pin_curl_session(session, url, proxy)
+                raw = session.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    proxy=proxy,
+                    timeout=timeout,
+                    allow_redirects=False,
+                    verify=verify,
+                    stream=True,
+                )
+            except BaseException:
+                self._release_pooled(handle, success=False)
+                raise
+            return StreamContext(raw, handle, fetcher=self, use_curl=True)
+        # httpx 兜底：无代理复用共享会话（或池化会话）；代理客户端按 proxy 缓存复用
+        handle = self._acquire_pooled(proxy)
+        try:
+            client = (
+                (handle.session if handle is not None else self._ensure_sync_session())
+                if proxy is None
+                else self._ensure_proxied_sync_client(proxy)
+            )
+            request_url, extra_headers, extensions = self._pin_target(url, proxy)
+            if extra_headers:
+                headers = {**headers, **extra_headers}
+            raw = client.request(
+                method=method,
+                url=request_url,
+                headers=headers,
+                timeout=timeout,
+                follow_redirects=False,
+                extensions=extensions,
+                stream=True,
+            )
+        except BaseException:
+            self._release_pooled(handle, success=False)
+            raise
+        return StreamContext(raw, handle, fetcher=self, use_curl=False)
+
+    def _stream_with_redirects_sync(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        proxy: str | None,
+        timeout: float,
+        verify: bool,
+    ) -> StreamContext:
+        """打开同步流式请求并手动跟随重定向（每跳校验 scheme/host）。
+
+        对齐 :meth:`_send_with_redirects_sync` 的状态机（复用
+        :class:`_RedirectState` 与 :meth:`_advance_redirect`），差异仅在
+        3xx 跳转时需要先关闭上一跳的流，以及最终返回
+        :class:`StreamContext` 而非整包响应。
+        """
+        state = _RedirectState(url, method, None, None, None, headers)
+        for _ in range(self.max_redirects + 1):
+            stream = self._stream_once_sync(
+                state.method, state.url, state.headers, proxy, timeout, verify
+            )
+            if not self._advance_redirect(state, stream.raw):
+                return stream
+            stream.close()
         raise FetchError(f"too many redirects (max {self.max_redirects}) for {url}")
 
     async def _send_async(
@@ -962,6 +1146,96 @@ class Fetcher(_FetcherCore):
             f"request to {url} failed without a captured exception"
         )  # pragma: no cover
 
+    # -- 公开下载 API ----------------------------------------------------------
+    def download(
+        self,
+        url: str,
+        dest: str | Path,
+        *,
+        chunk_size: int = 1 << 20,
+        resume: bool = True,
+        max_bytes: int | None = None,
+        headers: dict[str, str] | None = None,
+        should_abort: Callable[[], bool] | None = None,
+        on_headers: Callable[[int, Mapping[str, str]], None] | None = None,
+    ) -> Path:
+        """流式下载 *url* 到 *dest*（支持断点续传），返回最终绝对路径。
+
+        走与 :meth:`get` 完全相同的请求管线（SSRF host 校验、代理、会话
+        池、DNS 钉扎、重定向逐跳校验），只是响应 body 不整包缓冲而是按
+        ``chunk_size`` 分块写盘——大文件下载不再受内存约束。断点续传：
+        半成品写在 ``<dest>.part``，``resume=True`` 且 ``.part`` 存在时
+        发送 ``Range`` 续传（206 追加、200 截断重写），完成后
+        ``os.replace`` 原子替换到 *dest*。
+
+        Parameters
+        ----------
+        dest:
+            目标文件路径（目录不存在时自动创建）。
+        chunk_size:
+            分块字节数（默认 1MB；仅 httpx 后端严格生效，curl_cffi 后端
+            由接收缓冲队列决定块粒度）。
+        resume:
+            断点续传开关（默认开启）。
+        max_bytes:
+            累计写入字节上限（防磁盘炸弹）；超限即中止、清理 ``.part``
+            并抛 :class:`~web_crawler.exceptions.FetchError`。
+        headers:
+            每请求附加头（与 ``extra_headers`` 合并；``Range`` 由本方法
+            内部管理，调用方无需设置）。
+        should_abort:
+            每分块写入前轮询；返回 ``True`` 时中止下载（保留 ``.part``
+            供续传）并抛 :class:`FetchError`。
+        on_headers:
+            收到最终（重定向解析完）响应时回调一次，参数为
+            ``(status, headers)``——应用层可借此读取 Content-Type 等。
+
+        Raises
+        ------
+        ConfigError
+            ``chunk_size`` / ``max_bytes`` 参数非法。
+        FetchError
+            服务器错误状态、``max_bytes`` 超限、重定向超限、用户中止或
+            传输层错误重试耗尽（附 ``status`` 属性，可用
+            ``getattr(exc, "status", None)`` 读取）。
+        """
+        return download_sync(
+            self,
+            url,
+            dest,
+            chunk_size=chunk_size,
+            resume=resume,
+            max_bytes=max_bytes,
+            headers=headers,
+            should_abort=should_abort,
+            on_headers=on_headers,
+        )
+
+    async def async_download(
+        self,
+        url: str,
+        dest: str | Path,
+        *,
+        chunk_size: int = 1 << 20,
+        resume: bool = True,
+        max_bytes: int | None = None,
+        headers: dict[str, str] | None = None,
+        should_abort: Callable[[], bool] | None = None,
+        on_headers: Callable[[int, Mapping[str, str]], None] | None = None,
+    ) -> Path:
+        """异步流式下载（语义与 :meth:`download` 完全一致）。"""
+        return await download_async(
+            self,
+            url,
+            dest,
+            chunk_size=chunk_size,
+            resume=resume,
+            max_bytes=max_bytes,
+            headers=headers,
+            should_abort=should_abort,
+            on_headers=on_headers,
+        )
+
     # -- 公开同步 API ----------------------------------------------------------
     def request(self, method: str, url: str, **kwargs: Any) -> Response:
         """以 ``method`` 发送请求并返回 :class:`Response`。"""
@@ -1132,6 +1406,37 @@ class AsyncFetcher(_FetcherCore):
 
     async def options(self, url: str, **kwargs: Any) -> Response:
         return await self.request("OPTIONS", url, **kwargs)
+
+    # -- 公开下载 API ----------------------------------------------------------
+    async def download(
+        self,
+        url: str,
+        dest: str | Path,
+        *,
+        chunk_size: int = 1 << 20,
+        resume: bool = True,
+        max_bytes: int | None = None,
+        headers: dict[str, str] | None = None,
+        should_abort: Callable[[], bool] | None = None,
+        on_headers: Callable[[int, Mapping[str, str]], None] | None = None,
+    ) -> Path:
+        """异步流式下载 *url* 到 *dest*（支持断点续传），返回最终绝对路径。
+
+        语义与 :meth:`Fetcher.download <web_crawler.fetchers.fetcher.Fetcher.download>`
+        完全一致（同一套校验链、重试/退避与 ``.part`` 生命周期管理），
+        仅传输原语为异步版。
+        """
+        return await download_async(
+            self,
+            url,
+            dest,
+            chunk_size=chunk_size,
+            resume=resume,
+            max_bytes=max_bytes,
+            headers=headers,
+            should_abort=should_abort,
+            on_headers=on_headers,
+        )
 
     # -- 生命周期 --------------------------------------------------------------
     async def aclose(self) -> None:

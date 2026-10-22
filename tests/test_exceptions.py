@@ -540,14 +540,14 @@ def test_batch2_visual_vlm_client_failure_raises_ai_provider_error() -> None:
     assert isinstance(excinfo.value.__cause__, ConnectionError)
 
 
-def test_batch2_stealth_fetcher_unavailable_raises_fetch_error(
+def test_batch2_app_fetcher_unavailable_raises_fetch_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """app/_crawler_core.py stealth fetcher 不可用（FetchError ⊂ RuntimeError）。"""
-    monkeypatch.setattr(_crawler_core, "_stealth_fetcher", None)
-    monkeypatch.setattr(_crawler_core, "_import_stealth_fetcher", lambda: None)
-    with pytest.raises(FetchError, match="stealth fetcher unavailable") as excinfo:
-        _crawler_core._get_stealth_fetcher("chrome131", 30.0, None)
+    """app/_crawler_core.py 库级 Fetcher 不可用（FetchError ⊂ RuntimeError）。"""
+    monkeypatch.setattr(_crawler_core, "_fetchers_local", SimpleNamespace())
+    monkeypatch.setattr(_crawler_core, "_import_lib_fetcher", lambda: None)
+    with pytest.raises(FetchError, match="Fetcher unavailable") as excinfo:
+        _crawler_core._get_app_fetcher(None, 30.0, None)
     assert isinstance(excinfo.value, RuntimeError)
     assert isinstance(excinfo.value, WebCrawlerError)
 
@@ -626,23 +626,15 @@ def test_batch2_pentest_scheme_whitelist_raises_unsafe_target() -> None:
     assert isinstance(excinfo.value, WebCrawlerError)
 
 
-def test_batch2_crawler_core_unsafe_redirect_raises_unsafe_target(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """app/_crawler_core.py stealth 路径重定向跳向云元数据（UnsafeTargetError ⊂ ValueError）。"""
+def test_batch2_crawler_core_unsafe_redirect_raises_unsafe_target() -> None:
+    """fetchers/fetcher.py 重定向逐跳校验：跳向云元数据（UnsafeTargetError ⊂ ValueError）。"""
     fake_resp = SimpleNamespace(
-        status=302,
-        headers={"location": "http://169.254.169.254/latest/meta-data/"},
-        content=b"",
+        status_code=302,
+        headers={"Location": "http://169.254.169.254/latest/meta-data/"},
     )
-
-    class FakeFetcher:
-        def get(self, url: str, headers: dict[str, str] | None = None) -> Any:
-            return fake_resp
-
-    monkeypatch.setattr(_crawler_core, "_get_stealth_fetcher", lambda *args: FakeFetcher())
-    with pytest.raises(UnsafeTargetError, match="blocked redirect to unsafe URL") as excinfo:
-        _crawler_core._stealth_fetch("https://example.com/", {}, 30, None, "chrome131")
+    f = Fetcher(allow_private_hosts=False)
+    with pytest.raises(UnsafeTargetError, match="unsafe") as excinfo:
+        f._next_redirect(fake_resp, "https://example.com/", "GET", {})
     assert isinstance(excinfo.value, ValueError)
     assert isinstance(excinfo.value, WebCrawlerError)
 

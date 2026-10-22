@@ -21,6 +21,9 @@
   （allow/deny 正则、域白/黑名单、规范化去重）。
 - :class:`CrawlSpider` / :class:`Rule` — 规则驱动的跟随爬虫（对标
   Scrapy CrawlSpider），配合 ``LinkExtractor`` 声明式全站遍历。
+- :class:`SitemapSpider` — sitemap.xml 驱动的爬虫（对标 Scrapy
+  SitemapSpider）：sitemapindex 递归展开、``sitemap_rules`` 正则分发
+  回调、robots.txt 的 ``Sitemap:`` 行自动发现。
 - :class:`WebCrawlerError` — 统一异常体系根（子类兼容
   ``ValueError`` / ``RuntimeError``），可用 ``except WebCrawlerError``
   一次捕获库自身的错误。
@@ -96,6 +99,8 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     # spider / 规则驱动跟随爬虫
     "CrawlSpider": ("web_crawler.spider.crawl", "CrawlSpider"),
     "Rule": ("web_crawler.spider.crawl", "Rule"),
+    # spider / sitemap 驱动爬虫
+    "SitemapSpider": ("web_crawler.spider.sitemap", "SitemapSpider"),
     # ai（可插拔 LLM 层 + AI 辅助提取；默认 DeepSeek-V4.1-Flash）
     "get_provider": ("web_crawler.ai.llm", "get_provider"),
     "register_provider": ("web_crawler.ai.llm", "register_provider"),
@@ -181,6 +186,7 @@ __all__ = [
     # parser / 自适应
     "Selector",
     "SessionPool",
+    "SitemapSpider",
     "Spider",
     "SpiderError",
     "SpiderStats",
@@ -263,6 +269,7 @@ if TYPE_CHECKING:
     from .spider.cache import CacheMiddleware
     from .spider.crawl import CrawlSpider, Rule
     from .spider.feed import FeedExportPipeline
+    from .spider.sitemap import SitemapSpider
     from .spider.spider import (
         DownloaderMiddleware,
         DropItem,

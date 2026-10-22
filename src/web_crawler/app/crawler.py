@@ -101,11 +101,9 @@ logging.basicConfig(
 from web_crawler.app import _crawler_core as core
 from web_crawler.app._crawler_core import (  # noqa: F401
     _MAX_REDIRECTS,
-    _get_opener,
-    _get_stealth_fetcher,
-    _import_stealth_fetcher,
+    _get_app_fetcher,
+    _import_lib_fetcher,
     _log,
-    _stealth_fetch,
     attach_log_handler,
     decrypt_aes128,
     detach_log_handler,

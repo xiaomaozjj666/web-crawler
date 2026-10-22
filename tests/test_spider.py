@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from web_crawler import Request, Response, Spider, SpiderError
+from web_crawler import ConfigError, Request, Response, Spider, SpiderError
 from web_crawler.spider import DownloaderMiddleware, DropItem, IgnoreRequest, ItemPipeline
 
 
@@ -1822,6 +1822,161 @@ def test_per_domain_delay_async_serializes_same_domain() -> None:
     # y.example 不受 x 域限速约束（其请求可早于 x 域完成）
     y_times = [ts for url, ts in timestamps if url.startswith("https://y.example")]
     assert len(y_times) == 1
+
+
+# ===========================================================================
+# per-domain 并发槽位
+# ===========================================================================
+
+
+def test_per_domain_concurrency_clamps_inflight() -> None:
+    """per_domain_concurrency 配置的域在 stream() 中同域在途请求被钳制在上限。
+
+    6 个同域请求 + 槽位 2：任意时刻在途（fetcher 内并发计数峰值）恰为 2
+    ——严格小于 6 证明钳制生效，严格大于 1 证明是「槽位」而非退化为
+    per_domain_delay 式的完全串行。
+    """
+    state = {"inflight": 0, "max": 0}
+
+    class SlowFetcher:
+        async def async_get(self, url: str, **kwargs: Any) -> Response:
+            state["inflight"] += 1
+            state["max"] = max(state["max"], state["inflight"])
+            await asyncio.sleep(0.05)
+            state["inflight"] -= 1
+            return Response(url, 200, b"")
+
+    class S(Spider):
+        start_urls = [f"https://x.example/{i}" for i in range(6)]
+        max_concurrency = 8
+        per_domain_concurrency = {"x.example": 2}
+
+        def parse(self, response: Response) -> Any:
+            return None
+
+    spider = S(fetcher=SlowFetcher())
+
+    async def collect() -> list[Any]:
+        items = []
+        async for item in spider.stream():
+            items.append(item)
+        return items
+
+    asyncio.run(collect())
+    # 6 请求全部完成，且在途峰值被钳制在 2（事件循环顺序执行保证：
+    # 前两个 worker 持槽下载、其余在 acquire 处排队，峰值必达且不超 2）
+    assert spider.stats.pages_crawled == 6
+    assert state["max"] == 2
+
+
+def test_per_domain_concurrency_unconfigured_domain_unaffected() -> None:
+    """未配置槽位的域不受钳制：同域并发可达全局 max_concurrency 上限。"""
+    state = {"inflight": 0, "max": 0}
+
+    class SlowFetcher:
+        async def async_get(self, url: str, **kwargs: Any) -> Response:
+            state["inflight"] += 1
+            state["max"] = max(state["max"], state["inflight"])
+            await asyncio.sleep(0.05)
+            state["inflight"] -= 1
+            return Response(url, 200, b"")
+
+    class S(Spider):
+        # 只给无关域配槽位：x.example 不受影响
+        start_urls = [f"https://x.example/{i}" for i in range(6)]
+        max_concurrency = 8
+        per_domain_concurrency = {"other.example": 1}
+
+        def parse(self, response: Response) -> Any:
+            return None
+
+    spider = S(fetcher=SlowFetcher())
+
+    async def collect() -> list[Any]:
+        items = []
+        async for item in spider.stream():
+            items.append(item)
+        return items
+
+    asyncio.run(collect())
+    # 6 个请求同 tick 派发（6 < max_concurrency=8）且无槽位拦截，
+    # 全部并发进入下载：在途峰值明显超过任何钳制值
+    assert state["max"] >= 3
+
+
+def test_per_domain_concurrency_composes_with_delay() -> None:
+    """同域配置 delay 与 concurrency 时两者叠加生效（取更保守约束）。
+
+    下载耗时（0.15s）远大于 delay（0.05s）：无槽位时第二个请求在补足
+    间隔后即可与第一个并发下载；槽位 1 把下载钳为串行，同时间隔约束
+    （>= delay）仍然满足。
+    """
+    starts: list[float] = []
+    state = {"inflight": 0, "max": 0}
+
+    class SlowFetcher:
+        async def async_get(self, url: str, **kwargs: Any) -> Response:
+            state["inflight"] += 1
+            state["max"] = max(state["max"], state["inflight"])
+            starts.append(time.monotonic())
+            await asyncio.sleep(0.15)
+            state["inflight"] -= 1
+            return Response(url, 200, b"")
+
+    class S(Spider):
+        start_urls = [f"https://x.example/{i}" for i in range(3)]
+        max_concurrency = 8
+        per_domain_delay = {"x.example": 0.05}
+        per_domain_concurrency = {"x.example": 1}
+
+        def parse(self, response: Response) -> Any:
+            return None
+
+    spider = S(fetcher=SlowFetcher())
+
+    async def collect() -> list[Any]:
+        items = []
+        async for item in spider.stream():
+            items.append(item)
+        return items
+
+    asyncio.run(collect())
+    # 槽位生效：下载在途峰值 1（若仅有 delay，第二个请求等 0.05s 后
+    # 即可与第一个 0.15s 的下载重叠，峰值会到 2）
+    assert state["max"] == 1
+    # 延迟同样生效：相邻下载开始时刻间隔不小于 delay（留时钟容差）
+    for prev, cur in itertools.pairwise(starts):
+        assert cur - prev >= 0.04
+
+
+def test_per_domain_concurrency_invalid_value_raises_config_error() -> None:
+    """per_domain_concurrency 值 < 1 时构造期抛 ConfigError（快失败）。"""
+
+    class S(Spider):
+        start_urls = ["https://shop.example.com/"]
+        per_domain_concurrency = {"shop.example.com": 0}
+
+        def parse(self, response: Response) -> Any:
+            return None
+
+    with pytest.raises(ConfigError, match="per_domain_concurrency"):
+        S(fetcher=FakeFetcher(PAGES))
+
+
+def test_per_domain_concurrency_ignored_on_sync_run() -> None:
+    """同步 run() 本身串行执行：配置槽位不改变行为，照常完成。"""
+
+    class S(Spider):
+        start_urls = ["https://shop.example.com/", "https://shop.example.com/page2"]
+        per_domain_concurrency = {"shop.example.com": 2}
+
+        def parse(self, response: Response) -> Any:
+            return None
+
+    spider = S(fetcher=FakeFetcher(PAGES))
+    spider.run()
+    assert spider.stats.pages_crawled == 2
+    assert spider.stats.requests_failed == 0
 
 
 # ===========================================================================

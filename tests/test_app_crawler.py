@@ -1,7 +1,7 @@
 """app/crawler.py 单元测试：资源下载器核心逻辑。
 
 覆盖工具函数、数据类、限速/去重、HTML 解析、清单/报告生成、
-fetch（mock opener）以及 crawl 集成测试（mock fetch）。
+fetch（mock 库级 Fetcher 桥接）以及 crawl 集成测试（mock fetch）。
 所有网络请求均被 mock，测试可重复、不依赖外部状态。
 """
 
@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from web_crawler.app import _crawler_context as ctx_mod
 from web_crawler.app import _crawler_core as core
 from web_crawler.app import _crawler_post as post
 from web_crawler.app import crawler as cr
+from web_crawler.exceptions import FetchError
 
 # ========== 数据类 ==========
 
@@ -1351,52 +1353,44 @@ class TestRowFor:
 # ========== fetch ==========
 
 
+def _mock_fetch_response(status: int, content: bytes, headers: dict[str, str]) -> Mock:
+    """构造库级 Response 风格的桩对象（fetch 内存路径消费）。"""
+    return Mock(status=status, content=content, headers=headers)
+
+
 class TestFetch:
     def test_success(self) -> None:
         """fetch 成功读取响应体。"""
-        mock_response = MagicMock()
-        mock_response.headers.get.return_value = "text/html"
-        mock_response.read.side_effect = [b"<html>data</html>", b""]
-        mock_opener = MagicMock()
-        mock_opener.open.return_value = mock_response
-
-        with patch.object(core, "_get_opener", return_value=mock_opener):
+        fake = Mock()
+        fake.get.return_value = _mock_fetch_response(
+            200, b"<html>data</html>", {"content-type": "text/html"}
+        )
+        with patch.object(core, "_get_app_fetcher", return_value=fake):
             data, ct = cr.fetch("https://example.com", 30, {}, 0, None)
         assert data == b"<html>data</html>"
         assert ct == "text/html"
 
     def test_max_bytes_exceeded(self) -> None:
-        """超出 max_bytes 抛 ValueError。"""
-        mock_response = MagicMock()
-        mock_response.headers.get.return_value = "text/html"
-        mock_response.read.side_effect = [b"x" * 200, b""]
-        mock_opener = MagicMock()
-        mock_opener.open.return_value = mock_response
-
+        """超出 max_bytes 抛 ValueError 且不再重试。"""
+        fake = Mock()
+        fake.get.return_value = _mock_fetch_response(200, b"x" * 200, {})
         with (
-            patch.object(core, "_get_opener", return_value=mock_opener),
+            patch.object(core, "_get_app_fetcher", return_value=fake),
             pytest.raises(ValueError, match="max-bytes"),
         ):
             cr.fetch("https://example.com", 30, {}, 0, 100)
+        assert fake.get.call_count == 1
 
     def test_http_error_no_retry(self) -> None:
-        """404 错误不重试。"""
-        from urllib.error import HTTPError
-
-        mock_opener = MagicMock()
-        mock_opener.open.side_effect = HTTPError(
-            "https://x.com",
-            404,
-            "Not Found",
-            {},
-            None,  # type: ignore[arg-type]
-        )
-
+        """404 错误抛 FetchError（带 status 属性）。"""
+        fake = Mock()
+        fake.get.return_value = _mock_fetch_response(404, b"", {})
         with (
-            patch.object(core, "_get_opener", return_value=mock_opener),
-            pytest.raises(HTTPError),
+            patch.object(core, "_get_app_fetcher", return_value=fake),
+            pytest.raises(FetchError, match="HTTP Error 404") as exc_info,
         ):
             cr.fetch("https://x.com", 30, {}, 0, None)
+        assert getattr(exc_info.value, "status", None) == 404
 
 
 # ========== crawl 集成测试 ==========
@@ -1729,38 +1723,60 @@ class TestDomainRateLimiterAdvanced:
         assert wait == 10
 
 
-# ========== _get_opener ==========
+# ========== _get_app_fetcher ==========
 
 
-class TestGetOpener:
-    def test_returns_cached_opener(self) -> None:
-        """无 proxy 时返回缓存的 opener。"""
-        cr._opener = None
-        opener1 = cr._get_opener()
-        opener2 = cr._get_opener()
-        assert opener1 is opener2
-        # 清理
-        cr._opener = None
+class TestGetAppFetcher:
+    """线程本地应用 fetcher 缓存：同 key 复用、key 变更换新实例。"""
 
-    def test_with_proxy_returns_new_opener(self) -> None:
-        """有 proxy 时返回新的 opener（不缓存）。"""
-        cr._opener = None
-        opener = cr._get_opener("http://proxy:8080")
-        assert opener is not None
-        assert cr._opener is None  # proxy opener 不缓存
-        # 清理
-        cr._opener = None
+    def _reset_local(self) -> None:
+        core._fetchers_local = threading.local()
+
+    def test_same_key_reuses_instance(self) -> None:
+        """相同 (impersonate, proxy, timeout) 键复用同一实例。"""
+        self._reset_local()
+        try:
+            f1 = cr._get_app_fetcher(None, 30.0, None)
+            f2 = cr._get_app_fetcher(None, 30.0, None)
+            assert f1 is f2
+        finally:
+            self._reset_local()
+
+    def test_key_change_creates_new_instance(self) -> None:
+        """key 任一维度变化时构建新实例。"""
+        self._reset_local()
+        try:
+            f1 = cr._get_app_fetcher(None, 30.0, None)
+            f2 = cr._get_app_fetcher(None, 30.0, "http://proxy:8080")
+            f3 = cr._get_app_fetcher("chrome131", 30.0, None)
+            assert f1 is not f2
+            assert f1 is not f3
+            assert f2 is not f3
+        finally:
+            self._reset_local()
+
+    def test_fetcher_config_passed_through(self) -> None:
+        """构造参数传递到库级 Fetcher（指纹/超时/重试/重定向上限）。"""
+        self._reset_local()
+        try:
+            f = cr._get_app_fetcher("chrome131", 5.0, None)
+            assert f.impersonate == "chrome131"
+            assert f.timeout == 5.0
+            assert f.retries == 0
+            assert f.max_redirects == cr._MAX_REDIRECTS
+        finally:
+            self._reset_local()
 
 
-# ========== stealth fetcher ==========
+# ========== 库级 Fetcher 导入桥 ==========
 
 
-class TestImportStealthFetcher:
+class TestImportLibFetcher:
     def test_returns_none_when_unavailable(self) -> None:
         """web_crawler.Fetcher 不可用时返回 None。"""
         # 模拟两次 import 都失败
         with patch.dict("sys.modules", {"web_crawler": None}, clear=False):
-            result = cr._import_stealth_fetcher()
+            result = cr._import_lib_fetcher()
         # 可能返回 None 或 Fetcher，取决于环境；只验证不抛异常
         assert result is None or result is not None
 
@@ -1769,70 +1785,8 @@ class TestImportStealthFetcher:
         fake_fetcher = Mock()
         fake_module = Mock(Fetcher=fake_fetcher)
         with patch.dict("sys.modules", {"web_crawler": fake_module}):
-            result = cr._import_stealth_fetcher()
+            result = cr._import_lib_fetcher()
         assert result is fake_fetcher
-
-
-class TestStealthFetch:
-    def test_stealth_fetch_success(self) -> None:
-        """_stealth_fetch 通过缓存的 Fetcher 实例获取内容。"""
-        fake_resp = Mock()
-        fake_resp.headers = {"content-type": "text/html"}
-        fake_resp.content = b"<html>stealth</html>"
-        fake_resp.status = 200
-
-        fake_fetcher_instance = Mock()
-        fake_fetcher_instance.get.return_value = fake_resp
-        fake_fetcher_instance.close = Mock()
-
-        fake_fetcher_cls = Mock(return_value=fake_fetcher_instance)
-
-        # 清空模块级缓存，避免跨测试缓存污染
-        core._stealth_fetcher = None
-        core._stealth_fetcher_key = ("", None, "")
-
-        with patch.object(core, "_import_stealth_fetcher", return_value=fake_fetcher_cls):
-            content, ct, status = cr._stealth_fetch(
-                "https://example.com", {"X": "Y"}, 30, None, "chrome131"
-            )
-        assert content == b"<html>stealth</html>"
-        assert ct == "text/html"
-        assert status == 200
-        # 验证 get() 被调用（而非 __enter__）
-        fake_fetcher_instance.get.assert_called_once()
-
-    def test_stealth_fetch_unavailable_raises(self) -> None:
-        """Fetcher 不可用时抛 RuntimeError。"""
-        core._stealth_fetcher = None
-        core._stealth_fetcher_key = ("", None, "")
-
-        with (
-            patch.object(core, "_import_stealth_fetcher", return_value=None),
-            pytest.raises(RuntimeError, match="stealth fetcher unavailable"),
-        ):
-            cr._stealth_fetch("https://example.com", {}, 30, None, "chrome131")
-
-    def test_stealth_fetch_content_type_fallback(self) -> None:
-        """content-type 头缺失时回退到 Content-Type。"""
-        fake_resp = Mock()
-        fake_resp.headers = {"Content-Type": "application/json"}
-        fake_resp.content = b"{}"
-        fake_resp.status = 200
-
-        fake_fetcher_instance = Mock()
-        fake_fetcher_instance.get.return_value = fake_resp
-        fake_fetcher_instance.close = Mock()
-
-        fake_fetcher_cls = Mock(return_value=fake_fetcher_instance)
-
-        core._stealth_fetcher = None
-        core._stealth_fetcher_key = ("", None, "")
-
-        with patch.object(core, "_import_stealth_fetcher", return_value=fake_fetcher_cls):
-            _content, ct, _status = cr._stealth_fetch(
-                "https://example.com", {}, 30, None, "chrome131"
-            )
-        assert ct == "application/json"
 
 
 class TestSafeRedirectHandler:
@@ -1906,159 +1860,7 @@ class TestSafeRedirectHandler:
         assert result.full_url == "https://cdn.example.com/lib.js"
 
 
-class TestStealthFetchRedirects:
-    """stealth 路径手动跟随重定向并逐跳校验。"""
-
-    def test_follows_safe_redirect(self) -> None:
-        """抓取流程跟随安全重定向。"""
-        hop1 = Mock()
-        hop1.status = 302
-        hop1.headers = {"location": "https://cdn.example.com/lib.js"}
-        hop2 = Mock()
-        hop2.status = 200
-        hop2.headers = {"content-type": "application/javascript"}
-        hop2.content = b"var x = 1;"
-
-        instance = Mock()
-        instance.get.side_effect = [hop1, hop2]
-        instance.close = Mock()
-        with patch.object(core, "_get_stealth_fetcher", return_value=instance):
-            content, ct, status = cr._stealth_fetch(
-                "https://example.com/start", {}, 30, None, "chrome131"
-            )
-        assert content == b"var x = 1;"
-        assert ct == "application/javascript"
-        assert status == 200
-        # 两次请求：起始 URL 与重定向后的目标
-        assert instance.get.call_count == 2
-
-    def test_blocks_unsafe_redirect(self) -> None:
-        """抓取流程拒绝不安全重定向。"""
-        hop1 = Mock()
-        hop1.status = 302
-        hop1.headers = {"location": "http://169.254.169.254/latest"}
-        instance = Mock()
-        instance.get.return_value = hop1
-        instance.close = Mock()
-        with (
-            patch.object(core, "_get_stealth_fetcher", return_value=instance),
-            pytest.raises(ValueError, match="unsafe"),
-        ):
-            cr._stealth_fetch("https://example.com/start", {}, 30, None, "chrome131")
-
-    def test_blocks_relative_to_non_http_redirect(self) -> None:
-        """抓取流程拒绝相对跳转到非 HTTP 协议。"""
-        hop1 = Mock()
-        hop1.status = 302
-        hop1.headers = {"location": "file:///etc/passwd"}
-        instance = Mock()
-        instance.get.return_value = hop1
-        instance.close = Mock()
-        with (
-            patch.object(core, "_get_stealth_fetcher", return_value=instance),
-            pytest.raises(ValueError, match="unsafe"),
-        ):
-            cr._stealth_fetch("https://example.com/start", {}, 30, None, "chrome131")
-
-    def test_too_many_redirects(self) -> None:
-        """抓取流程在重定向超限时终止。"""
-        hop = Mock()
-        hop.status = 302
-        hop.headers = {"location": "https://example.com/again"}
-        instance = Mock()
-        instance.get.return_value = hop
-        instance.close = Mock()
-        with (
-            patch.object(core, "_get_stealth_fetcher", return_value=instance),
-            pytest.raises(ValueError, match="too many redirects"),
-        ):
-            cr._stealth_fetch("https://example.com/start", {}, 30, None, "chrome131")
-
-
-class TestStealthFetcherCache:
-    """模块级 stealth fetcher 缓存的复用与 key 变更。"""
-
-    def _reset_cache(self) -> None:
-        core._stealth_fetcher = None
-        core._stealth_fetcher_key = ("", None, "")
-
-    def test_cache_reuse(self) -> None:
-        """相同 key 复用缓存实例,不重复创建/关闭。"""
-        self._reset_cache()
-        fake = Mock()
-        fake.close = Mock()
-        fake_cls = Mock(return_value=fake)
-        with patch.object(core, "_import_stealth_fetcher", return_value=fake_cls):
-            f1 = cr._get_stealth_fetcher("chrome131", 30.0, None)
-            f2 = cr._get_stealth_fetcher("chrome131", 30.0, None)
-        assert f1 is f2
-        fake.close.assert_not_called()
-        fake_cls.assert_called_once()
-
-    def test_key_change_closes_old(self) -> None:
-        """key 变化时关闭旧实例并创建新实例。"""
-        self._reset_cache()
-        old = Mock()
-        old.close = Mock()
-        new = Mock()
-        new.close = Mock()
-        fake_cls = Mock(side_effect=[old, new])
-        with patch.object(core, "_import_stealth_fetcher", return_value=fake_cls):
-            f1 = cr._get_stealth_fetcher("chrome131", 30.0, None)
-            f2 = cr._get_stealth_fetcher("chrome120", 30.0, None)
-        assert f1 is old
-        assert f2 is new
-        old.close.assert_called_once()
-
-    def test_key_change_close_error_ignored(self) -> None:
-        """关闭旧实例失败时忽略,仍创建新实例。"""
-        self._reset_cache()
-        old = Mock()
-        old.close.side_effect = OSError("boom")
-        new = Mock()
-        new.close = Mock()
-        fake_cls = Mock(side_effect=[old, new])
-        with patch.object(core, "_import_stealth_fetcher", return_value=fake_cls):
-            cr._get_stealth_fetcher("chrome131", 30.0, None)
-            f2 = cr._get_stealth_fetcher("chrome120", 30.0, None)
-        assert f2 is new
-
-
-class TestStealthFetchMaxBytes:
-    """stealth 路径 Content-Length 预检。"""
-
-    def test_content_length_over_limit_rejected(self) -> None:
-        """响应 Content-Length 超限时被拒绝。"""
-        resp = Mock()
-        resp.status = 200
-        resp.headers = {"content-length": "2000", "content-type": "image/png"}
-        resp.content = b"x" * 2000
-        instance = Mock()
-        instance.get.return_value = resp
-        with (
-            patch.object(core, "_get_stealth_fetcher", return_value=instance),
-            pytest.raises(ValueError, match="max-bytes"),
-        ):
-            cr._stealth_fetch("https://x.com/a", {}, 30, None, "chrome131", max_bytes=1000)
-
-    def test_content_length_invalid_ignored(self) -> None:
-        """非数字 Content-Length 忽略,由调用方按实际长度兜底。"""
-        resp = Mock()
-        resp.status = 200
-        resp.headers = {"content-length": "abc", "content-type": "text/plain"}
-        resp.content = b"small"
-        instance = Mock()
-        instance.get.return_value = resp
-        with patch.object(core, "_get_stealth_fetcher", return_value=instance):
-            content, ct, status = cr._stealth_fetch(
-                "https://x.com/a", {}, 30, None, "chrome131", max_bytes=1000
-            )
-        assert content == b"small"
-        assert ct == "text/plain"
-        assert status == 200
-
-
-class TestImportStealthFetcherSrcInPath:
+class TestImportLibFetcherSrcInPath:
     def test_src_path_present_skips_insert(self) -> None:
         """src 已在 sys.path 时不再重复插入（覆盖跳过分支）。"""
         original_path = list(sys.path)
@@ -2067,7 +1869,7 @@ class TestImportStealthFetcherSrcInPath:
             if src_path not in sys.path:
                 sys.path.insert(0, src_path)
             with patch.dict("sys.modules", {"web_crawler": None}, clear=False):
-                result = cr._import_stealth_fetcher()
+                result = cr._import_lib_fetcher()
             assert result is None
         finally:
             sys.path[:] = original_path
@@ -2078,16 +1880,29 @@ class TestImportStealthFetcherSrcInPath:
 
 class TestFetchAdvanced:
     def test_stealth_path_in_fetch(self) -> None:
-        """control_args.stealth=True 时走 stealth 路径。"""
+        """control_args.stealth=True 时以目标指纹构造 fetcher。"""
         control_args = Mock()
         control_args.stealth = True
         control_args.impersonate = "chrome131"
         control_args.proxy = None
-
-        with patch.object(core, "_stealth_fetch", return_value=(b"data", "text/html", 200)):
+        fake = Mock()
+        fake.get.return_value = _mock_fetch_response(200, b"data", {"content-type": "text/html"})
+        with patch.object(core, "_get_app_fetcher", return_value=fake) as get_fetcher:
             data, ct = cr.fetch("https://example.com", 30, {}, 0, None, control_args=control_args)
         assert data == b"data"
         assert ct == "text/html"
+        get_fetcher.assert_called_once_with("chrome131", 30.0, None)
+
+    def test_non_stealth_uses_no_impersonation(self) -> None:
+        """非 stealth 路径以 impersonate=None 构造 fetcher（无指纹伪装）。"""
+        control_args = Mock()
+        control_args.stealth = False
+        control_args.proxy = None
+        fake = Mock()
+        fake.get.return_value = _mock_fetch_response(200, b"plain", {"content-type": "text/html"})
+        with patch.object(core, "_get_app_fetcher", return_value=fake) as get_fetcher:
+            cr.fetch("https://example.com", 30, {}, 0, None, control_args=control_args)
+        get_fetcher.assert_called_once_with(None, 30.0, None)
 
     def test_stealth_path_max_bytes_exceeded(self) -> None:
         """stealth 路径超出 max_bytes 抛 ValueError。"""
@@ -2095,22 +1910,23 @@ class TestFetchAdvanced:
         control_args.stealth = True
         control_args.impersonate = "chrome131"
         control_args.proxy = None
-
+        fake = Mock()
+        fake.get.return_value = _mock_fetch_response(200, b"x" * 200, {})
         with (
-            patch.object(core, "_stealth_fetch", return_value=(b"x" * 200, "text/html", 200)),
+            patch.object(core, "_get_app_fetcher", return_value=fake),
             pytest.raises(ValueError, match="max-bytes"),
         ):
             cr.fetch("https://example.com", 30, {}, 0, 100, control_args=control_args)
 
-    def test_stealth_path_with_rate_limiter(self) -> None:
-        """stealth 路径调用 rate_limiter.record_request。"""
+    def test_with_rate_limiter(self) -> None:
+        """内存路径调用 rate_limiter 的 wait_if_needed / record_request。"""
         control_args = Mock()
-        control_args.stealth = True
-        control_args.impersonate = "chrome131"
+        control_args.stealth = False
         control_args.proxy = None
-
+        fake = Mock()
+        fake.get.return_value = _mock_fetch_response(200, b"data", {})
         rate_limiter = Mock()
-        with patch.object(core, "_stealth_fetch", return_value=(b"data", "text/html", 200)):
+        with patch.object(core, "_get_app_fetcher", return_value=fake):
             cr.fetch(
                 "https://example.com",
                 30,
@@ -2124,114 +1940,79 @@ class TestFetchAdvanced:
         rate_limiter.record_request.assert_called_once()
 
     def test_resume_path_with_existing_part(self, tmp_path: Path) -> None:
-        """resume_path 存在 .part 文件时使用 Range 头续传。"""
+        """resume_path 走库级 download 流式落盘（返回空 body + content-type）。"""
         resume_path = tmp_path / "file.bin"
-        part_path = tmp_path / "file.bin.part"
-        part_path.write_bytes(b"existing")
+        (tmp_path / "file.bin.part").write_bytes(b"existing")
 
-        mock_response = MagicMock()
-        mock_response.headers.get.return_value = "application/octet-stream"
-        mock_response.status = 206
-        mock_response.read.side_effect = [b"new_data", b""]
+        def _fake_download(url: str, dest: Path, **kwargs: Any) -> Path:
+            kwargs["on_headers"](206, {"content-type": "application/octet-stream"})
+            (tmp_path / "file.bin.part").replace(dest)
+            return dest
 
-        mock_opener = MagicMock()
-        mock_opener.open.return_value = mock_response
-
-        with patch.object(core, "_get_opener", return_value=mock_opener):
+        fake = Mock()
+        fake.download.side_effect = _fake_download
+        with patch.object(core, "_get_app_fetcher", return_value=fake):
             data, ct = cr.fetch(
-                "https://example.com/file.bin",
-                30,
-                {},
-                0,
-                None,
-                resume_path=resume_path,
+                "https://example.com/file.bin", 30, {}, 0, None, resume_path=resume_path
             )
         assert data == b""
         assert ct == "application/octet-stream"
         assert resume_path.exists()
+        call_kwargs = fake.download.call_args.kwargs
+        assert call_kwargs["resume"] is True
+        assert call_kwargs["chunk_size"] == 1024 * 64
+        assert call_kwargs["should_abort"] is not None
+        assert call_kwargs["on_headers"] is not None
 
-    def test_resume_path_status_not_206(self, tmp_path: Path) -> None:
-        """resume_path 存在 .part 但响应非 206 时从头写。"""
-        resume_path = tmp_path / "file.bin"
-        part_path = tmp_path / "file.bin.part"
-        part_path.write_bytes(b"existing")
-
-        mock_response = MagicMock()
-        mock_response.headers.get.return_value = "application/octet-stream"
-        mock_response.status = 200
-        mock_response.read.side_effect = [b"full_data", b""]
-
-        mock_opener = MagicMock()
-        mock_opener.open.return_value = mock_response
-
-        with patch.object(core, "_get_opener", return_value=mock_opener):
-            data, _ct = cr.fetch(
-                "https://example.com/file.bin",
-                30,
-                {},
-                0,
-                None,
-                resume_path=resume_path,
-            )
-        assert data == b""
+    def test_resume_path_download_failure_propagates(self, tmp_path: Path) -> None:
+        """download 的 4xx FetchError 不退避直接上抛（状态错误语义）。"""
+        exc = FetchError("HTTP Error 404: download failed for https://x.com")
+        exc.status = 404  # type: ignore[attr-defined]
+        fake = Mock()
+        fake.download.side_effect = exc
+        with (
+            patch.object(core, "_get_app_fetcher", return_value=fake),
+            pytest.raises(FetchError, match="404"),
+        ):
+            cr.fetch("https://x.com/file.bin", 30, {}, 3, None, resume_path=tmp_path / "f.bin")
 
     def test_http_429_with_retry(self) -> None:
         """429 + Retry-After + 有重试次数时 sleep 并重试。"""
-        from urllib.error import HTTPError
-
-        mock_opener = MagicMock()
-        # 第一次 429，第二次成功
-        success_response = MagicMock()
-        success_response.headers.get.return_value = "text/html"
-        success_response.read.side_effect = [b"ok", b""]
-        mock_opener.open.side_effect = [
-            HTTPError("https://x.com", 429, "Too Many Requests", {"Retry-After": "1"}, None),  # type: ignore[arg-type]
-            success_response,
+        fake = Mock()
+        fake.get.side_effect = [
+            _mock_fetch_response(429, b"", {"Retry-After": "1"}),
+            _mock_fetch_response(200, b"ok", {"content-type": "text/html"}),
         ]
-
         rate_limiter = cr.DomainRateLimiter()
         with (
-            patch.object(core, "_get_opener", return_value=mock_opener),
+            patch.object(core, "_get_app_fetcher", return_value=fake),
             patch.object(cr.time, "sleep"),
         ):
             data, _ct = cr.fetch("https://x.com", 30, {}, 1, None, rate_limiter=rate_limiter)
         assert data == b"ok"
+        assert fake.get.call_count == 2
 
-    def test_http_403_no_retry(self) -> None:
-        """403 错误不重试。"""
-        from urllib.error import HTTPError
-
-        mock_opener = MagicMock()
-        mock_opener.open.side_effect = HTTPError(
-            "https://x.com",
-            403,
-            "Forbidden",
-            {},
-            None,  # type: ignore[arg-type]
-        )
-
+    def test_http_403_no_backoff(self) -> None:
+        """403 错误不退避。"""
+        fake = Mock()
+        fake.get.return_value = _mock_fetch_response(403, b"", {})
         with (
-            patch.object(core, "_get_opener", return_value=mock_opener),
-            pytest.raises(HTTPError),
+            patch.object(core, "_get_app_fetcher", return_value=fake),
+            patch.object(cr.time, "sleep") as mock_sleep,
+            pytest.raises(FetchError, match="HTTP Error 403"),
         ):
             cr.fetch("https://x.com", 30, {}, 3, None)
+        assert not mock_sleep.called
 
-    def test_urlerror_retry(self) -> None:
-        """URLError 重试后成功。"""
-        from urllib.error import URLError
-
-        success_response = MagicMock()
-        success_response.headers.get.return_value = "text/html"
-        success_response.read.side_effect = [b"ok", b""]
-
-        mock_opener = MagicMock()
-        mock_opener.open.side_effect = [
-            URLError("connection refused"),
-            success_response,
+    def test_os_error_retry(self) -> None:
+        """传输层 OSError 重试后成功。"""
+        fake = Mock()
+        fake.get.side_effect = [
+            OSError("connection refused"),
+            _mock_fetch_response(200, b"ok", {"content-type": "text/html"}),
         ]
-
         with (
-            patch.object(core, "_get_opener", return_value=mock_opener),
+            patch.object(core, "_get_app_fetcher", return_value=fake),
             patch.object(cr.time, "sleep"),
         ):
             data, _ct = cr.fetch("https://x.com", 30, {}, 2, None)
@@ -2239,99 +2020,53 @@ class TestFetchAdvanced:
 
     def test_value_error_no_retry(self) -> None:
         """ValueError（如 max_bytes 超限）不再重试，直接向上传播。"""
-        success_response = MagicMock()
-        success_response.headers.get.return_value = "text/html"
-        success_response.read.side_effect = [b"ok", b""]
-
-        mock_opener = MagicMock()
-        mock_opener.open.side_effect = [
-            ValueError("file exceeds --max-bytes (100)"),
-            success_response,
+        fake = Mock()
+        fake.get.side_effect = [
+            _mock_fetch_response(200, b"x" * 200, {}),
+            _mock_fetch_response(200, b"ok", {}),
         ]
-
         with (
-            patch.object(core, "_get_opener", return_value=mock_opener),
+            patch.object(core, "_get_app_fetcher", return_value=fake),
             patch.object(cr.time, "sleep"),
             pytest.raises(ValueError, match="file exceeds"),
         ):
-            cr.fetch("https://x.com", 30, {}, 1, None)
-
-    def test_os_error_retry(self) -> None:
-        """OSError 重试后成功。"""
-        success_response = MagicMock()
-        success_response.headers.get.return_value = "text/html"
-        success_response.read.side_effect = [b"ok", b""]
-
-        mock_opener = MagicMock()
-        mock_opener.open.side_effect = [
-            OSError("network error"),
-            success_response,
-        ]
-
-        with (
-            patch.object(core, "_get_opener", return_value=mock_opener),
-            patch.object(cr.time, "sleep"),
-        ):
-            data, _ct = cr.fetch("https://x.com", 30, {}, 1, None)
-        assert data == b"ok"
+            cr.fetch("https://x.com", 30, {}, 1, 100)
+        assert fake.get.call_count == 1
 
     def test_all_retries_exhausted(self) -> None:
         """所有重试都失败后抛出最后一个错误。"""
-        from urllib.error import URLError
-
-        mock_opener = MagicMock()
-        mock_opener.open.side_effect = URLError("connection refused")
-
+        fake = Mock()
+        fake.get.side_effect = OSError("connection refused")
         with (
-            patch.object(core, "_get_opener", return_value=mock_opener),
+            patch.object(core, "_get_app_fetcher", return_value=fake),
             patch.object(cr.time, "sleep"),
-            pytest.raises(URLError),
+            pytest.raises(OSError),
         ):
             cr.fetch("https://x.com", 30, {}, 2, None)
 
-    def test_file_handle_close_error(self, tmp_path: Path) -> None:
-        """finally 块中 file_handle.close() 失败时记录 warning 但不抛异常。"""
-        resume_path = tmp_path / "file.bin"
-        # 创建真实的 .part 文件让 replace 能成功
-        (tmp_path / "file.bin.part").write_bytes(b"x")
-
-        mock_response = MagicMock()
-        mock_response.headers.get.return_value = "application/octet-stream"
-        mock_response.read.side_effect = [b"data", b""]
-
-        mock_opener = MagicMock()
-        mock_opener.open.return_value = mock_response
-
-        mock_file = MagicMock()
-        # 第一次 close（正常流程 line 714）成功，第二次 close（finally 块 line 744）失败
-        mock_file.close.side_effect = [None, OSError("close error")]
-
-        with (
-            patch.object(core, "_get_opener", return_value=mock_opener),
-            patch.object(Path, "open", return_value=mock_file),
-        ):
-            # 不应抛异常（finally 中的 close error 被捕获）
-            cr.fetch("https://example.com/file.bin", 30, {}, 0, None, resume_path=resume_path)
-
     def test_cancelled_by_user(self) -> None:
-        """should_stop 返回 True 时抛 RuntimeError cancelled。"""
-        mock_response = MagicMock()
-        mock_response.headers.get.return_value = "text/html"
-        mock_response.read.side_effect = [b"data", b""]
-
-        mock_opener = MagicMock()
-        mock_opener.open.return_value = mock_response
-
+        """should_stop 返回 True 时 download 中止并转 RuntimeError cancelled。"""
         control_args = Mock()
         control_args.should_stop = lambda: True
         control_args.wait_if_paused = None
-        control_args.stealth = False  # 走 urllib 路径，不走 stealth
-
+        control_args.stealth = False
+        exc = FetchError("download aborted by should_abort callback")
+        exc.keep_part = True  # type: ignore[attr-defined]
+        fake = Mock()
+        fake.download.side_effect = exc
         with (
-            patch.object(core, "_get_opener", return_value=mock_opener),
+            patch.object(core, "_get_app_fetcher", return_value=fake),
             pytest.raises(RuntimeError, match="cancelled"),
         ):
-            cr.fetch("https://example.com", 30, {}, 0, None, control_args=control_args)
+            cr.fetch(
+                "https://example.com/file.bin",
+                30,
+                {},
+                0,
+                None,
+                resume_path=Path("cancelled.bin"),
+                control_args=control_args,
+            )
 
 
 # ========== 播放清单加密分支 ==========
@@ -3491,47 +3226,37 @@ class TestNormalizeUrlEmptyHostname:
         assert cr.normalize_url("http:///path") == ""
 
 
-class TestImportStealthFetcherFallback:
+class TestImportLibFetcherFallback:
     def test_src_path_inserted(self) -> None:
-        """_import_stealth_fetcher 两次 import 都失败时返回 None。"""
+        """_import_lib_fetcher 两次 import 都失败时返回 None。"""
         # web_crawler 未安装 → 第一次 import 失败 → 插入 src → 第二次 import 也失败 → None
         original_path = list(sys.path)
         try:
-            # 确保 src 不在 sys.path 中（覆盖 line 344）
+            # 确保 src 不在 sys.path 中（覆盖插入分支）
             src_path = str(Path(cr.__file__).resolve().parent.parent / "src")
             sys.path[:] = [p for p in sys.path if p != src_path]
             # 清除可能缓存的 web_crawler 模块
             with patch.dict("sys.modules", {"web_crawler": None}, clear=False):
-                result = cr._import_stealth_fetcher()
+                result = cr._import_lib_fetcher()
             assert result is None
         finally:
             sys.path[:] = original_path
 
 
 class TestFetchHttpErrorRetry:
-    def test_http_error_retry_sleep(self, tmp_path: Path) -> None:
-        """HTTPError 500 重试后最终抛出异常，重试期间调用 sleep。"""
-        from email.message import Message
-        from urllib.error import HTTPError
-
-        mock_opener = MagicMock()
-        http_err = HTTPError(
-            url="https://example.com/x",
-            code=500,
-            msg="Internal Server Error",
-            hdrs=Message(),
-            fp=None,
-        )
-        mock_opener.open.side_effect = http_err
-
+    def test_http_error_retry_sleep(self) -> None:
+        """HTTP 500 重试后最终抛出异常，重试期间调用 sleep。"""
+        fake = Mock()
+        fake.get.side_effect = [_mock_fetch_response(500, b"", {})] * 3
         with (
-            patch.object(core, "_get_opener", return_value=mock_opener),
+            patch.object(core, "_get_app_fetcher", return_value=fake),
             patch.object(cr.time, "sleep") as mock_sleep,
-            pytest.raises(HTTPError),
+            pytest.raises(FetchError, match="HTTP Error 500"),
         ):
             cr.fetch("https://example.com/x", 30, {}, 2, None)
         # 重试时调用过 sleep（退避）
         assert mock_sleep.called
+        assert fake.get.call_count == 3
 
 
 class TestEmptyRecommendations:
@@ -4124,24 +3849,6 @@ class TestCrawlCancelSkipsStages:
         assert exit_code == 1
         assert not (tmp_path / "resources_manifest.json").exists()
         assert not (tmp_path / "run_report.json").exists()
-
-
-class TestStealthFetchRedirectNoLocation:
-    """stealth 路径：重定向响应缺少 Location 头时停止跟随。"""
-
-    def test_redirect_without_location_raises(self) -> None:
-        """302 响应没有 Location 头 → break 后统一按 too many redirects 处理。"""
-        hop = Mock()
-        hop.status = 302
-        hop.headers = {}  # 无 location 头
-        instance = Mock()
-        instance.get.return_value = hop
-        instance.close = Mock()
-        with (
-            patch.object(core, "_get_stealth_fetcher", return_value=instance),
-            pytest.raises(ValueError, match="too many redirects"),
-        ):
-            cr._stealth_fetch("https://example.com/start", {}, 30, None, "chrome131")
 
 
 class TestFormatBytesPB:
