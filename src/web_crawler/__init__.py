@@ -17,6 +17,10 @@
   :class:`AutoThrottle` 自适应限速、robots ``Crawl-delay`` 遵守、
   stats JSON/JSONL 导出与 :class:`FeedExportPipeline` item 落盘导出
   （JSON 快照 / JSONL 追加 / CSV，``feed_output=`` 便捷参数直达）。
+- :class:`LinkExtractor` / :class:`Link` — Scrapy 风格的链接提取与过滤
+  （allow/deny 正则、域白/黑名单、规范化去重）。
+- :class:`CrawlSpider` / :class:`Rule` — 规则驱动的跟随爬虫（对标
+  Scrapy CrawlSpider），配合 ``LinkExtractor`` 声明式全站遍历。
 - :class:`WebCrawlerError` — 统一异常体系根（子类兼容
   ``ValueError`` / ``RuntimeError``），可用 ``except WebCrawlerError``
   一次捕获库自身的错误。
@@ -60,6 +64,9 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "AdaptiveStorage": ("web_crawler.parser.adaptive", "AdaptiveStorage"),
     "compute_fingerprint": ("web_crawler.parser.adaptive", "compute_fingerprint"),
     "similarity_score": ("web_crawler.parser.adaptive", "similarity_score"),
+    # parser / 链接提取
+    "Link": ("web_crawler.parser.links", "Link"),
+    "LinkExtractor": ("web_crawler.parser.links", "LinkExtractor"),
     # fetcher 系列
     "BaseFetcher": ("web_crawler.fetchers._base", "BaseFetcher"),
     "Fetcher": ("web_crawler.fetchers.fetcher", "Fetcher"),
@@ -86,6 +93,9 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "Spider": ("web_crawler.spider.spider", "Spider"),
     "SpiderError": ("web_crawler.spider.spider", "SpiderError"),
     "SpiderStats": ("web_crawler.spider.spider", "SpiderStats"),
+    # spider / 规则驱动跟随爬虫
+    "CrawlSpider": ("web_crawler.spider.crawl", "CrawlSpider"),
+    "Rule": ("web_crawler.spider.crawl", "Rule"),
     # ai（可插拔 LLM 层 + AI 辅助提取；默认 DeepSeek-V4.1-Flash）
     "get_provider": ("web_crawler.ai.llm", "get_provider"),
     "register_provider": ("web_crawler.ai.llm", "register_provider"),
@@ -131,6 +141,7 @@ __all__ = [
     "CaptchaManager",
     "CaptchaType",
     "ConfigError",
+    "CrawlSpider",
     "DeepSeekProvider",
     "DownloaderMiddleware",
     "DropItem",
@@ -151,6 +162,8 @@ __all__ = [
     "LLMMessage",
     "LLMProvider",
     "LLMResponse",
+    "Link",
+    "LinkExtractor",
     "OpenAICompatibleProvider",
     "ParseError",
     "ProxyPool",
@@ -163,6 +176,7 @@ __all__ = [
     # MCP 服务器
     "ReverseMCPServer",
     "RobotsPolicy",
+    "Rule",
     "ScrapeResult",
     # parser / 自适应
     "Selector",
@@ -241,11 +255,13 @@ if TYPE_CHECKING:
     from .fetchers.session import SessionPool
     from .fetchers.stealthy import StealthyFetcher
     from .parser.adaptive import AdaptiveStorage, compute_fingerprint, similarity_score
+    from .parser.links import Link, LinkExtractor
     from .parser.selector import Adaptors, Selector
     from .parser.visual import VisualExtractor
     from .response import Response
     from .spider.autothrottle import AutoThrottle
     from .spider.cache import CacheMiddleware
+    from .spider.crawl import CrawlSpider, Rule
     from .spider.feed import FeedExportPipeline
     from .spider.spider import (
         DownloaderMiddleware,
