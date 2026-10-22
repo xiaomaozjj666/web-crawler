@@ -20,6 +20,7 @@ dict schema 路径完全无第三方依赖：轻量字段约束（类型 / 必�
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -144,6 +145,13 @@ class ValidationPipeline(ItemPipeline):
       全部字段错误（缺失必填字段 / 期望类型 X 实际 Y）；被丢弃的 item
       不计入 ``items_scraped``、不进运行结果，计入
       ``stats.items_dropped``（Spider 执行链统一计数）。
+    - ``{"type": int}`` 按 Python ``isinstance`` 语义放行 ``True`` /
+      ``False``（bool 是 int 的子类）——这是 dict 路径的固化行为，
+      与 pydantic 路径（严格类型，int 拒收 bool）不同；需要严格区分
+      bool 与 int 时请改用 pydantic 模型路径。``{"type": float}``
+      同理只收 float 本身（不含 int），``(int, float)`` 才是双收写法。
+    - ``default`` 填充使用深拷贝：多个 item 各自拿到独立的可变默认值
+      （list/dict/set 不共享引用），原地修改互不影响。
     - 附加键（schema 之外的键）：dict 路径宽松保留透传；pydantic 路径
       按模型 ``model_config`` 的 ``extra`` 策略处理（默认忽略，不出现在
       ``model_dump`` 结果里）。
@@ -217,7 +225,11 @@ class ValidationPipeline(ItemPipeline):
                 if spec.required:
                     errors.append(f"{name}: 缺失必填字段")
                 elif spec.default is not _MISSING:
-                    result[name] = spec.default
+                    # 可变默认值（list/dict/set）深拷贝：schema 声明里的
+                    # default 对象被所有缺失该字段的 item 共享，浅引用会让
+                    # 原地修改互相污染。填充只在缺失字段时发生，deepcopy
+                    # 的开销可忽略；不可变默认值 deepcopy 原样返回
+                    result[name] = deepcopy(spec.default)
             elif spec.expected is not None and not isinstance(result[name], spec.expected):
                 errors.append(
                     f"{name}: 期望类型 {_type_name(spec.expected)}, "

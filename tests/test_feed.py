@@ -88,6 +88,32 @@ class EmptySpider(Spider):
         return None
 
 
+class RerunSpider(Spider):
+    """产出单条 item 的 spider：payload 可在两次 run 之间切换。
+
+    用于验证同一 spider 实例二次 run 的 feed 多周期语义（H-2）。
+    """
+
+    name = "rerun"
+    start_urls = [f"{BASE}/"]
+    payload = "first"
+
+    def parse(self, response: Response) -> Any:
+        yield {"payload": self.payload}
+
+
+class ToggleSpider(Spider):
+    """emit 开关控制是否产出 item（验证空周期不覆盖既有快照）。"""
+
+    name = "toggle"
+    start_urls = [f"{BASE}/"]
+    emit = True
+
+    def parse(self, response: Response) -> Any:
+        if self.emit:
+            yield {"url": response.url}
+
+
 def _failing_open(self: Path, *args: Any, **kwargs: Any) -> Any:
     """pathlib.Path.open 的替身：任何打开请求都抛 OSError（磁盘满模拟）。"""
 
@@ -124,6 +150,42 @@ def test_json_feed_empty_run_writes_empty_list(tmp_path: Path) -> None:
     path = tmp_path / "feed.json"
     EmptySpider(fetcher=FakeFetcher(PAGES), feed_output=path).run()
     assert json.loads(path.read_text(encoding="utf-8")) == []
+
+
+def test_json_feed_second_run_on_same_instance_snapshots_latest(tmp_path: Path) -> None:
+    """H-2 回归：同一实例二次 run，快照只含第二次数据（不静默丢）。"""
+    path = tmp_path / "rerun.json"
+    spider = RerunSpider(fetcher=FakeFetcher(PAGES), feed_output=path)
+    spider.run()
+    assert json.loads(path.read_text(encoding="utf-8")) == [{"payload": "first"}]
+    spider.payload = "second"
+    spider.run()
+    # 新周期 item 解除 close 守卫：快照反映最新 run（覆盖语义）
+    assert json.loads(path.read_text(encoding="utf-8")) == [{"payload": "second"}]
+
+
+def test_json_feed_second_empty_run_keeps_previous_snapshot(tmp_path: Path) -> None:
+    """H-2 边界：同一实例二次空 run 不覆盖既有快照（数据优先于空覆盖）。"""
+    path = tmp_path / "toggle.json"
+    spider = ToggleSpider(fetcher=FakeFetcher(PAGES), feed_output=path)
+    spider.run()
+    first = path.read_text(encoding="utf-8")
+    assert json.loads(first) == [{"url": f"{BASE}/"}]
+    spider.emit = False
+    spider.run()
+    # 空周期无新 item：守卫未解除，既有快照原样保留
+    assert path.read_text(encoding="utf-8") == first
+
+
+def test_jsonl_feed_second_run_on_same_instance_appends(tmp_path: Path) -> None:
+    """H-2 回归：同一实例二次 run，JSONL 追加两行（周期数据都不丢）。"""
+    path = tmp_path / "rerun.jsonl"
+    spider = RerunSpider(fetcher=FakeFetcher(PAGES), feed_output=path)
+    spider.run()
+    spider.payload = "second"
+    spider.run()
+    lines = path.read_text(encoding="utf-8").strip().splitlines()
+    assert [json.loads(line)["payload"] for line in lines] == ["first", "second"]
 
 
 def test_json_feed_creates_missing_parent_dirs(tmp_path: Path) -> None:
@@ -319,6 +381,44 @@ def test_csv_feed_empty_run_creates_no_file(tmp_path: Path) -> None:
     path = tmp_path / "feed.csv"
     EmptySpider(fetcher=FakeFetcher(PAGES), feed_output=path).run()
     assert not path.exists()
+
+
+def test_csv_feed_non_dict_item_skipped_with_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """CSV + 非 dict item：记 warning 跳过写盘，item 照常通过、其余行完整。"""
+
+    class MixedSpider(Spider):
+        name = "mixed"
+        start_urls = [f"{BASE}/"]
+
+        def parse(self, response: Response) -> Any:
+            yield {"url": "a", "status": 200}
+            yield "plain-string-item"
+            yield {"url": "c", "status": 201}
+
+    path = tmp_path / "mixed.csv"
+    with caplog.at_level(logging.WARNING, logger="web_crawler.spider.feed"):
+        items = MixedSpider(fetcher=FakeFetcher(PAGES), feed_output=path).run()
+    # 被跳过的 item 照常通过管道进入 run 结果（导出失败/跳过绝不连累数据）
+    assert items == [{"url": "a", "status": 200}, "plain-string-item", {"url": "c", "status": 201}]
+    with path.open(encoding="utf-8", newline="") as fh:
+        rows = list(csv_mod.reader(fh))
+    # 非 dict item 不写行、不扰动列定义：其余两行完整落盘
+    assert rows == [["url", "status"], ["a", "200"], ["c", "201"]]
+    assert any("non-mapping" in rec.getMessage() for rec in caplog.records)
+
+
+def test_csv_feed_write_failure_passes_item_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """CSV 写盘抛 OSError 不连累 item：run 正常返回全部数据并记 warning。"""
+    monkeypatch.setattr("pathlib.Path.open", _failing_open)
+    spider = FeedSpider(fetcher=FakeFetcher(PAGES), feed_output=tmp_path / "feed.csv")
+    with caplog.at_level(logging.WARNING, logger="web_crawler.spider.feed"):
+        items = spider.run()
+    assert items == EXPECTED_ITEMS
+    assert any("feed export" in rec.getMessage() for rec in caplog.records)
 
 
 # ===========================================================================

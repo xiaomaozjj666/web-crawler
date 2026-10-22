@@ -24,6 +24,7 @@ r"""Scrapy 风格的 :class:`CrawlSpider` —— 规则驱动的跟随爬虫。
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -31,6 +32,8 @@ from typing import Any
 from ..parser.links import LinkExtractor
 from ..response import Response
 from .spider import Request, Spider
+
+logger = logging.getLogger(__name__)
 
 # CrawlSpider 全部响应（种子与跟随）共用的回调方法名。
 # 本库 Request.callback 是字符串方法名（Spider._dispatch 以 getattr 解析），
@@ -47,8 +50,9 @@ class Rule:
     link_extractor:
         命中链接的提取器（含 allow/deny/域过滤等全部语义）。
     callback:
-        回调方法名（``None`` = 不产 item，仅跟随）。方法不存在时静默
-        跳过该规则（对齐 Scrapy 的宽容处理，不中断爬取）。
+        回调方法名（``None`` = 不产 item，仅跟随）。方法不存在时跳过
+        该规则并记 warning（每规则只警告一次；对齐 Scrapy 的宽容处理，
+        不中断爬取）。
     follow:
         是否继续从命中的链接（页面）提取（递归遍历）。``False`` 时
         「只跟一层」：命中链接仍会被请求，但直接交给 ``callback``
@@ -71,6 +75,12 @@ class CrawlSpider(Spider):
 
     rules: list[Rule] = []
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # 已警告过「回调方法缺失」的规则名：每规则只警告一次，防止逐
+        # 响应重复刷屏。实例属性而非类属性——可变集合不能跨实例共享
+        self._warned_missing_callbacks: set[str] = set()
+
     def start_requests(self) -> Iterator[Request]:
         """产出初始请求：callback 指向 :meth:`_parse_response`。"""
         for url in self.start_urls:
@@ -90,11 +100,23 @@ class CrawlSpider(Spider):
            提取）；``rule.callback`` 为 ``None`` 时不生成请求；
         4. ``rule.callback`` 指向的方法存在时，在当前 response 上调用
            并透传其全部产出（item 或 Request——Request 同样进入引擎调度）。
+
+        ``rule.callback`` 指向不存在的方法名时宽容跳过该规则（对齐
+        Scrapy，不中断爬取），但会记 warning 且每规则只警告一次——
+        静默丢弃会掩盖回调名拼写错误等配置问题。
         """
         for rule in self.rules:
             links = rule.link_extractor.extract(response)
             name = rule.callback
             callback = getattr(self, name, None) if name is not None else None
+            if name is not None and callback is None:
+                if name not in self._warned_missing_callbacks:
+                    self._warned_missing_callbacks.add(name)
+                    logger.warning(
+                        "CrawlSpider 规则回调 %r 不存在于 %s，跳过该规则",
+                        name,
+                        type(self).__name__,
+                    )
             if rule.follow:
                 for link in links:
                     yield Request(url=link.url, callback=_PARSE_RESPONSE)

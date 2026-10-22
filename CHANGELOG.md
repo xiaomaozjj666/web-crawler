@@ -4,6 +4,56 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+0.6.0/0.7.0 新增模块（下载/Feed/Sitemap/Link/Crawl/Validation）的深度审查
+修复——3 High / 6 Medium / 2 Low，均经实验复现确认后修复：
+
+- **（High）流式重定向 SSRF 拒绝时池化句柄泄漏**：下载 URL 重定向跳向
+  私网/云元数据被 `UnsafeTargetError` 拒绝时，当前跳已借出的会话池句柄
+  不归还——每次触发即泄漏一个池句柄。重定向循环补 `try/except` 清理
+  （sync/async 双路径）。
+- **（High）FeedExportPipeline 同实例二次运行数据静默丢失**：暂停 →
+  `run(resume=True)` 恢复场景下第二次抓取的 JSON 快照不落盘（close 幂等
+  守卫跨周期不重置）。守卫改为「周期结束」语义，缓冲随周期清空。
+- **（High）断点续传不校验 Content-Range 起始偏移**：服务器返回 206 但
+  body 起始与本地 `.part` 偏移不符时（错误实现/CDN/恶意服务器），客户端
+  错位拼接并原子落盘**损坏文件且无告警**。现解析 `Content-Range: bytes
+  <start>-` 并校验，错位/无头一律回退截断重写。
+- **（Medium）416 响应无条件删除已完整的 `.part`**：Windows 下
+  `os.replace` 被占用重试触发 416 时已下载数据全丢。现识别
+  `Content-Range: bytes */N` 且 `N == offset` 的「已完整」语义直接落盘。
+- **（Medium）SitemapSpider 递归无深度上限**：链式 sitemapindex（每层
+  URL 不同）可无限抓取。新增 `sitemap_max_depth`（默认 10，meta 传递
+  深度计数）。
+- **（Medium）sitemap 解析展开内部实体（billion laughs DoS）**：XML
+  解析器改 `resolve_entities=False`。
+- **（Medium）LinkExtractor 默认放行 javascript:/data: 伪协议**：下游
+  被当下载失败处理（污染统计 + 无意义重试）。新增 scheme 白名单
+  （仅 http/https 与相对链接）。
+- **（Medium）dict schema mutable default 跨 item 共享引用**：list/
+  dict/set 默认值改深拷贝填充。
+- **（Medium）CrawlSpider 回调方法名缺失静默丢弃**：补 warning（每规则
+  一次）。
+- **（Low）用户显式 `Range` 头在无 `.part` 时被透传**：静默产出部分
+  文件。现 `offset == 0` 时剔除用户 Range 头。
+- **（Low）写盘阶段本地 OSError 被当网络错误重试**：磁盘满/权限/
+  `os.replace` 被占用不再走网络退避重试，包装为 `FetchError`
+  （`keep_part=True`）。
+
+### Changed
+
+- `Fetcher.download()` 写盘与网络错误的分层：本地文件系统故障与网络
+  瞬时错误分离处理（不重试前者）。
+- `tests/test_download.py` 覆盖率补齐：`_download.py` 语句覆盖 **79% →
+  100%**（新增 66 个测试：Content-Range 错位矩阵、416 完成语义、写盘
+  故障矩阵、async 镜像套件、StreamContext 幂等与异常路径）。
+- 对抗性审查方法沉淀：六模块全部「核查无发现」的维度（槽位闭环/
+  StreamContext 幂等/取消路径/feed 并发安全论证/SSRF 链路）留有逐行
+  证据记录。
+
 ## [0.7.0] - 2026-10-22
 
 ### Added

@@ -119,6 +119,13 @@ class LinkExtractor:
         :class:`Link.url` 均使用规范化后的值。
     strip:
         链接文本做 strip + 空白折叠（``"  a  b "`` → ``"a b"``）。
+
+    Notes
+    -----
+    只产出 http/https 链接：``javascript:`` / ``data:`` / ``mailto:`` /
+    ``tel:`` 等非 http(s) scheme 一律拒绝。``allow`` 正则无法豁免伪协议
+    URL（scheme 校验先于正则执行）——需要怪异协议的场景不在支持范围，
+    请在回调里自行解析 ``<a>`` 原始属性。
     """
 
     def __init__(
@@ -185,7 +192,21 @@ class LinkExtractor:
         return links
 
     def _url_allowed(self, url: str) -> bool:
-        """单条 URL 的四层过滤：deny > allow > deny_domains > allow_domains。"""
+        """单条 URL 的首层 scheme 校验 + 四层过滤：scheme > deny > allow > 域。
+
+        只放行 http/https 链接：``javascript:`` / ``data:`` / ``mailto:``
+        / ``tel:`` 等伪协议一律拒绝（与库级 SSRF 校验的 scheme 白名单
+        语义对齐）——伪协议 URL 交给下游 Request 只会被引擎按下载失败
+        处理，污染统计且无意义。无 scheme 的相对 URL（str 输入未提供
+        base_url 时按原样保留的路径）放行交下游处理；无法解析的畸形
+        URL（urlparse 抛 ValueError）同样拒绝。
+        """
+        try:
+            scheme = urlparse(url).scheme
+        except ValueError:
+            return False
+        if scheme not in ("", "http", "https"):
+            return False
         if any(p.search(url) for p in self.deny):
             return False
         if self.allow and not any(p.search(url) for p in self.allow):

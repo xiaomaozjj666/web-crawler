@@ -4,7 +4,8 @@
 过滤（deny 优先）、allow_domains/deny_domains 后缀匹配（子域命中）、
 unique 去重保序、canonicalize（查询参数排序 / 去 fragment）、strip 空白
 折叠、attrs 附带属性、空白名单全放行、Response 与 str html 输入等价、
-非法正则抛 ConfigError。
+非法正则抛 ConfigError、http/https scheme 白名单（伪协议拒绝）、
+空白文档短路、无 host URL 域过滤拒绝、畸形 URL（urlparse ValueError）。
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import pytest
 
 from web_crawler import Link, LinkExtractor, Response
 from web_crawler.exceptions import ConfigError
+from web_crawler.parser.links import _hostname
 
 BASE = "https://shop.example.com"
 
@@ -192,3 +194,77 @@ def test_invalid_regex_raises_config_error() -> None:
         LinkExtractor(allow=("(",))
     with pytest.raises(ConfigError):
         LinkExtractor(deny=("[z-a",))
+
+
+# ===========================================================================
+# scheme 白名单（M-4）：只产 http/https 链接
+# ===========================================================================
+
+
+def test_pseudo_scheme_urls_rejected_by_default() -> None:
+    """默认配置拒绝 javascript:/data:/mailto:/tel: 伪协议 URL。"""
+    html = (
+        "<html><body>"
+        '<a href="javascript:void(0)">js</a>'
+        '<a href="data:text/html,x">data</a>'
+        '<a href="mailto:a@b.com">mail</a>'
+        '<a href="tel:12345678">tel</a>'
+        '<a href="https://x.com/ok">https</a>'
+        '<a href="/rel">relative</a>'
+        "</body></html>"
+    )
+    links = LinkExtractor().extract(html, base_url=BASE)
+    # 伪协议全拒；https 与经 urljoin 绝对化的相对链接通过
+    assert [link.url for link in links] == ["https://x.com/ok", f"{BASE}/rel"]
+
+
+def test_http_relative_link_resolved_and_allowed() -> None:
+    """http 基准下相对链接经 urljoin 绝对化后通过 scheme 校验。"""
+    html = '<html><body><a href="page2">next</a></body></html>'
+    links = LinkExtractor().extract(html, base_url=f"{BASE}/list")
+    assert [link.url for link in links] == [f"{BASE}/page2"]
+
+
+def test_pseudo_scheme_allow_regex_cannot_bypass_scheme_check() -> None:
+    """allow 正则无法豁免伪协议：scheme 校验先于正则执行。"""
+    html = '<html><body><a href="javascript:void(0)">js</a></body></html>'
+    links = LinkExtractor(allow=(r"javascript:.*",)).extract(html, base_url=BASE)
+    assert links == []
+
+
+def test_relative_url_without_base_kept_as_is() -> None:
+    """无 base_url 的相对链接按原样保留（空 scheme 放行交下游处理）。"""
+    html = '<html><body><a href="/rel">rel</a></body></html>'
+    links = LinkExtractor().extract(html)
+    assert [link.url for link in links] == ["/rel"]
+
+
+# ===========================================================================
+# 边界输入与畸形 URL
+# ===========================================================================
+
+
+def test_blank_document_returns_empty_list() -> None:
+    """空白文档（纯空白 / 空串）短路返回 []，不进 lxml 解析。"""
+    assert LinkExtractor().extract("   \n\t  ") == []
+    assert LinkExtractor().extract("") == []
+
+
+def test_no_host_url_with_allow_domains_rejected() -> None:
+    """无 host 的 URL（无 base 的相对路径）+ allow_domains：拒绝。"""
+    html = '<html><body><a href="/rel">rel</a></body></html>'
+    links = LinkExtractor(allow_domains=("example.com",)).extract(html)
+    assert links == []
+
+
+def test_malformed_url_rejected_gracefully() -> None:
+    """畸形 URL（无闭合括号的 IPv6 host）不炸提取：scheme 校验拒绝。"""
+    html = '<html><body><a href="http://[invalid">bad</a></body></html>'
+    # 无 base_url（不经 urljoin）+ canonicalize=False：直达 _url_allowed
+    links = LinkExtractor(canonicalize=False).extract(html)
+    assert links == []
+
+
+def test_hostname_of_invalid_ipv6_url_returns_empty() -> None:
+    """_hostname 对 urlparse 抛 ValueError 的畸形 URL 返回空串（不炸）。"""
+    assert _hostname("http://[invalid") == ""

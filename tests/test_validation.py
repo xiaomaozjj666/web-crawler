@@ -99,6 +99,44 @@ def test_dict_schema_optional_default_filled() -> None:
     assert item == {"name": "x"}  # 原 item 不被就地修改（浅拷贝上补默认值）
 
 
+def test_dict_schema_mutable_default_not_shared_between_items() -> None:
+    """M-5 回归：可变 default（list/dict/set）深拷贝——独立对象、修改互不影响。"""
+    schema = {
+        "tags": {"required": False, "default": []},
+        "attrs": {"required": False, "default": {"k": 1}},
+        "ids": {"required": False, "default": {1, 2}},
+    }
+    pipe = ValidationPipeline(schema)
+    out1 = pipe.process_item({"name": "a"}, Spider())
+    out2 = pipe.process_item({"name": "b"}, Spider())
+    for field in ("tags", "attrs", "ids"):
+        # 两个 item 的默认值不是同一对象，也不是 schema 声明里的本体
+        # （共享引用会让原地修改互相污染）
+        assert out1[field] is not out2[field]
+        assert out1[field] is not schema[field]["default"]
+        # 原地修改 out1 不影响 out2 与 schema 本体
+        value: Any = out1[field]
+        if isinstance(value, list):
+            value.append("mutated")
+        elif isinstance(value, dict):
+            value["mutated"] = True
+        else:
+            value.add("mutated")
+        assert "mutated" not in out2[field]
+        assert "mutated" not in schema[field]["default"]
+
+
+def test_dict_schema_int_type_accepts_bool_isinstance_semantics() -> None:
+    """L-1 固化：dict schema 的 {"type": int} 放行 bool（isinstance 语义）。
+
+    bool 是 int 的子类，与 pydantic 路径（严格类型，int 拒收 bool）
+    行为不同——固化现状并已在类 docstring 写明，进阶需求用 pydantic。
+    """
+    pipe = ValidationPipeline({"flag": {"type": int}})
+    assert pipe.process_item({"flag": True}, Spider())["flag"] is True
+    assert pipe.process_item({"flag": False}, Spider())["flag"] is False
+
+
 def test_dict_schema_extra_keys_passed_through() -> None:
     """附加键（schema 之外的键）宽松保留透传（docstring 写明的语义）。"""
     pipe = ValidationPipeline({"name": {"type": str}})

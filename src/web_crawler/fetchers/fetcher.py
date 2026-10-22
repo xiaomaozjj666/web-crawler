@@ -776,9 +776,14 @@ class _FetcherCore(BaseFetcher):
             stream = await self._stream_once_async(
                 state.method, state.url, state.headers, proxy, timeout, verify
             )
-            if not self._advance_redirect(state, stream.raw):
-                return stream
-
+            try:
+                if not self._advance_redirect(state, stream.raw):
+                    return stream
+            except BaseException:
+                # 跳转目标校验失败（如 UnsafeTargetError）时当前跳的流与池化
+                # 句柄已借出——必须先 aclose 归还再传播异常，否则泄漏
+                await stream.aclose()
+                raise
             await stream.aclose()
         raise FetchError(f"too many redirects (max {self.max_redirects}) for {url}")
 
@@ -867,8 +872,14 @@ class _FetcherCore(BaseFetcher):
             stream = self._stream_once_sync(
                 state.method, state.url, state.headers, proxy, timeout, verify
             )
-            if not self._advance_redirect(state, stream.raw):
-                return stream
+            try:
+                if not self._advance_redirect(state, stream.raw):
+                    return stream
+            except BaseException:
+                # 跳转目标校验失败（如 UnsafeTargetError）时当前跳的流与池化
+                # 句柄已借出——必须先 close 归还再传播异常，否则泄漏
+                stream.close()
+                raise
             stream.close()
         raise FetchError(f"too many redirects (max {self.max_redirects}) for {url}")
 

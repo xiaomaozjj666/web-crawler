@@ -3,15 +3,18 @@
 覆盖：start_requests 指向 _parse_response、最小规则组合（产 item +
 纯跟随）、A→B→C 递归深度、A→B→A 环路 DupeFilter 不死循环、
 allowed_domains 过滤跟随请求、callback=None 纯跟随不产 item、
-follow=False 只跟一层、回调方法名缺失静默跳过、实例级 rules 赋值、
-CrawlSpider + feed_output 落盘端到端。
+follow=False 只跟一层、回调方法名缺失警告（每规则一次）+ 跳过、
+实例级 rules 赋值、CrawlSpider + feed_output 落盘端到端。
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from web_crawler import CrawlSpider, LinkExtractor, Response, Rule
 
@@ -189,6 +192,27 @@ def test_missing_callback_method_is_skipped() -> None:
     items = S(fetcher=fetcher).run()
     assert items == []
     assert fetcher.calls == [f"{BASE}/", f"{BASE}/list"]
+
+
+def test_missing_callback_method_warns_once_across_responses(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """M-6 回归：回调缺失记 warning，两条响应只警告一次（不逐响应刷屏）。"""
+
+    class S(CrawlSpider):
+        name = "missing_cb_warn"
+        start_urls = [f"{BASE}/"]
+        rules = [Rule(LinkExtractor(allow=(r"/list",)), callback="no_such_method")]
+
+    fetcher = FakeFetcher(PAGES)
+    with caplog.at_level(logging.WARNING, logger="web_crawler.spider.crawl"):
+        items = S(fetcher=fetcher).run()
+    assert items == []
+    # / 与 /list 两个响应都走 _parse_response 评估该规则：warning 只出现一次
+    assert fetcher.calls == [f"{BASE}/", f"{BASE}/list"]
+    warnings = [rec.getMessage() for rec in caplog.records if "no_such_method" in rec.getMessage()]
+    assert len(warnings) == 1
+    assert "跳过" in warnings[0]
 
 
 def test_rules_assigned_on_instance() -> None:

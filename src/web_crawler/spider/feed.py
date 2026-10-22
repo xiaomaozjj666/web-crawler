@@ -3,7 +3,9 @@
 按 ``output`` 路径后缀选择导出格式：
 
 - ``.json`` — 单次快照（覆盖写）：``process_item`` 时缓存到内存，
-  ``close`` 收尾钩子触发时一次性 ``json.dump``（缩进 2）；
+  ``close`` 收尾钩子触发时一次性 ``json.dump``（缩进 2）；同一
+  spider 实例多次 run 时，快照始终反映最近一个有产出的周期（新
+  item 到达即解除收尾守卫，空周期不覆盖既有数据）；
 - ``.jsonl`` — JSON Lines 逐条追加（``ensure_ascii=False``）：多次运行
   天然聚合，适合断点续爬累积数据；
 - ``.csv`` — 首条 item 定列（表头），后续行按首条列对齐，缺失列补
@@ -65,14 +67,20 @@ class FeedExportPipeline(ItemPipeline):
         self._buffer: list[Any] = []
         # CSV 首条 item 定下的列（None = 尚未见到 item）
         self._fieldnames: list[str] | None = None
-        # close 幂等守卫：重复调用（用户手动 + 引擎收尾）不重写快照
+        # close 周期守卫：上次快照收尾后无新 item 时重复 close 跳过写盘
+        # （防同周期重复调用重写快照）。process_item 收到新周期数据会
+        # 解除守卫——同一 Spider 实例第二次 run() 时 close 重新落盘，
+        # 快照反映最新周期而非被首周期守卫拦下静默丢数据
         self._closed = False
 
     def process_item(self, item: Any, spider: Spider) -> Any:
         """写盘（或缓存）并原样返回 item——导出失败绝不连累数据。"""
         if self._format == ".json":
-            # 快照语义：先缓存，close 时一次性落盘
+            # 快照语义：先缓存，close 时一次性落盘。新 item 同时解除
+            # close 周期守卫（见 _closed 注释）：同一实例二次 run 时
+            # close 重新快照最新周期的数据
             self._buffer.append(item)
+            self._closed = False
         elif self._format == ".jsonl":
             self._write_jsonl(item)
         else:
@@ -84,7 +92,10 @@ class FeedExportPipeline(ItemPipeline):
 
         由 ``Spider._close_item_pipelines`` 在 run()/stream() 的
         finally 链上调用（正常结束 / 异常 / 暂停均触发）；写盘失败
-        只记 warning，不打断后续收尾步骤。
+        只记 warning，不打断后续收尾步骤。守卫语义是「周期结束」而非
+        「终身一次」：上次收尾后无新 item 时（同周期重复调用 / 二次
+        空 run）跳过重复写盘、既有快照保持不变；一旦 process_item
+        收到新数据（下一周期开始）守卫解除，close 重新落盘。
         """
         if self._closed:
             return
@@ -101,6 +112,10 @@ class FeedExportPipeline(ItemPipeline):
             )
         except OSError as exc:
             logger.warning("feed export to %s failed: %s", self.path, exc)
+        else:
+            # 写盘成功后清空缓冲：下一周期从零累积，快照反映最新 run
+            # （覆盖语义）；写失败时保留缓冲，随下周期数据一起补写
+            self._buffer.clear()
 
     def _write_jsonl(self, item: Any) -> None:
         """逐条追加 JSON Lines（每条一开一关，断点续爬天然聚合）。"""

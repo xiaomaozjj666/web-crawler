@@ -93,10 +93,15 @@ class SitemapSpider(Spider):
         全不命中同样丢弃。列表为空时全部丢弃并在构造期发 warning（对齐
         「无规则即无产出」的保守语义，Scrapy 的默认 ``[('', 'parse')]``
         需用户显式声明才有等价行为）。
+    sitemap_max_depth:
+        sitemapindex 递归层数上限（种子算第 1 层，默认 10）。DupeFilter
+        只能防同环 URL，链式 index（每层 URL 都不同）若无上限可无限
+        递归；达到上限时记 warning 停止展开。
     """
 
     sitemap_urls: list[str] = []
     sitemap_rules: list[tuple[str, str | None]] = []
+    sitemap_max_depth: int = 10
 
     def __init__(
         self,
@@ -140,14 +145,20 @@ class SitemapSpider(Spider):
 
     # -- user hooks --------------------------------------------------------
     def start_requests(self) -> Iterator[Request]:
-        """产出 sitemap 种子请求：显式 sitemap_urls 优先，否则 robots 自动发现。"""
+        """产出 sitemap 种子请求：显式 sitemap_urls 优先，否则 robots 自动发现。
+
+        种子携带 ``meta["sitemap_depth"] = 0``（第 1 层）；Spider._dispatch
+        会把 Request.meta 拷贝到 response.meta，供 :meth:`_parse_sitemap`
+        逐层 +1 传递深度（DupeFilter 指纹只含 method/url/body，meta 不
+        参与去重，防环语义不受影响）。
+        """
         urls = list(self.sitemap_urls)
         if not urls:
             urls = self._sitemaps_from_robots()
             if not urls:
                 logger.warning("robots.txt 未提供任何 Sitemap: 行，%s 无种子可抓", self.name)
         for url in urls:
-            yield Request(url=url, callback=_PARSE_SITEMAP)
+            yield Request(url=url, callback=_PARSE_SITEMAP, meta={"sitemap_depth": 0})
 
     # -- sitemap 链路 ------------------------------------------------------
     def _sitemaps_from_robots(self) -> list[str]:
@@ -196,13 +207,23 @@ class SitemapSpider(Spider):
         """解析 sitemap 响应：index 递归入队子 sitemap，urlset 规则分发。
 
         根元素 localname 判型：``sitemapindex`` 的每个 ``<sitemap>/<loc>``
-        以本回调再次入队（递归展开由 DupeFilter 兜底防环）；``urlset`` 的
-        每个 ``<url>/<loc>`` 经 :meth:`_callback_for` 分发为命中回调的
-        Request，未命中 / 显式排除的丢弃。解析失败（非 XML / 损坏 gzip）
-        只记 warning 不中断——单个坏 sitemap 不该连累其余种子的抓取。
+        以本回调再次入队（递归展开由 DupeFilter 兜底防环 + depth 上限
+        防链式无限递归）；``urlset`` 的每个 ``<url>/<loc>`` 经
+        :meth:`_callback_for` 分发为命中回调的 Request，未命中 / 显式
+        排除的丢弃。解析失败（非 XML / 损坏 gzip）只记 warning 不中断
+        ——单个坏 sitemap 不该连累其余种子的抓取。
+
+        XML 解析器 ``resolve_entities=False``：不展开内部实体（拒绝
+        billion laughs 一类实体炸弹）；实体引用节点的 text 为 None，
+        :func:`_iter_child_locs` 判空跳过即可，预定义实体（``&amp;`` 等）
+        仍正常解码，loc 提取不受影响。深度经 ``response.meta
+        ["sitemap_depth"]`` 读取（直接调用回调时缺省 0 = 第 1 层）。
         """
+        depth = response.meta.get("sitemap_depth", 0)
         try:
-            root = etree.fromstring(_sitemap_body(response.content))
+            root = etree.fromstring(
+                _sitemap_body(response.content), etree.XMLParser(resolve_entities=False)
+            )
         except (etree.XMLSyntaxError, gzip.BadGzipFile, EOFError, zlib.error) as exc:
             # XMLSyntaxError 覆盖非 XML / 语法错误；其余三个覆盖损坏 gzip
             # 流的三种典型抛出（magic 异常 / 截断 / CRC 校验失败）
@@ -210,8 +231,20 @@ class SitemapSpider(Spider):
             return
         root_tag = etree.QName(root).localname
         if root_tag == "sitemapindex":
-            for loc in _iter_child_locs(root, "sitemap"):
-                yield Request(url=loc, callback=_PARSE_SITEMAP)
+            locs = list(_iter_child_locs(root, "sitemap"))
+            if not locs:
+                return
+            child_depth = depth + 1
+            if child_depth >= self.sitemap_max_depth:
+                logger.warning(
+                    "sitemapindex 嵌套达到上限 %d 层，停止展开 %s 的子 sitemap（%d 个）",
+                    self.sitemap_max_depth,
+                    response.url,
+                    len(locs),
+                )
+                return
+            for loc in locs:
+                yield Request(url=loc, callback=_PARSE_SITEMAP, meta={"sitemap_depth": child_depth})
         elif root_tag == "urlset":
             for loc in _iter_child_locs(root, "url"):
                 callback = self._callback_for(loc)

@@ -1,9 +1,12 @@
 """SitemapSpider 的测试（内存 FakeFetcher，无网络）。
 
 覆盖：urlset 解析与 sitemap_rules 分发、sitemapindex 递归（含嵌套
-index 与无命名空间变体）、robots.txt 的 Sitemap: 行自动发现播种、
+index 与无命名空间变体）、sitemap_max_depth 递归上限（链式 index
+超限 warning 停止）、内部实体不展开（billion laughs 防护）、robots.txt
+的 Sitemap: 行自动发现播种（含无 Sitemap 行 warning 与同域只拉一次）、
 全不命中丢弃 + 空规则 warning、callback=None 显式排除、gzip sitemap
-解压、feed_output 落盘端到端、种子 / 正则两处构造期 ConfigError。
+解压（含损坏 gzip 容错）、非 XML / 未知根元素容错、feed_output 落盘
+端到端、种子 / 正则两处构造期 ConfigError。
 """
 
 from __future__ import annotations
@@ -327,3 +330,267 @@ def test_config_error_invalid_regex() -> None:
 
     with pytest.raises(ConfigError, match="sitemap_rules"):
         S(fetcher=FakeFetcher({}))
+
+
+# ===========================================================================
+# sitemapindex 递归上限（M-2）与实体不展开（M-3）
+# ===========================================================================
+
+
+def _index_xml(child: str) -> bytes:
+    """构造指向 child 的单条目 sitemapindex 文档。"""
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        f"  <sitemap><loc>{child}</loc></sitemap>\n"
+        "</sitemapindex>"
+    ).encode()
+
+
+def test_sitemapindex_depth_limit_stops_recursion_with_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """M-2：链式 index 递归受 sitemap_max_depth 约束，超限 warning 停止展开。"""
+    # 3 层链式 index：L1（种子）→ L2 → L3 → 叶子 urlset
+    pages = {
+        f"{BASE}/sitemap-l1.xml": _index_xml(f"{BASE}/sitemap-l2.xml"),
+        f"{BASE}/sitemap-l2.xml": _index_xml(f"{BASE}/sitemap-l3.xml"),
+        f"{BASE}/sitemap-l3.xml": _index_xml(f"{BASE}/sitemap-leaf.xml"),
+        f"{BASE}/sitemap-leaf.xml": URLSET_BLOG_POSTS,
+        f"{BASE}/blog/1": b"<html></html>",
+    }
+
+    class S(SitemapSpider):
+        name = "depth_limit"
+        sitemap_urls = [f"{BASE}/sitemap-l1.xml"]
+        sitemap_rules = [(r"/blog/", "parse_blog")]
+        sitemap_max_depth = 2
+
+        def parse_blog(self, response: Response) -> Any:
+            yield {"url": response.url}
+
+    fetcher = FakeFetcher(pages)
+    with caplog.at_level(logging.WARNING, logger="web_crawler.spider.sitemap"):
+        items = S(fetcher=fetcher).run()
+    # 只抓到第 2 层（L1、L2）：第 3 层 L3 及叶子不被请求
+    assert f"{BASE}/sitemap-l3.xml" not in fetcher.calls
+    assert f"{BASE}/sitemap-leaf.xml" not in fetcher.calls
+    assert fetcher.calls == [f"{BASE}/sitemap-l1.xml", f"{BASE}/sitemap-l2.xml"]
+    assert items == []
+    assert any("上限" in rec.getMessage() for rec in caplog.records)
+
+
+def test_sitemapindex_depth_counts_from_seed_zero(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """M-2 补充：默认上限 10 下正常嵌套（种子=第 1 层）不受影响。"""
+    # 嵌套 index → urlset 两层结构是现实主流形态，默认上限不拦截
+    pages = {
+        f"{BASE}/sitemap.xml": INDEX,
+        f"{BASE}/sitemap-blog.xml": NESTED_INDEX_BLOG,
+        f"{BASE}/sitemap-blog-posts.xml": URLSET_BLOG_POSTS,
+        f"{BASE}/blog/1": b"<html></html>",
+        f"{BASE}/blog/2": b"<html></html>",
+    }
+
+    class S(SitemapSpider):
+        name = "depth_default"
+        sitemap_urls = [f"{BASE}/sitemap.xml"]
+        sitemap_rules = [(r"/blog/", "parse_blog")]
+
+        def parse_blog(self, response: Response) -> Any:
+            yield {"url": response.url}
+
+    fetcher = FakeFetcher(pages)
+    with caplog.at_level(logging.WARNING, logger="web_crawler.spider.sitemap"):
+        items = S(fetcher=fetcher).run()
+    assert [it["url"] for it in items] == [f"{BASE}/blog/1", f"{BASE}/blog/2"]
+    # 三层嵌套（index → 子 index → urlset）未触发上限 warning
+    assert not any("上限" in rec.getMessage() for rec in caplog.records)
+
+
+def test_internal_entities_not_expanded(caplog: pytest.LogCaptureFixture) -> None:
+    """M-3：内部实体不展开（billion laughs 防护），文本 loc 正常提取。"""
+    # 嵌套内部实体：若解析器展开会指数放大内存；不展开时实体 loc 的
+    # text 为 None，判空跳过即可
+    entity_sitemap = (
+        b'<?xml version="1.0" encoding="UTF-8"?>\n'
+        b"<!DOCTYPE urlset [\n"
+        b'  <!ENTITY lol "lol">\n'
+        b'  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">\n'
+        b"]>\n"
+        b'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        b"  <url><loc>&lol2;</loc></url>\n"
+        b"  <url><loc>https://shop.example.com/blog/1</loc></url>\n"
+        b"</urlset>"
+    )
+    pages = {
+        f"{BASE}/sitemap.xml": entity_sitemap,
+        f"{BASE}/blog/1": b"<html></html>",
+    }
+
+    class S(SitemapSpider):
+        name = "entities"
+        sitemap_urls = [f"{BASE}/sitemap.xml"]
+        sitemap_rules = [(r"/blog/", "parse_blog")]
+
+        def parse_blog(self, response: Response) -> Any:
+            yield {"url": response.url}
+
+    fetcher = FakeFetcher(pages)
+    with caplog.at_level(logging.WARNING, logger="web_crawler.spider.sitemap"):
+        items = S(fetcher=fetcher).run()
+    # 实体 loc 跳过、文本 loc 正常分发；不炸、不产生解析失败 warning
+    assert items == [{"url": f"{BASE}/blog/1"}]
+    assert not any("sitemap 解析失败" in rec.getMessage() for rec in caplog.records)
+
+
+# ===========================================================================
+# 解析容错：非 XML / 损坏 gzip / 未知根元素
+# ===========================================================================
+
+
+def test_non_xml_sitemap_warns_and_other_seeds_proceed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """非 XML 响应（截断的 HTML 404 页）：warning 跳过该种子，其余种子照常。"""
+    pages = {
+        # 未闭合标签的 HTML 错误页：XML 解析器直接抛语法错误
+        f"{BASE}/sitemap-bad.xml": b"<html><body><h1>404 Not Found",
+        f"{BASE}/sitemap-good.xml": URLSET,
+        f"{BASE}/blog/1": b"<html></html>",
+        f"{BASE}/blog/2": b"<html></html>",
+    }
+
+    class S(SitemapSpider):
+        name = "non_xml"
+        sitemap_urls = [f"{BASE}/sitemap-bad.xml", f"{BASE}/sitemap-good.xml"]
+        sitemap_rules = [(r"/blog/", "parse_blog")]
+
+        def parse_blog(self, response: Response) -> Any:
+            yield {"url": response.url}
+
+    fetcher = FakeFetcher(pages)
+    with caplog.at_level(logging.WARNING, logger="web_crawler.spider.sitemap"):
+        items = S(fetcher=fetcher).run()
+    # 坏种子只 warning 不中断：好种子的 loc 照常分发
+    assert items == [{"url": f"{BASE}/blog/1"}, {"url": f"{BASE}/blog/2"}]
+    warnings = [
+        rec.getMessage() for rec in caplog.records if "sitemap 解析失败" in rec.getMessage()
+    ]
+    assert len(warnings) == 1
+    assert f"{BASE}/sitemap-bad.xml" in warnings[0]
+
+
+def test_corrupt_gzip_sitemap_warns_without_crash(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """损坏 gzip（magic 头对但内容坏）：warning 跳过，运行不中断。"""
+    pages = {
+        # gzip magic（\x1f\x8b）之后是垃圾数据：解压必败
+        f"{BASE}/sitemap.xml.gz": b"\x1f\x8b" + b"\x00" * 16,
+        f"{BASE}/blog/1": b"<html></html>",
+    }
+
+    class S(SitemapSpider):
+        name = "corrupt_gz"
+        sitemap_urls = [f"{BASE}/sitemap.xml.gz"]
+        sitemap_rules = [(r"/blog/", "parse_blog")]
+
+        def parse_blog(self, response: Response) -> Any:
+            yield {"url": response.url}
+
+    fetcher = FakeFetcher(pages)
+    with caplog.at_level(logging.WARNING, logger="web_crawler.spider.sitemap"):
+        items = S(fetcher=fetcher).run()
+    assert items == []
+    assert fetcher.calls == [f"{BASE}/sitemap.xml.gz"]
+    assert any("sitemap 解析失败" in rec.getMessage() for rec in caplog.records)
+
+
+def test_rss_root_element_warns_and_skipped(caplog: pytest.LogCaptureFixture) -> None:
+    """RSS 根元素（非 sitemap/sitemapindex）：warning 跳过该种子。"""
+    rss = (
+        b'<?xml version="1.0" encoding="UTF-8"?>\n'
+        b'<rss version="2.0"><channel><title>feed</title></channel></rss>'
+    )
+    pages = {f"{BASE}/sitemap.xml": rss}
+
+    class S(SitemapSpider):
+        name = "rss_root"
+        sitemap_urls = [f"{BASE}/sitemap.xml"]
+        sitemap_rules = [(r"", "parse")]
+
+        def parse(self, response: Response) -> Any:
+            yield {"url": response.url}
+
+    fetcher = FakeFetcher(pages)
+    with caplog.at_level(logging.WARNING, logger="web_crawler.spider.sitemap"):
+        items = S(fetcher=fetcher).run()
+    assert items == []
+    assert any("未知 sitemap 根元素" in rec.getMessage() for rec in caplog.records)
+    assert any("'rss'" in rec.getMessage() for rec in caplog.records)
+
+
+# ===========================================================================
+# robots 自动发现：无 Sitemap 行 warning 与同域只拉一次
+# ===========================================================================
+
+
+def test_robots_without_sitemap_line_warns_no_seeds(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """robots.txt 无任何 Sitemap: 行：warning 且无种子（无 sitemap 请求）。"""
+    monkeypatch.setattr(
+        "web_crawler.spider.spider.fetch_robots_text",
+        lambda url, timeout=10.0: "User-agent: *\nDisallow: /private\n",
+    )
+
+    class S(SitemapSpider):
+        name = "no_sitemap_line"
+        start_urls = [f"{BASE}/"]
+        respect_robots = True
+        sitemap_rules = [(r"", "parse")]
+
+        def parse(self, response: Response) -> Any:
+            yield {"url": response.url}
+
+    fetcher = FakeFetcher({})
+    with caplog.at_level(logging.WARNING, logger="web_crawler.spider.sitemap"):
+        items = S(fetcher=fetcher).run()
+    assert items == []
+    # 无种子：唯一的请求是 robots.txt 本身（经 RobotsPolicy），无 sitemap 抓取
+    assert fetcher.calls == []
+    assert any("无种子" in rec.getMessage() for rec in caplog.records)
+
+
+def test_robots_fetched_once_for_same_host_start_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """两个同域 start_urls：robots.txt 只拉取一次（按主机缓存共享）。"""
+    robots_calls: list[str] = []
+
+    def fake_robots(url: str, timeout: float = 10.0) -> str:
+        robots_calls.append(url)
+        return f"Sitemap: {BASE}/sitemap.xml\n"
+
+    monkeypatch.setattr("web_crawler.spider.spider.fetch_robots_text", fake_robots)
+    pages = {
+        f"{BASE}/sitemap.xml": URLSET_BLOG_POSTS,
+        f"{BASE}/blog/1": b"<html></html>",
+        f"{BASE}/blog/2": b"<html></html>",
+    }
+
+    class S(SitemapSpider):
+        name = "same_host"
+        start_urls = [f"{BASE}/", f"{BASE}/page2"]
+        respect_robots = True
+        sitemap_rules = [(r"/blog/", "parse_blog")]
+
+        def parse_blog(self, response: Response) -> Any:
+            yield {"url": response.url}
+
+    items = S(fetcher=FakeFetcher(pages)).run()
+    # 同域两条 start_urls 只触发一次 robots.txt 外呼
+    assert robots_calls == [f"{BASE}/robots.txt"]
+    assert items == [{"url": f"{BASE}/blog/1"}, {"url": f"{BASE}/blog/2"}]

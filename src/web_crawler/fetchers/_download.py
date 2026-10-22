@@ -9,12 +9,24 @@
 断点续传语义（对齐应用层已验证的实现）：
 
 * 目标文件 ``dest`` 的半成品写在 ``dest.part``；``resume=True`` 且
-  ``.part`` 存在时发送 ``Range: bytes=<size>-``；
-* 响应 ``206 Partial Content`` → 追加模式续写（从 offset 起累计）；
+  ``.part`` 存在时发送 ``Range: bytes=<size>-``；无半成品
+  （``offset == 0``）时剔除用户显式传入的 ``Range`` 头——否则服务器回
+  206 部分响应，从 0 写盘得到的是被静默截断的「假完整文件」；
+* 响应 ``206 Partial Content`` 且 ``Content-Range: bytes <start>-...``
+  声明的起始偏移与本地 ``.part`` 大小一致 → 追加模式续写；起始错位或
+  ``Content-Range`` 缺失/格式错（服务器不支持正确续传）→ 截断重写——
+  宁可重下全量也不错位拼接出静默损坏的文件；
 * 响应 ``200``（服务器不支持 Range）→ 截断重写；
+* 响应 ``416`` 且 ``Content-Range: bytes */N`` 声明 N == 本地 ``.part``
+  大小（半成品已是全长，仅差原子落盘）→ 直接 ``os.replace`` 收尾；
+  其余 ``416`` → :class:`~web_crawler.exceptions.FetchError` 并清理
+  ``.part``；
 * 其余状态码 → :class:`~web_crawler.exceptions.FetchError` 并清理
   ``.part``（资源不可得，半成品无意义）；
 * 传输层错误中断 → 保留 ``.part``（下次调用可继续续传）；
+* 写盘阶段的本地 ``OSError``（磁盘满/权限/目标被占用）→ 与网络错误
+  分离，**不**按退避重试（本地故障重试无意义），直接抛
+  :class:`~web_crawler.exceptions.FetchError` 并保留 ``.part``；
 * 用户经 ``should_abort`` 回调主动中止 → 保留 ``.part``；
 * ``max_bytes`` 超限 → 清理 ``.part``（防磁盘炸弹）；
 * 全部字节写入完成后 ``os.replace`` 原子替换到 ``dest``（Windows 兼容）。
@@ -25,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import re
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from pathlib import Path
@@ -42,6 +55,18 @@ __all__ = ["StreamContext", "download_async", "download_sync", "part_path_for"]
 # 半成品临时文件后缀（与应用层历史实现一致，不带 pid：跨进程/跨次运行续传
 # 正是断点续传的核心场景，带 pid 会让其他进程的半成品无法复用）。
 PART_SUFFIX = ".part"
+
+# Content-Range 头两种形态（RFC 9110 §14.4/§14.5）：
+#   206 续传响应 ``bytes <first>-<last>/<complete>``（<last>/<complete> 可省略）
+#   416 不可满足   ``bytes */<complete>``
+# 解析从严（只认标准 ``bytes SP`` 前缀，``bytes=`` 等变形一律失败）——
+# 错位解析成假偏移比解析失败危险得多，失败方走安全的截断重写路径。
+_CONTENT_RANGE_START_RE = re.compile(r"^bytes\s+(\d+)-")
+_CONTENT_RANGE_TOTAL_RE = re.compile(r"^bytes\s+\*/(\d+)$")
+
+
+class _LocalWriteError(Exception):
+    """写盘阶段本地 ``OSError`` 的内部包装（与网络传输错误分离，不参与重试）。"""
 
 
 def part_path_for(dest: Path) -> Path:
@@ -81,6 +106,66 @@ def download_error(
     exc.status = status  # type: ignore[attr-defined]
     exc.keep_part = keep_part  # type: ignore[attr-defined]
     return exc
+
+
+def _range_start(headers: Mapping[str, str] | None) -> int | None:
+    """解析 ``Content-Range: bytes <start>-...`` 的起始偏移；无头/格式错返回 None。
+
+    ``bytes */N``（416 不可满足形式）与其他非标准写法均返回 ``None``，
+    由调用方按「服务器不支持正确续传」处理（截断重写）。
+    """
+    if headers is None:
+        return None
+    value = headers.get("Content-Range")
+    if not isinstance(value, str):
+        return None
+    matched = _CONTENT_RANGE_START_RE.match(value.strip())
+    return int(matched.group(1)) if matched else None
+
+
+def _range_total(headers: Mapping[str, str] | None) -> int | None:
+    """解析 ``Content-Range: bytes */<total>``（416 不可满足响应）声明的完整长度。"""
+    if headers is None:
+        return None
+    value = headers.get("Content-Range")
+    if not isinstance(value, str):
+        return None
+    matched = _CONTENT_RANGE_TOTAL_RE.match(value.strip())
+    return int(matched.group(1)) if matched else None
+
+
+def _send_headers_for_offset(merged: Mapping[str, str], offset: int) -> dict[str, str]:
+    """按续传偏移构建实际发送的请求头（sync/async 共用）。
+
+    ``offset > 0``（有半成品要续传）时由内部 ``Range`` 头覆盖——续传
+    偏移以 ``.part`` 实际大小为准，用户显式值无关紧要；``offset == 0``
+    时剔除用户显式传入的 ``Range`` 头：无半成品却带 Range 会收到 206
+    部分响应，从 0 写盘得到的是被静默截断的「假完整文件」。HTTP 头
+    名大小写不敏感，按 ``casefold()`` 匹配剔除。
+    """
+    send_headers = dict(merged)
+    if offset > 0:
+        send_headers["Range"] = f"bytes={offset}-"
+        return send_headers
+    for key in [k for k in send_headers if k.casefold() == "range"]:
+        send_headers.pop(key)
+    return send_headers
+
+
+def _finalize_part(fetcher: _FetcherCore, proxy: str | None, part: Path, dest: Path) -> Path:
+    """把已完整的 ``.part`` 原子落盘到 *dest*（含代理健康标记），返回绝对路径。
+
+    ``os.replace`` 的本地 ``OSError``（Windows 目标被占用、磁盘满等）
+    包装为 :class:`_LocalWriteError`——本地故障与网络瞬时错误分离，
+    不参与重试。
+    """
+    try:
+        os.replace(part, dest)
+    except OSError as exc:
+        raise _LocalWriteError(f"cannot finalize {part} -> {dest}: {exc}") from exc
+    if isinstance(fetcher.proxy, ProxyPool) and proxy:
+        fetcher.proxy.mark_success(proxy)
+    return dest.absolute()
 
 
 def _discard_part(part: Path) -> None:
@@ -203,8 +288,8 @@ def download_sync(
     复用 fetcher 的全套请求管线（SSRF 校验、代理、会话池、DNS 钉扎，
     由 ``_stream_with_redirects_sync`` 承载），重试语义对齐
     ``_send_sync``：网络层错误与 429/5xx 按指数退避重试（代理池自动
-    轮换），4xx 状态直接失败。写盘中途的传输错误会保留 ``.part``，
-    下一次重试自动以 ``Range`` 续传。
+    轮换），4xx 状态直接失败；写盘阶段的本地 ``OSError`` 不重试。写盘
+    中途的传输错误会保留 ``.part``，下一次重试自动以 ``Range`` 续传。
     """
     from .fetcher import _parse_retry_after
 
@@ -223,9 +308,7 @@ def download_sync(
         # 每次尝试基于 .part 当前实际大小重算偏移：上一次写盘中途断流的
         # 半成品在下一次重试里自动转为 Range 续传
         offset = resume_offset_for(part, resume)
-        send_headers = dict(merged_headers)
-        if offset > 0:
-            send_headers["Range"] = f"bytes={offset}-"
+        send_headers = _send_headers_for_offset(merged_headers, offset)
         try:
             stream = fetcher._stream_with_redirects_sync(
                 "GET", url, send_headers, proxy, fetcher.timeout, fetcher.verify
@@ -248,17 +331,30 @@ def download_sync(
                 proxy = _proxy_rotated(fetcher, proxy)
                 time.sleep(retry_after or backoff)
                 continue
+            if status == 416:
+                # 416 + ``Content-Range: bytes */N`` 且 N == 本地 .part 大小：
+                # 半成品已是全长（上次写盘完成但未及原子落盘等场景），直接
+                # 落盘收尾；其余 416 按不可满足范围报错（半成品作废）
+                declared = _range_total(stream.headers)
+                if declared is not None and declared == offset and part.exists():
+                    return _finalize_part(fetcher, proxy, part, dest_path)
+                raise download_error(f"HTTP Error 416: download failed for {url}", status=status)
             if status not in (200, 206):
                 raise download_error(
                     f"HTTP Error {status}: download failed for {url}", status=status
                 )
             if on_headers is not None:
                 on_headers(status, stream.headers)
-            # 206 且已有半成品 → 追加续写；200（或未发 Range 却收到 206）
-            # → 截断重写，对齐应用层历史语义
-            append = status == 206 and offset > 0
+            # 206 续传必须服务器声明的 Content-Range 起始与本地偏移一致才
+            # 追加；起始错位 / 无 Content-Range（或非 206）一律截断重写
+            append = status == 206 and offset > 0 and _range_start(stream.headers) == offset
             total = offset if append else 0
-            file_handle = part.open("ab" if append else "wb")
+            # 写盘区（open/write/close/replace）的本地 OSError 单独包装：
+            # 磁盘满/权限等本地故障按网络错误退避重试毫无意义
+            try:
+                file_handle = part.open("ab" if append else "wb")
+            except OSError as exc:
+                raise _LocalWriteError(f"cannot open {part}: {exc}") from exc
             try:
                 for chunk in stream.iter_chunks(chunk_size):
                     if should_abort is not None and should_abort():
@@ -268,13 +364,21 @@ def download_sync(
                     total += len(chunk)
                     if max_bytes is not None and total > max_bytes:
                         raise download_error(f"file exceeds max_bytes ({max_bytes})")
-                    file_handle.write(chunk)
+                    try:
+                        file_handle.write(chunk)
+                    except OSError as exc:
+                        raise _LocalWriteError(f"cannot write to {part}: {exc}") from exc
             finally:
-                file_handle.close()
-            os.replace(part, dest_path)
-            if isinstance(fetcher.proxy, ProxyPool) and proxy:
-                fetcher.proxy.mark_success(proxy)
-            return dest_path.absolute()
+                try:
+                    file_handle.close()
+                except OSError as exc:
+                    # 取代传播中的异常升级为本地写盘错误（close 刷盘失败
+                    # 本就意味着半成品不可信，统一走不重试路径）
+                    raise _LocalWriteError(f"cannot close {part}: {exc}") from exc
+            return _finalize_part(fetcher, proxy, part, dest_path)
+        except _LocalWriteError as exc:
+            # 本地写盘失败：不重试（非网络瞬时故障），保留 .part 供续传
+            raise download_error(f"local write failure for {url}: {exc}", keep_part=True) from exc
         except FetchError as exc:
             # 状态错误 / 超限 → 清理 .part；用户主动中止（keep_part）→ 保留
             if not getattr(exc, "keep_part", False):
@@ -329,9 +433,7 @@ async def download_async(
     for attempt in range(fetcher.retries + 1):
         backoff = min(2.0**attempt, 10.0) + random.random() * 0.25
         offset = resume_offset_for(part, resume)
-        send_headers = dict(merged_headers)
-        if offset > 0:
-            send_headers["Range"] = f"bytes={offset}-"
+        send_headers = _send_headers_for_offset(merged_headers, offset)
         try:
             stream = await fetcher._stream_with_redirects_async(
                 "GET", url, send_headers, proxy, fetcher.timeout, fetcher.verify
@@ -354,15 +456,24 @@ async def download_async(
                 proxy = _proxy_rotated(fetcher, proxy)
                 await asyncio.sleep(retry_after or backoff)
                 continue
+            if status == 416:
+                # 语义同 sync 版：bytes */N 且 N == 本地 .part 大小 → 收尾
+                declared = _range_total(stream.headers)
+                if declared is not None and declared == offset and part.exists():
+                    return _finalize_part(fetcher, proxy, part, dest_path)
+                raise download_error(f"HTTP Error 416: download failed for {url}", status=status)
             if status not in (200, 206):
                 raise download_error(
                     f"HTTP Error {status}: download failed for {url}", status=status
                 )
             if on_headers is not None:
                 on_headers(status, stream.headers)
-            append = status == 206 and offset > 0
+            append = status == 206 and offset > 0 and _range_start(stream.headers) == offset
             total = offset if append else 0
-            file_handle = part.open("ab" if append else "wb")
+            try:
+                file_handle = part.open("ab" if append else "wb")
+            except OSError as exc:
+                raise _LocalWriteError(f"cannot open {part}: {exc}") from exc
             try:
                 async for chunk in stream.aiter_chunks(chunk_size):
                     if should_abort is not None and should_abort():
@@ -372,13 +483,19 @@ async def download_async(
                     total += len(chunk)
                     if max_bytes is not None and total > max_bytes:
                         raise download_error(f"file exceeds max_bytes ({max_bytes})")
-                    file_handle.write(chunk)
+                    try:
+                        file_handle.write(chunk)
+                    except OSError as exc:
+                        raise _LocalWriteError(f"cannot write to {part}: {exc}") from exc
             finally:
-                file_handle.close()
-            os.replace(part, dest_path)
-            if isinstance(fetcher.proxy, ProxyPool) and proxy:
-                fetcher.proxy.mark_success(proxy)
-            return dest_path.absolute()
+                try:
+                    file_handle.close()
+                except OSError as exc:
+                    raise _LocalWriteError(f"cannot close {part}: {exc}") from exc
+            return _finalize_part(fetcher, proxy, part, dest_path)
+        except _LocalWriteError as exc:
+            # 本地写盘失败：不重试（非网络瞬时故障），保留 .part 供续传
+            raise download_error(f"local write failure for {url}: {exc}", keep_part=True) from exc
         except FetchError as exc:
             if not getattr(exc, "keep_part", False):
                 _discard_part(part)
