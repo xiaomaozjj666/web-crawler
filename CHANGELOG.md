@@ -4,7 +4,14 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] - 2026-10-22
+
+### Added
+
+- **PyPI 发行**：发行版名 `stealth-web-crawler`（导入名 `web_crawler`
+  不变，`beautifulsoup4`/`bs4` 同款惯例）；`pip install
+  stealth-web-crawler` 即装即用，tag 触发的 Trusted Publishing 流水线
+  （`pypi.yml`：build → twine check → OIDC 发布）。
 
 ### Fixed
 

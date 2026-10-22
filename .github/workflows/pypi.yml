@@ -53,7 +53,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: pypi
+    # 不绑定 GitHub environment：PyPI 侧登记 publisher 时 environment
+    # 必须留空，两侧配置才匹配（绑 environment 需两侧同名，易错配）
     permissions:
       # Trusted Publishing 所需的 OIDC 令牌
       id-token: write
