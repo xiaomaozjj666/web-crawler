@@ -25,7 +25,9 @@
 `SessionPool` / `ProxyPool` 负责会话与代理轮换；`BaseFetcher` 是全部 fetcher
 的共享配置基类；`Response` 是统一返回的结果对象。
 
-`Fetcher` — 主力同步 HTTP fetcher，同时暴露 `async_get` / `async_request` 异步方法。
+`Fetcher` — 主力同步 HTTP fetcher，同时暴露 `async_get` / `async_request`
+异步方法与 `download()` 流式下载（断点续传，复用 SSRF / DNS 钉扎 / 代理 /
+会话池全套校验链）。
 
 ::: web_crawler.fetchers.fetcher.Fetcher
 
@@ -107,8 +109,9 @@ API；指纹引擎与存储独立成模块，可单独复用。
 ## Spider 框架 {: #spider-framework }
 
 回调驱动的爬虫框架：优先级调度、域名过滤、指纹去重、失败重试、robots 遵守、
-暂停/续跑、下载中间件与 item 管道、自适应限速与统计导出。深度用法见
-[Spider 爬虫框架指南](guides/spider.md)。
+域级并发槽位、暂停/续跑、下载中间件与 item 管道（导出 / 校验）、自适应限速
+与统计导出，另有 `CrawlSpider` / `SitemapSpider` 两个发现策略子类。深度用法
+见 [Spider 爬虫框架指南](guides/spider.md)。
 
 `Spider` — 爬虫基类：子类定义 `start_urls` 与 `parse` 回调即可运行。
 
@@ -141,6 +144,12 @@ API；指纹引擎与存储独立成模块，可单独复用。
 `Spider(feed_output=...)` 便捷参数等价于 Scrapy 的 `FEEDS` 配置。
 
 ::: web_crawler.spider.feed.FeedExportPipeline
+
+`ValidationPipeline` — item 校验管道：pydantic `BaseModel`（校验 + 规范化
+透传，延迟导入不破懒加载）或无依赖 dict schema（`type` / `required` /
+`default` DSL）；失败抛 `DropItem` 并计入 `items_dropped` 统计。
+
+::: web_crawler.spider.validation.ValidationPipeline
 
 `CacheMiddleware` — GET 响应磁盘缓存中间件：TTL、离线回放、原子写与
 解压炸弹防护。
@@ -178,6 +187,12 @@ API；指纹引擎与存储独立成模块，可单独复用。
 ::: web_crawler.spider.crawl.CrawlSpider
 
 ::: web_crawler.spider.crawl.Rule
+
+`SitemapSpider` — sitemap 驱动的爬虫（对标 Scrapy 同名概念）：
+sitemapindex 递归展开、`sitemap_rules` 正则分发回调、robots.txt 的
+`Sitemap:` 行自动发现种子。
+
+::: web_crawler.spider.sitemap.SitemapSpider
 
 ## 异常体系 {: #exceptions }
 

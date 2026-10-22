@@ -4,6 +4,31 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-10-22
+
+### Added
+- **`Fetcher.download()` / `AsyncFetcher.download()` 流式下载**：断点续传
+  （`Range` / 206 / 200 回退，`.part` 临时文件 + 原子替换）、`max_bytes`
+  磁盘炸弹上限、`should_abort` 每分块取消回调；流式路径完整复用既有校验链
+  ——SSRF host 校验、DNS 钉扎、代理、会话池在下载上全部生效；curl_cffi
+  `stream=True` 与 httpx 兜底 × sync/async 四路径矩阵；池化句柄延迟到流关闭
+  才归还。CLI 应用层同步改调库实现（净删 ~250 行自建 urllib 管线，下载路径
+  白赚安全加固）。
+- **`Spider.per_domain_concurrency` 域级并发槽位**：`asyncio.Semaphore`
+  表达「同域最多 N 并发」中间档（此前只有延迟制：配延迟即并发降 1）；与
+  `per_domain_delay` 镜像对称——多配置命中取最小并发、同域子域共享预算；
+  只影响 `stream()` 并发路径。
+- **`SitemapSpider`**：sitemap 驱动的爬虫（对标 Scrapy 同名概念）——
+  sitemapindex 递归展开、`sitemap_rules` 正则按序分发回调、robots.txt 的
+  `Sitemap:` 行自动发现种子（本库对 Scrapy 的扩展）、gzip sitemap 自动
+  解压、DupeFilter 防环路。
+- **`ValidationPipeline` item 校验管道**：pydantic `BaseModel`（校验 +
+  `model_dump` 规范化透传，构造期延迟导入不破懒加载红线）或无依赖 dict
+  schema（`type` / `required` / `default` 轻量 DSL）两种形态；校验失败抛
+  `DropItem`（消息聚合全部字段与原因），汇入新增的
+  `SpiderStats.items_dropped` 计数（`as_dict` 条件导出：丢弃 > 0 才出现
+  该键，无丢弃路径输出与旧版逐字一致）。
+
 ## [0.6.0] - 2026-10-22
 
 ### Added

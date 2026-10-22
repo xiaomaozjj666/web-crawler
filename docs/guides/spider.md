@@ -118,6 +118,21 @@ items = MySpider(fetcher=Fetcher(), autothrottle=throttle).run()
 `target_concurrency`（希望同域保持的并发数，`target_delay = EMA / 该值`）、
 `min_delay` / `max_delay`（延迟上下限）、`penalty_factor`（失败惩罚放大系数）。
 
+### 域级并发槽位
+
+延迟之外还有「同域最多 N 并发」的硬上限表达——`per_domain_concurrency`
+（`asyncio.Semaphore`，仅 `stream()` 并发路径生效；`run()` 同步路径本身串行）：
+
+```python
+class PoolSpider(Spider):
+    # 同域最多 2 个在途请求（子域共享预算）；与 per_domain_delay 叠加时
+    # 两者都生效——延迟照常补间隔，并发被槽位钳制
+    per_domain_concurrency = {"example.com": 2}
+```
+
+多配置命中同一 host（精确 + 子域后缀）时取**最小**并发；与 `per_domain_delay`
+「取最大延迟」镜像对称。全局并发仍由 `max_concurrency` 控制。
+
 ## 遵守 robots.txt
 
 ```python
@@ -280,6 +295,61 @@ items = ArticleSpider(fetcher=Fetcher(impersonate="chrome131")).run()
 
 `CrawlSpider` 继承 `Spider` 全部能力（`feed_output` / `autothrottle` /
 `CacheMiddleware` / 暂停续跑等均可直接组合）。
+
+## sitemap 驱动：SitemapSpider
+
+已知站点结构时，sitemap 比链接跟随更高效——不必渲染页面就能拿到全部 URL
+（对标 Scrapy `SitemapSpider`）：
+
+```python
+from web_crawler import SitemapSpider
+
+
+class SiteSpider(SitemapSpider):
+    sitemap_urls = ["https://example.com/sitemap.xml"]  # 也可缺省（见下）
+    sitemap_rules = [
+        (r"/blog/\d+/", "parse_article"),  # 正则按序匹配，值为回调方法名
+        (r"/tag/", None),  # None = 显式排除
+    ]
+
+    def parse_article(self, response):
+        return {"title": response.css_first("h1::text")}
+
+
+items = SiteSpider(fetcher=Fetcher(impersonate="chrome131")).run()
+```
+
+sitemapindex 会递归展开（`DupeFilter` 防环路），gzip 压缩的 sitemap 自动解压；
+`sitemap_urls` 缺省且 `respect_robots=True` 时从 `start_urls` 各域 robots.txt
+的 `Sitemap:` 行自动发现种子（本库对 Scrapy 的扩展）。全不匹配的 URL 丢弃；
+`sitemap_rules` 为空构造期 warning 提示。生成的请求自动经过域过滤 / 去重 /
+robots 检查链路，`feed_output` 等基类能力全部可用。
+
+## item 校验：ValidationPipeline
+
+回调产出的 item 在管道里做结构校验——pydantic 模型（装了才可用）或无依赖
+的 dict schema，失败抛 `DropItem` 并计入 `stats.items_dropped`：
+
+```python
+from web_crawler import ValidationPipeline
+
+
+# dict schema：零依赖轻量 DSL（type / required / default）
+class QuotesSpider(Spider):
+    item_pipelines = [
+        ValidationPipeline(
+            {
+                "text": {"type": str},
+                "author": {"type": str, "required": False, "default": "匿名"},
+            }
+        ),
+        FeedExportPipeline("quotes.jsonl"),
+    ]
+```
+
+dict schema 的附加键宽松透传、缺失字段按 `default` 补齐；进阶校验（嵌套 /
+正则 / 自定义校验器）用 pydantic `BaseModel`（校验 + 规范化透传，延迟导入
+不破懒加载）。校验失败消息聚合全部字段与原因。
 
 ## 统计导出
 
