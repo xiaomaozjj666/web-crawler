@@ -4,6 +4,21 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-10-23
+
+### Added
+
+- **`web-crawler-startproject` 脚手架**（对标 `scrapy startproject`）：一条
+  命令生成可跑项目骨架——示例 Spider 两种玩法（基础 `Spider` 跟链 +
+  `CrawlSpider` 规则跟随）、`main.py` 以本库构造参数风格组装、
+  `feed_output` 落盘演示、3 步上手 README；项目名合法性/目录守卫、
+  UTF-8+LF 输出。
+- **`web-crawler-shell` 交互式调试**（对标 `scrapy shell`）：`fetch <url>`
+  抓取后即时试 `css` / `xpath` / `links`（LinkExtractor）；响应摘要
+  （状态/最终 URL/长度/标题）、结果摘要上限 20 条；SSRF 防护人话化、
+  抓取失败滞留可重试、EOF/Ctrl+C 优雅退出；命令解析纯函数化。
+- 社区基建：issue 模板三件套（bug / feature / config 引导）。
+
 ## [0.8.0] - 2026-10-22
 
 ### Added
