@@ -74,7 +74,8 @@ class TitleSpider(Spider):
     def parse(self, response: Response) -> Iterator[dict[str, str]]:
         """产出一条 {"url", "title", "heading"} item。"""
         title = response.css_first("title")
-        heading = response.css_first("h1")
+        # 优雅降级：部分页面没有 h1（如 example.com），回退取 title 文本
+        heading = response.css_first("h1") or title
         yield {
             "url": response.url,
             "title": str(title.text).strip() if title is not None else "",
@@ -107,7 +108,8 @@ class SiteCrawlSpider(CrawlSpider):
 
     def parse_page(self, response: Response) -> Iterator[dict[str, str]]:
         """CrawlSpider 规则回调：每个命中页面的响应调用一次。"""
-        heading = response.css_first("h1")
+        # 优雅降级：无 h1 的页面回退取 title，item 永远有可读的标题
+        heading = response.css_first("h1") or response.css_first("title")
         yield {
             "url": response.url,
             "heading": str(heading.text).strip() if heading is not None else "",
