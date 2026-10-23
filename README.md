@@ -1,7 +1,8 @@
 # web-crawler
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB" alt="Python 3.10+" />
+  <a href="https://pypi.org/project/stealth-web-crawler/"><img src="https://img.shields.io/pypi/v/stealth-web-crawler?color=blue" alt="PyPI version" /></a>
+  <a href="https://pypi.org/project/stealth-web-crawler/"><img src="https://img.shields.io/pypi/pyversions/stealth-web-crawler" alt="Python versions" /></a>
   <img src="https://img.shields.io/badge/lxml-adaptive%20selector-8CA1B6" alt="lxml 自适应选择器" />
   <img src="https://img.shields.io/badge/TLS-impersonation-0F6B9E" alt="TLS 指纹隐身" />
   <img src="https://github.com/xiaomaozjj666/web-crawler/actions/workflows/ci.yml/badge.svg" alt="CI" />
@@ -433,6 +434,21 @@ python -m pytest -m "not slow"        # 运行测试（跳过慢速集成测试�
 python -m pytest --cov=web_crawler             # 带覆盖率
 python benchmarks.py --check-regression   # 性能回归检查（CI 模式）
 ```
+
+## 与同类库的性能对比
+
+同进程同条件可复现对标（77KB / 500 元素 HTML 样本，timeit 15 轮取中位数；完整条件与复现步骤见 `benchmarks_vs_peers.py`）：
+
+| 操作 | web_crawler | Scrapling 0.5 | 结论 |
+| --- | --- | --- | --- |
+| 构造解析（HTML→对象） | **~1.6 ms** | ~2.0 ms | **快 1.2–1.3x** |
+| css 首个匹配 | ~0.44 ms | ~0.43 ms | 持平 |
+| css 多元素 + 文本提取 | ~0.44 ms | ~0.43 ms | 持平 |
+| xpath 多元素 | ~0.18 ms | ~0.18 ms | 持平 |
+
+查询热路径两者持平（同为 lxml 底层）；构造解析更快——Scrapling 构造期做特征预提取以支撑自适应重定位（能力换时间），web_crawler 的重定位按需触发、构造零预提取。自 0.4.0 优化轮起本库自身热路径提升：`xpath_first` -78.7%、`children` -59%、Spider 调度 2.55x、httpx header 合并 1566x（`python benchmarks.py` 可复验）。
+
+> 对比环境：Windows 11 / CPython 3.12 / 2026-10-23。跑对标需独立 venv：`pip install scrapling -e . && python benchmarks_vs_peers.py`。
 
 > 测试需要 dev 依赖（`pytest` / `pytest-asyncio` / `pytest-cov`）。仓库内 `.venv` 是
 > 纯运行时环境、不含 pytest，请用已安装 dev 依赖的系统 Python 运行（`python -m pytest`

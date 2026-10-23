@@ -4,8 +4,8 @@ version = "0.9.0"
 description = "A Scrapling-aligned stealth web scraping library: adaptive selectors, TLS-fingerprint HTTP, JS rendering, and a spider framework."
 requires-python = ">=3.10"
 readme = "README.md"
-license = {text = "MIT"}
-authors = [{name = "web-crawler contributors"}]
+license = { text = "MIT" }
+authors = [{ name = "web-crawler contributors" }]
 keywords = [
     "web-scraping",
     "scraping",
@@ -65,9 +65,7 @@ web-crawler-startproject = "web_crawler.app.startproject:main"
 web-crawler-shell = "web_crawler.app.shell:main"
 
 [project.optional-dependencies]
-visual = [
-    "Pillow>=12.3.0,<13",
-]
+visual = ["Pillow>=12.3.0,<13"]
 all = [
     "curl_cffi>=0.9,<1",
     # 上限保持宽松：camoufox（<1.61）与 all 组合安装时由 pip 自动选兼容版本；
@@ -75,21 +73,10 @@ all = [
     "playwright>=1.60.0,<2",
     "pydantic>=2.14.1,<3",
 ]
-camoufox = [
-    "camoufox[geoip]>=0.5.8,<1",
-]
-captcha = [
-    "ddddocr>=1.6.1,<2",
-    "numpy>=2.2.6,<3",
-]
-crypto = [
-    "pycryptodome>=4.0.1,<5",
-]
-mcp = [
-    "mcp>=2.3.0,<3",
-    "camoufox[geoip]>=0.5.8,<1",
-    "pydantic>=2.14.1,<3",
-]
+camoufox = ["camoufox[geoip]>=0.5.8,<1"]
+captcha = ["ddddocr>=1.6.1,<2", "numpy>=2.2.6,<3"]
+crypto = ["pycryptodome>=4.0.1,<5"]
+mcp = ["mcp>=2.3.0,<3", "camoufox[geoip]>=0.5.8,<1", "pydantic>=2.14.1,<3"]
 dev = [
     "pytest>=9.1.1,<10",
     "pytest-cov>=7.1.0,<8",
@@ -132,9 +119,7 @@ ignore = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-]
+markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
 filterwarnings = [
     # 默认把一切警告升级为错误（严格模式，pandas/numpy 同款做法）；
     # 下方的 ignore 条目在其之前插入过滤器栈，优先级更高，即"先豁免后严格"
