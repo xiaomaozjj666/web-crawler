@@ -11,16 +11,16 @@
 
 ## 安装
 
-推荐在虚拟环境中从源码安装：
+推荐直接从 PyPI 安装（发行版名 `stealth-web-crawler`，导入名仍是 `web_crawler`）：
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
+pip install stealth-web-crawler
 ```
 
-`[dev]` 包含核心依赖与开发工具（pytest / ruff / mypy）。核心抓取与解析只依赖
-`httpx` + `lxml`；隐身与渲染能力按需追加 extras：
+核心抓取与解析依赖 `httpx`、`lxml`、`beautifulsoup4`、`cssselect`；隐身与渲染
+能力按需追加 extras：
 
 | extras | 追加能力 | 说明 |
 | --- | --- | --- |
@@ -32,17 +32,22 @@ pip install -e ".[dev]"
 | `visual` | 图片解码预处理 | `Pillow` |
 
 ```bash
-pip install -e ".[all]"
+pip install "stealth-web-crawler[all]"
 playwright install chromium      # 仅 DynamicFetcher / StealthyFetcher 需要
 ```
 
 !!! warning "不要直接 `pip install web-crawler`"
-    PyPI 上同名包属于另一个无关项目，会装到错误的库。请始终使用上面的
-    源码安装方式。
+    PyPI 上的 `web-crawler`（以及 `webcrawler`）属于另一个无关项目，会装到错误的库。
+    本项目的发行版名是 `stealth-web-crawler`。
 
-安装成功后会自动注册四个命令：`web-crawler`（资源下载 CLI）、`crawler-ui`
+!!! note "源码安装（开发）"
+    需要 `[dev]` 开发工具（pytest / ruff / mypy）时，克隆仓库后运行
+    `pip install -e ".[dev]"`。
+
+安装成功后会自动注册六个命令：`web-crawler`（资源下载 CLI）、`crawler-ui`
 （本地 Web UI）、`web-crawler-mcp`（MCP 服务）、`web-crawler-reverse`
-（JS 逆向 CLI）。
+（JS 逆向 CLI）、`web-crawler-startproject`（项目脚手架）、
+`web-crawler-shell`（交互式调试 shell）。
 
 ## 第一个请求：隐身抓取
 
@@ -170,5 +175,5 @@ except WebCrawlerError as e:
   DNS 钉扎与安全边界
 - [AI 能力指南](guides/ai.md) — AIExtractor、AIScrapeAgent、图片验证码、
   JS 逆向 Agent
-- [API 参考](api-reference.md) — 全部 59 个公开符号的自动生成文档
+- [API 参考](api-reference.md) — 全部 66 个公开符号的自动生成文档
 - [JS 逆向 Agent](reverse-agent.md) — 完整逆向手册

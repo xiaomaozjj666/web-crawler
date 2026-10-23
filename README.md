@@ -450,8 +450,8 @@ python benchmarks.py --check-regression   # 性能回归检查（CI 模式）
 
 > 对比环境：Windows 11 / CPython 3.12 / 2026-10-23。跑对标需独立 venv：`pip install scrapling -e . && python benchmarks_vs_peers.py`。
 
-> 测试需要 dev 依赖（`pytest` / `pytest-asyncio` / `pytest-cov`）。仓库内 `.venv` 是
-> 纯运行时环境、不含 pytest，请用已安装 dev 依赖的系统 Python 运行（`python -m pytest`
+> 测试需要 dev 依赖（`pytest` / `pytest-asyncio` / `pytest-cov`）。仓库不提交 `.venv`
+> （本地 venv 可自行装测试依赖），请用已安装 dev 依赖的 Python 运行（`python -m pytest`
 > 或直接 `pytest`，editable 安装后无需 `PYTHONPATH=src`）。
 
 GitHub Actions 在每次 push 时运行 lint、类型检查、带覆盖率的测试、基准回归检查与文档构建（`--strict`）；标记为 `@pytest.mark.slow` 的慢速测试（如 Camoufox 端到端套件）默认被排除。

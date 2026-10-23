@@ -15,7 +15,7 @@
     - [AI 能力](guides/ai.md) — AIExtractor / AIScrapeAgent / 图片验证码 / 逆向 Agent
 - [架构说明](architecture.md) — 模块树、各组件职责、数据流图
 - [JS 逆向 Agent](reverse-agent.md) — 完整使用指南、配置项、能力矩阵
-- [API 参考](api-reference.md) — 全部 59 个公开符号的自动生成文档
+- [API 参考](api-reference.md) — 全部 66 个公开符号的自动生成文档
 - [更新日志](https://github.com/xiaomaozjj666/web-crawler/blob/master/CHANGELOG.md) — 版本历史
 
 ## 合规说明

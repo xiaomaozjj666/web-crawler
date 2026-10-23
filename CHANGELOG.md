@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`startproject` 模板 heading 空串**：`example.com` 等页面已无 `<h1>`，脚手架
+  生成的 `TitleSpider` / `SiteCrawlSpider` 回调产出的 item `heading` 为空串。
+  模板改为 `h1` 取不到时回退取 `title`（优雅降级示范，item 永远有可读标题）。
+
 ## [0.9.0] - 2026-10-23
 
 ### Added

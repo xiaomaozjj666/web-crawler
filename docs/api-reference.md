@@ -1,7 +1,7 @@
 # API 参考
 
 本节由 [mkdocstrings](https://mkdocstrings.github.io/) 从源码 docstring 自动生成。
-所有公开 API 均通过 `web_crawler` 顶层包导出（`__all__` 共 59 个公共符号），
+所有公开 API 均通过 `web_crawler` 顶层包导出（`__all__` 共 66 个公共符号），
 全部为懒加载——`import web_crawler` 不会强制加载 `playwright` / `curl_cffi`
 等可选依赖，重型子模块仅在对应符号首次访问时才解析。
 
