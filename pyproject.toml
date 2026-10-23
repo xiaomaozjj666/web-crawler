@@ -61,6 +61,8 @@ web-crawler = "web_crawler.app.crawler:main"
 crawler-ui = "web_crawler.app.ui:main"
 web-crawler-mcp = "web_crawler.mcp.server:main"
 web-crawler-reverse = "web_crawler.mcp.cli:main"
+web-crawler-startproject = "web_crawler.app.startproject:main"
+web-crawler-shell = "web_crawler.app.shell:main"
 
 [project.optional-dependencies]
 visual = [

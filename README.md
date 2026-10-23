@@ -308,6 +308,8 @@ playwright install chromium        # 仅 DynamicFetcher / StealthyFetcher 需要
 | `crawler-ui` | 本地 Web UI |
 | `web-crawler-mcp` | MCP 服务（JSON-RPC over stdio） |
 | `web-crawler-reverse` | JS 逆向 Agent 命令行 |
+| `web-crawler-startproject` | 爬虫项目脚手架（对标 `scrapy startproject`）：生成含示例 Spider 的可跑骨架 |
+| `web-crawler-shell` | 交互式调试 shell（对标 `scrapy shell`）：`fetch <url>` 后即时试 css/xpath/links |
 
 ### 直接运行（源码树，免 pip install）
 
