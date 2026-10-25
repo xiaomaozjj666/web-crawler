@@ -32,6 +32,7 @@ import sys
 from pathlib import Path
 from string import Template
 
+from web_crawler import __version__
 from web_crawler.exceptions import ConfigError
 
 # ── 模板（纯字符串常量；教学站点用 example.com + iana.org 组合保稳）──────────
@@ -277,6 +278,13 @@ def main(argv: list[str] | None = None) -> int:
             '生成后: cd myproject && pip install "stealth-web-crawler[all]" '
             "&& python main.py"
         ),
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"web-crawler-startproject {__version__}",
+        help="显示版本并退出",
     )
     parser.add_argument("name", help="项目名（合法 Python 标识符，同时作为目录名）")
     args = parser.parse_args(argv)

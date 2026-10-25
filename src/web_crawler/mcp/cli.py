@@ -28,6 +28,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from web_crawler import __version__
+
 
 def _print_json(data: Any, *, indent: int = 2) -> None:
     """格式化输出 JSON。"""
@@ -479,6 +481,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="web-crawler-reverse",
         description="JS 逆向 Agent 命令行工具 — Camoufox + DeepSeek 驱动",
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"web-crawler-reverse {__version__}",
+        help="显示版本并退出",
     )
     parser.add_argument(
         "--model",

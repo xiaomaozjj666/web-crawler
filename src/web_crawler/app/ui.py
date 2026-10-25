@@ -75,12 +75,16 @@ from web_crawler.app._ui_state import (
 def main() -> None:
     import argparse as _ap
 
-    database.init_db()
-    _stale = database.fail_stale_running_tasks()
-    if _stale:
-        _log.info("启动清理: %d 个上次未完成的任务已标记为中断", _stale)
+    from web_crawler import __version__
 
     _parser = _ap.ArgumentParser(description="Web Resource Crawler UI")
+    _parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"crawler-ui {__version__}",
+        help="显示版本并退出",
+    )
     _parser.add_argument("--open", action="store_true", help="Automatically open browser")
     _parser.add_argument("--host", default=HOST, help=f"Server host (default: {HOST})")
     _parser.add_argument("--port", type=int, default=PORT, help=f"Server port (default: {PORT})")
@@ -91,6 +95,12 @@ def main() -> None:
         "注意：控制面无鉴权，仅建议在可信网络使用",
     )
     _args = _parser.parse_args()
+
+    # 参数解析前置（含 --version 快速路径）：初始化/清理不产生副作用残留
+    database.init_db()
+    _stale = database.fail_stale_running_tasks()
+    if _stale:
+        _log.info("启动清理: %d 个上次未完成的任务已标记为中断", _stale)
 
     # 安全边界：控制面默认只允许绑定回环地址，禁止 0.0.0.0 暴露到局域网；
     # 容器/远程场景需显式 --allow-remote 放行（Dockerfile CMD 使用）

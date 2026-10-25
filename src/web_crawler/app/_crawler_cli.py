@@ -3,8 +3,8 @@
 从 :mod:`app.crawler` 拆出的命令行解析层；``main()`` 入口保留在
 ``app.crawler`` 本体（``python -m web_crawler.app.crawler`` 用法不变）。
 
-本模块是叶子模块，仅依赖 :mod:`app._crawler_context` 提供的默认值常量，
-不导入 ``app.crawler``。
+本模块是叶子模块，仅依赖 :mod:`app._crawler_context` 提供的默认值常量与
+包级 ``__version__``（``-V/--version`` 版本标志），不导入 ``app.crawler``。
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 
+from web_crawler import __version__
 from web_crawler.app._crawler_context import DEFAULT_USER_AGENT, DEFAULT_WORKERS
 
 
@@ -27,6 +28,13 @@ Examples:
   %(prog)s --load-config my_project.json
   %(prog)s --url https://example.com --save-config my_project.json
         """,
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"web-crawler {__version__}",
+        help="Show version and exit.",
     )
     parser.add_argument("--url", help="Start page URL.")
     parser.add_argument(

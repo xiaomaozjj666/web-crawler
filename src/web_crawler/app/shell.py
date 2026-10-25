@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from string import Template
 from typing import Any, Protocol, TypeAlias
 
-from web_crawler import Fetcher
+from web_crawler import Fetcher, __version__
 from web_crawler.exceptions import UnsafeTargetError, WebCrawlerError
 from web_crawler.parser.links import LinkExtractor
 from web_crawler.response import Response
@@ -405,6 +405,13 @@ def main(argv: list[str] | None = None) -> int:
             "  %(prog)s https://example.com\n"
             "  %(prog)s                    # 空 shell，进去后 fetch <url>"
         ),
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"web-crawler-shell {__version__}",
+        help="显示版本并退出",
     )
     parser.add_argument("url", nargs="?", help="启动时抓取的 URL（可省略，进 shell 后再 fetch）。")
     parser.add_argument(
