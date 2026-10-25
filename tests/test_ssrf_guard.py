@@ -175,6 +175,21 @@ def test_rejects_localhost_and_mdns_hostnames(host: str) -> None:
     assert host_is_unsafe(host)
 
 
+@pytest.mark.parametrize(
+    "host",
+    [
+        "my-localhost.example.com",  # 含 localhost 子串的普通公网域名
+        "localhostern.io",
+    ],
+)
+def test_allows_public_domains_mentioning_localhost(host: str) -> None:
+    """子串误杀回归：仅保留名精确/后缀匹配，普通公网域名放行。
+
+    此前 ``"localhost" in lowered`` 子串匹配会把这类域名一并判为不安全。
+    """
+    assert not is_unsafe_hostname(host)
+
+
 def test_empty_or_missing_host_is_unsafe() -> None:
     """主机为空或缺失时不安全。"""
     assert host_is_unsafe(None)

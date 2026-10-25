@@ -468,7 +468,7 @@ GitHub Actions 在每次 push 时运行 lint、类型检查、带覆盖率的测
 
 **Q: 库遵守 robots.txt 吗？**
 
-遵守，而且按保守口径：`CrawlSpider` 默认读取并遵守 `robots.txt` 的 `Disallow` 与 `Crawl-delay`；同一目标的延迟取 `Crawl-delay`、`Retry-After` 与你显式配置的延迟三者的**最大值**，绝不抢跑。想关掉 robots 遵守请三思——多数站点的封禁策略最先看这个。
+支持，但**默认关闭**（对齐 Scrapy 的默认姿态，`CrawlSpider(respect_robots=True)` 显式开启）：开启后会读取并遵守 `robots.txt` 的 `Disallow` 与 `Crawl-delay`，且 `Crawl-delay` 与你的显式延迟、autothrottle 取**最大值**（只抬高、永不放宽）。`Retry-After` 节流在开启重试（429/503 等响应）时生效。多数站点的封禁策略最先看 robots 遵守——面向长期采集的任务建议开启。
 
 **Q: JS 渲染的页面怎么抓？**
 

@@ -58,7 +58,7 @@ resources_manifest.*
 run_report.*
 summary.txt
 crawler_output/
-reverse_screenshots/
+/reverse_screenshots/
 reverse_checkpoints/
 .checkpoints/
 .item_state.json

@@ -230,13 +230,20 @@ def is_private_ip(host: str) -> bool:
 def is_unsafe_hostname(host: str) -> bool:
     """静态主机名检查：localhost / *.localhost / *.local（mDNS）/ 云元数据名称。
 
-    含 ``localhost`` 字样的主机名（如 ``localhost.localdomain``、子域名）与
-    以 ``.local`` 结尾的 mDNS 名称均视为不安全。
+    ``localhost`` 本身、其子域（``api.localhost``，RFC 6761 保留名）、
+    ``localhost.*``（``localhost.localdomain`` 等）与以 ``.local`` 结尾的
+    mDNS 名称均视为不安全。刻意不做子串匹配——``my-localhost.example.com``
+    是普通公网域名，子串匹配会误杀（误杀方向虽保守，但会把合法目标一并挡掉）。
     """
     lowered = host.strip().lower().rstrip(".")
     if lowered in _UNSAFE_HOSTNAMES:
         return True
-    return "localhost" in lowered or lowered.endswith(".local")
+    return (
+        lowered == "localhost"
+        or lowered.startswith("localhost.")
+        or ".localhost" in lowered
+        or lowered.endswith(".local")
+    )
 
 
 def host_is_unsafe(host: str | None, *, resolve: bool = False) -> bool:
