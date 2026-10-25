@@ -180,12 +180,15 @@ def test_rejects_localhost_and_mdns_hostnames(host: str) -> None:
     [
         "my-localhost.example.com",  # 含 localhost 子串的普通公网域名
         "localhostern.io",
+        "talk.localhosted.io",  # .localhost 只是中间标签，不是保留后缀
     ],
 )
 def test_allows_public_domains_mentioning_localhost(host: str) -> None:
     """子串误杀回归：仅保留名精确/后缀匹配，普通公网域名放行。
 
-    此前 ``"localhost" in lowered`` 子串匹配会把这类域名一并判为不安全。
+    此前 ``"localhost" in lowered`` 子串匹配会把这类域名一并判为不安全；
+    收紧为 ``endswith(".localhost")`` 后，``.localhost`` 出现在中间标签的
+    域名同样放行（真解析到回环 IP 由 resolve 层兜底）。
     """
     assert not is_unsafe_hostname(host)
 

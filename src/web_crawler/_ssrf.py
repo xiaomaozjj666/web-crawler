@@ -232,8 +232,12 @@ def is_unsafe_hostname(host: str) -> bool:
 
     ``localhost`` 本身、其子域（``api.localhost``，RFC 6761 保留名）、
     ``localhost.*``（``localhost.localdomain`` 等）与以 ``.local`` 结尾的
-    mDNS 名称均视为不安全。刻意不做子串匹配——``my-localhost.example.com``
-    是普通公网域名，子串匹配会误杀（误杀方向虽保守，但会把合法目标一并挡掉）。
+    mDNS 名称均视为不安全。全部用精确/后缀匹配，不做子串匹配——
+    ``my-localhost.example.com``、``talk.localhosted.io`` 是普通公网域名，
+    子串匹配会误杀。代价是 ``evil.localhost.attacker.com`` 这类中间标签
+    含 ``.localhost`` 的域名不在静态层拦截——它解析出的公网 IP 无回环风险，
+    真把 A 记录指到 127.0.0.1 时由 ``host_is_unsafe(resolve=True)`` 的
+    IP 检查兜底（分层防御，静态层只负责名字本身）。
     """
     lowered = host.strip().lower().rstrip(".")
     if lowered in _UNSAFE_HOSTNAMES:
@@ -241,8 +245,7 @@ def is_unsafe_hostname(host: str) -> bool:
     return (
         lowered == "localhost"
         or lowered.startswith("localhost.")
-        or ".localhost" in lowered
-        or lowered.endswith(".local")
+        or lowered.endswith((".localhost", ".local"))
     )
 
 
