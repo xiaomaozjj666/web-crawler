@@ -464,6 +464,32 @@ GitHub Actions 在每次 push 时运行 lint、类型检查、带覆盖率的测
 - 图片验证码（OCR / 滑块 / 点选）通过 `ImageCaptchaSolver` 自动识别；当页面返回 401/403 或出现无法处理的挑战时，Agent 会停止并返回"转人工处理"。
 - 用途边界、默认安全姿态与全解锁开关的详细说明见上方 [用途与边界](#用途与边界)；`web_crawler.pentest` 仅用于**已获书面授权**的安全测试；未经授权对他人系统使用任何模块均属违法，使用者自行承担全部责任。
 
+## 常见问题（FAQ）
+
+**Q: 库遵守 robots.txt 吗？**
+
+遵守，而且按保守口径：`CrawlSpider` 默认读取并遵守 `robots.txt` 的 `Disallow` 与 `Crawl-delay`；同一目标的延迟取 `Crawl-delay`、`Retry-After` 与你显式配置的延迟三者的**最大值**，绝不抢跑。想关掉 robots 遵守请三思——多数站点的封禁策略最先看这个。
+
+**Q: JS 渲染的页面怎么抓？**
+
+三条路：`DynamicFetcher`（Playwright 内核）跑重 JS 站点；`StealthyFetcher`（隐身 + Cloudflare 感知）应对反爬检测；纯静态页面用基础 `Fetcher` 即可（最快）。逆向场景下 `web-crawler-reverse` 可注入 JS Hook 定位加密参数。
+
+**Q: 速率限制怎么配？**
+
+`Fetcher` 构造参数 `delay`（每请求间隔）+ `CrawlSpider` 的自适应模式（站点变慢自动放慢、恢复后提速，见上方示例）。不建议把延迟调到 0——对目标站点和你自己的 IP 都不友好。
+
+**Q: 和 scrapy 是什么关系？**
+
+定位不同：scrapy 是全功能爬虫框架（管道、中间件、调度器全家桶），本库是**隐身优先**的抓取工具箱——SSRF 防护、robots/Crawl-delay/Retry-After、元素指纹变更检测、断点续爬这些"防封"能力开箱即用；`startproject`/`shell` 命令刻意对标 scrapy 的使用直觉，但组装是显式构造参数风格，没有全局配置文件。两者可以共存：重采集管线用 scrapy，强对抗场景用本库。
+
+**Q: Power Mode 是什么？什么时候开？**
+
+默认所有抓取入口拒绝私网/环回/链路本地目标（含云元数据地址），协议仅放行 http/https——这是防 SSRF 的默认安全姿态。Power Mode 只在你**自己的可信环境**里需要访问内网服务或云元数据时才开，且只放行 host 校验、协议白名单始终保留。开法见下节。
+
+**Q: 报障前先做什么？**
+
+每个 CLI 都支持 `-V/--version`（如 `web-crawler -V`）；`python -m web_crawler` 可直跑查看版本与全部入口。提 issue 时附上版本号、最小复现代码与目标站点行为描述。
+
 ## 🔓 Power Mode（个人全解锁，默认关闭）
 
 **公开默认是安全版本**：所有抓取入口（Fetcher / AsyncFetcher / DynamicFetcher / StealthyFetcher / CamoufoxFetcher、app 下载器与重定向）都会拒绝私网 / 环回 / 链路本地目标（含云元数据 `169.254.169.254`、CGNAT、IPv6 ULA / 链路本地、`localhost` / `*.local` 等）。

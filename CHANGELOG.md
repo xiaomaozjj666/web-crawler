@@ -6,11 +6,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **全 CLI 家族 `-V/--version` 版本标志**：`web-crawler`、`crawler-ui`、
+  `web-crawler-startproject`、`web-crawler-shell`、`web-crawler-reverse`
+  五个入口补齐 POSIX 惯例的版本标志（此前仅 `web-crawler-mcp` 支持），
+  输出 `<prog> <version>` 统一格式；报障排障第一步（确认安装版本）不再缺位。
+- **`python -m web_crawler` 直跑入口**：无参数打印版本与六个 CLI 入口指引；
+  `--version`/`-V` 与 CLI 家族输出一致；不接受子命令（与专门入口职责不重叠），
+  未知参数退出码 2。
+- **README FAQ 章节**：robots 遵守口径（三源延迟取最大）、JS 渲染三条路径、
+  速率限制配置、与 scrapy 的定位差异、Power Mode 使用时机、报障前置步骤。
+- `.gitignore` 防御性收录 `.arts/`、`.codeartsdoer/` 本地工具运行时目录
+  （此前仅靠全局 gitignore 兜底，其他贡献者机器上可能污染 git status）。
+- 新增 `tests/test_version_flags.py`：6 个 CLI 的版本标志回归 +
+  `python -m web_crawler` 子进程行为（--version/--help/未知参数）。
+
 ### Fixed
 
 - **`startproject` 模板 heading 空串**：`example.com` 等页面已无 `<h1>`，脚手架
   生成的 `TitleSpider` / `SiteCrawlSpider` 回调产出的 item `heading` 为空串。
   模板改为 `h1` 取不到时回退取 `title`（优雅降级示范，item 永远有可读标题）。
+- **`crawler-ui` 参数解析副作用顺序**：`main()` 中 argparse 解析前置到
+  `init_db()`/清理逻辑之前，`--version` 快速路径不再触碰数据库。
 
 ## [0.9.0] - 2026-10-23
 
