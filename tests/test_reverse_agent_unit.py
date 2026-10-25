@@ -538,9 +538,14 @@ class TestObserve:
     """_observe_async（原 sync/async 两类合并，断言取并集）。"""
 
     @pytest.mark.asyncio
-    async def test_observe_collects_all_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_observe_collects_all_fields(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """_observe 应聚合 url/hook_data/network/scripts/captcha/dom/截图。"""
-        monkeypatch.chdir(Path(__file__).parent)  # 截图写入 tests 目录
+        # 截图落临时目录：此前 chdir 到 tests 目录写真实文件，靠未锚定的
+        # gitignore 规则掩盖；规则收窄为 /reverse_screenshots/（根锚定）后
+        # 该产物变成未跟踪噪音，两次被 git add -A 误扫进提交。
+        monkeypatch.chdir(tmp_path)
         cfg = ReverseAgentConfig(
             enable_screenshot=True,
             enable_guard=False,
