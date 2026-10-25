@@ -40,6 +40,11 @@ site/
 # 内部过程文档（不随仓库分发）
 REVIEW-REPORT.md
 
+# 本地 AI 辅助工具的运行时目录（会话缓存/临时产物），防御性收录：
+# 避免贡献者机器上的同类工具把 git status 弄脏
+.arts/
+.codeartsdoer/
+
 # OS
 .DS_Store
 Thumbs.db
