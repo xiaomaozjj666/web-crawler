@@ -76,6 +76,7 @@ def test_python_m_web_crawler_version() -> None:
         [sys.executable, "-m", "web_crawler", "--version"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
         check=False,
     )
@@ -89,6 +90,7 @@ def test_python_m_web_crawler_help() -> None:
         [sys.executable, "-m", "web_crawler", "--help"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
         check=False,
     )
@@ -103,6 +105,7 @@ def test_python_m_web_crawler_rejects_subcommand() -> None:
         [sys.executable, "-m", "web_crawler", "crawl", "https://example.com"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=60,
         check=False,
     )

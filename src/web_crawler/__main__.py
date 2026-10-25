@@ -27,7 +27,21 @@ _HELP = (
 )
 
 
+def _ensure_utf8_stdio() -> None:
+    """把 stdout/stderr 钉成 UTF-8（``errors="replace"`` 兜底）。
+
+    默认编码跟随系统代码页：非 UTF-8 代码页的机器上（如 cp1252）打印中文
+    指引文本会抛 ``UnicodeEncodeError`` 直接退出 1。写法与
+    ``web_crawler.mcp.server._ensure_utf8_stdio`` 保持一致。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _ensure_utf8_stdio()
     args = sys.argv[1:] if argv is None else list(argv)
     if args in (["--version"], ["-V"]):
         print(f"web-crawler {__version__}")
