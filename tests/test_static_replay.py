@@ -106,7 +106,9 @@ def test_missing_and_wrong_type_are_quarantined_not_exported(tmp_path: Path) -> 
         zlib.compress(b"<html><body><section id='item'></section></body></html>")
     )
     assert _run(missing_project) == {"items": []}
-    missing_reason = json.loads((missing_project / "quarantine.jsonl").read_text())["reasons"][0]
+    missing_reason = json.loads((missing_project / "quarantine.jsonl").read_text(encoding="utf-8"))[
+        "reasons"
+    ][0]
     assert "缺失必填字段" in missing_reason
 
     wrong_project = compile_static_replay(
@@ -114,7 +116,9 @@ def test_missing_and_wrong_type_are_quarantined_not_exported(tmp_path: Path) -> 
         tmp_path / "wrong-type",
     )
     assert _run(wrong_project) == {"items": []}
-    wrong_reason = json.loads((wrong_project / "quarantine.jsonl").read_text())["reasons"][0]
+    wrong_reason = json.loads((wrong_project / "quarantine.jsonl").read_text(encoding="utf-8"))[
+        "reasons"
+    ][0]
     assert "期望类型 int" in wrong_reason
 
 
@@ -129,7 +133,7 @@ def test_low_confidence_drift_is_quarantined(tmp_path: Path) -> None:
     )
 
     assert _run(project) == {"items": []}
-    quarantined = json.loads((project / "quarantine.jsonl").read_text())
+    quarantined = json.loads((project / "quarantine.jsonl").read_text(encoding="utf-8"))
     assert quarantined["reasons"] == ["low_confidence"]
 
 
@@ -159,7 +163,10 @@ def test_secret_values_are_redacted_from_project_and_output(tmp_path: Path) -> N
     # Change the sensitive query value into a non-secret placeholder as part of compilation.
     for meta_path in (project / "cache").glob("*.meta.json"):
         meta_path.write_text(
-            meta_path.read_text().replace("token=super-secret-value", "token=redacted")
+            meta_path.read_text(encoding="utf-8").replace(
+                "token=super-secret-value", "token=redacted"
+            ),
+            encoding="utf-8",
         )
 
     result = _run(project)
