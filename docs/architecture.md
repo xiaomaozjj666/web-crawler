@@ -26,6 +26,7 @@ src/web_crawler/          # 核心库
     proxy.py              # ProxyPool（轮换 + 冷却）
   spider/
     spider.py             # Spider + Request + SpiderStats（暂停/续跑）
+    static_replay.py      # 静态轨迹 → 离线 Spider 项目（契约隔离 + 幂等）
   ai/                     # AI 辅助抓取 + JS 逆向套件
     llm.py                # LLMProvider（OpenAI 兼容，默认 DeepSeek）
     extractor.py          # AIExtractor（CSS 选择器生成 + 自愈）
@@ -103,6 +104,11 @@ mkdocs.yml                # API 文档站点配置
   - 优先级调度、域名过滤、URL 去重
   - JSON 状态序列化，支持暂停/续跑
   - `Request` 封装 URL + callback + meta
+- **`StaticReplayCompiler`**：把成功静态 GET 导航快照与 CSS 抽取轨迹编译为独立离线
+  Spider 项目。非 GET、缺少响应快照、选择器录制歧义及浏览器/LLM/验证码动作在
+  编译期明确失败；缓存由 `CacheMiddleware(offline=True)` 提供，秘密值在落盘前脱敏，
+  指纹重定位低于阈值、缺字段或类型错误的 item 写入 quarantine 而不进入 feed，
+  重复离线运行按确定性 item 哈希幂等跳过。
 
 #### AI 层 `ai/`
 

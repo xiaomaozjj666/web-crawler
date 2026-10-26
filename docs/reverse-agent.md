@@ -167,6 +167,26 @@ finally:
 | 截图捕获 | `enable_screenshot` | `True` | 每步观察 + 错误路径保存 PNG |
 | 人类化输入 | `humanize_input` | `True` | click 先 hover、type 逐键随机延迟 |
 
+## 静态轨迹编译与离线回放
+
+对只含 **GET navigate（带响应快照）+ CSS extract** 的轨迹，可生成独立离线 Spider
+项目；hook、浏览器交互、LLM 分析和验证码等动态步骤不属于此切片，会在编译期报错，
+不会被注释跳过后伪装成成功。
+
+```python
+from web_crawler.spider.static_replay import compile_static_replay
+
+project = compile_static_replay(recorder.records, "out/static-replay", secrets=["敏感值"])
+# python out/static-replay/spider.py
+```
+
+每个 navigate 记录须在 `params.response` 中携带 `url/status/headers/body_base64`；extract
+记录须声明 `selector/fields`，且录制快照内选择器唯一匹配。生成的 `cache/`、`replay.json`
+和 `spider.py` 不含上述秘密值；命中缓存才执行，缓存缺失绝不联网。字段缺失、类型错误或
+指纹重定位置信度不足会写入 `quarantine.jsonl`，不进入 `items.jsonl`；重复离线运行按
+确定性 item 哈希跳过，避免重复落盘。动态页面交互、会话态和无快照请求仍需显式扩展，
+不能由本静态链路保证重放。
+
 ## 错误处理
 
 - **浏览器崩溃**：`CrashRecovery` 尝试重启一次

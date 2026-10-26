@@ -35,16 +35,24 @@ from .spider import (
     SpiderError,
     SpiderStats,
 )
+from .static_replay import (
+    ContractPipeline,
+    IdempotentFeedPipeline,
+    StaticReplayCompiler,
+    compile_static_replay,
+)
 from .validation import ValidationPipeline
 
 __all__ = [
     "AutoThrottle",
     "CacheMiddleware",
+    "ContractPipeline",
     "CrawlSpider",
     "DownloaderMiddleware",
     "DropItem",
     "DupeFilter",
     "FeedExportPipeline",
+    "IdempotentFeedPipeline",
     "IgnoreRequest",
     "ItemPipeline",
     "Request",
@@ -53,5 +61,7 @@ __all__ = [
     "Spider",
     "SpiderError",
     "SpiderStats",
+    "StaticReplayCompiler",
     "ValidationPipeline",
+    "compile_static_replay",
 ]
