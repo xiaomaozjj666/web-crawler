@@ -119,6 +119,11 @@ ignore = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# pytest-asyncio 对未显式设置 fixture 循环作用域会发 PytestDeprecationWarning，
+# 而该警告在其 pytest_configure 阶段抛出，被上方 filterwarnings=error 升级成
+# 异常后整个 pytest 以 INTERNALERROR 退出（2026-10-27 Nightly e2e 实测）。
+# 显式声明为 function（pytest-asyncio 未来版本的默认值），一次性消除该告警。
+asyncio_default_fixture_loop_scope = "function"
 markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
 filterwarnings = [
     # 默认把一切警告升级为错误（严格模式，pandas/numpy 同款做法）；
