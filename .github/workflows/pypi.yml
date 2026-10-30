@@ -1,4 +1,4 @@
-# PyPI 发行：tag（v*）触发构建与发布。
+# PyPI 发行：tag（v*）触发构建与发布；publish 带版本闸门（见 publish 的 if）。
 #
 # 发行版名 stealth-web-crawler（导入名 web_crawler 不变，README 安装节
 # 有说明）；PyPI 上 web-crawler / webcrawler / stealth-crawler 均已被
@@ -31,6 +31,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      # 包版本号，供 publish 的版本闸门比对
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -38,6 +41,9 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: pyproject.toml
+      - name: 读取包版本
+        id: version
+        run: echo "version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")" >> "$GITHUB_OUTPUT"
       - run: pip install build twine
       - name: Build sdist and wheel
         run: python -m build
@@ -53,6 +59,13 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # 版本闸门：只有 tag 名 == v<pyproject 版本号> 才发布。PyPI 版本号
+    # 不可重复上传；仓库里存在非版本 tag（如挂语音注册资产的
+    # v0.0.1-voice，wechat-bot TTS 经它匿名下载），这类 tag 同样命中
+    # v* 触发——2026-10-30 推送 v0.0.1-voice 时重发 0.9.0 被 PyPI
+    # 400 File already exists 拒绝即此因。tag 与版本不一致时跳过
+    # publish，整个运行保持绿色。
+    if: format('v{0}', needs.build.outputs.version) == github.ref_name
     # 不绑定 GitHub environment：PyPI 侧登记 publisher 时 environment
     # 必须留空，两侧配置才匹配（绑 environment 需两侧同名，易错配）
     permissions:
