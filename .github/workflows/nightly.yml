@@ -40,6 +40,12 @@ jobs:
           cache-dependency-path: pyproject.toml
       - run: pip install -e ".[all,dev,camoufox,captcha,mcp,visual]"
       - name: Install browser binaries
+        env:
+          # camoufox fetch 会请求 daijro/camoufox 的 GitHub Release API；不带
+          # token 时走共享 runner 出口 IP 的匿名限额（60 次/小时），被打满就
+          # 直接 403（2026-11-03 Nightly 失败根因）。camoufox/pkgman.py 原生
+          # 读取 GITHUB_TOKEN，设置后走认证限额（5000/小时），消除该失败类。
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           playwright install --with-deps chromium
           camoufox fetch
