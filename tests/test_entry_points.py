@@ -19,6 +19,8 @@ def test_crawler_module_entry_runs() -> None:
         [sys.executable, "-m", "web_crawler.app.crawler", "--help"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
         check=True,
     )
