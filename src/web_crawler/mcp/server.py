@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 import threading
@@ -29,6 +30,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .. import __version__
+from .._cli import add_output_arguments, configure_logging, output_mode
 from ..ai.analyzer import JSAnalyzer
 from ..ai.captcha import CaptchaManager
 from ..ai.hooks import HookLibrary, generate_combined_script
@@ -498,6 +500,7 @@ def _build_parser() -> argparse.ArgumentParser:
         version=f"web-crawler-mcp {__version__}",
         help="显示版本并退出",
     )
+    add_output_arguments(parser)
     return parser
 
 
@@ -523,11 +526,15 @@ def main() -> None:
     不能因此让它启动失败。
 
     入口先调 :func:`_ensure_utf8_stdio`：否则非 UTF-8 代码页下打印中文帮助会崩
-    （2026-10-16 CI 的 windows-latest 实测）。
+    （2026-10-16 CI 的 windows-latest 实测）。stdout 始终只承载 JSON-RPC。
     """
     _ensure_utf8_stdio()
-    _build_parser().parse_known_args()
-    if not os.environ.get("DEEPSEEK_API_KEY"):
+    args, _unknown = _build_parser().parse_known_args()
+    if not logging.getLogger().handlers:
+        logging.basicConfig(format="%(levelname)s: %(message)s", stream=sys.stderr)
+    configure_logging(args)
+    logging.getLogger(__name__).debug("MCP stdio 服务启动，输出模式=%s", output_mode(args))
+    if not os.environ.get("DEEPSEEK_API_KEY") and output_mode(args) != "quiet":
         sys.stderr.write("warning: DEEPSEEK_API_KEY 环境变量未设置，LLM 相关工具将不可用。\n")
         sys.stderr.flush()
     server = ReverseMCPServer()

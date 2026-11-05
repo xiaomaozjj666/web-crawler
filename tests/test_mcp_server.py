@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -1836,6 +1837,8 @@ def test_main_warns_without_api_key(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """无 DEEPSEEK_API_KEY 时 main 写 stderr 警告并正常退出。"""
+    # 隔离 pytest 自身的 -q：新 CLI 的 -q/--quiet 不应被当成 MCP 进程参数。
+    monkeypatch.setattr(sys, "argv", ["web-crawler-mcp"])
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     fake_server = MagicMock()
     fake_server.run = MagicMock()  # 不抛异常

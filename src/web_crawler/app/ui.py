@@ -21,6 +21,8 @@ import webbrowser
 from http.server import ThreadingHTTPServer
 from pathlib import Path  # noqa: F401  (历史导入路径,测试 patch.object(ui.Path, ...) 依赖)
 
+from web_crawler._cli import add_output_arguments, configure_logging, emit_json, output_mode
+
 sys.dont_write_bytecode = True
 _log = logging.getLogger(__name__)
 
@@ -94,7 +96,9 @@ def main() -> None:
         help="允许绑定非回环地址（如 0.0.0.0，供 Docker/远程访问）。"
         "注意：控制面无鉴权，仅建议在可信网络使用",
     )
+    add_output_arguments(_parser)
     _args = _parser.parse_args()
+    configure_logging(_args)
 
     # 参数解析前置（含 --version 快速路径）：初始化/清理不产生副作用残留
     database.init_db()
@@ -114,6 +118,17 @@ def main() -> None:
     url = f"http://{_args.host}:{_args.port}"
     if _args.open:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+    if output_mode(_args) == "json":
+        # 服务已绑定但尚未进入 serve_forever；只发一条启动状态，后续日志走 stderr。
+        emit_json(
+            {
+                "status": "starting",
+                "command": "crawler-ui",
+                "url": url,
+                "host": _args.host,
+                "port": _args.port,
+            }
+        )
     _log.info("Web UI started: %s", url)
     _log.info("Press Ctrl+C to stop.")
     try:

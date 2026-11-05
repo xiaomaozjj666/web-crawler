@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **六个 CLI 统一输出体验**：新增互斥的 `--quiet/--verbose/--json`；爬取进度
+  包含完成数/总数、速率、失败数与数据量，TTY 原地刷新、非 TTY 节流输出；
+  结束摘要结构化展示成功/失败/耗时/数据量，网络/解析/配置/安全错误附下一步建议。
+- **Codecov 真实覆盖率接入**：CI 生成并上传 `coverage.xml`，README 改用真实
+  Codecov 徽章；文档补充 `CODECOV_TOKEN` 与公开仓库 tokenless 配置步骤。
 - **全 CLI 家族 `-V/--version` 版本标志**：`web-crawler`、`crawler-ui`、
   `web-crawler-startproject`、`web-crawler-shell`、`web-crawler-reverse`
   五个入口补齐 POSIX 惯例的版本标志（此前仅 `web-crawler-mcp` 支持），

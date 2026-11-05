@@ -6,7 +6,7 @@
   <img src="https://img.shields.io/badge/lxml-adaptive%20selector-8CA1B6" alt="lxml 自适应选择器" />
   <img src="https://img.shields.io/badge/TLS-impersonation-0F6B9E" alt="TLS 指纹隐身" />
   <img src="https://github.com/xiaomaozjj666/web-crawler/actions/workflows/ci.yml/badge.svg" alt="CI" />
-  <img src="https://img.shields.io/badge/coverage-92%25%2F97%25%20(CI%20gate)-brightgreen" alt="覆盖率 CI 门禁：minimal-deps ≥92%、full-deps ≥97%（非实时数据）" />
+  <a href="https://codecov.io/gh/xiaomaozjj666/web-crawler"><img src="https://codecov.io/gh/xiaomaozjj666/web-crawler/branch/master/graph/badge.svg" alt="Codecov 实时覆盖率" /></a>
   <a href="https://xiaomaozjj666.github.io/web-crawler/"><img src="https://img.shields.io/badge/docs-online-brightgreen" alt="文档站" /></a>
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" />
 </p>
@@ -311,6 +311,39 @@ playwright install chromium        # 仅 DynamicFetcher / StealthyFetcher 需要
 | `web-crawler-reverse` | JS 逆向 Agent 命令行 |
 | `web-crawler-startproject` | 爬虫项目脚手架（对标 `scrapy startproject`）：生成含示例 Spider 的可跑骨架 |
 | `web-crawler-shell` | 交互式调试 shell（对标 `scrapy shell`）：`fetch <url>` 后即时试 css/xpath/links |
+
+### 统一 CLI 输出与爬取反馈
+
+六个入口均提供互斥的 `-q/--quiet`、`-v/--verbose`、`--json`：
+
+| 模式 | 行为 |
+| --- | --- |
+| 默认 | 人读结果与摘要；爬取进度显示已完成/总数、速率、失败数和数据量 |
+| `--verbose` | 额外显示调试日志及当前 URL 等进度上下文 |
+| `--quiet` | 隐藏进度和成功摘要，保留错误及命令本身请求的数据结果 |
+| `--json` | stdout 输出一个机器可解析 JSON 文档，诊断与进度不混入 stdout |
+
+TTY 下爬取进度原地刷新；重定向、管道和 CI 等非 TTY 环境自动降级为节流日志，不会逐条刷屏。结束摘要包含成功、失败、跳过、耗时、数据量和输出目录；`status` 为 `success`、`partial` 或 `cancelled`。网络、解析、配置和安全错误会分级显示，并给出下一步修复建议。
+
+```bash
+web-crawler --url https://example.com --out ./out --json
+# 单页无资源时的字段示例（数值来自实际运行，不是固定模板）：
+# {"schema_version":1,"command":"web-crawler","status":"success","pages_scanned":1,
+#  "resources_found":0,"succeeded":0,"failed":0,"skipped":0,"duration_seconds":0.123,
+#  "bytes":0,"output_dir":"/absolute/path/out"}
+```
+
+`web-crawler-shell URL --json` 是单次抓取模式；`web-crawler-reverse` 的数据结果始终保持 JSON。`web-crawler-mcp` 的 stdout 严格保留 JSON-RPC 协议，不额外插入启动摘要，`--quiet/--verbose` 只控制诊断日志。
+
+### Codecov 首次配置（维护者网页操作）
+
+覆盖率徽章由 Codecov 实时生成，不在 README 硬编码覆盖率数字。首次启用：
+
+1. 在 [Codecov](https://app.codecov.io/) 导入 `xiaomaozjj666/web-crawler`，从仓库 **Settings → General → Repository Upload Token** 获取 token。
+2. 打开 GitHub 仓库 **Settings → Secrets and variables → Actions → New repository secret**，创建名为 `CODECOV_TOKEN` 的 secret 并粘贴 token；不要把 token 写入仓库文件。
+3. 重跑 CI，并在 Codecov 核对 `minimal-deps` / `full-deps` 报告是否到达。
+
+公开仓库也可按 [Codecov 官方 tokenless 文档](https://docs.codecov.com/docs/codecov-tokens#uploading-without-a-token)，在 Codecov 组织的 **Global Upload Token** 设置中允许任意来源上传；开启后无需 `CODECOV_TOKEN`。workflow 使用官方 `codecov/codecov-action@v5`，secret 为空时走公开仓库 tokenless 路径，实际可用性以 Codecov 组织设置为准。详细贡献者说明见 [CONTRIBUTING.md](CONTRIBUTING.md#codecov-首次接入维护者网页操作)。
 
 ### 直接运行（源码树，免 pip install）
 

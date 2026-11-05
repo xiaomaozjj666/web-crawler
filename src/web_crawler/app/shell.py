@@ -32,7 +32,14 @@ from string import Template
 from typing import Any, Protocol, TypeAlias
 
 from web_crawler import Fetcher, __version__
-from web_crawler.exceptions import UnsafeTargetError, WebCrawlerError
+from web_crawler._cli import (
+    add_output_arguments,
+    configure_logging,
+    emit_error,
+    emit_json,
+    output_mode,
+)
+from web_crawler.exceptions import ConfigError, UnsafeTargetError, WebCrawlerError
 from web_crawler.parser.links import LinkExtractor
 from web_crawler.response import Response
 
@@ -419,7 +426,33 @@ def main(argv: list[str] | None = None) -> int:
         default="chrome131",
         help="Fetcher 伪装的浏览器指纹（默认 chrome131）。",
     )
+    add_output_arguments(parser)
     args = parser.parse_args(argv)
+    configure_logging(args)
+
+    if output_mode(args) == "json":
+        if not args.url:
+            emit_error(ConfigError("--json 模式必须提供要抓取的 URL"), args)
+            return 2
+        try:
+            fetcher = Fetcher(impersonate=args.impersonate)
+            response = fetcher.get(args.url)
+        except Exception as exc:
+            emit_error(exc, args, context=args.url)
+            return 1
+        emit_json(
+            {
+                "status": "success",
+                "url": args.url,
+                "final_url": response.url,
+                "status_code": response.status,
+                "ok": response.ok,
+                "content_length": len(response.content),
+                "title": _page_title(response),
+            }
+        )
+        return 0
+
     fetcher = Fetcher(impersonate=args.impersonate)
     return run_shell(args.url, fetcher)
 

@@ -51,6 +51,14 @@ from pathlib import Path
 # 拆分后各层的同名再导出：保证 `app.crawler` 模块的所有属性仍可访问，
 # 测试对 cr.xxx 的访问与 patch.object(cr, ...) 不受影响（阶段子模块内部
 # 通过 cr.<name> 运行期属性访问本模块全局名，patch 后拿到替换值）。
+from web_crawler._cli import (
+    ProgressReporter,
+    configure_logging,
+    crawl_summary,
+    emit_crawl_summary,
+    emit_error,
+    output_mode,
+)
 from web_crawler.app._crawler_cli import build_parser
 from web_crawler.app._crawler_context import (  # noqa: F401
     CRAWL_STATE_FILE,
@@ -85,7 +93,7 @@ from web_crawler.app._crawler_scan import (
     _scan_pages,
     _seed_page_queue,
 )
-from web_crawler.app.crawler_models import ManifestRow, Resource  # noqa: F401
+from web_crawler.app.crawler_models import ManifestRow, Resource
 from web_crawler.app.crawler_net import *
 from web_crawler.app.crawler_report import *
 
@@ -117,6 +125,48 @@ from web_crawler.app._crawler_core import (  # noqa: F401
 
 
 def crawl(args: argparse.Namespace) -> int:
+    """为爬取主流程安装统一进度回调，并保证动态行与外部回调正确收尾。"""
+    reporter = ProgressReporter(output_mode(args))
+    had_callback = hasattr(args, "progress_callback")
+    previous_callback = getattr(args, "progress_callback", None)
+
+    def forward_progress(payload: dict[str, object]) -> None:
+        reporter.update(payload)
+        if previous_callback:
+            previous_callback(payload)
+
+    args.progress_callback = forward_progress
+    try:
+        return _crawl(args)
+    finally:
+        reporter.close()
+        if had_callback:
+            args.progress_callback = previous_callback
+        else:
+            del args.progress_callback
+
+
+def _emit_summary(
+    args: argparse.Namespace,
+    ctx: _CrawlContext,
+    resources: list[Resource],
+    rows: list[ManifestRow],
+    started_at: float,
+    *,
+    cancelled: bool = False,
+) -> None:
+    summary = crawl_summary(
+        pages=len(ctx.seen_pages),
+        resources=len(resources),
+        rows=rows,
+        started_at=started_at,
+        output_dir=str(ctx.output_dir),
+        cancelled=cancelled,
+    )
+    emit_crawl_summary(summary, args)
+
+
+def _crawl(args: argparse.Namespace) -> int:
     """应用层爬取主流程：页面扫描 → 资源过滤 → 并发下载 → 后处理与报告。"""
     crawl_start_time = time.time()
     report_config: dict[str, object] = {
@@ -145,7 +195,7 @@ def crawl(args: argparse.Namespace) -> int:
     try:
         extra_headers = parse_headers(args.header)
     except ValueError as exc:
-        _log.error("header parse error: %s", exc)
+        emit_error(exc, args, context="--header")
         return 2
 
     headers = {"User-Agent": args.user_agent, **extra_headers}
@@ -173,6 +223,7 @@ def crawl(args: argparse.Namespace) -> int:
     # 阶段入口守卫：页面扫描期间已取消 → 跳过下载阶段与后处理
     if cancelled or core.should_stop(args):
         _log.info("crawl cancelled; skipping download phase")
+        _emit_summary(args, ctx, resources, [], crawl_start_time, cancelled=True)
         return 1
 
     if not resources:
@@ -194,6 +245,7 @@ def crawl(args: argparse.Namespace) -> int:
             end_time=time.time(),
             config=report_config,
         )
+        _emit_summary(args, ctx, resources, [], crawl_start_time)
         return 0
 
     # ── 下载阶段（并发）──
@@ -220,7 +272,9 @@ def crawl(args: argparse.Namespace) -> int:
     )
 
     # 统一退出码：0 成功 / 1 用户取消 / 2 参数错误
-    return 1 if (cancelled or core.should_stop(args)) else 0
+    is_cancelled = cancelled or core.should_stop(args)
+    _emit_summary(args, ctx, resources, manifest_rows, crawl_start_time, cancelled=is_cancelled)
+    return 1 if is_cancelled else 0
 
 
 # ── 入口 ───────────────────────────────────────────────────────────
@@ -229,10 +283,22 @@ def crawl(args: argparse.Namespace) -> int:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    configure_logging(args)
 
     # 配置保存/加载
     if args.load_config:
-        config = load_config_from_file(args.load_config)
+        if not Path(args.load_config).is_file():
+            emit_error(
+                ValueError(f"配置文件不存在：{args.load_config}"),
+                args,
+                context=args.load_config,
+            )
+            raise SystemExit(2)
+        try:
+            config = load_config_from_file(args.load_config)
+        except (OSError, ValueError) as exc:
+            emit_error(exc, args, context=args.load_config)
+            raise SystemExit(2) from exc
         # CLI 显式提供的参数覆盖配置文件
         for key, value in vars(args).items():
             if key == "load_config":
@@ -249,7 +315,22 @@ def main() -> None:
     if args.save_config:
         if not args.url:
             parser.error("--url is required when using --save-config")
-        save_config_to_file(args, args.save_config)
+        try:
+            save_config_to_file(args, args.save_config)
+        except OSError as exc:
+            emit_error(exc, args, context=args.save_config)
+            raise SystemExit(2) from exc
+        if output_mode(args) == "json":
+            from web_crawler._cli import emit_json
+
+            emit_json(
+                {
+                    "status": "success",
+                    "command": "web-crawler",
+                    "action": "save-config",
+                    "path": str(Path(args.save_config).resolve()),
+                }
+            )
         return
 
     if not args.url:

@@ -71,6 +71,16 @@ jobs:
           --cov=web_crawler
           --cov-fail-under=92
           --cov-report=term-missing
+          --cov-report=xml
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.xml
+          disable_search: true
+          flags: minimal-deps
+          name: minimal-${{ matrix.os }}-py${{ matrix.python-version }}
+          token: "${{ secrets.CODECOV_TOKEN }}"
+          fail_ci_if_error: false
 
   test-extras:
     # 安装全部可选依赖（playwright / curl_cffi / camoufox 等），把动态 fetcher
@@ -94,6 +104,16 @@ jobs:
           --cov=web_crawler
           --cov-fail-under=97
           --cov-report=term-missing
+          --cov-report=xml
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.xml
+          disable_search: true
+          flags: full-deps
+          name: full-deps-ubuntu-py3.12
+          token: "${{ secrets.CODECOV_TOKEN }}"
+          fail_ci_if_error: false
 
   bench:
     runs-on: ubuntu-latest

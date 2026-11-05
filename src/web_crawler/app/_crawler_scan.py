@@ -19,6 +19,7 @@ import time
 from collections import deque
 from urllib.parse import urlparse
 
+from web_crawler._cli import render_error
 from web_crawler.app import _crawler_context as ctx_mod
 from web_crawler.app import _crawler_core as cr
 from web_crawler.app._crawler_context import _CrawlContext
@@ -145,6 +146,7 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
             phase="page",
             current_url=page_url,
             pages_scanned=len(ctx.seen_pages),
+            total_pages=args.max_pages,
             total_resources=0,
             processed_resources=0,
         )
@@ -160,7 +162,7 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
                 control_args=args,
             )
         except Exception as exc:
-            _log.warning("page fetch failed: %s", exc)
+            _log.error("%s", render_error(exc, context=page_url))
             continue
 
         page_path = output_path_for_url(page_url, ctx.output_dir, "text/html", prefix="pages")

@@ -13,6 +13,7 @@ import argparse
 import os
 
 from web_crawler import __version__
+from web_crawler._cli import add_output_arguments
 from web_crawler.app._crawler_context import DEFAULT_USER_AGENT, DEFAULT_WORKERS
 
 
@@ -164,4 +165,5 @@ Examples:
     )
     parser.add_argument("--save-config", help="Save crawl configuration to a JSON file and exit.")
     parser.add_argument("--load-config", help="Load crawl configuration from a JSON file.")
+    add_output_arguments(parser)
     return parser

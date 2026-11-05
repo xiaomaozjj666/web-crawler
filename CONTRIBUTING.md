@@ -84,6 +84,22 @@ chore: ...
 - 标记为 `@pytest.mark.slow` 的慢速测试（如 Camoufox 端到端套件）默认被 CI 排除，本地可用 `pytest -m slow` 单独运行。
 - 覆盖率门禁由 `pyproject.toml` 的 `[tool.coverage.report] fail_under` 控制，请勿让覆盖率下降。
 
+### Codecov 首次接入（维护者网页操作）
+
+CI 会生成 `coverage.xml`，并通过官方 `codecov/codecov-action` 上传；README 徽章展示 Codecov 返回的真实数据，仓库不硬编码或伪造覆盖率百分比。首次启用需要维护者完成以下网页配置：
+
+1. 在 [Codecov](https://app.codecov.io/) 使用 GitHub 账号登录并导入 `xiaomaozjj666/web-crawler`，在仓库的 **Settings → General → Repository Upload Token** 复制上传 token。
+2. 打开 GitHub 仓库 **Settings → Secrets and variables → Actions**，在 **Repository secrets** 中选择 **New repository secret**，名称填写 `CODECOV_TOKEN`，值粘贴上一步的 token 并保存。不要把 token 写入 workflow、源码或日志。
+3. 推送提交或重跑 CI，在 Codecov 仓库页确认 `minimal-deps` / `full-deps` 上传已到达，再检查 README 徽章。fork PR 不读取仓库 secrets；上传失败不会替代或掩盖测试门禁结果。
+
+本仓库是公开仓库，也可按 [Codecov 官方的 tokenless 说明](https://docs.codecov.com/docs/codecov-tokens#uploading-without-a-token) 在 Codecov 组织的 **Global Upload Token** 设置中允许任意来源上传；启用后，公开仓库可不配置 `CODECOV_TOKEN`。workflow 的 `token` 在未配置 secret 时为空，由 action 走公开仓库 tokenless 路径；是否可用以 Codecov 组织设置为准。私有仓库仍必须配置 secret。
+
+本地需要与 CI 相同的 XML 报告时运行：
+
+```bash
+pytest -m "not slow" --cov=web_crawler --cov-report=term-missing --cov-report=xml
+```
+
 ## 安全相关贡献
 
 涉及安全边界的改动（SSRF 防护、URL 校验、本地服务鉴权、Power Mode 行为）请额外谨慎：

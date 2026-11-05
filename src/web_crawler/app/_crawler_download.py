@@ -233,6 +233,9 @@ def _process_resource(ctx: _CrawlContext, resource: Resource) -> ManifestRow | N
     except Exception as exc:
         if "cancelled by user" in str(exc):
             return None  # 取消信号
+        from web_crawler._cli import render_error
+
+        _log.error("%s", render_error(exc, context=resource.url))
         status = f"error: {exc}"
         manifest_row = row_for(status, resource, "", "", 0, ctx.page_titles)
 
@@ -263,6 +266,8 @@ def _run_downloads(ctx: _CrawlContext, manifest_rows: list[ManifestRow]) -> bool
         pending: set[Future[ManifestRow | None]] = set(futures)
         index = 0
         download_queue_size = len(ctx.queue)
+        failed_count = 0
+        bytes_downloaded = 0
 
         while pending and not cancelled:
             try:
@@ -284,6 +289,7 @@ def _run_downloads(ctx: _CrawlContext, manifest_rows: list[ManifestRow]) -> bool
                 resource_for_future = futures.pop(future)
                 index += 1
                 ctx.processed_count[0] = index
+                completed_row: ManifestRow | None = None
                 try:
                     result = future.result()
                     if result is None:
@@ -294,6 +300,7 @@ def _run_downloads(ctx: _CrawlContext, manifest_rows: list[ManifestRow]) -> bool
                     with ctx.manifest_lock:
                         manifest_rows.append(result)
                         _append_jsonl_row(ctx, result)
+                    completed_row = result
                 except (
                     Exception
                 ) as exc:  # pragma: no cover - 防御性：_process_resource 已捕获所有异常
@@ -304,7 +311,14 @@ def _run_downloads(ctx: _CrawlContext, manifest_rows: list[ManifestRow]) -> bool
                         )
                         manifest_rows.append(failed_row)
                         _append_jsonl_row(ctx, failed_row)
+                    completed_row = failed_row
 
+                # 增量计数，避免每个资源完成时扫描完整 manifest 导致 O(n²)。
+                if completed_row is not None:
+                    if completed_row.status.startswith("error"):
+                        failed_count += 1
+                    elif completed_row.status.startswith("ok"):
+                        bytes_downloaded += completed_row.bytes
                 cr.report_progress(
                     args,
                     phase="download",
@@ -312,6 +326,8 @@ def _run_downloads(ctx: _CrawlContext, manifest_rows: list[ManifestRow]) -> bool
                     total_resources=download_queue_size,
                     processed_resources=index,
                     pages_scanned=len(ctx.seen_pages),
+                    failed_resources=failed_count,
+                    bytes_downloaded=bytes_downloaded,
                 )
 
             # 把运行期新发现的资源加入队列

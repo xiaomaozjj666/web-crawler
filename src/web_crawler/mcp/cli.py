@@ -29,6 +29,13 @@ from pathlib import Path
 from typing import Any
 
 from web_crawler import __version__
+from web_crawler._cli import (
+    add_output_arguments,
+    configure_logging,
+    emit_error,
+    emit_json,
+    output_mode,
+)
 
 
 def _print_json(data: Any, *, indent: int = 2) -> None:
@@ -36,10 +43,13 @@ def _print_json(data: Any, *, indent: int = 2) -> None:
     print(json.dumps(data, ensure_ascii=False, indent=indent, default=str))
 
 
-def _print_result(result: str) -> int:
-    """打印 handle_tool 返回的 JSON 结果，返回退出码（0 成功 / 1 失败）。"""
+def _print_result(result: str, args: argparse.Namespace | None = None) -> int:
+    """打印工具 JSON 结果；quiet 保留结果，JSON 模式使用紧凑单文档。"""
     data = json.loads(result)
-    _print_json(data)
+    if output_mode(args) == "json":
+        emit_json(data)
+    else:
+        _print_json(data)
     return 1 if isinstance(data, dict) and "error" in data else 0
 
 
@@ -63,7 +73,7 @@ def cmd_reverse_url(args: argparse.Namespace) -> int:
                 "max_steps": args.max_steps,
             },
         )
-        return _print_result(result)
+        return _print_result(result, args)
     finally:
         server.close()
 
@@ -76,7 +86,7 @@ def cmd_inject_hooks(args: argparse.Namespace) -> int:
             "inject_hooks",
             {"url": args.url, "hooks": args.hooks or []},
         )
-        return _print_result(result)
+        return _print_result(result, args)
     finally:
         server.close()
 
@@ -93,7 +103,7 @@ def cmd_analyze_js(args: argparse.Namespace) -> int:
             "analyze_js_code",
             {"code": code, "url": args.url or "", "target_param": args.target_param or ""},
         )
-        return _print_result(result)
+        return _print_result(result, args)
     finally:
         server.close()
 
@@ -107,7 +117,7 @@ def cmd_webpack(args: argparse.Namespace) -> int:
     server = _make_server(args.model)
     try:
         result = server.handle_tool("extract_webpack_modules", {"source": source})
-        return _print_result(result)
+        return _print_result(result, args)
     finally:
         server.close()
 
@@ -122,6 +132,9 @@ def cmd_deobfuscate(args: argparse.Namespace) -> int:
     try:
         result = server.handle_tool("deobfuscate_js", {"code": code})
         data = json.loads(result)
+        if output_mode(args) == "json":
+            emit_json(data)
+            return 1 if isinstance(data, dict) and "error" in data else 0
         if isinstance(data, dict) and "error" in data:
             _print_json(data)
             return 1
@@ -147,6 +160,9 @@ def cmd_reimplement(args: argparse.Namespace) -> int:
             {"code": code, "language": args.language},
         )
         data = json.loads(result)
+        if output_mode(args) == "json":
+            emit_json(data)
+            return 1 if isinstance(data, dict) and "error" in data else 0
         if isinstance(data, dict) and "error" in data:
             _print_json(data)
             return 1
@@ -164,7 +180,7 @@ def cmd_captcha(args: argparse.Namespace) -> int:
     server = _make_server(args.model)
     try:
         result = server.handle_tool("solve_captcha", {"url": args.url})
-        return _print_result(result)
+        return _print_result(result, args)
     finally:
         server.close()
 
@@ -207,7 +223,7 @@ def cmd_captcha_image(args: argparse.Namespace) -> int:
     server = _make_server(args.model)
     try:
         result = server.handle_tool("solve_captcha_image", payload)
-        return _print_result(result)
+        return _print_result(result, args)
     finally:
         server.close()
 
@@ -236,7 +252,7 @@ def cmd_pentest(args: argparse.Namespace) -> int:
     payload["timeout"] = args.timeout
     try:
         result = server.handle_tool("pentest_recon", payload)
-        return _print_result(result)
+        return _print_result(result, args)
     finally:
         server.close()
 
@@ -251,7 +267,7 @@ def cmd_capture(args: argparse.Namespace) -> int:
         payload["limit"] = args.limit
     try:
         result = server.handle_tool("capture_network_requests", payload)
-        return _print_result(result)
+        return _print_result(result, args)
     finally:
         server.close()
 
@@ -266,7 +282,7 @@ def cmd_scripts(args: argparse.Namespace) -> int:
         payload["limit"] = args.limit
     try:
         result = server.handle_tool("get_page_scripts", payload)
-        return _print_result(result)
+        return _print_result(result, args)
     finally:
         server.close()
 
@@ -308,7 +324,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         result = agent.run(url=args.url, task=args.task or "")
     except Exception as exc:
-        print(f"Agent 执行失败：{exc}", file=sys.stderr)
+        emit_error(exc, args, context="Agent 执行失败")
         return 1
     finally:
         agent.close()
@@ -317,9 +333,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.save_script and result.get("compiled_script"):
         try:
             Path(args.save_script).write_text(str(result["compiled_script"]), encoding="utf-8")
-            print(f"成功路径脚本已保存：{args.save_script}", file=sys.stderr)
+            if output_mode(args) not in ("quiet", "json"):
+                print(f"成功路径脚本已保存：{args.save_script}", file=sys.stderr)
         except OSError as exc:
-            print(f"保存脚本失败：{exc}", file=sys.stderr)
+            emit_error(exc, args, context=f"保存脚本失败：{args.save_script}")
 
     # 输出 JSON 结果
     if args.output and args.output != "-":
@@ -327,7 +344,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             json.dumps(result, ensure_ascii=False, indent=2, default=str),
             encoding="utf-8",
         )
-        print(f"结果已写入：{args.output}", file=sys.stderr)
+        if output_mode(args) not in ("quiet", "json"):
+            print(f"结果已写入：{args.output}", file=sys.stderr)
+    elif output_mode(args) == "json":
+        emit_json(result)
     else:
         _print_json(result)
     return 0
@@ -494,6 +514,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="deepseek-flash",
         help="DeepSeek 模型名（默认 deepseek-flash）",
     )
+    add_output_arguments(parser)
     sub = parser.add_subparsers(dest="command", help="子命令")
 
     # reverse
@@ -679,10 +700,16 @@ def main() -> None:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     parser = build_parser()
     args = parser.parse_args()
+    configure_logging(args)
     if not args.command:
         parser.print_help()
         sys.exit(2)
-    sys.exit(args.func(args))
+    try:
+        exit_code = args.func(args)
+    except Exception as exc:
+        emit_error(exc, args, context=str(args.command))
+        raise SystemExit(1) from exc
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":  # pragma: no cover

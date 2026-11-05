@@ -28,11 +28,17 @@ from __future__ import annotations
 
 import argparse
 import keyword
-import sys
 from pathlib import Path
 from string import Template
 
 from web_crawler import __version__
+from web_crawler._cli import (
+    add_output_arguments,
+    configure_logging,
+    emit_error,
+    emit_json,
+    output_mode,
+)
 from web_crawler.exceptions import ConfigError
 
 # ── 模板（纯字符串常量；教学站点用 example.com + iana.org 组合保稳）──────────
@@ -286,14 +292,41 @@ def main(argv: list[str] | None = None) -> int:
         version=f"web-crawler-startproject {__version__}",
         help="显示版本并退出",
     )
+    add_output_arguments(parser)
     parser.add_argument("name", help="项目名（合法 Python 标识符，同时作为目录名）")
     args = parser.parse_args(argv)
+    configure_logging(args)
     try:
         root = create_project(args.name)
     except ConfigError as exc:
-        print(f"错误：{exc}", file=sys.stderr)
+        emit_error(exc, args, context=args.name)
         return 2
+
+    mode = output_mode(args)
+    files = sorted(path.as_posix() for path in build_project_files(root.name))
+    next_steps = [
+        f"cd {root.name}",
+        'pip install "stealth-web-crawler[all]"',
+        "python main.py",
+    ]
+    if mode == "json":
+        emit_json(
+            {
+                "status": "success",
+                "project": str(root),
+                "files": files,
+                "next_steps": next_steps,
+            }
+        )
+        return 0
+    if mode == "quiet":
+        return 0
+
     print(f"已生成项目 {root}/")
+    if mode == "verbose":
+        print("生成文件：")
+        for path in files:
+            print(f"  {path}")
     print()
     print("下一步：")
     print(f"  cd {root.name}")
