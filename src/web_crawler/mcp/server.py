@@ -530,6 +530,10 @@ def main() -> None:
     """
     _ensure_utf8_stdio()
     args, _unknown = _build_parser().parse_known_args()
+    if _unknown:
+        # 保留历史嵌入调用兼容：宿主进程的同名参数（如 pytest -q）不应误控 MCP。
+        # 只有完全可识别的 MCP 参数列表才启用输出模式；未知参数本身仍被忽略。
+        args.quiet = args.verbose = args.json_output = False
     if not logging.getLogger().handlers:
         logging.basicConfig(format="%(levelname)s: %(message)s", stream=sys.stderr)
     configure_logging(args)
