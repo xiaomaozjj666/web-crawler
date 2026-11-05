@@ -1,0 +1,1594 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Scrapling 风格隐身爬虫库 + JS 逆向 Agent">
+      
+      
+      
+        <link rel="canonical" href="https://xiaomaozjj666.github.io/web-crawler/guides/spider/">
+      
+      
+        <link rel="prev" href="../../api-reference/">
+      
+      
+        <link rel="next" href="../stealth/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Spider 爬虫框架 - web-crawler 文档</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="blue">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#spider" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href="../.." title="web-crawler 文档" class="md-header__button md-logo" aria-label="web-crawler 文档" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            web-crawler 文档
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Spider 爬虫框架
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="blue"  aria-label="切换暗色模式"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="切换暗色模式" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="blue"  aria-label="切换亮色模式"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="切换亮色模式" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/xiaomaozjj666/web-crawler" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    xiaomaozjj666/web-crawler
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="标签" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  首页
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../quickstart/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  快速开始
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../api-reference/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  API 参考
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="./" class="md-tabs__link">
+          
+  
+  
+  进阶指南
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../architecture/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  架构说明
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../reverse-agent/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  JS 逆向 Agent
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="https://github.com/xiaomaozjj666/web-crawler/blob/master/CHANGELOG.md" class="md-tabs__link">
+        
+  
+  
+    
+  
+  更新日志
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="web-crawler 文档" class="md-nav__button md-logo" aria-label="web-crawler 文档" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    web-crawler 文档
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/xiaomaozjj666/web-crawler" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    xiaomaozjj666/web-crawler
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    首页
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    快速开始
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API 参考
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    进阶指南
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    进阶指南
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spider 爬虫框架
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spider 爬虫框架
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#spider_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        最小可用的 Spider
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#request" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Request：调度单位
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        域名过滤与去重
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        失败重试
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        限速：三个来源取最保守
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="限速：三个来源取最保守">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        域级并发槽位
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#robotstxt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        遵守 robots.txt
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        下载中间件
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="下载中间件">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cachemiddleware" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        内置缓存：CacheMiddleware
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#item-pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        item 管道
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        暂停与续跑
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#feed-item" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        feed 导出：item 落盘
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#linkextractor-crawlspider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        规则跟随：LinkExtractor + CrawlSpider
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sitemap-sitemapspider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sitemap 驱动：SitemapSpider
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#item-validationpipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        item 校验：ValidationPipeline
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        统计导出
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stream" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        流式调度：stream()
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        下一步
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../stealth/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    隐身与网络
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ai/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AI 能力
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    架构说明
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reverse-agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    JS 逆向 Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/xiaomaozjj666/web-crawler/blob/master/CHANGELOG.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    更新日志
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#spider_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        最小可用的 Spider
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#request" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Request：调度单位
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        域名过滤与去重
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        失败重试
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        限速：三个来源取最保守
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="限速：三个来源取最保守">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        域级并发槽位
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#robotstxt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        遵守 robots.txt
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        下载中间件
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="下载中间件">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cachemiddleware" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        内置缓存：CacheMiddleware
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#item-pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        item 管道
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        暂停与续跑
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#feed-item" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        feed 导出：item 落盘
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#linkextractor-crawlspider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        规则跟随：LinkExtractor + CrawlSpider
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sitemap-sitemapspider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        sitemap 驱动：SitemapSpider
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#item-validationpipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        item 校验：ValidationPipeline
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        统计导出
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stream" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        流式调度：stream()
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        下一步
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="spider">Spider 爬虫框架指南<a class="headerlink" href="#spider" title="Permanent link">&para;</a></h1>
+<p><code>Spider</code> 是回调驱动的爬虫框架：子类声明起始 URL 与回调，引擎负责调度、
+去重、限速、重试、中间件与统计。本页覆盖全部框架级机制；API 细节见
+<a href="../../api-reference/#spider-framework">API 参考 · Spider 框架</a>。</p>
+<h2 id="spider_1">最小可用的 Spider<a class="headerlink" href="#spider_1" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">web_crawler</span><span class="w"> </span><span class="kn">import</span> <span class="n">Spider</span><span class="p">,</span> <span class="n">Request</span><span class="p">,</span> <span class="n">Fetcher</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">QuotesSpider</span><span class="p">(</span><span class="n">Spider</span><span class="p">):</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">start_urls</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"https://quotes.toscrape.com/"</span><span class="p">]</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">allowed_domains</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"quotes.toscrape.com"</span><span class="p">]</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">parse</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">response</span><span class="p">):</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        <span class="k">for</span> <span class="n">quote</span> <span class="ow">in</span> <span class="n">response</span><span class="o">.</span><span class="n">css</span><span class="p">(</span><span class="s2">"div.quote"</span><span class="p">):</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>            <span class="k">yield</span> <span class="p">{</span><span class="s2">"text"</span><span class="p">:</span> <span class="n">quote</span><span class="o">.</span><span class="n">css_first</span><span class="p">(</span><span class="s2">".text"</span><span class="p">)</span><span class="o">.</span><span class="n">text</span><span class="p">}</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>        <span class="n">nxt</span> <span class="o">=</span> <span class="n">response</span><span class="o">.</span><span class="n">css_first</span><span class="p">(</span><span class="s2">"li.next &gt; a"</span><span class="p">)</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        <span class="k">if</span> <span class="n">nxt</span><span class="p">:</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>            <span class="k">yield</span> <span class="n">Request</span><span class="p">(</span><span class="n">response</span><span class="o">.</span><span class="n">urljoin</span><span class="p">(</span><span class="n">nxt</span><span class="o">.</span><span class="n">attr</span><span class="p">(</span><span class="s2">"href"</span><span class="p">)))</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="n">items</span> <span class="o">=</span> <span class="n">QuotesSpider</span><span class="p">(</span><span class="n">fetcher</span><span class="o">=</span><span class="n">Fetcher</span><span class="p">(</span><span class="n">impersonate</span><span class="o">=</span><span class="s2">"chrome131"</span><span class="p">))</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+</code></pre></div>
+<p>回调里 <code>yield</code> 的规则只有两条：</p>
+<ul>
+<li><code>yield Request(...)</code> → 请求进入调度队列，可指定其他回调；</li>
+<li><code>yield {…}</code>（任意非 Request 对象）→ 视为 item，被收集进返回列表
+  （并流经 item 管道，见<a href="#item-pipeline">下文</a>）。</li>
+</ul>
+<h2 id="request">Request：调度单位<a class="headerlink" href="#request" title="Permanent link">&para;</a></h2>
+<p><code>Request</code> 是 dataclass，常用字段：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>默认</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>url</code></td>
+<td>必填</td>
+<td>目标地址</td>
+</tr>
+<tr>
+<td><code>method</code></td>
+<td><code>"GET"</code></td>
+<td>HTTP 方法</td>
+</tr>
+<tr>
+<td><code>callback</code></td>
+<td><code>"parse"</code></td>
+<td>Spider 子类上的回调方法名</td>
+</tr>
+<tr>
+<td><code>headers</code> / <code>body</code></td>
+<td><code>None</code></td>
+<td>请求头 / 请求体</td>
+</tr>
+<tr>
+<td><code>priority</code></td>
+<td><code>0</code></td>
+<td>越大越先调度（heap 取负实现）</td>
+</tr>
+<tr>
+<td><code>meta</code></td>
+<td><code>{}</code></td>
+<td>透传到 <code>response.meta</code>，供回调间传递状态</td>
+</tr>
+<tr>
+<td><code>retries</code></td>
+<td><code>0</code></td>
+<td>引擎重试计数（配合 <code>max_retries</code>）</td>
+</tr>
+<tr>
+<td><code>dont_filter</code></td>
+<td><code>False</code></td>
+<td><code>True</code> 时跳过去重器</td>
+</tr>
+</tbody>
+</table>
+<p>多级页面用 <code>callback</code> + <code>meta</code> 串联：</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">parse</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">response</span><span class="p">):</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="k">yield</span> <span class="n">Request</span><span class="p">(</span><span class="n">detail_url</span><span class="p">,</span> <span class="n">callback</span><span class="o">=</span><span class="s2">"parse_detail"</span><span class="p">,</span> <span class="n">meta</span><span class="o">=</span><span class="p">{</span><span class="s2">"source"</span><span class="p">:</span> <span class="n">response</span><span class="o">.</span><span class="n">url</span><span class="p">})</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="k">def</span><span class="w"> </span><span class="nf">parse_detail</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">response</span><span class="p">):</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="k">yield</span> <span class="p">{</span><span class="s2">"source"</span><span class="p">:</span> <span class="n">response</span><span class="o">.</span><span class="n">meta</span><span class="p">[</span><span class="s2">"source"</span><span class="p">],</span> <span class="s2">"title"</span><span class="p">:</span> <span class="n">response</span><span class="o">.</span><span class="n">css_first</span><span class="p">(</span><span class="s2">"h1"</span><span class="p">)</span><span class="o">.</span><span class="n">text</span><span class="p">}</span>
+</code></pre></div>
+<h2 id="_1">域名过滤与去重<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>allowed_domains = ["example.com"]</code>：引擎只调度该域（含子域）的请求，
+  其余直接丢弃；空列表表示不过滤。</li>
+<li>去重由 <code>DupeFilter</code> 完成，指纹 = <code>method + url + body</code> 的 SHA1——同一 URL
+  的不同 method / body（如不同分页参数）不会互相误杀。</li>
+</ul>
+<p>需要磁盘持久化等自定义行为时，实现 <code>request_seen(request) -&gt; bool</code> 并注入：</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">DiskDupeFilter</span><span class="p">(</span><span class="n">DupeFilter</span><span class="p">):</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">seen</span> <span class="o">=</span> <span class="n">load_seen_set</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>  <span class="c1"># 启动时加载</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">request_seen</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">request</span><span class="p">):</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>        <span class="n">fp</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fingerprint</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>        <span class="k">if</span> <span class="n">fp</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">seen</span><span class="p">:</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>            <span class="k">return</span> <span class="kc">True</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">seen</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">fp</span><span class="p">)</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>        <span class="k">return</span> <span class="kc">True</span>  <span class="c1"># 占位；实际实现记得返回 False 并落盘</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="n">spider</span> <span class="o">=</span> <span class="n">MySpider</span><span class="p">(</span><span class="n">fetcher</span><span class="o">=</span><span class="n">f</span><span class="p">,</span> <span class="n">dupefilter</span><span class="o">=</span><span class="n">DiskDupeFilter</span><span class="p">(</span><span class="s2">"seen.txt"</span><span class="p">))</span>
+</code></pre></div>
+<h2 id="_2">失败重试<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">RobustSpider</span><span class="p">(</span><span class="n">Spider</span><span class="p">):</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="n">max_retries</span> <span class="o">=</span> <span class="mi">2</span>  <span class="c1"># 下载失败后的最大重试次数（指数退避）；默认 0 不重试</span>
+</code></pre></div>
+<p>重试针对<strong>下载失败</strong>（网络错误、非 2xx 状态码），带指数退避；回调内抛出的
+异常不属于重试范畴（会记入统计并继续处理后续请求）。</p>
+<h2 id="_3">限速：三个来源取最保守<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
+<p>同域相邻请求的实际延迟由三个来源的最大值决定（<code>_throttle_delay_for</code>）：</p>
+<ol>
+<li><code>per_domain_delay</code> — 静态下限，用户显式承诺的礼貌底线；</li>
+<li><code>AutoThrottle</code> — 自适应值，只允许比静态下限更保守；</li>
+<li>robots <code>Crawl-delay</code> — 站点方显式声明的礼貌底线（仅
+   <code>respect_robots=True</code> 时生效），同样只抬高、永不放宽。</li>
+</ol>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># 静态：同域最小间隔 1 秒（设置了延迟的域在 stream() 中会被串行化）</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="k">class</span><span class="w"> </span><span class="nc">SlowSpider</span><span class="p">(</span><span class="n">Spider</span><span class="p">):</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="n">per_domain_delay</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"example.com"</span><span class="p">:</span> <span class="mf">1.0</span><span class="p">,</span> <span class="s2">"api.example.com"</span><span class="p">:</span> <span class="mf">0.5</span><span class="p">}</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="c1"># 自适应：站点变慢自动放慢、变快自动提速（对齐 Scrapy AutoThrottle 语义）</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="kn">from</span><span class="w"> </span><span class="nn">web_crawler</span><span class="w"> </span><span class="kn">import</span> <span class="n">AutoThrottle</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="n">throttle</span> <span class="o">=</span> <span class="n">AutoThrottle</span><span class="p">(</span><span class="n">target_concurrency</span><span class="o">=</span><span class="mf">2.0</span><span class="p">,</span> <span class="n">alpha</span><span class="o">=</span><span class="mf">0.3</span><span class="p">)</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="n">items</span> <span class="o">=</span> <span class="n">MySpider</span><span class="p">(</span><span class="n">fetcher</span><span class="o">=</span><span class="n">Fetcher</span><span class="p">(),</span> <span class="n">autothrottle</span><span class="o">=</span><span class="n">throttle</span><span class="p">)</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+</code></pre></div>
+<p><code>AutoThrottle</code> 关键参数：<code>alpha</code>（EMA 平滑系数，默认 0.3）、
+<code>target_concurrency</code>（希望同域保持的并发数，<code>target_delay = EMA / 该值</code>）、
+<code>min_delay</code> / <code>max_delay</code>（延迟上下限）、<code>penalty_factor</code>（失败惩罚放大系数）。</p>
+<h3 id="_4">域级并发槽位<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h3>
+<p>延迟之外还有「同域最多 N 并发」的硬上限表达——<code>per_domain_concurrency</code>
+（<code>asyncio.Semaphore</code>，仅 <code>stream()</code> 并发路径生效；<code>run()</code> 同步路径本身串行）：</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">PoolSpider</span><span class="p">(</span><span class="n">Spider</span><span class="p">):</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="c1"># 同域最多 2 个在途请求（子域共享预算）；与 per_domain_delay 叠加时</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="c1"># 两者都生效——延迟照常补间隔，并发被槽位钳制</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">per_domain_concurrency</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"example.com"</span><span class="p">:</span> <span class="mi">2</span><span class="p">}</span>
+</code></pre></div>
+<p>多配置命中同一 host（精确 + 子域后缀）时取<strong>最小</strong>并发；与 <code>per_domain_delay</code>
+「取最大延迟」镜像对称。全局并发仍由 <code>max_concurrency</code> 控制。</p>
+<h2 id="robotstxt">遵守 robots.txt<a class="headerlink" href="#robotstxt" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">PoliteSpider</span><span class="p">(</span><span class="n">Spider</span><span class="p">):</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>    <span class="n">respect_robots</span> <span class="o">=</span> <span class="kc">True</span>  <span class="c1"># 回调产出的请求先过 robots.txt（默认关闭）</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="n">user_agent</span> <span class="o">=</span> <span class="s2">"my-bot"</span>  <span class="c1"># robots.txt 检查使用的 UA（"*" 取所有 UA 规则的保守并集）</span>
+</code></pre></div>
+<p>行为细节：robots 拉取失败时保守视为允许（不让一次瞬时故障拦截整个爬取），
+404 视为全允许；<code>Crawl-delay</code> 并入上面的三源延迟取最保守者。实现与
+<code>AIScrapeAgent</code> 共用同一个 <code>RobotsPolicy</code>。</p>
+<h2 id="_5">下载中间件<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>
+<p><code>DownloaderMiddleware</code> 在请求发出前 / 响应返回后介入下载流程，按声明顺序执行：</p>
+<ul>
+<li><code>process_request(request, spider)</code> 返回 <code>None</code> 放行下载；返回 <code>Response</code>
+  直接短路（不再发请求）；抛 <code>IgnoreRequest</code> 丢弃该请求（计入
+  <code>requests_ignored</code>）；</li>
+<li><code>process_response(response, request, spider)</code> 收到下载结果，返回
+  （可替换的）<code>Response</code>。</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">web_crawler</span><span class="w"> </span><span class="kn">import</span> <span class="n">DownloaderMiddleware</span><span class="p">,</span> <span class="n">IgnoreRequest</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">BlockListMiddleware</span><span class="p">(</span><span class="n">DownloaderMiddleware</span><span class="p">):</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">process_request</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">request</span><span class="p">,</span> <span class="n">spider</span><span class="p">):</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>        <span class="k">if</span> <span class="nb">any</span><span class="p">(</span><span class="n">kw</span> <span class="ow">in</span> <span class="n">request</span><span class="o">.</span><span class="n">url</span> <span class="k">for</span> <span class="n">kw</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"/logout"</span><span class="p">,</span> <span class="s2">"/admin"</span><span class="p">)):</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>            <span class="k">raise</span> <span class="n">IgnoreRequest</span><span class="p">(</span><span class="sa">f</span><span class="s2">"blocked: </span><span class="si">{</span><span class="n">request</span><span class="o">.</span><span class="n">url</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>        <span class="k">return</span> <span class="kc">None</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="k">class</span><span class="w"> </span><span class="nc">MySpider</span><span class="p">(</span><span class="n">Spider</span><span class="p">):</span>
+<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>    <span class="n">middlewares</span> <span class="o">=</span> <span class="p">[</span><span class="n">BlockListMiddleware</span><span class="p">]</span>  <span class="c1"># 类或实例均可</span>
+</code></pre></div>
+<h3 id="cachemiddleware">内置缓存：CacheMiddleware<a class="headerlink" href="#cachemiddleware" title="Permanent link">&para;</a></h3>
+<p><code>CacheMiddleware</code> 为 GET 响应提供磁盘缓存（<code>&lt;sha256&gt;.meta.json</code> +
+zlib 压缩 <code>.body</code>，临时文件 + <code>os.replace</code> 原子写）：</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">web_crawler</span><span class="w"> </span><span class="kn">import</span> <span class="n">CacheMiddleware</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">CachedSpider</span><span class="p">(</span><span class="n">Spider</span><span class="p">):</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>    <span class="n">start_urls</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"https://quotes.toscrape.com/"</span><span class="p">]</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>    <span class="c1"># 1 小时 TTL；离线回放时不发任何网络请求</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>    <span class="n">middlewares</span> <span class="o">=</span> <span class="p">[</span><span class="n">CacheMiddleware</span><span class="p">(</span><span class="n">cache_dir</span><span class="o">=</span><span class="s2">".web_crawler_cache"</span><span class="p">,</span> <span class="n">ttl</span><span class="o">=</span><span class="mi">3600</span><span class="p">)]</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">parse</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">response</span><span class="p">):</span>
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>        <span class="k">yield</span> <span class="p">{</span><span class="s2">"title"</span><span class="p">:</span> <span class="n">response</span><span class="o">.</span><span class="n">css_first</span><span class="p">(</span><span class="s2">"title"</span><span class="p">)</span><span class="o">.</span><span class="n">text</span><span class="p">}</span>
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="c1"># 离线回放：同目录已有缓存时绝不发网络请求（未命中抛 IgnoreRequest）</span>
+<a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a><span class="k">class</span><span class="w"> </span><span class="nc">ReplaySpider</span><span class="p">(</span><span class="n">Spider</span><span class="p">):</span>
+<a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>    <span class="n">middlewares</span> <span class="o">=</span> <span class="p">[</span><span class="n">CacheMiddleware</span><span class="p">(</span><span class="n">cache_dir</span><span class="o">=</span><span class="s2">".web_crawler_cache"</span><span class="p">,</span> <span class="n">offline</span><span class="o">=</span><span class="kc">True</span><span class="p">)]</span>
+</code></pre></div>
+<p>要点：仅缓存 GET；默认只缓存 2xx（<code>cache_4xx=True</code> 可纳入 4xx，5xx 永不缓存）；
+<code>ignore_lookup=True</code> 跳过查找强制走网络但结果仍回写（缓存刷新模式）；
+<code>max_body_size</code>（默认 64MB）钳制解压后体积，防 zlib 炸弹。缓存的信任模型与
+残余风险详见 <a href="https://github.com/xiaomaozjj666/web-crawler/blob/master/SECURITY.md">SECURITY.md · 磁盘缓存信任模型</a>。</p>
+<h2 id="item-pipeline">item 管道<a class="headerlink" href="#item-pipeline" title="Permanent link">&para;</a></h2>
+<p>回调产出的每条 item 依次流经 <code>item_pipelines</code> 声明的管道链：返回值是变换后的
+item，返回 <code>None</code> 或抛 <code>DropItem</code> 即丢弃该条（不计入 <code>items_scraped</code>）：</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">web_crawler</span><span class="w"> </span><span class="kn">import</span> <span class="n">ItemPipeline</span><span class="p">,</span> <span class="n">DropItem</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">CleanPipeline</span><span class="p">(</span><span class="n">ItemPipeline</span><span class="p">):</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">process_item</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">item</span><span class="p">,</span> <span class="n">spider</span><span class="p">):</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"name"</span><span class="p">):</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>            <span class="k">raise</span> <span class="n">DropItem</span><span class="p">(</span><span class="s2">"empty name"</span><span class="p">)</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>        <span class="k">return</span> <span class="p">{</span><span class="o">**</span><span class="n">item</span><span class="p">,</span> <span class="s2">"name"</span><span class="p">:</span> <span class="n">item</span><span class="p">[</span><span class="s2">"name"</span><span class="p">]</span><span class="o">.</span><span class="n">strip</span><span class="p">()}</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="k">class</span><span class="w"> </span><span class="nc">MySpider</span><span class="p">(</span><span class="n">Spider</span><span class="p">):</span>
+<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a>    <span class="n">item_pipelines</span> <span class="o">=</span> <span class="p">[</span><span class="n">CleanPipeline</span><span class="p">]</span>  <span class="c1"># 类或实例均可，按声明顺序执行</span>
+</code></pre></div>
+<h2 id="_6">暂停与续跑<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h2>
+<p><code>run()</code> 支持基于 JSON 状态文件的暂停 / 恢复——队列与已见集合都会持久化：</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># 首次运行：带上 state_file，中断（含回调异常）时会自动落盘</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="n">spider</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">state_file</span><span class="o">=</span><span class="s2">"state.json"</span><span class="p">,</span> <span class="n">max_requests</span><span class="o">=</span><span class="mi">100</span><span class="p">)</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="c1"># 继续跑：从状态文件恢复队列与去重集合</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="n">items</span> <span class="o">=</span> <span class="n">MySpider</span><span class="p">(</span><span class="n">fetcher</span><span class="o">=</span><span class="n">Fetcher</span><span class="p">())</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">state_file</span><span class="o">=</span><span class="s2">"state.json"</span><span class="p">,</span> <span class="n">resume</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</code></pre></div>
+<p>运行中也可调用 <code>spider.pause()</code> 通知循环在当前批次后持久化并停止。</p>
+<h2 id="feed-item">feed 导出：item 落盘<a class="headerlink" href="#feed-item" title="Permanent link">&para;</a></h2>
+<p><code>stats_output</code> 落的是运行度量，<code>feed_output</code> 落的是业务数据本身——一行
+便捷参数即可把 item 导出为 JSON / JSONL / CSV（对标 Scrapy 的 <code>FEEDS</code> 配置）：</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="n">spider</span> <span class="o">=</span> <span class="n">QuotesSpider</span><span class="p">(</span><span class="n">fetcher</span><span class="o">=</span><span class="n">Fetcher</span><span class="p">(</span><span class="n">impersonate</span><span class="o">=</span><span class="s2">"chrome131"</span><span class="p">),</span> <span class="n">feed_output</span><span class="o">=</span><span class="s2">"quotes.jsonl"</span><span class="p">)</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="n">items</span> <span class="o">=</span> <span class="n">spider</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>  <span class="c1"># item 逐条追加到 quotes.jsonl</span>
+</code></pre></div>
+<p>也可声明在 <code>item_pipelines</code> 上与其他管道串联（先变换、后落盘）：</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">web_crawler</span><span class="w"> </span><span class="kn">import</span> <span class="n">FeedExportPipeline</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">QuotesSpider</span><span class="p">(</span><span class="n">Spider</span><span class="p">):</span>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>    <span class="n">item_pipelines</span> <span class="o">=</span> <span class="p">[</span><span class="n">CleanPipeline</span><span class="p">,</span> <span class="n">FeedExportPipeline</span><span class="p">(</span><span class="s2">"quotes.jsonl"</span><span class="p">)]</span>
+</code></pre></div>
+<p>格式语义：<code>.json</code> 单次快照（覆盖写，空运行产出 <code>[]</code>）；<code>.jsonl</code> 逐条追加
+（<code>ensure_ascii=False</code>，多次运行天然聚合，适合断点续爬累积数据）；<code>.csv</code>
+首条 item 定列（表头），缺失列补空串、多余列记 warning 丢弃。</p>
+<p>导出容错与统计导出同源——「导出绝不连累已抓数据」：写盘失败（磁盘满 /
+权限）只记 warning 不抛异常，item 照常通过管道；父目录不存在时自动逐级
+创建；未知后缀在构造时抛 <code>ConfigError</code>。</p>
+<h2 id="linkextractor-crawlspider">规则跟随：LinkExtractor + CrawlSpider<a class="headerlink" href="#linkextractor-crawlspider" title="Permanent link">&para;</a></h2>
+<p>整站遍历不必在 <code>parse</code> 里手写 <code>css("a")</code> + <code>urljoin</code> + 去重样板——
+<code>LinkExtractor</code> 提取并过滤链接，<code>CrawlSpider</code> 用 <code>rules</code> 声明「哪些链接
+跟进、命中后交给哪个回调」（对标 Scrapy 同名概念）：</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">web_crawler</span><span class="w"> </span><span class="kn">import</span> <span class="n">CrawlSpider</span><span class="p">,</span> <span class="n">Rule</span><span class="p">,</span> <span class="n">LinkExtractor</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">ArticleSpider</span><span class="p">(</span><span class="n">CrawlSpider</span><span class="p">):</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a>    <span class="n">start_urls</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"https://blog.example.com/"</span><span class="p">]</span>
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>    <span class="n">allowed_domains</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"blog.example.com"</span><span class="p">]</span>
+<a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a>    <span class="n">rules</span> <span class="o">=</span> <span class="p">[</span>
+<a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a>        <span class="c1"># 列表页与翻页：只跟进，不产 item</span>
+<a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a>        <span class="n">Rule</span><span class="p">(</span><span class="n">LinkExtractor</span><span class="p">(</span><span class="n">allow</span><span class="o">=</span><span class="p">(</span><span class="sa">r</span><span class="s2">"/posts/$"</span><span class="p">,</span> <span class="sa">r</span><span class="s2">"/page/\d+/"</span><span class="p">))),</span>
+<a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a>        <span class="c1"># 文章详情页：提取 item；follow=False 不再从文章页继续提取</span>
+<a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a>        <span class="n">Rule</span><span class="p">(</span><span class="n">LinkExtractor</span><span class="p">(</span><span class="n">allow</span><span class="o">=</span><span class="p">(</span><span class="sa">r</span><span class="s2">"/posts/\d+/$"</span><span class="p">)),</span> <span class="n">callback</span><span class="o">=</span><span class="s2">"parse_article"</span><span class="p">,</span> <span class="n">follow</span><span class="o">=</span><span class="kc">False</span><span class="p">),</span>
+<a id="__codelineno-13-12" name="__codelineno-13-12" href="#__codelineno-13-12"></a>    <span class="p">]</span>
+<a id="__codelineno-13-13" name="__codelineno-13-13" href="#__codelineno-13-13"></a>
+<a id="__codelineno-13-14" name="__codelineno-13-14" href="#__codelineno-13-14"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">parse_article</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">response</span><span class="p">):</span>
+<a id="__codelineno-13-15" name="__codelineno-13-15" href="#__codelineno-13-15"></a>        <span class="k">return</span> <span class="p">{</span><span class="s2">"title"</span><span class="p">:</span> <span class="n">response</span><span class="o">.</span><span class="n">css_first</span><span class="p">(</span><span class="s2">"h1::text"</span><span class="p">)}</span>
+<a id="__codelineno-13-16" name="__codelineno-13-16" href="#__codelineno-13-16"></a>
+<a id="__codelineno-13-17" name="__codelineno-13-17" href="#__codelineno-13-17"></a>
+<a id="__codelineno-13-18" name="__codelineno-13-18" href="#__codelineno-13-18"></a><span class="n">items</span> <span class="o">=</span> <span class="n">ArticleSpider</span><span class="p">(</span><span class="n">fetcher</span><span class="o">=</span><span class="n">Fetcher</span><span class="p">(</span><span class="n">impersonate</span><span class="o">=</span><span class="s2">"chrome131"</span><span class="p">))</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+</code></pre></div>
+<p><code>LinkExtractor</code> 的过滤参数：<code>allow</code> / <code>deny</code>（URL 正则白/黑名单，<code>re.search</code>
+语义，deny 优先）、<code>allow_domains</code> / <code>deny_domains</code>（后缀匹配，<code>example.com</code>
+命中 <code>sub.example.com</code>）、<code>unique</code>（按规范化 URL 去重保序）、<code>canonicalize</code>
+（查询参数排序 + 去 fragment）。跟随请求自动经过 Spider 基类的域过滤 /
+<code>DupeFilter</code> 去重 / robots 检查链路——环路（A→B→A）不会死循环。</p>
+<p><code>CrawlSpider</code> 继承 <code>Spider</code> 全部能力（<code>feed_output</code> / <code>autothrottle</code> /
+<code>CacheMiddleware</code> / 暂停续跑等均可直接组合）。</p>
+<h2 id="sitemap-sitemapspider">sitemap 驱动：SitemapSpider<a class="headerlink" href="#sitemap-sitemapspider" title="Permanent link">&para;</a></h2>
+<p>已知站点结构时，sitemap 比链接跟随更高效——不必渲染页面就能拿到全部 URL
+（对标 Scrapy <code>SitemapSpider</code>）：</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">web_crawler</span><span class="w"> </span><span class="kn">import</span> <span class="n">SitemapSpider</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">SiteSpider</span><span class="p">(</span><span class="n">SitemapSpider</span><span class="p">):</span>
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a>    <span class="n">sitemap_urls</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"https://example.com/sitemap.xml"</span><span class="p">]</span>  <span class="c1"># 也可缺省（见下）</span>
+<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a>    <span class="n">sitemap_rules</span> <span class="o">=</span> <span class="p">[</span>
+<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a>        <span class="p">(</span><span class="sa">r</span><span class="s2">"/blog/\d+/"</span><span class="p">,</span> <span class="s2">"parse_article"</span><span class="p">),</span>  <span class="c1"># 正则按序匹配，值为回调方法名</span>
+<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a>        <span class="p">(</span><span class="sa">r</span><span class="s2">"/tag/"</span><span class="p">,</span> <span class="kc">None</span><span class="p">),</span>  <span class="c1"># None = 显式排除</span>
+<a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a>    <span class="p">]</span>
+<a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a>
+<a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">parse_article</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">response</span><span class="p">):</span>
+<a id="__codelineno-14-12" name="__codelineno-14-12" href="#__codelineno-14-12"></a>        <span class="k">return</span> <span class="p">{</span><span class="s2">"title"</span><span class="p">:</span> <span class="n">response</span><span class="o">.</span><span class="n">css_first</span><span class="p">(</span><span class="s2">"h1::text"</span><span class="p">)}</span>
+<a id="__codelineno-14-13" name="__codelineno-14-13" href="#__codelineno-14-13"></a>
+<a id="__codelineno-14-14" name="__codelineno-14-14" href="#__codelineno-14-14"></a>
+<a id="__codelineno-14-15" name="__codelineno-14-15" href="#__codelineno-14-15"></a><span class="n">items</span> <span class="o">=</span> <span class="n">SiteSpider</span><span class="p">(</span><span class="n">fetcher</span><span class="o">=</span><span class="n">Fetcher</span><span class="p">(</span><span class="n">impersonate</span><span class="o">=</span><span class="s2">"chrome131"</span><span class="p">))</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+</code></pre></div>
+<p>sitemapindex 会递归展开（<code>DupeFilter</code> 防环路），gzip 压缩的 sitemap 自动解压；
+<code>sitemap_urls</code> 缺省且 <code>respect_robots=True</code> 时从 <code>start_urls</code> 各域 robots.txt
+的 <code>Sitemap:</code> 行自动发现种子（本库对 Scrapy 的扩展）。全不匹配的 URL 丢弃；
+<code>sitemap_rules</code> 为空构造期 warning 提示。生成的请求自动经过域过滤 / 去重 /
+robots 检查链路，<code>feed_output</code> 等基类能力全部可用。</p>
+<h2 id="item-validationpipeline">item 校验：ValidationPipeline<a class="headerlink" href="#item-validationpipeline" title="Permanent link">&para;</a></h2>
+<p>回调产出的 item 在管道里做结构校验——pydantic 模型（装了才可用）或无依赖
+的 dict schema，失败抛 <code>DropItem</code> 并计入 <code>stats.items_dropped</code>：</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">web_crawler</span><span class="w"> </span><span class="kn">import</span> <span class="n">ValidationPipeline</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="c1"># dict schema：零依赖轻量 DSL（type / required / default）</span>
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="k">class</span><span class="w"> </span><span class="nc">QuotesSpider</span><span class="p">(</span><span class="n">Spider</span><span class="p">):</span>
+<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a>    <span class="n">item_pipelines</span> <span class="o">=</span> <span class="p">[</span>
+<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a>        <span class="n">ValidationPipeline</span><span class="p">(</span>
+<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a>            <span class="p">{</span>
+<a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a>                <span class="s2">"text"</span><span class="p">:</span> <span class="p">{</span><span class="s2">"type"</span><span class="p">:</span> <span class="nb">str</span><span class="p">},</span>
+<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a>                <span class="s2">"author"</span><span class="p">:</span> <span class="p">{</span><span class="s2">"type"</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="s2">"required"</span><span class="p">:</span> <span class="kc">False</span><span class="p">,</span> <span class="s2">"default"</span><span class="p">:</span> <span class="s2">"匿名"</span><span class="p">},</span>
+<a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a>            <span class="p">}</span>
+<a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a>        <span class="p">),</span>
+<a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a>        <span class="n">FeedExportPipeline</span><span class="p">(</span><span class="s2">"quotes.jsonl"</span><span class="p">),</span>
+<a id="__codelineno-15-14" name="__codelineno-15-14" href="#__codelineno-15-14"></a>    <span class="p">]</span>
+</code></pre></div>
+<p>dict schema 的附加键宽松透传、缺失字段按 <code>default</code> 补齐；进阶校验（嵌套 /
+正则 / 自定义校验器）用 pydantic <code>BaseModel</code>（校验 + 规范化透传，延迟导入
+不破懒加载）。校验失败消息聚合全部字段与原因。</p>
+<h2 id="_7">统计导出<a class="headerlink" href="#_7" title="Permanent link">&para;</a></h2>
+<p>构造参数 <code>stats_output</code> 指定导出路径：<code>.jsonl</code> 后缀按行追加（多次运行可
+聚合分析），其他后缀写单次 JSON 快照（覆盖写）。正常结束、异常与暂停均会落盘。</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="n">spider</span> <span class="o">=</span> <span class="n">MySpider</span><span class="p">(</span><span class="n">fetcher</span><span class="o">=</span><span class="n">Fetcher</span><span class="p">(),</span> <span class="n">stats_output</span><span class="o">=</span><span class="s2">"stats.jsonl"</span><span class="p">)</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="n">items</span> <span class="o">=</span> <span class="n">spider</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="c1"># stats.jsonl 每行：pages_crawled / items_scraped / requests_failed /</span>
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="c1">#                   requests_ignored / elapsed_seconds / autothrottle 快照</span>
+</code></pre></div>
+<p>运行结束的统计同时挂在 <code>spider.stats</code>（<code>SpiderStats</code> 实例）上，可直接读取。</p>
+<h2 id="stream">流式调度：stream()<a class="headerlink" href="#stream" title="Permanent link">&para;</a></h2>
+<p><code>run()</code> 适合批量抓取后一次性处理；<code>stream()</code> 是持续流式调度——并发槽位
+空出即派发下一个请求，慢请求不会阻塞后续调度，逐条产出处理结果：</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>
+<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">consume</span><span class="p">():</span>
+<a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>    <span class="n">spider</span> <span class="o">=</span> <span class="n">QuotesSpider</span><span class="p">(</span><span class="n">fetcher</span><span class="o">=</span><span class="n">Fetcher</span><span class="p">(</span><span class="n">impersonate</span><span class="o">=</span><span class="s2">"chrome131"</span><span class="p">))</span>
+<a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a>    <span class="k">async</span> <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">spider</span><span class="o">.</span><span class="n">stream</span><span class="p">():</span>
+<a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a>        <span class="nb">print</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>  <span class="c1"># 边爬边消费，不必等全部完成</span>
+<a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a>
+<a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a>
+<a id="__codelineno-17-10" name="__codelineno-17-10" href="#__codelineno-17-10"></a><span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">consume</span><span class="p">())</span>
+</code></pre></div>
+<p><code>stream()</code> 同样支持 <code>max_requests</code> / <code>state_file</code> / <code>resume</code> 参数。注意设置了
+<code>per_domain_delay</code> 的域在流式模式下会被串行化（同域并发降为 1）。</p>
+<h2 id="_8">下一步<a class="headerlink" href="#_8" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../stealth/">隐身与网络指南</a> — Fetcher 的 TLS 指纹、会话池与代理轮换</li>
+<li><a href="../../api-reference/#spider-framework">API 参考 · Spider 框架</a> — 全部类的
+  自动生成文档</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "content.code.copy", "content.code.annotate"], "search": "../../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>
