@@ -44,6 +44,11 @@ if TYPE_CHECKING:
     from .session import SessionHandle, SessionPool
 
 
+# 普通请求默认最多保留 64 MiB 解压后的响应体，防止异常/恶意响应无限占用内存；
+# 调用方可按请求用 max_bytes 调低，或显式传 None 关闭上限。
+_DEFAULT_MAX_BYTES = 64 * 1024 * 1024
+
+
 def _load_curl_backend() -> tuple[Any, Any, Any, Any]:
     """惰性导入 curl_cffi 符号（仅在选用 curl 后端时）。"""
     from curl_cffi import CurlHttpVersion
@@ -169,6 +174,7 @@ class _FetcherCore(BaseFetcher):
         allow_private_hosts: bool | None = None,
         resolve_hosts: bool = True,
         session_pool: SessionPool | None = None,
+        max_bytes: int | None = _DEFAULT_MAX_BYTES,
     ) -> None:
         super().__init__(
             timeout=timeout,
@@ -184,7 +190,10 @@ class _FetcherCore(BaseFetcher):
         )
         if max_redirects < 0:
             raise ConfigError("max_redirects must be >= 0")
+        if max_bytes is not None and max_bytes < 0:
+            raise ConfigError("max_bytes must be >= 0")
         self.max_redirects = max_redirects
+        self.max_bytes = max_bytes
         self.impersonate = impersonate
         self.http2 = http2
         # JA3 指纹定制：传入时通过 curl_cffi 的 ja3 参数覆盖默认 TLS 扩展顺序。
@@ -471,14 +480,43 @@ class _FetcherCore(BaseFetcher):
         return errors
 
     # -- 响应转换 -------------------------------------------------------------
-    def _to_response(self, raw: Any, request_headers: dict[str, str]) -> Response:
+    def _to_response(
+        self,
+        raw: Any,
+        request_headers: dict[str, str],
+        *,
+        max_bytes: int | None = None,
+        method: str | None = None,
+    ) -> Response:
         # 运行时导入 Response 以避免模块加载期的循环导入
         from ..response import Response
 
+        if max_bytes is not None:
+            declared: int | None = None
+            # HEAD 的 Content-Length 表示对应 GET 的长度，不代表本次响应体，
+            # 不能用该头误判；其余方法可在读取 body 前快速拒绝明显超限响应。
+            if method != "HEAD":
+                try:
+                    declared = int(raw.headers.get("Content-Length", ""))
+                except (TypeError, ValueError):
+                    declared = None
+            if declared is not None and declared > max_bytes:
+                raise FetchError(
+                    f"response exceeds max_bytes ({max_bytes} bytes) for {raw.url}: "
+                    f"Content-Length is {declared} bytes"
+                )
+            content = raw.content
+            if len(content) > max_bytes:
+                raise FetchError(
+                    f"response exceeds max_bytes ({max_bytes} bytes) for {raw.url}: "
+                    f"received {len(content)} bytes"
+                )
+        else:
+            content = raw.content
         return Response(
             url=str(raw.url),
             status=int(raw.status_code),
-            content=raw.content,
+            content=content,
             headers=dict(raw.headers),
             request_headers=request_headers,
             storage=self.storage,
@@ -894,6 +932,9 @@ class _FetcherCore(BaseFetcher):
         json: Any = None,
         **kwargs: Any,
     ) -> Response:
+        max_bytes = kwargs.pop("max_bytes", getattr(self, "max_bytes", _DEFAULT_MAX_BYTES))
+        if max_bytes is not None and max_bytes < 0:
+            raise ConfigError("max_bytes must be >= 0")
         self._validate_target(url)
         merged_headers = self._merge_headers(headers)
         timeout = kwargs.pop("timeout", self.timeout)
@@ -935,9 +976,9 @@ class _FetcherCore(BaseFetcher):
                 # 成功响应：清零该代理的失败计数
                 if isinstance(self.proxy, ProxyPool) and proxy:
                     self.proxy.mark_success(proxy)
-                return self._to_response(raw, merged_headers)
+                return self._to_response(raw, merged_headers, max_bytes=max_bytes, method=method)
             if attempt == self.retries:
-                return self._to_response(raw, merged_headers)
+                return self._to_response(raw, merged_headers, max_bytes=max_bytes, method=method)
             # 429/5xx 视为代理问题信号：标记失败并换下一个
             if isinstance(self.proxy, ProxyPool) and proxy:
                 self.proxy.mark_failed(proxy)
@@ -972,6 +1013,9 @@ class Fetcher(_FetcherCore):
     max_redirects:
         手动跟随重定向的最大跳数（默认 ``5``）。每一跳都会重新校验 URL
         scheme（SSRF 防护），跨源跳转会剥离 ``Authorization`` 请求头。
+    max_bytes:
+        普通请求响应体的默认字节上限（默认 64 MiB），同时校验 Content-Length
+        与最终 body；超限抛 ``FetchError``。单次请求可覆盖，显式传 ``None`` 关闭。
     ja3_fingerprint:
         可选的 JA3 TLS 指纹字符串，用于覆盖伪装预设（如自定义加密套件/
         扩展顺序）。仅 ``curl_cffi`` 后端使用；回退 ``httpx`` 时忽略。
@@ -1100,6 +1144,9 @@ class Fetcher(_FetcherCore):
         json: Any = None,
         **kwargs: Any,
     ) -> Response:
+        max_bytes = kwargs.pop("max_bytes", getattr(self, "max_bytes", _DEFAULT_MAX_BYTES))
+        if max_bytes is not None and max_bytes < 0:
+            raise ConfigError("max_bytes must be >= 0")
         self._validate_target(url)
         merged_headers = self._merge_headers(headers)
         timeout = kwargs.pop("timeout", self.timeout)
@@ -1141,9 +1188,9 @@ class Fetcher(_FetcherCore):
                 # 成功响应：清零该代理的失败计数
                 if isinstance(self.proxy, ProxyPool) and proxy:
                     self.proxy.mark_success(proxy)
-                return self._to_response(raw, merged_headers)
+                return self._to_response(raw, merged_headers, max_bytes=max_bytes, method=method)
             if attempt == self.retries:
-                return self._to_response(raw, merged_headers)
+                return self._to_response(raw, merged_headers, max_bytes=max_bytes, method=method)
             # 429/5xx 视为代理问题信号：标记失败并换下一个
             if isinstance(self.proxy, ProxyPool) and proxy:
                 self.proxy.mark_failed(proxy)

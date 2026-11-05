@@ -61,8 +61,8 @@ jobs:
         with:
           name: dist
           path: dist/
-      # PyPI 发布已移除：发行名 web-crawler 在 PyPI 已被占用，无法同名发布。
-      # 如需发布 PyPI，请先为发行版更名再添加 publish 步骤。
+      # 本 job 只创建 GitHub Release；同一 tag 还会触发 pypi.yml，由后者以
+      # stealth-web-crawler 为发行名，在 tag == v<pyproject 版本号> 时发布 PyPI。
       #
       # 已存在的 release 不再重建：GITHUB_TOKEN 无法更新由人工在网页创建的
       # release（返回 403 Resource not accessible by integration），因此重推同一

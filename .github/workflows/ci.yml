@@ -106,7 +106,7 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - run: pip install -e ".[dev]"
-      - name: Benchmark regression check (advisory)
+      - name: Benchmark regression check (20% threshold, advisory)
         id: bench
         # continue-on-error 保留：共享 runner 的 CPU/调度噪声可能造成 >20% 的
         # 假阳性抖动，判定维持 advisory 不挡合并；但结果写 JSON 并上传 artifact，
@@ -116,7 +116,8 @@ jobs:
       - name: Surface regression in step summary
         if: always() && steps.bench.outcome == 'failure'
         run: |
-          echo "⚠️ **Benchmark regression detected** (advisory — see bench step logs for details)." >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning title=Performance regression::A benchmark exceeded the 20% baseline threshold (advisory)."
+          echo "⚠️ **Benchmark regression detected**: one or more benchmarks exceeded the **20% baseline threshold** (advisory — see bench step logs for details)." >> "$GITHUB_STEP_SUMMARY"
       - name: Archive benchmark results
         # bench step 失败（回归 exit 1）时 continue-on-error 保证本步照常执行；
         # JSON 在 exit 前已写盘，故无需 if: always()

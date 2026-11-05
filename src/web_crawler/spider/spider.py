@@ -14,6 +14,7 @@ import asyncio
 import base64
 import hashlib
 import heapq
+import inspect
 import json
 import logging
 import random
@@ -352,6 +353,37 @@ class Spider:
             return None
         return self._robots_policy.crawl_delay(url, fetch_robots_text)
 
+    async def _fetch_robots_text_async(self, url: str) -> str:
+        """经当前 fetcher 的异步统一管线拉取 robots.txt。
+
+        与页面请求共享 SSRF 校验、代理、TLS 指纹、重定向和超时配置；
+        非成功状态按空规则处理，与旧 urllib 路径的 HTTPError 语义一致。
+        """
+        assert self.fetcher is not None, "a fetcher must be provided to fetch robots.txt"
+        async_get = getattr(self.fetcher, "async_get", None)
+        if callable(async_get):
+            result = async_get(url)
+        else:
+            # AsyncFetcher 的纯异步 API 名为 get()；自定义 fetcher 也可返回
+            # 直接的 Response（保持 Spider 的可插拔后端约定）。
+            result = self.fetcher.get(url)
+        response = await result if inspect.isawaitable(result) else result
+        if response.status >= 400:
+            return ""
+        return response.text
+
+    async def _robots_allowed_async(self, url: str) -> bool:
+        """不阻塞事件循环的 robots 允许性检查。"""
+        if not self.respect_robots:
+            return True
+        return await self._robots_policy.allowed_async(url, self._fetch_robots_text_async)
+
+    async def _robots_crawl_delay_async(self, url: str) -> float | None:
+        """异步读取 Crawl-delay，并与允许性检查共享首次拉取结果。"""
+        if not self.respect_robots:
+            return None
+        return await self._robots_policy.crawl_delay_async(url, self._fetch_robots_text_async)
+
     def _domain_delay_for(self, url: str) -> tuple[float, str]:
         """返回 ``(延迟, 匹配到的域名)``（精确或子域后缀匹配，取最长命中）。
 
@@ -421,6 +453,24 @@ class Spider:
                 delay, key = robots_delay, host
         return delay, key
 
+    async def _throttle_delay_for_async(self, url: str) -> tuple[float, str]:
+        """异步三源节流计算；robots 拉取全程使用异步 fetch 管线。"""
+        if not self.respect_robots or self._robots_policy.is_cached(url):
+            # 无 robots 外呼时同步计算没有阻塞 IO，复用原入口也保持既有
+            # 插桩/子类定制行为；仅首次拉取必须走下方异步路径。
+            return self._throttle_delay_for(url)
+        delay, key = self._domain_delay_for(url)
+        if self.autothrottle is not None or self.respect_robots:
+            host = _throttle_host(url)
+            if self.autothrottle is not None:
+                at_delay = self.autothrottle.get_delay(host)
+                if at_delay > delay:
+                    delay, key = at_delay, host
+            robots_delay = await self._robots_crawl_delay_async(url)
+            if robots_delay is not None and robots_delay > delay:
+                delay, key = robots_delay, host
+        return delay, key
+
     def _note_throttle(self, url: str, elapsed: float, success: bool) -> None:
         """把一次真实下载的结果反馈给 autothrottle（未开启时为空操作）。
 
@@ -452,12 +502,13 @@ class Spider:
         """异步路径：在 per-domain 锁内补足同域最小间隔（同域串行）。
 
         ``precomputed`` 是调用方已算好的 ``(delay, key)``：stream() 的
-        worker 为取域锁先调用过一次 :meth:`_throttle_delay_for`，且两次
-        调用之间无 ``await`` 点（事件循环内原子、autothrottle/robots 状态
-        不可能变化），传入即严格等价于内部重算——省掉每请求一次完整的三
-        源延迟计算。缺省 ``None`` 时内部自算，独立调用行为不变。
+        worker 为取域锁先异步计算一次，之后不再重算，避免 robots 重复外呼。
+        缺省 ``None`` 时内部通过异步三源计算获取，独立调用同样不阻塞事件循环。
         """
-        delay, key = precomputed if precomputed is not None else self._throttle_delay_for(url)
+        if precomputed is None:
+            delay, key = await self._throttle_delay_for_async(url)
+        else:
+            delay, key = precomputed
         if delay <= 0:
             return
         async with lock:
@@ -480,17 +531,47 @@ class Spider:
             return False
         return True
 
-    def _dispatch(self, response: Response, request: Request) -> list[Any]:
-        """执行按名取得的回调并收集其 yield 的产出。"""
-        # 拷贝 meta 而非共享引用，避免多个回调间意外互相修改
+    async def _filter_async(self, request: Request) -> bool:
+        """异步版 :meth:`_filter`，robots 网络 IO 不阻塞事件循环。"""
+        if request.dont_filter:
+            return True
+        if not self.allowed(request.url):
+            logger.debug("filtered off-domain: %s", request.url)
+            return False
+        if self.dupefilter.request_seen(request):
+            return False
+        if not await self._robots_allowed_async(request.url):
+            logger.info("filtered by robots.txt: %s", request.url)
+            return False
+        return True
+
+    def _callback(self, response: Response, request: Request) -> Any:
+        """准备 meta 并调用按名查找的用户回调（结果可为 awaitable）。"""
         response.meta = dict(request.meta)
         callback = getattr(self, request.callback, None)
         if callback is None:
             raise SpiderError(f"callback {request.callback!r} not found on {type(self).__name__}")
-        result = callback(response)
+        return callback(response)
+
+    @staticmethod
+    def _callback_outputs(result: Any) -> list[Any]:
         if result is None:
             return []
         return list(result)
+
+    def _dispatch(self, response: Response, request: Request) -> list[Any]:
+        """执行同步回调并收集其产出。"""
+        result = self._callback(response, request)
+        if inspect.isawaitable(result):
+            raise SpiderError("async callbacks require Spider.async_run() or Spider.stream()")
+        return self._callback_outputs(result)
+
+    async def _dispatch_async(self, response: Response, request: Request) -> list[Any]:
+        """执行同步或异步回调并收集其产出。"""
+        result = self._callback(response, request)
+        if inspect.isawaitable(result):
+            result = await result
+        return self._callback_outputs(result)
 
     # -- middleware / pipeline ----------------------------------------------
     def _apply_request_middlewares(self, request: Request) -> Response | None:
@@ -508,13 +589,31 @@ class Spider:
         return response
 
     def _apply_item_pipelines(self, item: Any) -> Any:
-        """依次执行 process_item；返回 None 表示该条被丢弃。"""
+        """依次执行同步 process_item；返回 None 表示该条被丢弃。"""
         for pipe in self._item_pipelines:
             try:
                 item = pipe.process_item(item, self)
+                if inspect.isawaitable(item):
+                    raise SpiderError(
+                        "async item pipelines require Spider.async_run() or Spider.stream()"
+                    )
             except DropItem:
                 # 丢弃计数与 items_scraped 互补（对齐 requests_ignored 的
                 # 计数位）：item 不进结果，但在运行统计中可见
+                self.stats.items_dropped += 1
+                return None
+            if item is None:
+                return None
+        return item
+
+    async def _apply_item_pipelines_async(self, item: Any) -> Any:
+        """依次执行同步或异步 process_item，并保持 DropItem 计数语义。"""
+        for pipe in self._item_pipelines:
+            try:
+                item = pipe.process_item(item, self)
+                if inspect.isawaitable(item):
+                    item = await item
+            except DropItem:
                 self.stats.items_dropped += 1
                 return None
             if item is None:
@@ -946,14 +1045,14 @@ class Spider:
                 if slot is not None:
                     await slot.acquire()
                 try:
-                    delay, domain_key = self._throttle_delay_for(request.url)
+                    delay, domain_key = await self._throttle_delay_for_async(request.url)
                     if delay > 0:
                         lock = self._domain_locks.get(domain_key)
                         if lock is None:
                             lock = asyncio.Lock()
                             self._domain_locks[domain_key] = lock
-                        # precomputed：两次三源计算之间无 await（严格等价），
-                        # 省掉每请求一次的重复三源延迟计算
+                        # precomputed：robots 已在此处异步拉取并缓存，锁内只
+                        # 负责等待，不再进行第二次三源计算或网络 IO。
                         await self._throttle_domain_async(
                             request.url, lock, precomputed=(delay, domain_key)
                         )
@@ -992,18 +1091,18 @@ class Spider:
             if self.download_delay:
                 await asyncio.sleep(self.download_delay)
             try:
-                outputs = self._dispatch(response, request)
+                outputs = await self._dispatch_async(response, request)
             except Exception as exc:
                 raise SpiderError(
                     f"callback {request.callback!r} raised on {request.url}: {exc}"
                 ) from exc
             for out in outputs:
                 if isinstance(out, Request):
-                    if self._filter(out):
+                    if await self._filter_async(out):
                         self._heap_counter += 1
                         heapq.heappush(queue, (-out.priority, self._heap_counter, out))
                     continue
-                processed = self._apply_item_pipelines(out)
+                processed = await self._apply_item_pipelines_async(out)
                 if processed is not None:
                     buf.append(processed)
 

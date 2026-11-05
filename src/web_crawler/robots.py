@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import urllib.request
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -97,10 +99,21 @@ class RobotsPolicy:
         # 原始行与解析器分开存：crawl_delay 需要自行扫描以保证跨版本一致，
         # 而 _cache 的值类型保持与旧版相同（外部预置解析器的用法仍然可用）。
         self._lines: dict[str, list[str]] = {}
+        # 异步首次拉取按 host 串行化：并发 worker 未命中缓存时也只外呼一次，
+        # 与同步路径「同主机至多一次」的缓存语义保持一致。
+        self._async_locks: dict[str, asyncio.Lock] = {}
+
+    @staticmethod
+    def _host(url: str) -> str:
+        parsed = urlparse(url)
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    def is_cached(self, url: str) -> bool:
+        """该 URL 所在 host 是否已有可复用解析结果。"""
+        return self._host(url) in self._cache
 
     def _parser_for(self, url: str, fetch_text: Any) -> RobotFileParser | None:
-        parsed = urlparse(url)
-        host = f"{parsed.scheme}://{parsed.netloc}"
+        host = self._host(url)
         if host in self._cache:
             return self._cache[host]
         robots_url = urljoin(host, "/robots.txt")
@@ -116,11 +129,63 @@ class RobotsPolicy:
         self._lines[host] = lines
         return rp
 
+    async def _parser_for_async(self, url: str, fetch_text: Any) -> RobotFileParser:
+        """异步获取并缓存解析器；同 host 的并发首查共享一次外呼。"""
+        host = self._host(url)
+        if host in self._cache:
+            return self._cache[host]
+        lock = self._async_locks.get(host)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._async_locks[host] = lock
+        async with lock:
+            # 等待期间其他 worker 可能已完成拉取，必须在锁内再次检查。
+            if host in self._cache:
+                return self._cache[host]
+            robots_url = urljoin(host, "/robots.txt")
+            rp = RobotFileParser()
+            try:
+                fetched = fetch_text(robots_url)
+                if inspect.isawaitable(fetched):
+                    fetched = await fetched
+                lines = fetched.splitlines()
+                rp.parse(lines)
+            except Exception:
+                # 与同步路径一致：网络/SSRF/解析失败均按空规则放行并缓存。
+                rp = RobotFileParser()
+                rp.parse([])
+                lines = []
+            self._cache[host] = rp
+            self._lines[host] = lines
+            return rp
+
     def allowed(self, url: str, fetch_text: Any) -> bool:
         rp = self._parser_for(url, fetch_text)
         if rp is None:  # pragma: no cover - _parser_for 始终返回 RobotFileParser
             return True
         return rp.can_fetch(self.user_agent, url)
+
+    async def allowed_async(self, url: str, fetch_text: Any) -> bool:
+        """异步版 :meth:`allowed`，复用同一份按 host 缓存。"""
+        rp = await self._parser_for_async(url, fetch_text)
+        return rp.can_fetch(self.user_agent, url)
+
+    def _cached_crawl_delay(self, url: str, rp: RobotFileParser) -> float | None:
+        lines = self._lines.get(self._host(url))
+        if lines is not None:
+            return _first_crawl_delay(lines, self.user_agent)
+        # 解析器由外部直接预置（没有原始行）：退回标准库语义
+        delay = rp.crawl_delay(self.user_agent)
+        if delay is None:
+            return None
+        # typeshed 把 crawl_delay 标注为 str | None（运行时实为 int|None）
+        try:
+            value = float(delay)
+        except ValueError:
+            return None
+        if value < 0:
+            return None
+        return value
 
     def crawl_delay(self, url: str, fetch_text: Any = None) -> float | None:
         """返回 ``url`` 所在站点 robots.txt 为本 UA 声明的 Crawl-delay（秒）。
@@ -142,22 +207,12 @@ class RobotsPolicy:
         rp = self._parser_for(url, fetch_text)
         if rp is None:  # pragma: no cover - _parser_for 始终返回 RobotFileParser
             return None
-        parsed = urlparse(url)
-        lines = self._lines.get(f"{parsed.scheme}://{parsed.netloc}")
-        if lines is not None:
-            return _first_crawl_delay(lines, self.user_agent)
-        # 解析器由外部直接预置（没有原始行）：退回标准库语义
-        delay = rp.crawl_delay(self.user_agent)
-        if delay is None:
-            return None
-        # typeshed 把 crawl_delay 标注为 str | None（运行时实为 int|None）
-        try:
-            value = float(delay)
-        except ValueError:
-            return None
-        if value < 0:
-            return None
-        return value
+        return self._cached_crawl_delay(url, rp)
+
+    async def crawl_delay_async(self, url: str, fetch_text: Any) -> float | None:
+        """异步版 :meth:`crawl_delay`，与允许性检查共享缓存。"""
+        rp = await self._parser_for_async(url, fetch_text)
+        return self._cached_crawl_delay(url, rp)
 
 
 def fetch_robots_text(url: str, timeout: float = 10.0) -> str:

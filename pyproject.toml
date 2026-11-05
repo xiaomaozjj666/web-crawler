@@ -150,7 +150,7 @@ filterwarnings = [
 
 [tool.coverage.run]
 source = ["web_crawler"]
-branch = false
+branch = true
 
 [tool.coverage.report]
 show_missing = true
