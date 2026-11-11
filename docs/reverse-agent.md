@@ -7,6 +7,8 @@
 
 1. 启动 `CamoufoxFetcher`（默认 `headless=False`，便于人工介入）
 2. 创建新的浏览器上下文，在导航前通过 `add_init_script` 注入 Hook 脚本
+   （Camoufox 默认隔离执行 `evaluate` / `add_init_script`，因此注入与读取脚本都带
+   `mw:` 主世界前缀并启用 `main_world_eval`；否则看不到页面自身的 `fetch` / XHR）
 3. 进入循环：
    - **观察**：收集 Hook 捕获数据、网络请求、页面脚本、验证码检测、DOM 摘要
    - **思考**：把观察结果交给 DeepSeek-V4.1-Flash 决定下一步动作
@@ -43,6 +45,42 @@ web-crawler-mcp                       # 通过 stdio 跑 JSON-RPC
 `analysis`、`compiled_script`、`judge_result`，外加
 `last_confidence`、`checkpoints`、`screenshots`、`error_screenshot`。
 
+### 证据模型与上下文控制
+
+MCP 工具的成功结果带 `meta` 信封（错误结果改为返回 `kind` / `recovery` /
+`retryable`），大结果不会被整块塞进模型上下文：
+
+| 字段 | 说明 |
+| --- | --- |
+| `meta.evidence_id` | 结果副本的稳定句柄（内容 sha256 派生，同内容同 id）；`reverse_engineer_url` 在截断前登记完整结果，其他工具登记本次返回正文 |
+| `meta.evidence_stored` | 是否已存入证据库；`false` 时 `meta.evidence_reason` 说明原因（如 `full_result_exceeds_store_limit`、`evidence_evicted`） |
+| `meta.elapsed_ms` | 工具耗时 |
+| `limitations` / `unknowns` / `coverage` | 结论边界、未确认项、实际覆盖范围 |
+| `error.kind` / `error.recovery` / `error.retryable` | 失败分类、修复建议、是否可重试 |
+
+`reverse_engineer_url` 超过 `max_text_length` 的字段会截断并列入
+`truncations`；被截掉的部分可用该结果自存的完整证据经 `inspect_evidence`
+翻页取回，`list_evidence` 查看当前进程内的证据列表。其他工具的 evidence
+就是返回正文本身；`meta.evidence_stored=false` 时没有额外副本：
+
+```jsonc
+{"tool": "inspect_evidence", "arguments": {"evidence_id": "ev_1a2b3c4d5e6f7a8b", "offset": 0, "limit": 20000}}
+```
+
+证据库是进程内 LRU（默认 16 条 / 32 MiB）。三个环境变量可调节上下文开销：
+`WEB_CRAWLER_MCP_SCHEMA_PROFILE=compact`（工具 schema 去掉长描述）、
+`WEB_CRAWLER_MCP_EVIDENCE_RECORDS`、`WEB_CRAWLER_MCP_EVIDENCE_BYTES`。
+
+### 环境自检
+
+```bash
+web-crawler-reverse doctor          # 依赖 / 密钥 / 浏览器 / 证据限额逐项检查
+web-crawler-reverse --json doctor   # 机器可读；仅 fail 项返回退出码 1
+```
+
+每项检查给出 `ok` / `warn` / `fail` 与具体修复命令；可降级的缺失（如未装
+`mcp` SDK、未配 LLM 密钥）只告警，不阻断基础能力。
+
 ### CLI（脚本与交互式 REPL）
 
 ```bash
@@ -51,6 +89,7 @@ web-crawler-reverse analyze script.js            # 反混淆 JS 片段
 web-crawler-reverse webpack bundle.js            # 抽 webpack 模块
 web-crawler-reverse reimplement algo.js --language python
 web-crawler-reverse capture https://example.com --wait 8
+web-crawler-reverse doctor                       # 环境自检与修复建议
 web-crawler-reverse interactive                  # REPL：输入 `tools` 列工具
 ```
 

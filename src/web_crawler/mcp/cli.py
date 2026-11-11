@@ -60,6 +60,32 @@ def _make_server(model: str = "deepseek-flash") -> Any:
     return ReverseMCPServer(model=model)
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """检查运行环境、依赖与配置，输出可执行的修复建议。"""
+    from ._doctor import collect_checks
+
+    checks = collect_checks()
+    failed = [check for check in checks if check.status == "fail"]
+    if output_mode(args) == "json":
+        emit_json(
+            {
+                "ok": not failed,
+                "checks": [check.to_dict() for check in checks],
+            }
+        )
+    else:
+        for check in checks:
+            print(f"[{check.status:4s}] {check.name:18s} {check.detail}")
+            if check.fix:
+                print(f"         修复：{check.fix}")
+        print()
+        if failed:
+            print(f"{len(failed)} 项检查失败，请按上面的修复建议处理后重试。")
+        else:
+            print("环境检查通过（warn 项不影响基本使用）。")
+    return 1 if failed else 0
+
+
 def cmd_reverse_url(args: argparse.Namespace) -> int:
     """逆向分析指定 URL。"""
     server = _make_server(args.model)
@@ -372,6 +398,7 @@ def cmd_interactive(args: argparse.Namespace) -> int:
     print("         --ports / --timeout / --allow-private 不受支持，请改用命令行 pentest 子命令）")
     print("  capture <url> [--wait 5]               捕获网络请求")
     print("  scripts <url>                          获取 JS 脚本列表")
+    print("  evidence [id] [offset] [limit]         列出/读取本会话证据")
     print("  tools                                   列出所有工具")
     print("  exit                                    退出\n")
     try:
@@ -388,6 +415,25 @@ def cmd_interactive(args: argparse.Namespace) -> int:
                 tools = server.get_tools()
                 for t in tools:
                     print(f"  {t['name']:30s} {t.get('description', '')[:60]}")
+                continue
+            if cmd == "evidence":
+                if len(parts) == 1:
+                    result = server.handle_tool("list_evidence", {})
+                else:
+                    evidence_payload: dict[str, Any] = {"evidence_id": parts[1]}
+                    valid_args = True
+                    for index, key in ((2, "offset"), (3, "limit")):
+                        if len(parts) > index:
+                            try:
+                                evidence_payload[key] = int(parts[index])
+                            except ValueError:
+                                print(f"参数 {key} 必须是整数：{parts[index]}")
+                                valid_args = False
+                                break
+                    if not valid_args:
+                        continue
+                    result = server.handle_tool("inspect_evidence", evidence_payload)
+                _print_json(json.loads(result))
                 continue
             if cmd == "reverse" and len(parts) >= 2:
                 url = parts[1]
@@ -624,6 +670,13 @@ def build_parser() -> argparse.ArgumentParser:
     # interactive
     p = sub.add_parser("interactive", aliases=["repl"], help="交互式 REPL 模式")
     p.set_defaults(func=cmd_interactive)
+
+    # doctor
+    p = sub.add_parser(
+        "doctor",
+        help="检查运行环境、依赖与配置，输出可执行的修复建议",
+    )
+    p.set_defaults(func=cmd_doctor)
 
     # run — 一键运行完整 ReverseAgent（不走 MCP，直接调用 agent.run）
     p = sub.add_parser(

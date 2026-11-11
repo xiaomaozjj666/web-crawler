@@ -33,9 +33,145 @@ def _to_json(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, default=_json_default, indent=2)
 
 
-def _error(error: str, **extra: Any) -> str:
-    """构造标准错误响应 JSON。"""
-    payload: dict[str, Any] = {"error": error}
+def _classify_error(error: str, extra: dict[str, Any]) -> tuple[str, str | None, bool | None]:
+    """按错误消息与上下文归类，返回 ``(kind, recovery, retryable)``。
+
+    借鉴 REA 的失败分类：请求本身违规（invalid_request）、目标被安全门禁
+    拒绝（unsafe_target）、缺依赖/缺密钥（*_missing）、超时（timeout）是不同
+    根因，修复动作完全不同；只用一句 ``error`` 会让调用方（尤其是 agent）
+    反复重试同一件注定失败的事。
+    """
+    message = error.lower()
+    details = str(extra.get("details", "")).lower()
+    text = f"{message} {details}"
+
+    if "authorization required" in text:
+        return (
+            "authorization",
+            "确认已获目标书面授权后再传 authorization_confirmed=true；未获授权时不要调用 pentest_recon。",
+            False,
+        )
+    if any(
+        token in text
+        for token in (
+            "unsafe target",
+            "unsafe_target",
+            "private address",
+            "private host",
+            "loopback",
+            "link-local",
+            "metadata",
+            "not allowed",
+            "unsupported target scheme",
+            "scheme not allowed",
+            "only http",
+            "私网",
+            "内网",
+            "非公网",
+            "安全门禁",
+        )
+    ):
+        return (
+            "unsafe_target",
+            (
+                "安全门禁拒绝了目标：改用公网 http/https 目标；确需内网/环回目标时，"
+                "只在自有可控环境用 allow_private=true 或 WEB_CRAWLER_POWER_MODE=1"
+                "（修改环境变量后需重启 MCP 服务）。"
+            ),
+            False,
+        )
+    if "dependency missing" in text or "no module named" in text:
+        return (
+            "dependency_missing",
+            (
+                "安装缺失依赖（如 pip install -e '.[all,mcp]'）后重启 MCP 服务；"
+                "运行中的进程不会自动加载新装的依赖。"
+            ),
+            False,
+        )
+    if any(
+        token in text for token in ("api key", "llm call failed", "provider", "deepseek", "openai")
+    ):
+        return (
+            "provider_unavailable",
+            (
+                "设置 DEEPSEEK_API_KEY（或 LLM_API_KEY）后重启 MCP 服务；"
+                "可用 web-crawler-reverse doctor 检查 provider 配置。"
+            ),
+            False,
+        )
+    if any(
+        token in text
+        for token in ("401", "403", "forbidden", "unauthorized", "access denied", "拒绝访问")
+    ):
+        return (
+            "target_rejected",
+            (
+                "目标返回 401/403：检查登录态、Cookie/签名或访问权限；"
+                "用同一凭证重复请求通常无效，必要时转人工处理。"
+            ),
+            False,
+        )
+    if "timeout" in text or "timed out" in text:
+        return (
+            "timeout",
+            "增大 timeout/max_steps，或缩小采集范围后重试。",
+            True,
+        )
+    if any(token in text for token in ("browser", "playwright", "camoufox", "浏览器", "chromium")):
+        return (
+            "browser_unavailable",
+            (
+                "检查浏览器依赖：pip install -e '.[camoufox,mcp]'，并按需执行 "
+                "python -m camoufox fetch（或 playwright install chromium）；"
+                "无显示环境时使用 headless。"
+            ),
+            False,
+        )
+    if (
+        extra.get("code") == -32602
+        or "invalid params" in text
+        or "invalid url" in text
+        or "missing host" in text
+        or "userinfo" in text
+        or "is required" in text
+        or "must be" in text
+        or "unknown check names" in text
+    ):
+        return (
+            "invalid_request",
+            "按 tools/list 返回的最新 inputSchema 检查参数名、类型、枚举与必填项后重试。",
+            False,
+        )
+    if "internal error" in text:
+        return (
+            "internal",
+            "查看 MCP 服务的 stderr 日志定位内部错误；该错误通常不能靠重试自动恢复。",
+            False,
+        )
+    return "unavailable", None, None
+
+
+def _error(
+    error: str,
+    *,
+    kind: str | None = None,
+    recovery: str | None = None,
+    retryable: bool | None = None,
+    **extra: Any,
+) -> str:
+    """构造标准错误响应 JSON，并附上根因分类与可执行修复建议。"""
+    inferred_kind, inferred_recovery, inferred_retryable = _classify_error(error, extra)
+    payload: dict[str, Any] = {
+        "error": error,
+        "kind": kind or inferred_kind,
+    }
+    final_recovery = recovery if recovery is not None else inferred_recovery
+    if final_recovery:
+        payload["recovery"] = final_recovery
+    final_retryable = retryable if retryable is not None else inferred_retryable
+    if final_retryable is not None:
+        payload["retryable"] = final_retryable
     payload.update(extra)
     return _to_json(payload)
 
@@ -53,6 +189,9 @@ _MAX_PAGE_SIZE = 500
 # 长文本默认截断阈值与硬上限（字符数）
 _DEFAULT_TEXT_LIMIT = 50_000
 _MAX_TEXT_LIMIT = 200_000
+# inspect_evidence 单页默认/最大字符数
+_DEFAULT_EVIDENCE_PAGE = 20_000
+_MAX_EVIDENCE_PAGE = 200_000
 
 
 def _clamp_int(value: Any, default: int, lo: int, hi: int) -> int:

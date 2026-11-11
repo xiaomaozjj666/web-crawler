@@ -22,9 +22,11 @@ headers，单纯抓包无法看到生成过程，必须在浏览器内拦截才�
 
 示例
 ----
->>> from web_crawler.ai.hooks import generate_combined_script, collect_hook_data
+>>> from web_crawler.ai.hooks import (
+...     collect_hook_data, generate_combined_script, main_world_script,
+... )
 >>> js = generate_combined_script(["fetch_hook", "xhr_hook"])
->>> page.add_init_script(js)            # 在导航前注入
+>>> page.add_init_script(main_world_script(js))   # 在导航前注入（主世界）
 >>> page.goto("https://example.com")
 >>> data = collect_hook_data(page)
 >>> data["records"][0]["headers"]       # 拿到拦截到的请求头
@@ -45,6 +47,13 @@ if TYPE_CHECKING:
 # 因此可以单独注入也可以任意组合。
 # ---------------------------------------------------------------------------
 #
+# ★ 主世界前缀（2026-11-11 实测）：Camoufox/Juggler 默认在隔离世界执行
+#   ``page.evaluate`` 与 ``add_init_script``，与页面自身脚本的 ``window``
+#   不互通——Hook 装在隔离世界就看不到页面 fetch/XHR，读 ``__hook_data__``
+#   也永远为空。启动 Camoufox 时传 ``main_world_eval=True`` 后，脚本加
+#   ``mw:`` 前缀即可进入页面主世界。未启用时 ``mw:`` 只是合法 JS label，
+#   脚本照常执行，因此本模块统一无条件加前缀。
+#
 # ★ 实测限制（2026-10-21，camoufox / Playwright-Firefox，本机与 CI 双复现）：
 #   ``add_init_script`` 在该引擎上**晚于文档自身脚本**生效。注入本身成功
 #   （``__hook_fetch__`` 为真、``window.fetch`` 确为包装函数，注入后自调
@@ -52,6 +61,14 @@ if TYPE_CHECKING:
 #   重载一次都一样。⇒ Hook 只保证捕获**安装之后**发出的请求，
 #   「靠 init script 抓住首屏请求」在该引擎上不可依赖，别据此写断言。
 # ---------------------------------------------------------------------------
+
+MAIN_WORLD_PREFIX = "mw:"
+
+
+def main_world_script(script: str) -> str:
+    """给 Camoufox 脚本加主世界前缀（未启用 ``main_world_eval`` 时是无害 label）。"""
+    return f"{MAIN_WORLD_PREFIX}{script}"
+
 
 _FETCH_HOOK_JS = r"""
 (() => {
@@ -535,15 +552,24 @@ def collect_hook_data(page: Page) -> dict:
     便于上层序列化或断言，包含 ``records``（list[dict]）与 ``count``（int）。
     """
     records = page.evaluate(
-        """() => {
+        main_world_script(
+            """(() => {
             const data = window.__hook_data__ || [];
             const snapshot = data.slice();
             try { window.__hook_data__ = []; } catch (e) {}
             return snapshot;
-        }"""
+        })()"""
+        )
     )
     records = records or []
     return {"records": list(records), "count": len(records)}
 
 
-__all__ = ["HookLibrary", "HookScript", "collect_hook_data", "generate_combined_script"]
+__all__ = [
+    "MAIN_WORLD_PREFIX",
+    "HookLibrary",
+    "HookScript",
+    "collect_hook_data",
+    "generate_combined_script",
+    "main_world_script",
+]

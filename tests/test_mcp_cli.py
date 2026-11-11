@@ -730,6 +730,39 @@ def test_cmd_interactive_tools_command(
     assert "deobfuscate_js" in captured.out
 
 
+def test_cmd_interactive_evidence_lists_records(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``evidence`` 无参数时列出证据。"""
+    server = _setup_interactive(monkeypatch, ["evidence", "exit"], json.dumps({"count": 0}))
+    cli_module.cmd_interactive(_parse_args(["interactive"]))
+    server.handle_tool.assert_called_once_with("list_evidence", {})
+    assert '"count": 0' in capsys.readouterr().out
+
+
+def test_cmd_interactive_evidence_reads_with_offset_and_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``evidence <id> <offset> <limit>`` 透传翻页参数。"""
+    server = _setup_interactive(
+        monkeypatch, ["evidence ev_1 20 50", "exit"], json.dumps({"text": "ok"})
+    )
+    cli_module.cmd_interactive(_parse_args(["interactive"]))
+    server.handle_tool.assert_called_once_with(
+        "inspect_evidence", {"evidence_id": "ev_1", "offset": 20, "limit": 50}
+    )
+
+
+def test_cmd_interactive_evidence_rejects_non_integer(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """非法 offset/limit 只提示并继续 REPL，不调用工具。"""
+    server = _setup_interactive(monkeypatch, ["evidence ev_1 0 nope", "exit"])
+    cli_module.cmd_interactive(_parse_args(["interactive"]))
+    server.handle_tool.assert_not_called()
+    assert "必须是整数" in capsys.readouterr().out
+
+
 def test_cmd_interactive_reverse_command(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

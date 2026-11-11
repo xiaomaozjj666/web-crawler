@@ -8,10 +8,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from web_crawler.ai.hooks import (
+    MAIN_WORLD_PREFIX,
     HookLibrary,
     HookScript,
     collect_hook_data,
     generate_combined_script,
+    main_world_script,
 )
 
 _EXPECTED_HOOK_NAMES = [
@@ -115,3 +117,21 @@ def test_collect_hook_data_empty_when_evaluate_returns_none() -> None:
 
     assert result["count"] == 0
     assert result["records"] == []
+
+
+def test_main_world_script_prefixes_for_camoufox() -> None:
+    """Camoufox 主世界脚本统一带 ``mw:`` 前缀（其他引擎视为无害 label）。"""
+    assert MAIN_WORLD_PREFIX == "mw:"
+    assert main_world_script("window.x = 1;") == "mw:window.x = 1;"
+
+
+def test_collect_hook_data_uses_main_world_iife() -> None:
+    """读取 Hook 数据必须在主世界执行，且用 IIFE 兼容两种引擎的 evaluate 语义。"""
+    page = MagicMock()
+    page.evaluate.return_value = [{"type": "fetch"}]
+
+    collect_hook_data(page)
+
+    script = page.evaluate.call_args.args[0]
+    assert script.startswith("mw:")
+    assert script.rstrip().endswith("()")

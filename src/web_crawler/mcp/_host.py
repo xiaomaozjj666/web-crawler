@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ._evidence import EvidenceStore
+
 
 class HostContract:  # pragma: no cover - 纯类型契约,无运行时路径
     """宿主属性与方法契约(仅声明)。"""
@@ -20,11 +22,20 @@ class HostContract:  # pragma: no cover - 纯类型契约,无运行时路径
     analyzer: Any
     captcha_manager: Any
     agent: Any
+    evidence_store: EvidenceStore
+    schema_profile: str
     _fetcher: Any
     _browser_lock: Any
     _progress_sender: Any
     _progress_lock: Any
     _closed: bool
+
+    # -- 运行时访问器 ----------------------------------------------------
+    def _evidence_store(self) -> EvidenceStore:
+        raise NotImplementedError
+
+    def _schema_profile(self) -> str:
+        raise NotImplementedError
 
     # -- 生命周期与浏览器 ------------------------------------------------
     def _create_agent(self) -> Any:

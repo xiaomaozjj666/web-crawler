@@ -123,7 +123,14 @@ class CamoufoxFetcher(DynamicFetcher):
     # -- 启动参数 -----------------------------------------------------------
     def _launch_kwargs(self) -> dict[str, Any]:
         """组装本次抓取所需的 ``Camoufox(...)`` 启动选项。"""
-        kwargs: dict[str, Any] = {"headless": self.headless, "humanize": self.humanize}
+        kwargs: dict[str, Any] = {
+            "headless": self.headless,
+            "humanize": self.humanize,
+            # Camoufox 默认在隔离世界执行 evaluate/add_init_script，页面自身的
+            # window 全局与 fetch/XHR 不可见；Hook 与业务脚本需要主世界。
+            # 用户可用 camoufox_options 显式覆盖。
+            "main_world_eval": True,
+        }
         if self.os is not None:
             kwargs["os"] = self.os
         if self.locale is not None:

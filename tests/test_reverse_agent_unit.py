@@ -1646,6 +1646,8 @@ class TestInjectHooks:
         page = _AsyncPageMock()
         page.evaluate = AsyncMock()
         assert await agent._inject_hooks_async(page, ["fetch_hook"]) is True
+        script = page.evaluate.await_args.args[0]
+        assert script.startswith("mw:"), "Hook 必须注入 Camoufox 主世界，否则看不到页面请求"
 
     @pytest.mark.asyncio
     async def test_inject_hooks_async_failure(self) -> None:
@@ -2266,6 +2268,8 @@ class TestCreatePage:
         assert p is page
         browser.new_context.assert_awaited_once()
         context.add_init_script.assert_awaited_once()
+        init_script = context.add_init_script.await_args.args[0]
+        assert init_script.startswith("mw:"), "init script 必须注入 Camoufox 主世界"
         context.new_page.assert_awaited_once()
 
     @pytest.mark.asyncio

@@ -2,17 +2,81 @@
 
 from __future__ import annotations
 
+import os
+
 from ._server_helpers import (
+    _DEFAULT_EVIDENCE_PAGE,
     _DEFAULT_PAGE_SIZE,
     _DEFAULT_TEXT_LIMIT,
     _DEFAULT_WAIT_TIME,
+    _MAX_EVIDENCE_PAGE,
     _MAX_PAGE_SIZE,
     _MAX_TEXT_LIMIT,
 )
 
+SCHEMA_PROFILES = ("full", "compact")
+_PROFILE_ENV = "WEB_CRAWLER_MCP_SCHEMA_PROFILE"
+# REA 的渐进式发现只预览前 240 字符：紧凑档把描述压到首个句子。
+_PREVIEW_CHARS = 240
 
-def build_tool_definitions() -> list[dict]:
+
+def normalize_schema_profile(value: str | None = None) -> str:
+    """把任意输入归一化为受支持的 schema 档位；非法值回退 full。"""
+    raw = value if value is not None else os.environ.get(_PROFILE_ENV, "full")
+    profile = str(raw).strip().lower()
+    return profile if profile in SCHEMA_PROFILES else "full"
+
+
+def _compact_description(text: str) -> str:
+    """保留首个句子（不超过 240 字符），确保工具选择所需信息仍在首屏。"""
+    for separator in ("。", "\n", ". "):
+        index = text.find(separator)
+        if 0 < index < _PREVIEW_CHARS:
+            return text[: index + len(separator)].strip()
+    if len(text) <= _PREVIEW_CHARS:
+        return text
+    return text[: _PREVIEW_CHARS - 1].rstrip() + "…"
+
+
+def _compact_schema(node: dict) -> dict:
+    """递归去掉 description，保留类型/必填/枚举/默认值与嵌套结构。
+
+    REA 的 compact profile 会省略参数说明与嵌套形状；这里保留结构（Python
+    客户端仍能据类型校验），只去掉纯注释性 prose——省上下文但不牺牲可调用性。
+    """
+    out: dict = {}
+    for key, value in node.items():
+        if key == "description":
+            continue
+        if key == "properties" and isinstance(value, dict):
+            out[key] = {name: _compact_schema(spec) for name, spec in value.items()}
+        elif key == "items" and isinstance(value, dict):
+            out[key] = _compact_schema(value)
+        else:
+            out[key] = value
+    return out
+
+
+def _apply_schema_profile(tools: list[dict], profile: str) -> list[dict]:
+    """按档位裁剪工具目录（full 原样返回）。"""
+    if profile != "compact":
+        return tools
+    return [
+        {
+            "name": tool["name"],
+            "description": _compact_description(tool["description"]),
+            "inputSchema": _compact_schema(tool["inputSchema"]),
+        }
+        for tool in tools
+    ]
+
+
+def build_tool_definitions(profile: str = "full") -> list[dict]:
     """返回 MCP 工具列表(每个工具包含 name / description / inputSchema)。"""
+    return _apply_schema_profile(_build_full_tool_definitions(), normalize_schema_profile(profile))
+
+
+def _build_full_tool_definitions() -> list[dict]:
     return [
         {
             "name": "reverse_engineer_url",
@@ -320,6 +384,45 @@ def build_tool_definitions() -> list[dict]:
                 "required": ["url"],
             },
         },
+        {
+            "name": "inspect_evidence",
+            "description": (
+                "按 evidence_id 分页读取本会话登记的工具结果。"
+                "reverse_engineer_url 会在截断前自存完整结果（未超过存储字节上限时）；"
+                "其他工具的 evidence 即本次返回内容。用 offset/limit 读取长结果，"
+                "避免重跑浏览器/LLM。meta.evidence_stored=false 表示完整结果未入"
+                "存储（响应本身即全部可得内容）。证据仅存于当前进程，重启后失效。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "evidence_id": {
+                        "type": "string",
+                        "description": "证据 id（形如 ev_0123456789abcdef）",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "字符偏移（Python 码点，默认 0）",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": _DEFAULT_EVIDENCE_PAGE,
+                        "description": (
+                            "本页最大字符数"
+                            f"（1-{_MAX_EVIDENCE_PAGE}，默认 {_DEFAULT_EVIDENCE_PAGE}）"
+                        ),
+                    },
+                },
+                "required": ["evidence_id"],
+            },
+        },
+        {
+            "name": "list_evidence",
+            "description": (
+                "列出本会话登记的证据 id、来源工具、字节数与存储用量。"
+                "用于发现可读取的 evidence_id，并如实报告被淘汰/拒收的条数。"
+            ),
+            "inputSchema": {"type": "object", "properties": {}},
+        },
     ]
-
-    # -- Prompts / Resources / 进度 ------------------------------------------

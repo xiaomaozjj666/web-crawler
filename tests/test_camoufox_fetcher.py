@@ -172,9 +172,9 @@ def test_init_calls_require_camoufox(mock_camoufox: dict[str, MagicMock]) -> Non
 # _launch_kwargs 各参数组合
 # ---------------------------------------------------------------------------
 def test_launch_kwargs_minimal(fetcher: Any) -> None:
-    """仅 headless + humanize 默认值；不添加 None 字段。"""
+    """默认 headless + humanize + 主世界执行；不添加 None 字段。"""
     kwargs = fetcher._launch_kwargs()
-    assert kwargs == {"headless": True, "humanize": True}
+    assert kwargs == {"headless": True, "humanize": True, "main_world_eval": True}
 
 
 def test_launch_kwargs_all_options(mock_camoufox: dict[str, MagicMock]) -> None:
@@ -240,10 +240,17 @@ def test_launch_kwargs_camoufox_options_override_defaults(
     """camoufox_options 覆盖默认值并补充新键。"""
     from web_crawler import CamoufoxFetcher
 
-    f = CamoufoxFetcher(camoufox_options={"headless": False, "fingerprint_preset": "stealth"})
+    f = CamoufoxFetcher(
+        camoufox_options={
+            "headless": False,
+            "fingerprint_preset": "stealth",
+            "main_world_eval": False,
+        }
+    )
     kwargs = f._launch_kwargs()
-    # 用户传入的 headless 覆盖默认 True
+    # 用户传入的 headless / main_world_eval 覆盖默认值
     assert kwargs["headless"] is False
+    assert kwargs["main_world_eval"] is False
     assert kwargs["fingerprint_preset"] == "stealth"
     f.close()
 

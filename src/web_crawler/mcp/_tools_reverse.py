@@ -90,10 +90,62 @@ class ReverseToolsMixin(HostContract):
                 self.report_progress(
                     progress["progressToken"], max_steps, max_steps, message="done"
                 )
+                found = result.get("target_params_found") or {}
+                if not isinstance(found, dict):
+                    found = {}
+                unknowns = [param for param in target_params if param not in found]
+                if not target_params:
+                    unknowns = ["未指定 target_params：无法确认站点全部加密参数是否都已覆盖"]
+                limitations = [
+                    (
+                        "浏览器运行时逆向：只覆盖本次页面会话中被 Hook 记录的请求；"
+                        "服务端渲染、原生客户端与未触发的懒加载分支不在范围内。"
+                    ),
+                    (
+                        "置信度与算法说明由 LLM 生成，不构成等价性证明；"
+                        "关键参数请用录制回放或重实现测试复核。"
+                    ),
+                    "hook_data 与 history 是采样快照，受 max_steps 与页面加载时机限制。",
+                ]
+                coverage = {
+                    "mode": "agent",
+                    "steps_executed": result.get("steps"),
+                    "max_steps": max_steps,
+                    "hook_records": len((result.get("hook_data") or {}).get("records", [])),
+                    "target_params_requested": len(target_params),
+                    "target_params_found": len(found),
+                }
+                payload: dict[str, Any] = {
+                    "result": result,
+                    "agent": True,
+                    "truncations": [],
+                    "limitations": limitations,
+                    "unknowns": unknowns,
+                    "coverage": coverage,
+                }
+                # 截断前自存完整结果：调用方可用 inspect_evidence 取回被截断的
+                # history / Hook 请求体，而不必重跑一次浏览器/LLM。
+                record = self._evidence_store().put(
+                    "reverse_engineer_url",
+                    _to_json(payload),
+                    metadata={"url": url, "mode": "agent"},
+                )
                 # result 内嵌超长文本（反混淆 JS、hook 请求体、history 片段），
-                # 递归截断并在顶层标注 truncations，避免一次响应塞爆上游上下文
-                trimmed, truncations = _truncate_result_strings(result, max_text_length)
-                return _to_json({"result": trimmed, "agent": True, "truncations": truncations})
+                # 递归截断并在顶层标注 truncations；路径相对于 result 展开，
+                # 与历史响应格式保持一致，避免一次响应塞爆上游上下文。
+                trimmed_result, truncations = _truncate_result_strings(result, max_text_length)
+                response = dict(payload)
+                response["result"] = trimmed_result
+                response["truncations"] = truncations
+                if record is not None:
+                    response["evidence_id"] = record.evidence_id
+                    response["evidence_note"] = (
+                        "完整结果已登记为 evidence_id；字段被截断时用 "
+                        "inspect_evidence 按 offset/limit 取回全文。"
+                    )
+                else:
+                    response["_evidence_unavailable_reason"] = "full_result_exceeds_store_limit"
+                return _to_json(response)
             except Exception as exc:
                 fallback_note = f"ReverseAgent 执行失败：{exc}，降级为基本采集"
 
@@ -123,19 +175,54 @@ class ReverseToolsMixin(HostContract):
         note = (
             "ReverseAgent 模块不可用，仅返回基本采集结果" if self.agent is None else fallback_note
         )
-        # 降级采集同样递归截断超长文本（hook 捕获的请求体可能非常大）
-        trimmed, truncations = _truncate_result_strings(collected, max_text_length)
-        return _to_json(
-            {
-                "agent": False,
-                "note": note,
-                "url": url,
-                "target_params": target_params,
-                "task": task,
-                "truncations": truncations,
-                **trimmed,
-            }
+        limitations = [
+            (
+                "ReverseAgent 不可用或执行失败：本次只做页面 Hook 基本采集，"
+                "没有 JS 反混淆、算法重实现或步进验证。"
+            ),
+            (
+                "仅覆盖页面生命周期内 fetch/XHR/cookie 等 Hook 捕获到的请求；"
+                "导航前已发出的请求不可见。"
+            ),
+        ]
+        unknowns = (
+            list(target_params) if target_params else ["未执行 JS 分析：目标参数的生成算法仍未知"]
         )
+        coverage = {
+            "mode": "fallback",
+            "hooks": len(all_hooks),
+            "hook_records": collected.get("hook_count", 0),
+            "scripts": len(collected.get("scripts") or []),
+            "wait_seconds": _DEFAULT_WAIT_TIME,
+        }
+        payload = {
+            "agent": False,
+            "note": note,
+            "url": url,
+            "target_params": target_params,
+            "task": task,
+            "truncations": [],
+            "limitations": limitations,
+            "unknowns": unknowns,
+            "coverage": coverage,
+            **collected,
+        }
+        # 降级采集同样在截断前自存完整结果（hook 捕获的请求体可能非常大）
+        record = self._evidence_store().put(
+            "reverse_engineer_url",
+            _to_json(payload),
+            metadata={"url": url, "mode": "fallback"},
+        )
+        trimmed, truncations = _truncate_result_strings(collected, max_text_length)
+        response = {**payload, **trimmed, "truncations": truncations}
+        if record is not None:
+            response["evidence_id"] = record.evidence_id
+            response["evidence_note"] = (
+                "完整结果已登记为 evidence_id；字段被截断时用 inspect_evidence 取回全文。"
+            )
+        else:
+            response["_evidence_unavailable_reason"] = "full_result_exceeds_store_limit"
+        return _to_json(response)
 
     def _tool_inject_hooks(self, args: dict) -> str:
         url = args["url"]
@@ -165,6 +252,17 @@ class ReverseToolsMixin(HostContract):
                 "invalid_hooks": invalid,
                 "preview_count": len(preview),
                 "preview": preview,
+                "limitations": [
+                    (
+                        f"预览只保留前 {_PREVIEW_LIMIT} 条 Hook 记录；"
+                        "完整记录请用 capture_network_requests 分页获取。"
+                    ),
+                    "Hook 只覆盖注入之后发生的请求；导航前已发出的请求不可见。",
+                ],
+                "coverage": {
+                    "hooks_requested": len(hooks),
+                    "preview_count": len(preview),
+                },
             }
         )
 
@@ -190,6 +288,14 @@ class ReverseToolsMixin(HostContract):
             "deobfuscated": deobfuscated,
             "truncated": truncated,
             "full_length": full_len,
+            "limitations": [
+                "分析由 LLM 生成，需人工复核；confidence 是模型自评，不是正确性证明。",
+                "deobfuscated 输出按 max_length 截断（truncated/full_length 标注）；需要全文时用 deobfuscate_js 单独获取。",
+            ],
+            "coverage": {
+                "input_chars": len(code),
+                "deobfuscated_chars": full_len,
+            },
         }
         if target_param:
             payload["target_param"] = target_param
@@ -213,6 +319,14 @@ class ReverseToolsMixin(HostContract):
                 ],
                 "count": len(modules),
                 "entry_point": entry,
+                "limitations": [
+                    "正则提取只识别常见 webpack 模块语法；高度混淆或自定义 runtime 可能漏检。",
+                    "source_preview 只保留每个模块前 500 字符，完整模块需按 id 从原始 bundle 中提取。",
+                ],
+                "coverage": {
+                    "modules": len(modules),
+                    "source_chars": len(source),
+                },
             }
         )
 
@@ -230,6 +344,10 @@ class ReverseToolsMixin(HostContract):
                 "length": len(sliced),
                 "truncated": truncated,
                 "full_length": full_len,
+                "limitations": [
+                    "反混淆结果由 LLM 生成，需人工复核；不保证与原代码逐行等价。",
+                ],
+                "coverage": {"input_chars": len(code), "output_chars": full_len},
             }
         )
 
@@ -249,6 +367,10 @@ class ReverseToolsMixin(HostContract):
                 "length": len(sliced),
                 "truncated": truncated,
                 "full_length": full_len,
+                "limitations": [
+                    "重实现由 LLM 生成，需用原始输入/输出样本做等价性测试后再上线。",
+                ],
+                "coverage": {"input_chars": len(code), "output_chars": full_len},
             }
         )
 
@@ -280,6 +402,14 @@ class ReverseToolsMixin(HostContract):
             result = self._run_browser_task(url, _detect_and_solve, wait_time=2.0)
         except Exception as exc:
             return _error("浏览器操作失败", details=str(exc))
+        result["limitations"] = [
+            "自动处理失败时需要人工介入；本工具不提供第三方验证码打码服务。",
+            "检测基于常见选择器与 iframe 特征，页面自定义实现可能识别不到。",
+        ]
+        result["coverage"] = {
+            "captcha_type": result.get("type"),
+            "solved": result.get("solved"),
+        }
         return _to_json(result)
 
     def _tool_solve_captcha_image(self, args: dict) -> str:
@@ -297,6 +427,7 @@ class ReverseToolsMixin(HostContract):
         # 用 self.provider（可能支持 vision）构造 ImageCaptchaSolver
         cfg = ImageSolverConfig()
         solver = ImageCaptchaSolver(provider=self.provider, config=cfg)
+        limitations = ["识别结果由 Vision/OCR 生成，需在提交前人工或回放校验。"]
 
         try:
             if mode == "text":
@@ -304,7 +435,14 @@ class ReverseToolsMixin(HostContract):
                 if not image:
                     return _error("image is required for text mode")
                 text = solver.solve_text(image, mime=mime)
-                return _to_json({"mode": "text", "text": text, "ok": bool(text)})
+                return _to_json(
+                    {
+                        "mode": "text",
+                        "text": text,
+                        "ok": bool(text),
+                        "limitations": limitations,
+                    }
+                )
             if mode == "slider":
                 bg = args.get("bg", "")
                 slider = args.get("slider", "")
@@ -312,7 +450,14 @@ class ReverseToolsMixin(HostContract):
                     return _error("bg and slider are required for slider mode")
                 sol = solver.solve_slider(bg, slider)
                 if sol is None:
-                    return _to_json({"mode": "slider", "ok": False, "message": "识别失败"})
+                    return _to_json(
+                        {
+                            "mode": "slider",
+                            "ok": False,
+                            "message": "识别失败",
+                            "limitations": limitations,
+                        }
+                    )
                 return _to_json(
                     {
                         "mode": "slider",
@@ -321,6 +466,7 @@ class ReverseToolsMixin(HostContract):
                         "y": sol.y,
                         "method": sol.method,
                         "confidence": sol.confidence,
+                        "limitations": limitations,
                     }
                 )
             # click
@@ -330,7 +476,14 @@ class ReverseToolsMixin(HostContract):
                 return _error("image is required for click mode")
             click_sol = solver.solve_click(image, prompt, mime=mime)
             if click_sol is None:
-                return _to_json({"mode": "click", "ok": False, "message": "识别失败"})
+                return _to_json(
+                    {
+                        "mode": "click",
+                        "ok": False,
+                        "message": "识别失败",
+                        "limitations": limitations,
+                    }
+                )
             return _to_json(
                 {
                     "mode": "click",
@@ -338,6 +491,7 @@ class ReverseToolsMixin(HostContract):
                     "points": [{"x": x, "y": y} for x, y in click_sol.points],
                     "labels": click_sol.labels,
                     "method": click_sol.method,
+                    "limitations": limitations,
                 }
             )
         except Exception as exc:

@@ -8,6 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MCP 证据模型（借鉴 REA 的 evidence / context economy 设计）**：成功结果
+  新增 `meta` 信封（`evidence_id` / `evidence_stored` / `evidence_bytes` /
+  `elapsed_ms`），结果正文存入进程内 LRU 证据库；`reverse_engineer_url` 在
+  `max_text_length` 截断前自存完整结果，其他工具登记本次返回正文。新增
+  `inspect_evidence`（按偏移/页长翻页读取）与 `list_evidence`（记录列表 +
+  容量统计）两个导航工具，以及 `evidence://records`、`config://server`
+  两个资源。超出存储上限或并发淘汰时返回 `evidence_stored=false` 与原因，
+  绝不把截断副本冒充完整证据；`reverse_engineer_url` 的截断因此从
+  「信息丢失」变为「可恢复」（前提是完整结果未超过存储字节上限）。
+- **结论边界显式化**：逆向与渗透类工具结果新增 `limitations` / `unknowns` /
+  `coverage`——说明适用边界（浏览器运行时范围、LLM 置信度不等于证明、
+  采样范围）、尚未确认的问题（请求了但未找到的参数）、实际覆盖范围
+  （步数 / hook 数 / 请求数 / 页面完整性），避免把推测当结论。
+- **可恢复错误分类**：错误结果新增 `kind`（`authorization` / `unsafe_target` /
+  `dependency_missing` / `provider_unavailable` / `target_rejected` / `timeout` /
+  `browser_unavailable` / `invalid_request` / `internal` / `unavailable`）、
+  `recovery`（下一步动作）与 `retryable`，由统一分类器生成；超时、依赖缺失等
+  处理器异常也会被包装成带恢复建议的结构化错误。
+- **compact schema 档位**：`WEB_CRAWLER_MCP_SCHEMA_PROFILE=compact` 时工具定义
+  只保留类型 / 必填 / 枚举 / 默认值、去掉长描述（描述压到 240 字符预览），
+  显著降低 tools 列表占用的模型上下文；默认 `full` 行为完全不变。
+- **`web-crawler-reverse doctor` 环境自检**：报告 Python 与包版本，逐项检查
+  `mcp` SDK、LLM 密钥、`curl_cffi`、`camoufox` 模块与浏览器本体、Playwright
+  Chromium 二进制、临时目录可写性、schema 档位与证据限额，每项给出修复命令；
+  `--json` 输出机器可读结果，只有 `fail` 项返回退出码 1。
+- **证据库容量可调**：`WEB_CRAWLER_MCP_EVIDENCE_RECORDS`（默认 16，1–256）与
+  `WEB_CRAWLER_MCP_EVIDENCE_BYTES`（默认 32 MiB，1 MiB–1 GiB）；非整数回落默认
+  值、越界值收敛到边界，并在 doctor 中告警。
+- 新增 `tests/test_mcp_evidence.py`（45 项：id 稳定性 / 淘汰 / 去重 / 翻页 /
+  环境限额 / 截断可恢复 / 错误分类 / schema 契约）与 `tests/test_mcp_doctor.py`
+  （24 项）。
 - **六个 CLI 统一输出体验**：新增互斥的 `--quiet/--verbose/--json`；爬取进度
   包含完成数/总数、速率、失败数与数据量，TTY 原地刷新、非 TTY 节流输出；
   结束摘要结构化展示成功/失败/耗时/数据量，网络/解析/配置/安全错误附下一步建议。
@@ -27,8 +58,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 新增 `tests/test_version_flags.py`：6 个 CLI 的版本标志回归 +
   `python -m web_crawler` 子进程行为（--version/--help/未知参数）。
 
+### Changed
+
+- MCP 成功结果的顶层字段保持向后兼容；新增的 `meta`、`evidence_id`、
+  `limitations`、`unknowns`、`coverage` 均为附加字段，旧客户端可忽略。
+  错误结果不带 `meta`（只有 `kind` / `recovery` / `retryable`）。
+  `inspect_evidence` / `list_evidence` 属于导航工具，不写证据库（避免自我引用）。
+
 ### Fixed
 
+- **Camoufox 隔离世界导致 Hook 全部失明**：Camoufox 默认在独立 world 执行
+  `page.evaluate` / `add_init_script`，页面自身的 `fetch` / XHR 与 window 全局
+  都不可见，`capture_network_requests` / `inject_hooks` /
+  `reverse_engineer_url` 的 Hook 采集因此长期返回 0 条。现在默认
+  `main_world_eval=True`，并对所有注入/读取脚本加 `mw:` 主世界前缀
+  （`main_world_script`）；其他引擎把 `mw:` 当作无害的 JS label，行为不变。
+  真实 Camoufox 端到端从 0 条恢复为 fetch + XHR 共 2 条。
+- **证据降级不再伪装成完整结果**：工具自存的完整结果超出存储上限、或在收尾
+  前被并发调用挤出 LRU 时，此前会把截断后的响应登记成「完整证据」；现在返回
+  `meta.evidence_stored=false` 并给出 `full_result_exceeds_store_limit` /
+  `evidence_evicted`，调用方不会误以为还能翻页取回原文。
+- **401/403 不再误判为 provider 故障**：新增 `target_rejected` 错误类型，
+  修复建议指向登录态/权限核对，而不是反复重试同一凭证。
+- **REPL `evidence` 子命令的非整数参数**：此前 offset/limit 解析失败会跳出
+  循环却继续使用未赋值的 `result`，触发 `UnboundLocalError` 并中断 REPL；
+  现在提示后继续下一条命令，并补 4 项 REPL 回归测试。
 - **`startproject` 模板 heading 空串**：`example.com` 等页面已无 `<h1>`，脚手架
   生成的 `TitleSpider` / `SiteCrawlSpider` 回调产出的 item `heading` 为空串。
   模板改为 `h1` 取不到时回退取 `title`（优雅降级示范，item 永远有可读标题）。

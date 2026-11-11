@@ -402,6 +402,42 @@ web-crawler-mcp                    # 通过 stdio 通信
 }
 ```
 
+### MCP 证据模型与上下文控制（借鉴 REA）
+
+工具结果遵循「摘要 + 可追溯证据 + 显式局限」三件套：既不把一个几 MB 的结果整块塞进模型上下文，也不让推测冒充结论。
+
+| 字段 | 含义 |
+| --- | --- |
+| `meta.evidence_id` | 结果副本的稳定句柄（由内容 sha256 派生，同内容同 id）；`reverse_engineer_url` 会在截断前登记完整结果，其他工具登记本次返回正文 |
+| `meta.evidence_stored` | 是否成功存入证据库；`false` 时 `meta.evidence_reason` 给出原因（如 `full_result_exceeds_store_limit`、`evidence_evicted`） |
+| `meta.elapsed_ms` | 工具实际耗时，便于定位慢调用 |
+| `limitations` / `unknowns` / `coverage` | 结论的适用边界、尚未确认的问题、本次实际覆盖到的范围 |
+| `error.kind` / `error.recovery` / `error.retryable` | 失败原因分类、下一步修复建议、是否值得重试 |
+
+`reverse_engineer_url` 的大文本结果按 `max_text_length` 截断并写入 `truncations`，被截掉的原文可凭该结果自存的完整证据翻页取回；其他工具的 evidence 就是返回正文本身。`meta.evidence_stored=false` 时没有额外副本，响应即全部可得内容：
+
+```jsonc
+// 1) 先看摘要，拿到 evidence_id
+{"result": {"...": "..."}, "meta": {"evidence_id": "ev_1a2b3c4d5e6f7a8b", "evidence_stored": true}}
+
+// 2) 再按需翻页读取完整证据（默认每页 20000 字符，单页上限 200000）
+{"tool": "inspect_evidence", "arguments": {"evidence_id": "ev_1a2b3c4d5e6f7a8b", "offset": 0, "limit": 20000}}
+{"tool": "list_evidence", "arguments": {}}
+```
+
+证据库是进程内 LRU（默认 16 条 / 32 MiB，超出后先淘汰最久未使用），可用环境变量调节：
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `WEB_CRAWLER_MCP_SCHEMA_PROFILE` | `full` | 设为 `compact` 时工具 schema 只保留类型/必填/枚举，去掉长描述，显著缩小 tools 列表占用的上下文 |
+| `WEB_CRAWLER_MCP_EVIDENCE_RECORDS` | `16` | 证据条数上限（1–256） |
+| `WEB_CRAWLER_MCP_EVIDENCE_BYTES` | `33554432` | 证据总字节上限（1 MiB–1 GiB） |
+
+```bash
+web-crawler-reverse doctor            # 环境自检：依赖、密钥、浏览器、证据限额逐项给修复建议
+web-crawler-reverse --json doctor     # 机器可读输出；只有 fail 项才返回退出码 1
+```
+
 ### JS 逆向 CLI
 
 ```bash
@@ -416,6 +452,7 @@ web-crawler-reverse deobfuscate script.js           # AI 反混淆 JS 代码
 web-crawler-reverse captcha https://example.com     # 检测并处理页面验证码
 web-crawler-reverse captcha-image --mode slider --bg bg.png --slider s.png
 web-crawler-reverse pentest example.com --authorized   # 轻量渗透侦察（仅限已授权目标）
+web-crawler-reverse doctor                          # 环境自检与逐项修复建议
 web-crawler-reverse interactive                     # REPL，输入 tools 查看命令
 web-crawler-reverse run --url https://example.com --task "提取签名参数" --headless
 ```

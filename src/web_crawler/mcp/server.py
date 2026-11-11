@@ -21,10 +21,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
 import threading
+import time
 import traceback
 from collections.abc import Callable
 from typing import Any
@@ -33,7 +35,7 @@ from .. import __version__
 from .._cli import add_output_arguments, configure_logging, output_mode
 from ..ai.analyzer import JSAnalyzer
 from ..ai.captcha import CaptchaManager
-from ..ai.hooks import HookLibrary, generate_combined_script
+from ..ai.hooks import HookLibrary, generate_combined_script, main_world_script
 from ..ai.llm import get_provider
 from ..exceptions import UnsafeTargetError
 from ..fetchers.camoufox import CamoufoxFetcher
@@ -85,10 +87,12 @@ _FIELD_LIMITS: dict[str, int] = {
     "image": 5_000_000,  # solve_captcha_image base64
     "bg": 5_000_000,
     "slider": 5_000_000,
+    "evidence_id": 128,  # inspect_evidence
 }
 
 
 # -- 从子模块汇入(保持历史导入路径可用) ------------------------------------
+from ._evidence import EvidenceStore
 from ._server_helpers import (  # noqa: F401
     _DEFAULT_PAGE_SIZE,
     _DEFAULT_TEXT_LIMIT,
@@ -105,7 +109,7 @@ from ._server_helpers import (  # noqa: F401
     _truncate_text,
     _type_ok,
 )
-from ._specs import build_tool_definitions
+from ._specs import build_tool_definitions, normalize_schema_profile
 from ._ssrf_gate import (  # noqa: F401
     _check_target_public,
     _check_url,
@@ -113,6 +117,7 @@ from ._ssrf_gate import (  # noqa: F401
     _ip_is_global,
     _resolve_host_ips,
 )
+from ._tools_evidence import EvidenceToolsMixin
 from ._tools_pentest import PentestToolsMixin, _parse_pentest_target  # noqa: F401
 from ._tools_reverse import ReverseToolsMixin
 from ._transport import (
@@ -122,10 +127,19 @@ from ._transport import (
 # -- MCP 服务器 --------------------------------------------------------------
 
 
-class ReverseMCPServer(ReverseToolsMixin, PentestToolsMixin, StdioTransportMixin):
+class ReverseMCPServer(
+    ReverseToolsMixin, PentestToolsMixin, EvidenceToolsMixin, StdioTransportMixin
+):
     """通过 MCP 协议暴露 JS 逆向 Agent 能力的服务器。"""
 
-    def __init__(self, provider_name: str = "deepseek", model: str = "deepseek-flash") -> None:
+    def __init__(
+        self,
+        provider_name: str = "deepseek",
+        model: str = "deepseek-flash",
+        *,
+        schema_profile: str | None = None,
+        evidence_store: EvidenceStore | None = None,
+    ) -> None:
         self.provider_name = provider_name
         self.model = model
 
@@ -141,6 +155,13 @@ class ReverseMCPServer(ReverseToolsMixin, PentestToolsMixin, StdioTransportMixin
         # ReverseAgent（可选）：缺失时 reverse_engineer_url 降级为基本采集
         self.agent = self._create_agent()
 
+        # 会话级证据存储：完整工具结果按 evidence_id 保留，支持分页取回
+        self.evidence_store = (
+            evidence_store if evidence_store is not None else EvidenceStore.from_env()
+        )
+        # tools/list 的 schema 档位：full（默认）/ compact（省上下文）
+        self.schema_profile = normalize_schema_profile(schema_profile)
+
         # CamoufoxFetcher 实例（lazy 创建，跨工具调用复用同一浏览器）
         self._fetcher: CamoufoxFetcher | None = None
         # Playwright sync API 非线程安全：并发工具调用（to_thread 线程池）串行化浏览器访问
@@ -149,6 +170,20 @@ class ReverseMCPServer(ReverseToolsMixin, PentestToolsMixin, StdioTransportMixin
         self._progress_sender: Callable[[int, int, str], None] | None = None
         self._progress_lock = threading.Lock()
         self._closed = False
+
+    # -- 证据 / schema 访问器 ---------------------------------------------
+
+    def _evidence_store(self) -> EvidenceStore:
+        """返回证据存储；绕过 ``__init__`` 的测试替身也能懒创建。"""
+        store = getattr(self, "evidence_store", None)
+        if store is None:
+            store = EvidenceStore.from_env()
+            self.evidence_store = store
+        return store
+
+    def _schema_profile(self) -> str:
+        """返回当前 schema 档位（属性缺失时读环境变量/默认 full）。"""
+        return normalize_schema_profile(getattr(self, "schema_profile", None))
 
     # -- 资源管理 ----------------------------------------------------------
 
@@ -168,7 +203,7 @@ class ReverseMCPServer(ReverseToolsMixin, PentestToolsMixin, StdioTransportMixin
             self._fetcher = CamoufoxFetcher(headless=True, network_idle=False)
         return self._fetcher
 
-    def _run_browser_task(  # pragma: no cover - 需真实 Playwright 浏览器，属集成测试范畴
+    def _run_browser_task(
         self,
         url: str,
         task_fn: Callable[[Any], Any],
@@ -199,7 +234,7 @@ class ReverseMCPServer(ReverseToolsMixin, PentestToolsMixin, StdioTransportMixin
             try:
                 page = context.new_page()
                 if hooks:
-                    page.add_init_script(generate_combined_script(hooks))
+                    page.add_init_script(main_world_script(generate_combined_script(hooks)))
                 page.goto(url, wait_until="domcontentloaded", timeout=fetcher.timeout * 1000)
                 if wait_time > 0:
                     page.wait_for_timeout(int(wait_time * 1000))
@@ -208,20 +243,23 @@ class ReverseMCPServer(ReverseToolsMixin, PentestToolsMixin, StdioTransportMixin
                 context.close()
 
     def close(self) -> None:
-        """清理所有资源：关闭浏览器、标记服务已关闭。"""
+        """清理所有资源：关闭浏览器、清空会话证据、标记服务已关闭。"""
         if self._fetcher is not None:
             try:
                 self._fetcher.close()
             except Exception:
                 pass
             self._fetcher = None
+        store = getattr(self, "evidence_store", None)
+        if store is not None:
+            store.clear()
         self._closed = True
 
     # -- 工具列表 ------------------------------------------------------------
 
     def get_tools(self) -> list[dict]:
         """返回 MCP 工具列表(每个工具包含 name / description / inputSchema)。"""
-        return build_tool_definitions()
+        return build_tool_definitions(self._schema_profile())
 
     def get_prompts(self) -> list[dict]:
         """返回 MCP prompts 列表（预定义 prompt 模板）。"""
@@ -351,6 +389,18 @@ class ReverseMCPServer(ReverseToolsMixin, PentestToolsMixin, StdioTransportMixin
                 "description": "ExtractedParams Pydantic schema 的 JSON Schema 定义",
                 "mimeType": "application/json",
             },
+            {
+                "uri": "config://server",
+                "name": "server_config",
+                "description": "当前 schema 档位、证据存储用量与版本信息",
+                "mimeType": "application/json",
+            },
+            {
+                "uri": "evidence://records",
+                "name": "evidence_records",
+                "description": "本会话已登记的证据 id 列表与存储统计",
+                "mimeType": "application/json",
+            },
         ]
 
     def read_resource(self, uri: str) -> str:
@@ -379,6 +429,17 @@ class ReverseMCPServer(ReverseToolsMixin, PentestToolsMixin, StdioTransportMixin
                 return _to_json({"note": "pydantic not available, schema unavailable"})
             except Exception as exc:
                 return _error("schema unavailable", details=str(exc))
+        if uri == "config://server":
+            return _to_json(
+                {
+                    "version": __version__,
+                    "schema_profile": self._schema_profile(),
+                    "evidence": self._evidence_store().stats(),
+                    "tools": len(self.get_tools()),
+                }
+            )
+        if uri == "evidence://records":
+            return self._tool_list_evidence({})
         return _error(f"unknown resource uri: {uri}")
 
     def make_progress_token(self, tool_name: str, total: int = 1) -> dict:
@@ -458,6 +519,8 @@ class ReverseMCPServer(ReverseToolsMixin, PentestToolsMixin, StdioTransportMixin
             "pentest_recon": self._tool_pentest_recon,
             "capture_network_requests": self._tool_capture_network_requests,
             "get_page_scripts": self._tool_get_page_scripts,
+            "inspect_evidence": self._tool_inspect_evidence,
+            "list_evidence": self._tool_list_evidence,
         }
         handler = handlers.get(name)
         if handler is None:
@@ -466,20 +529,112 @@ class ReverseMCPServer(ReverseToolsMixin, PentestToolsMixin, StdioTransportMixin
         validation_error = self._validate_tool_args(name, args)
         if validation_error:
             return _error(validation_error, code=-32602)
+        started = time.monotonic()
         try:
-            return handler(args)
+            raw = handler(args)
         except TimeoutError as exc:
-            return _error("timeout", details=str(exc))
+            raw = _error("timeout", details=str(exc))
         except ImportError as exc:
-            return _error("dependency missing", details=str(exc))
+            raw = _error("dependency missing", details=str(exc))
         except RuntimeError as exc:
             # LLM 调用失败 / 浏览器运行时错误
-            return _error("runtime error", details=str(exc))
+            raw = _error("runtime error", details=str(exc))
         except Exception as exc:
             # 完整 traceback 只写 stderr 日志，客户端仅收到错误类别（防内部信息泄露）
             sys.stderr.write(f"[mcp] tool {name} failed:\n{traceback.format_exc()}\n")
             sys.stderr.flush()
-            return _error("internal error", error_type=type(exc).__name__)
+            raw = _error("internal error", error_type=type(exc).__name__)
+        return self._finalize_tool_result(name, raw, (time.monotonic() - started) * 1000.0)
+
+    # -- 结果收尾：证据登记 + 稳定 id --------------------------------------
+
+    _NAVIGATION_TOOLS = frozenset({"inspect_evidence", "list_evidence"})
+
+    def _finalize_tool_result(self, name: str, raw: str, elapsed_ms: float) -> str:
+        """给成功结果登记证据并附 ``meta``；错误结果保持错误语义。
+
+        ``meta.evidence_id`` 指向完整结果：工具若在截断前自存了完整正文，
+        这里只校验并复用；否则登记当前返回正文。读证据的工具不再产生新证据，
+        避免「证据套证据」把有用的记录挤出 LRU。
+        """
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return raw
+        if not isinstance(parsed, dict):
+            return raw
+
+        rounded_elapsed = round(elapsed_ms, 1)
+        if "error" in parsed:
+            return _to_json(parsed)
+
+        store = self._evidence_store()
+        if name in self._NAVIGATION_TOOLS:
+            parsed["meta"] = {
+                "tool": name,
+                "elapsed_ms": rounded_elapsed,
+                "evidence_id": None,
+                "evidence_stored": False,
+                "evidence_reason": "navigation_tool",
+            }
+            return _to_json(parsed)
+
+        evidence_id = parsed.get("evidence_id")
+        unavailable_reason = parsed.pop("_evidence_unavailable_reason", None)
+        if unavailable_reason is not None:
+            # 工具自存完整结果失败：绝不能把截断后的响应伪装成完整证据。
+            parsed.pop("evidence_id", None)
+            parsed.pop("evidence_note", None)
+            parsed["meta"] = {
+                "tool": name,
+                "elapsed_ms": rounded_elapsed,
+                "evidence_id": None,
+                "evidence_stored": False,
+                "evidence_reason": unavailable_reason,
+            }
+            return _to_json(parsed)
+
+        record = store.get(evidence_id) if isinstance(evidence_id, str) and evidence_id else None
+        if record is None and isinstance(evidence_id, str) and evidence_id:
+            # 工具声明的证据在收尾前已被并发调用挤出 LRU：不降级成截断副本。
+            parsed.pop("evidence_id", None)
+            parsed.pop("evidence_note", None)
+            parsed["meta"] = {
+                "tool": name,
+                "elapsed_ms": rounded_elapsed,
+                "evidence_id": None,
+                "evidence_stored": False,
+                "evidence_reason": "evidence_evicted",
+            }
+            return _to_json(parsed)
+        if record is None:
+            record = store.put(name, raw, metadata={"tool": name})
+            if record is not None:
+                parsed["evidence_id"] = record.evidence_id
+                evidence_id = record.evidence_id
+
+        meta: dict[str, Any] = {
+            "tool": name,
+            "elapsed_ms": rounded_elapsed,
+        }
+        if record is not None:
+            meta.update(
+                {
+                    "evidence_id": record.evidence_id,
+                    "evidence_stored": True,
+                    "evidence_bytes": record.size_bytes,
+                }
+            )
+        else:
+            meta.update(
+                {
+                    "evidence_id": evidence_id if isinstance(evidence_id, str) else None,
+                    "evidence_stored": False,
+                    "evidence_reason": "exceeds_store_limit",
+                }
+            )
+        parsed["meta"] = meta
+        return _to_json(parsed)
 
     # -- 各工具实现 ----------------------------------------------------------
 

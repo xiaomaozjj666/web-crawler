@@ -92,7 +92,7 @@ from .checkpoint import Checkpoint, CheckpointManager, CheckpointStore
 from .confidence import ConfidenceResult, ConfidenceScorer
 from .dom_pruner import DomPruner, PrunedDom
 from .guardrails import ActionGuard, GuardrailResult
-from .hooks import generate_combined_script
+from .hooks import generate_combined_script, main_world_script
 from .judge import JudgeResult, TaskJudge
 from .llm import DEFAULT_MODEL, DeepSeekProvider, LLMMessage, LLMProvider
 from .loop import ContextCompressor, LoopDetector
@@ -761,12 +761,14 @@ class ReverseAgent(ActionExecutor):
         # 异步版 collect_hook_data：内联 evaluate 以支持 await
         records = (
             await page.evaluate(
-                """() => {
+                main_world_script(
+                    """(() => {
                 const data = window.__hook_data__ || [];
                 const snapshot = data.slice();
                 try { window.__hook_data__ = []; } catch (e) {}
                 return snapshot;
-            }"""
+            })()"""
+                )
             )
             or []
         )
@@ -858,7 +860,7 @@ class ReverseAgent(ActionExecutor):
         """异步注入 Hook 脚本。"""
         try:
             script = generate_combined_script(hook_names)
-            await page.evaluate(script)
+            await page.evaluate(main_world_script(script))
             return True
         except Exception:
             return False
@@ -939,7 +941,7 @@ class ReverseAgent(ActionExecutor):
         )
         combined = generate_combined_script(hook_names or self.config.hooks)
         try:
-            await context.add_init_script(combined)
+            await context.add_init_script(main_world_script(combined))
         except Exception as exc:
             # 不再静默：注入失败会让整轮 Hook 捕获失效（hook_count 恒为 0），
             # 而症状与「页面确实没发请求」一模一样，排查成本极高。
@@ -995,7 +997,12 @@ class ReverseAgent(ActionExecutor):
     async def _read_hook_data_async(self, page: Any) -> dict:
         """异步非破坏性读取 Hook 数据。"""
         try:
-            records = await page.evaluate("() => (window.__hook_data__ || []).slice()") or []
+            records = (
+                await page.evaluate(
+                    main_world_script("(() => (window.__hook_data__ || []).slice())()")
+                )
+                or []
+            )
             return {"records": list(records), "count": len(records)}
         except Exception:
             return {"records": [], "count": 0}
@@ -1004,7 +1011,12 @@ class ReverseAgent(ActionExecutor):
         """异步读取 Hook 记录列表。"""
         records: list[dict] = []
         try:
-            fresh = await page.evaluate("() => (window.__hook_data__ || []).slice()") or []
+            fresh = (
+                await page.evaluate(
+                    main_world_script("(() => (window.__hook_data__ || []).slice())()")
+                )
+                or []
+            )
             records.extend(fresh)
         except Exception:
             pass

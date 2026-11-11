@@ -111,3 +111,22 @@ def test_python_m_web_crawler_rejects_subcommand() -> None:
     )
     assert proc.returncode == 2
     assert "未知参数" in proc.stderr
+
+
+def test_main_module_in_process(capsys: pytest.CaptureFixture[str]) -> None:
+    """``__main__.main`` 的四条路径（版本 / 帮助 / 空参数 / 未知参数）。"""
+    from web_crawler.__main__ import main
+
+    assert main(["--version"]) == 0
+    assert f"web-crawler {__version__}" in capsys.readouterr().out
+
+    assert main(["--help"]) == 0
+    help_out = capsys.readouterr().out
+    assert "可用命令行入口" in help_out
+    assert "web-crawler-mcp" in help_out
+
+    assert main([]) == 0
+    assert "可用命令行入口" in capsys.readouterr().out
+
+    assert main(["unknown"]) == 2
+    assert "未知参数" in capsys.readouterr().err

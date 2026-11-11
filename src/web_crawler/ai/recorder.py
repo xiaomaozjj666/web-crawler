@@ -236,7 +236,7 @@ class ScriptCompiler:
             import time
             from typing import Any
 
-            from web_crawler.ai.hooks import generate_combined_script
+            from web_crawler.ai.hooks import generate_combined_script, main_world_script
             from web_crawler.fetchers.camoufox import CamoufoxFetcher
 
 
@@ -309,7 +309,7 @@ class ScriptCompiler:
             f"    _hooks = {hooks_literal}",
             "    import json as _json",
             "    _hook_names = _json.loads(_hooks)",
-            "    page.evaluate(generate_combined_script(_hook_names))",
+            "    page.evaluate(main_world_script(generate_combined_script(_hook_names)))",
             f"    history.append({{'step': {rec.step}, 'action': 'inject_hook', 'hooks': _hook_names}})",
         ]
 
@@ -338,7 +338,7 @@ class ScriptCompiler:
             assert_msg = _py_string_literal(f"param {param_name} not found in hook data")
             return [
                 f"    # step {rec.step}: extract {param_name!r} (recorded value: redacted)",
-                "    _hook_records = page.evaluate('() => (window.__hook_data__ || []).slice()') or []",
+                "    _hook_records = page.evaluate(main_world_script('(() => (window.__hook_data__ || []).slice())()')) or []",
                 "    _found = None",
                 "    for _r in _hook_records:",
                 "        _headers = _r.get('headers') or {}",
@@ -354,7 +354,7 @@ class ScriptCompiler:
         # 没记录到结果值：仅做 best-effort 提取
         return [
             f"    # step {rec.step}: extract {param_name!r} (no recorded value)",
-            "    _hook_records = page.evaluate('() => (window.__hook_data__ || []).slice()') or []",
+            "    _hook_records = page.evaluate(main_world_script('(() => (window.__hook_data__ || []).slice())()')) or []",
             f"    history.append({{'step': {rec.step}, 'action': 'extract', 'param': {param_name!r}}})",
         ]
 

@@ -404,10 +404,12 @@ def test_get_resources_structure() -> None:
     """resources 列表结构正确。"""
     srv = _make_server()
     resources = srv.get_resources()
-    assert len(resources) == 4
+    assert len(resources) == 6
     uris = {r["uri"] for r in resources}
     assert "agent://state" in uris
     assert "hooks://library" in uris
+    assert "config://server" in uris
+    assert "evidence://records" in uris
 
 
 # -- render_prompt ----------------------------------------------------------
@@ -1401,6 +1403,69 @@ def test_tool_pentest_recon_unknown_checks() -> None:
     assert "unknown check names" in parsed["error"]
 
 
+def test_run_browser_task_injects_hooks_in_main_world(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hook 必须以 ``mw:`` 主世界前缀注入，否则 Camoufox 隔离世界里看不到页面请求。"""
+    from web_crawler.exceptions import UnsafeTargetError
+
+    srv = _make_server()
+    fetcher = MagicMock(name="fetcher")
+    fetcher.extra_headers = {"X-Test": "1"}
+    fetcher.verify = True
+    fetcher.timeout = 30
+    page = MagicMock(name="page")
+    context = MagicMock(name="context")
+    context.new_page.return_value = page
+    fetcher._ensure_browser.return_value.new_context.return_value = context
+    monkeypatch.setattr(srv, "_get_fetcher", lambda: fetcher)
+    monkeypatch.setattr(server_module, "_check_url", lambda url: None)
+
+    result = srv._run_browser_task(
+        "http://127.0.0.1:9/x",
+        lambda p: {"seen": p is page},
+        hooks=["fetch_hook"],
+        wait_time=0.5,
+    )
+
+    assert result == {"seen": True}
+    script = page.add_init_script.call_args.args[0]
+    assert script.startswith("mw:")
+    assert "__hook_fetch__" in script
+    page.goto.assert_called_once()
+    page.wait_for_timeout.assert_called_once_with(500)
+    context.close.assert_called_once()
+
+    # 未通过 SSRF 门禁时不得触碰浏览器
+    monkeypatch.setattr(server_module, "_check_url", lambda url: "blocked target")
+    with pytest.raises(UnsafeTargetError):
+        srv._run_browser_task("http://127.0.0.1:9/x", lambda p: None)
+    assert fetcher._ensure_browser.call_count == 1
+
+
+def test_run_browser_task_without_hooks_skips_init_script(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """无 hooks 时不注入 init script，避免无谓开销。"""
+    srv = _make_server()
+    fetcher = MagicMock(name="fetcher")
+    fetcher.extra_headers = None
+    fetcher.verify = False
+    fetcher.timeout = 5
+    page = MagicMock(name="page")
+    context = MagicMock(name="context")
+    context.new_page.return_value = page
+    fetcher._ensure_browser.return_value.new_context.return_value = context
+    monkeypatch.setattr(srv, "_get_fetcher", lambda: fetcher)
+    monkeypatch.setattr(server_module, "_check_url", lambda url: None)
+
+    srv._run_browser_task("http://127.0.0.1:9/x", lambda p: None)
+
+    page.add_init_script.assert_not_called()
+    assert page.wait_for_timeout.call_count == 0
+    context.close.assert_called_once()
+
+
 def test_filter_private_egress_redacts_non_public_targets() -> None:
     """捕获记录出口过滤：非公网目标整体打码并计数，公网记录原样保留。"""
     from web_crawler.mcp._tools_pentest import _filter_private_egress
@@ -1681,7 +1746,7 @@ def test_handle_jsonrpc_resources_list() -> None:
     srv = _make_server()
     resp = srv._handle_jsonrpc("resources/list", {}, 10)
     assert "resources" in resp["result"]
-    assert len(resp["result"]["resources"]) == 4
+    assert len(resp["result"]["resources"]) == 6
 
 
 def test_handle_jsonrpc_resources_read_success() -> None:
