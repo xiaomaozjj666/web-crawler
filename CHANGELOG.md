@@ -67,6 +67,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **浏览器工具重定向 SSRF 绕过（失败关闭）**：`page.goto` 会在浏览器内部自动跟随 302，
+  而 Camoufox/Juggler 的 `page.route` 只拦截首个请求（实测重定向跳转不进
+  handler），公网 URL 可借 302 跳到内网/云元数据，绕过 MCP 的入口 URL 门禁。
+  现在导航前用共享 cookie 的 `APIRequestContext`（`max_redirects=0`）逐跳预检
+  整条重定向链（每跳过同一 `_check_url`），再导航到已校验链尾。预检结论不可信
+  即拒绝：预检异常未完成、无请求上下文、或门禁本身抛错，都不再退化为普通导航。
+  `page.route` 守卫继续拦截 JS 主动发起的文档级导航；导航完成后、任务结束与
+  Agent 每步观察前复核落点与晚到的拦截（JS 导航的 abort 可能在 `goto` 返回之后
+  才发生），被拒目标统一报告为 `unsafe_target`。同步与异步导航共用一套判定与
+  入口（`safe_goto_sync` / `safe_goto_async`）。
+  **残余风险（缓解，非根治）**：
+  1. 预检与浏览器真正连接之间仍存在 DNS 重绑定窗口。curl 路径可用
+     `CURLOPT_RESOLVE` 钉扎，Playwright 无等价能力，浏览器路径仅为缓解。
+  2. iframe（子框架）的重定向链不经预检，主框架 route 也看不到其后段跳转；
+     子框架被拒时只 abort 不判任务失败。落点复核会检查各 iframe 的最终 URL
+     （内网落点会使任务失败，且在截图与结果返回之前无法阻止该内网请求已经发出）。
+     这是浏览器 route 能力的边界，尚无根治方案。
+  3. `Refresh` 头跳转已纳入逐跳预检：解析对齐 WHATWG shared declarative
+     refresh steps——`;` / `,` / 空白分隔符、`url=` 关键字可省略（省略时整个
+     余部即目标 URL）、引号形式截断于闭合引号；无时间前缀与空目标（原地刷新）
+     放行，十进制时长（含前导点 ``.5``）等规范外形式失败关闭拒绝。
+     HTML `<meta http-equiv="refresh">` 与脚本跳转未经预检，依赖 route 守卫
+     （是否经 route 可见未实测）。
+  **验证**：单元与回归测试覆盖失败关闭、晚到拦截、游标语义与 iframe 落点接线；
+  独立审查发现的五项已修复并补回归测试——Refresh 逗号/空白分隔与无 `url=`
+  关键字形态绕过预检、收尾复核在已关闭页面上抛裸异常、`data:` / `blob:` 子框架
+  被落点复核误判、门禁字面量末尾点与 `_ssrf` 判定分叉。Refresh 解析的浏览器
+  行为（含无关键字形态会导航）由独立复核以 Chromium 与 Camoufox 双引擎实测确认。
+  端到端命中数为上一会话的 Camoufox 实测（仓库内无法复现，未重跑）。
+- **MCP 门禁漏放 CGNAT 段（云元数据）**：`_ssrf_gate` 的公网判定只排除标准库的
+  `is_private` 等项，而 `is_private` 不覆盖 `100.64.0.0/10`（实测
+  `100.100.100.200` 的 `is_private` 与 `is_global` 均为 False），导致
+  `http://100.100.100.200/`（阿里云元数据）与 `100.64.0.1` 通过 `_check_url`，
+  浏览器导航与 pentest 目标校验均受影响。现与 `_ssrf` 共用同一阻断表
+  （`_is_blocked_ip`），字面量、IPv4-mapped 与域名解析结果三种形式一致判定。
+  README / SECURITY.md 一直声明默认拒绝 CGNAT，本次使代码与文档对齐。
+- **导航宿主契约改为显式报错（去掉 fail-open 回退）**：`ActionExecutor` 的
+  导航路径曾用 `getattr` 探测宿主实现，缺失时退化为裸 `page.goto`，会绕过逐跳
+  门禁。现为显式契约 stub（未实现即 `NotImplementedError`），导航动作失败关闭。
 - **Camoufox 隔离世界导致 Hook 全部失明**：Camoufox 默认在独立 world 执行
   `page.evaluate` / `add_init_script`，页面自身的 `fetch` / XHR 与 window 全局
   都不可见，`capture_network_requests` / `inject_hooks` /

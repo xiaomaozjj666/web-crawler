@@ -310,6 +310,25 @@ def test_create_agent_returns_none_on_exception(
     assert srv._create_agent() is None
 
 
+def test_create_agent_passes_navigation_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MCP 创建的 Agent 必须带逐跳导航门禁，避免重定向绕过入口 URL 校验。"""
+    captured: dict[str, Any] = {}
+
+    class _Agent:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(server_module, "_HAS_REVERSE_AGENT", True)
+    monkeypatch.setattr(server_module, "ReverseAgent", _Agent)
+    monkeypatch.setattr(server_module, "ReverseAgentConfig", lambda: MagicMock())
+    srv = _make_server()
+
+    assert isinstance(srv._create_agent(), _Agent)
+    assert captured["url_guard"] is server_module._check_url
+
+
 def test_get_fetcher_lazy_creation() -> None:
     """_get_fetcher 首次调用创建 CamoufoxFetcher，后续复用同一实例。"""
     srv = _make_server()
@@ -612,6 +631,21 @@ def test_handle_tool_catches_timeout_error() -> None:
     assert parsed["error"] == "timeout"
 
 
+def test_handle_tool_catches_unsafe_target_error() -> None:
+    """导航守卫拒绝非公网目标时，错误必须归类为 unsafe target 而非运行时错误。"""
+    from web_crawler.exceptions import UnsafeTargetError
+
+    srv = _make_server()
+
+    def _boom(args: dict) -> str:
+        raise UnsafeTargetError("navigation blocked: 重定向目标 不是公网地址")
+
+    with patch.object(srv, "_tool_deobfuscate_js", _boom):
+        parsed = json.loads(srv.handle_tool("deobfuscate_js", {"code": "x"}))
+    assert parsed["error"] == "unsafe target"
+    assert "不是公网" in parsed["details"]
+
+
 def test_handle_tool_catches_import_error() -> None:
     """handler 抛 ImportError 时返回 dependency missing 错误。"""
     srv = _make_server()
@@ -755,6 +789,46 @@ def test_tool_reverse_engineer_url_with_agent_success(
     parsed = json.loads(srv._tool_reverse_engineer_url({"url": "http://x", "max_steps": 5}))
     assert parsed["agent"] is True
     assert parsed["result"]["success"] is True
+
+
+class _GuardAgent(_FakeAgent):
+    """带 url_guard 的 FakeAgent：验证构建 run agent 时门禁被复用。"""
+
+    last: _GuardAgent | None = None
+
+    def __init__(self, *, url_guard: Any = None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.url_guard = url_guard
+        _GuardAgent.last = self
+
+
+def test_tool_reverse_engineer_url_reuses_navigation_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """重建 run agent 时必须透传原 agent 的 url_guard，否则重定向守卫丢失。"""
+    monkeypatch.setattr(server_module, "_HAS_REVERSE_AGENT", True)
+    guard = lambda url: None
+    base_agent = _GuardAgent(
+        config=_FakeAgentConfig(),
+        provider=MagicMock(),
+        analyzer=MagicMock(),
+        url_guard=guard,
+    )
+    srv = _make_server(agent=base_agent)
+
+    class _FakeEventBus:
+        def __init__(self) -> None:
+            pass
+
+        def subscribe(self, fn: Any) -> None:
+            pass
+
+    monkeypatch.setattr("web_crawler.ai.watchdog.EventBus", _FakeEventBus)
+
+    parsed = json.loads(srv._tool_reverse_engineer_url({"url": "http://x"}))
+    assert parsed["agent"] is True
+    assert _GuardAgent.last is not None
+    assert _GuardAgent.last.url_guard is guard
 
 
 def test_tool_reverse_engineer_url_truncates_big_result(
@@ -1435,12 +1509,214 @@ def test_run_browser_task_injects_hooks_in_main_world(
     page.goto.assert_called_once()
     page.wait_for_timeout.assert_called_once_with(500)
     context.close.assert_called_once()
+    # 导航守卫：文档请求走门禁后放行，子资源不逐跳判定
+    handler = page.route.call_args.args[1]
+    allowed = MagicMock()
+    allowed.request.resource_type = "document"
+    allowed.request.url = "http://127.0.0.1:9/x"
+    handler(allowed)
+    allowed.continue_.assert_called_once()
 
     # 未通过 SSRF 门禁时不得触碰浏览器
     monkeypatch.setattr(server_module, "_check_url", lambda url: "blocked target")
     with pytest.raises(UnsafeTargetError):
         srv._run_browser_task("http://127.0.0.1:9/x", lambda p: None)
     assert fetcher._ensure_browser.call_count == 1
+
+
+def test_run_browser_task_blocks_redirect_to_non_public(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """允许的入口 302 到内网地址时，逐跳守卫 abort 并上抛 unsafe_target。"""
+    from web_crawler.exceptions import UnsafeTargetError
+
+    srv = _make_server()
+    fetcher = MagicMock(name="fetcher")
+    fetcher.extra_headers = None
+    fetcher.verify = True
+    fetcher.timeout = 5
+    page = MagicMock(name="page")
+    context = MagicMock(name="context")
+    context.new_page.return_value = page
+    fetcher._ensure_browser.return_value.new_context.return_value = context
+    monkeypatch.setattr(srv, "_get_fetcher", lambda: fetcher)
+
+    entry = "http://127.0.0.1:9/start"
+    inner = "http://169.254.169.254/latest/meta-data/"
+
+    def gate(url: str) -> str | None:
+        return None if url == entry else "non-public target"
+
+    monkeypatch.setattr(server_module, "_check_url", gate)
+
+    def fake_goto(url: str, **kwargs: Any) -> None:
+        # 模拟浏览器跟随重定向：新文档请求先经过 route 守卫，再抛 abort 错误
+        handler = page.route.call_args.args[1]
+        redirect = MagicMock()
+        redirect.request.resource_type = "document"
+        redirect.request.frame.parent_frame = None  # 顶层文档，非 iframe
+        redirect.request.url = inner
+        handler(redirect)
+        redirect.abort.assert_called_once()
+        raise RuntimeError("net::ERR_FAILED")
+
+    page.goto.side_effect = fake_goto
+
+    with pytest.raises(UnsafeTargetError, match="重定向目标"):
+        srv._run_browser_task(entry, lambda p: None)
+    context.close.assert_called_once()  # 即便拒绝也要释放 context
+
+
+class _RedirectResponse:
+    """APIRequestContext 响应桩：status/headers/dispose 三件套。"""
+
+    def __init__(self, status: int, location: str | None = None) -> None:
+        self.status = status
+        self.headers = {"location": location} if location else {}
+
+    def dispose(self) -> None:
+        pass
+
+
+def _stub_browser_task(
+    monkeypatch: pytest.MonkeyPatch, gate: Any
+) -> tuple[ReverseMCPServer, MagicMock, MagicMock]:
+    """构造 _run_browser_task 所需的 fetcher/context/page 桩。"""
+    srv = _make_server()
+    fetcher = MagicMock(name="fetcher")
+    fetcher.extra_headers = None
+    fetcher.verify = True
+    fetcher.timeout = 5
+    page = MagicMock(name="page")
+    context = MagicMock(name="context")
+    context.new_page.return_value = page
+    # 预检默认看到无重定向的 200：链上的跳转只能来自浏览器内部，由 route 守卫兜底
+    context.request.get.return_value = _RedirectResponse(200)
+    fetcher._ensure_browser.return_value.new_context.return_value = context
+    monkeypatch.setattr(srv, "_get_fetcher", lambda: fetcher)
+    monkeypatch.setattr(server_module, "_check_url", gate)
+    return srv, context, page
+
+
+def test_run_browser_task_rejects_blocked_redirect_before_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """预检发现链上非公网目标时，浏览器不得发出任何请求。"""
+    from web_crawler.exceptions import UnsafeTargetError
+
+    entry = "https://public.example/start"
+    inner = "http://169.254.169.254/latest/meta-data/"
+
+    def gate(url: str) -> str | None:
+        return None if url == entry else "non-public target"
+
+    srv, context, page = _stub_browser_task(monkeypatch, gate)
+    context.request.get.return_value = _RedirectResponse(302, inner)
+
+    with pytest.raises(UnsafeTargetError, match="重定向目标"):
+        srv._run_browser_task(entry, lambda p: None)
+
+    page.goto.assert_not_called()
+    context.close.assert_called_once()
+
+
+def test_run_browser_task_refuses_when_preflight_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """预检请求异常（结果未知）时必须失败关闭：不得让浏览器直接导航。
+
+    旧实现在预检异常时静默退化为 goto，而浏览器内部跟随的 302 不经 route
+    守卫，等于放行内网跳转。
+    """
+    from web_crawler.exceptions import UnsafeTargetError
+
+    entry = "https://public.example/start"
+    srv, context, page = _stub_browser_task(monkeypatch, lambda url: None)
+    context.request.get.side_effect = RuntimeError("connection reset")
+
+    with pytest.raises(UnsafeTargetError, match="未完成"):
+        srv._run_browser_task(entry, lambda p: None)
+
+    page.goto.assert_not_called()
+    context.close.assert_called_once()
+
+
+def test_run_browser_task_navigates_to_preflighted_redirect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """预检通过后直接导航链尾，并以入口 URL 作为 referer。"""
+    entry = "https://public.example/start"
+    final = "https://public.example/final"
+    srv, context, page = _stub_browser_task(monkeypatch, lambda url: None)
+    context.request.get.side_effect = [
+        _RedirectResponse(302, final),
+        _RedirectResponse(200),
+    ]
+    page.url = final
+
+    assert srv._run_browser_task(entry, lambda p: "ok") == "ok"
+    page.goto.assert_called_once_with(
+        final, wait_until="domcontentloaded", timeout=5000, referer=entry
+    )
+    context.close.assert_called_once()
+
+
+def test_run_browser_task_propagates_unrelated_goto_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """守卫未拦截时，goto 的原始网络错误必须原样上抛。"""
+    srv, _context, page = _stub_browser_task(monkeypatch, lambda url: None)
+    page.goto.side_effect = RuntimeError("net::ERR_CONNECTION_RESET")
+
+    with pytest.raises(RuntimeError, match="net::ERR_CONNECTION_RESET"):
+        srv._run_browser_task("https://public.example/start", lambda p: None)
+
+
+def test_run_browser_task_rejects_route_guard_block_without_goto_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """JS 导航被 route 守卫 abort 但 goto 未抛错时，仍需上抛 unsafe_target。"""
+    from web_crawler.exceptions import UnsafeTargetError
+
+    entry = "https://public.example/start"
+    inner = "http://169.254.169.254/latest/meta-data/"
+
+    def gate(url: str) -> str | None:
+        return None if url == entry else "non-public target"
+
+    srv, _context, page = _stub_browser_task(monkeypatch, gate)
+
+    def fake_goto(url: str, **kwargs: Any) -> None:
+        handler = page.route.call_args.args[1]
+        redirect = MagicMock()
+        redirect.request.resource_type = "document"
+        redirect.request.frame.parent_frame = None  # 顶层文档，非 iframe
+        redirect.request.url = inner
+        handler(redirect)
+
+    page.goto.side_effect = fake_goto
+
+    with pytest.raises(UnsafeTargetError, match="重定向目标"):
+        srv._run_browser_task(entry, lambda p: None)
+
+
+def test_run_browser_task_rejects_disallowed_landing_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """导航最终落点（浏览器改写后的 URL）必须再过一次门禁。"""
+    from web_crawler.exceptions import UnsafeTargetError
+
+    entry = "https://public.example/start"
+    landing = "https://evil.example/landing"
+
+    def gate(url: str) -> str | None:
+        return None if url == entry else "not allowed"
+
+    srv, _context, page = _stub_browser_task(monkeypatch, gate)
+    page.url = landing
+
+    with pytest.raises(UnsafeTargetError, match="navigation landed"):
+        srv._run_browser_task(entry, lambda p: None)
 
 
 def test_run_browser_task_without_hooks_skips_init_script(
@@ -2488,6 +2764,10 @@ def test_run_browser_task_serializes_concurrent_calls() -> None:
     """并发 _run_browser_task 由 _browser_lock 串行化（Playwright sync 非线程安全）。"""
     srv = _make_server()
     fake_fetcher = MagicMock()
+    # 导航超时等参数必须是真实数值（_preflight_timeout 会与之比较）
+    fake_fetcher.timeout = 5
+    fake_fetcher.extra_headers = None
+    fake_fetcher.verify = True
     fake_browser = MagicMock()
     fake_fetcher._ensure_browser.return_value = fake_browser
     fake_context = MagicMock()
@@ -3356,3 +3636,90 @@ def test_run_mcp_v2_call_tool_plain_text_result(monkeypatch: pytest.MonkeyPatch)
     assert text["content"][0]["text"] == "plain text"
     assert none["isError"] is False
     assert none["content"][0]["text"] is None
+
+
+def test_run_browser_task_refuses_late_js_navigation_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """JS 导航的 abort 可能发生在 goto 返回之后：任务结束时的复核必须仍能拒绝。"""
+    from web_crawler.exceptions import UnsafeTargetError
+
+    entry = "https://public.example/start"
+    inner = "http://169.254.169.254/latest/meta-data/"
+
+    def gate(url: str) -> str | None:
+        return None if url == entry else "non-public target"
+
+    srv, context, page = _stub_browser_task(monkeypatch, gate)
+    context.request.get.return_value = _RedirectResponse(200)
+
+    def task(p: Any) -> str:
+        # goto 返回后，页面脚本才发起内网文档导航，守卫在此时 abort
+        handler = page.route.call_args.args[1]
+        late = MagicMock()
+        late.request.resource_type = "document"
+        late.request.frame.parent_frame = None  # 顶层文档，非 iframe
+        late.request.url = inner
+        handler(late)
+        late.abort.assert_called_once()
+        return "content"
+
+    with pytest.raises(UnsafeTargetError, match="重定向目标"):
+        srv._run_browser_task(entry, task)
+
+    context.close.assert_called_once()
+
+
+class _PopupRoute:
+    """弹窗的首个导航请求：request.frame 访问抛错（Playwright 实测行为）。"""
+
+    def __init__(self, url: str) -> None:
+        self._url = url
+        self.abort_calls = 0
+
+    @property
+    def request(self) -> Any:
+        class _Req:
+            resource_type = "document"
+
+            def __init__(self, url: str) -> None:
+                self.url = url
+
+            @property
+            def frame(self) -> Any:
+                raise RuntimeError("Frame for this navigation request is not available")
+
+        return _Req(self._url)
+
+    def continue_(self) -> None:
+        raise AssertionError("popup route must not continue")
+
+    def abort(self) -> None:
+        self.abort_calls += 1
+
+
+def test_run_browser_task_refuses_popup_block_via_context_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """window.open 弹窗的文档请求只经过 context 级 route 守卫：拦截即拒绝任务。"""
+    from web_crawler.exceptions import UnsafeTargetError
+
+    entry = "https://public.example/start"
+    inner = "http://169.254.169.254/latest/meta-data/"
+
+    def gate(url: str) -> str | None:
+        return None if url == entry else "non-public target"
+
+    srv, context, _page = _stub_browser_task(monkeypatch, gate)
+    popup = _PopupRoute(inner)
+
+    def task(p: Any) -> str:
+        handler = context.route.call_args.args[1]
+        handler(popup)
+        assert popup.abort_calls == 1
+        return "content"
+
+    with pytest.raises(UnsafeTargetError, match="重定向目标"):
+        srv._run_browser_task(entry, task)
+
+    context.close.assert_called_once()

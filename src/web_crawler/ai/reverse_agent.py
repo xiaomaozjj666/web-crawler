@@ -51,11 +51,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
 from typing_extensions import Self
 
+from .._nav_guard import (
+    frame_urls,
+    install_context_navigation_guard_async,
+    install_navigation_guard_async,
+    safe_goto_async,
+    settle_refusal,
+)
+from ..exceptions import UnsafeTargetError
 from ..fetchers.camoufox import CamoufoxFetcher
 from ._jsonutil import extract_json as _extract_json
 from ._reverse_actions import ActionExecutor
@@ -168,10 +177,18 @@ class ReverseAgent(ActionExecutor):
         analyzer: JSAnalyzer | None = None,
         *,
         event_bus: EventBus | None = None,
+        url_guard: Callable[[str], str | None] | None = None,
     ) -> None:
         self.config = config or ReverseAgentConfig()
         self.provider = provider or DeepSeekProvider(model=DEFAULT_MODEL)
         self.analyzer = analyzer or JSAnalyzer(provider=self.provider)
+        # 可选的逐跳导航门禁（如 MCP 的 _check_url）：page.goto 会在浏览器
+        # 内部跟随重定向，只有入口 URL 校验无法阻止「公网 → 302 → 内网」。
+        # 默认 None 保持独立使用 Agent（含 localhost 调试）的既有行为。
+        self.url_guard = url_guard
+        self._nav_blocked: list[str] = []
+        # 已复核过的拦截记录游标：晚到拦截只报告一次，已处理的拒绝不会让之后每步失败
+        self._nav_checked = 0
         # 验证码管理器：若启用 image_captcha，注入 ImageCaptchaSolver，
         # 让图片挑战出现时自动用 LLM Vision / 本地 OCR 识别
         if self.config.enable_image_captcha:
@@ -331,6 +348,9 @@ class ReverseAgent(ActionExecutor):
         self._last_error_screenshot = ""
         # 重置多标签页管理
         self._tabs = {}
+        # 重置导航门禁拦截记录（守卫列表在每次建页时重建）
+        self._nav_blocked = []
+        self._nav_checked = 0
         # 重置断点续跑（避免复用上一次 run 的 checkpoint）
         self._resume_from = None
 
@@ -450,7 +470,10 @@ class ReverseAgent(ActionExecutor):
             # resume 时导航回上次 URL，否则导航到入口 url
             nav_url = self._resume_from.url if self._resume_from and self._resume_from.url else url
             try:
-                await page.goto(nav_url, wait_until="domcontentloaded", timeout=30000)
+                await self._safe_goto_async(page, nav_url)
+            except UnsafeTargetError:
+                # 逐跳门禁拒绝：不能降级成普通导航错误继续分析空白页。
+                raise
             except Exception as exc:
                 history.append({"step": 0, "event": "navigate_error", "error": str(exc)})
             await asyncio.sleep(self.config.wait_after_navigate)
@@ -476,6 +499,11 @@ class ReverseAgent(ActionExecutor):
                 try:
                     observation = await self._observe_async(page, step=step)
                     last_observation = observation
+                    late = self._late_navigation_refusal(
+                        observation.url, self._guarded_frames(page)
+                    )
+                    if late:
+                        raise UnsafeTargetError(late)
                     self._emit(
                         EVENT_OBSERVATION,
                         step=step,
@@ -485,6 +513,9 @@ class ReverseAgent(ActionExecutor):
                         script_count=len(observation.scripts),
                         screenshot_path=observation.screenshot_path,
                     )
+                except UnsafeTargetError:
+                    # 导航拦截不是观察故障，不得进入崩溃恢复路径
+                    raise
                 except Exception as exc:
                     history.append({"step": step, "event": "observe_error", "error": str(exc)})
                     self._emit(EVENT_OBSERVE_ERROR, step=step, error=str(exc))
@@ -711,6 +742,10 @@ class ReverseAgent(ActionExecutor):
                                 self._current_plan.advance()
                     elif action.action_type == "analyze_js" and isinstance(result, AnalysisResult):
                         analysis = result
+                except UnsafeTargetError:
+                    # 导航门禁拒绝（动作层的 navigate / new_tab）与初始导航一致：终止运行，
+                    # 不能当作普通动作错误继续
+                    raise
                 except Exception as exc:
                     history.append({"step": step, "event": "act_error", "error": str(exc)})
                     self._emit("act.error", step=step, error=str(exc))
@@ -739,6 +774,13 @@ class ReverseAgent(ActionExecutor):
                     )
                     self.checkpoint_manager.save(cp)
 
+            # 循环可经 done / max_steps / 停止 / 崩溃恢复 / 末步切换标签页结束：末步之后
+            # 的 JS 导航不会再被观察到，收尾前对"当前页"复核一次。self._page 为最新页，
+            # 循环局部变量 page 可能仍指向已被切换掉的旧页；避免把拦截页面的 hook 数据带入结果
+            final_page = self._page if self._page is not None else page
+            late = self._final_navigation_refusal(final_page)
+            if late:
+                raise UnsafeTargetError(late)
             # 合并最后一次观察的缓存，避免结果 hook_data 几乎为空
             final_hook_data = self._merge_final_hook_data(await self._read_hook_data_async(page))
             return self._build_run_result(
@@ -939,6 +981,7 @@ class ReverseAgent(ActionExecutor):
             extra_http_headers=self.fetcher.extra_headers or None,
             ignore_https_errors=not self.fetcher.verify,
         )
+        await self._install_context_guard_async(context)
         combined = generate_combined_script(hook_names or self.config.hooks)
         try:
             await context.add_init_script(main_world_script(combined))
@@ -951,8 +994,82 @@ class ReverseAgent(ActionExecutor):
             await self.fetcher._setup_page_async(page)
         except Exception:
             pass
+        await self._install_nav_guard_async(page)
         self._setup_page_listeners(page)
         return context, page
+
+    def _guarded_frames(self, page: Any) -> list[str]:
+        """门禁启用时取页面全部框架（含 iframe）的 URL；未启用时不触碰页面对象。"""
+        return frame_urls(page) if self.url_guard is not None else []
+
+    def _final_navigation_refusal(self, page: Any) -> str | None:
+        """收尾复核：页面已关闭或框架不可读时失败关闭，并给出明确原因而非裸异常。"""
+        if self.url_guard is None:
+            return None
+        try:
+            frames = frame_urls(page)
+        except Exception as exc:
+            return f"navigation check incomplete: 无法读取页面框架（{exc}）"
+        return self._late_navigation_refusal(getattr(page, "url", ""), frames)
+
+    def _late_navigation_refusal(self, page_url: str, frames: Iterable[str] = ()) -> str | None:
+        """复核运行期间晚到的导航拦截（只看上次复核之后新增的记录）。
+
+        任何导航门禁拒绝都会终止运行（失败关闭）：动作层的拒绝同样上抛（见
+        ``arun`` 中 act 的 ``except UnsafeTargetError``）。游标保证每条记录只判定
+        一次；``frames`` 为各 iframe 的当前 URL（见 :meth:`_guarded_frames`）；
+        未配置 ``url_guard`` 时为空操作。
+        """
+        if self.url_guard is None:
+            return None
+        fresh = self._nav_blocked[self._nav_checked :]
+        self._nav_checked = len(self._nav_blocked)
+        return settle_refusal(fresh, page_url, self.url_guard, frames)
+
+    async def _install_context_guard_async(self, context: Any) -> None:
+        """上下文级导航门禁：覆盖弹窗等新页面（未配置 url_guard 时是空操作）。"""
+        if self.url_guard is None:
+            return
+        self._nav_blocked = await install_context_navigation_guard_async(
+            context, self.url_guard, blocked=self._nav_blocked
+        )
+
+    async def _install_nav_guard_async(self, page: Any) -> None:
+        """按需给页面安装逐跳导航门禁（未配置 ``url_guard`` 时是空操作）。"""
+        if self.url_guard is None:
+            self._nav_blocked = []
+            return
+        # 多个页面（主页面 / new_tab）共享同一拦截列表，切换标签后仍能识别拒绝。
+        self._nav_blocked = await install_navigation_guard_async(
+            page, self.url_guard, blocked=self._nav_blocked
+        )
+
+    async def _safe_goto_async(
+        self,
+        page: Any,
+        url: str,
+        *,
+        wait_until: str = "domcontentloaded",
+        timeout: float = 30000,
+    ) -> None:
+        """带逐跳门禁的导航（未配置 ``url_guard`` 时等价于 ``page.goto``）。
+
+        配置了 ``url_guard`` 时委托 :func:`safe_goto_async`：预检整条重定向链、
+        导航到已校验链尾、复核落点；任何无法确认安全的情形都失败关闭。
+        """
+        if self.url_guard is None:
+            await page.goto(url, wait_until=wait_until, timeout=timeout)
+            return
+        context = self._context if self._context is not None else getattr(page, "context", None)
+        await safe_goto_async(
+            page,
+            getattr(context, "request", None),
+            url,
+            self.url_guard,
+            blocked=self._nav_blocked,
+            wait_until=wait_until,
+            timeout=timeout,
+        )
 
     def _setup_page_listeners(self, page: Any) -> None:
         """设置页面事件监听器，收集网络请求到 ``self._network_log``。"""
@@ -984,9 +1101,11 @@ class ReverseAgent(ActionExecutor):
             context, page = await self._create_page_async(self.config.hooks)
             self._context = context
             self._page = page
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await self._safe_goto_async(page, url)
             await asyncio.sleep(self.config.wait_after_navigate)
             return True, page
+        except UnsafeTargetError:
+            raise
         except Exception:
             return False, None
 

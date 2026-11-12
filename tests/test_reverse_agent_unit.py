@@ -127,6 +127,17 @@ class _SyncPage:
         self.on_calls.append((event, handler))
 
 
+def _ok_request() -> MagicMock:
+    """预检用的 APIRequestContext 桩：任意 URL 都返回 200（无重定向）。"""
+    response = MagicMock()
+    response.status = 200
+    response.headers = {}
+    response.dispose = AsyncMock()
+    request = MagicMock()
+    request.get = AsyncMock(return_value=response)
+    return request
+
+
 class _AsyncPageMock(MagicMock):
     """awaitable 的 page 桩：未显式设置的属性自动按 AsyncMock 处理。
 
@@ -1310,6 +1321,40 @@ class TestDoNewTab:
         assert agent._tabs["main"] is page
 
     @pytest.mark.asyncio
+    async def test_new_tab_installs_navigation_guard(self) -> None:
+        """配置 url_guard 时，新标签页同样安装逐跳导航守卫。"""
+        agent = _make_agent()
+        agent.url_guard = lambda url: None if url == "https://t.example" else "blocked"
+        page = _AsyncPageMock()
+        new_page = _AsyncPageMock()
+        new_page.goto = AsyncMock()
+        new_page.url = "https://t.example"
+        agent._context = MagicMock()
+        agent._context.new_page = AsyncMock(return_value=new_page)
+        agent._context.request = _ok_request()
+        agent.fetcher = MagicMock()
+        agent.fetcher._setup_page_async = AsyncMock()
+        action = Action(action_type="new_tab", params={"url": "https://t.example"})
+        with (
+            patch("web_crawler.ai.reverse_agent.time.sleep"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
+        ):
+            await agent._do_new_tab_async(page, action, step=1)
+        new_page.route.assert_awaited_once()
+
+        # 新页面的守卫同样会 abort 非公网文档导航，且顶层导航记入拦截列表
+        handler = new_page.route.call_args.args[1]
+        denied = MagicMock()
+        denied.request.resource_type = "document"
+        denied.request.frame.parent_frame = None  # 顶层文档，非 iframe
+        denied.request.url = "http://169.254.169.254/latest/meta-data/"
+        denied.abort = AsyncMock()
+        denied.continue_ = AsyncMock()
+        await handler(denied)
+        denied.abort.assert_awaited_once()
+        assert agent._nav_blocked == ["http://169.254.169.254/latest/meta-data/"]
+
+    @pytest.mark.asyncio
     async def test_new_tab_without_url_skips_goto(self) -> None:
         """new_tab 动作无 url 时跳过跳转。"""
         agent = _make_agent()
@@ -2271,6 +2316,179 @@ class TestCreatePage:
         init_script = context.add_init_script.await_args.args[0]
         assert init_script.startswith("mw:"), "init script 必须注入 Camoufox 主世界"
         context.new_page.assert_awaited_once()
+        page.route.assert_not_called()  # 未配置 url_guard 时不安装导航守卫
+
+    @pytest.mark.asyncio
+    async def test_create_page_async_installs_navigation_guard_when_configured(self) -> None:
+        """配置 url_guard 后，页面导航必须逐跳校验并记录被拦截目标。"""
+        agent = _make_agent()
+        agent.url_guard = lambda url: None if url.startswith("https://public.") else "no"
+        fetcher = MagicMock()
+        browser = MagicMock()
+        context = MagicMock()
+        context.route = AsyncMock()  # 上下文级守卫以 await 安装
+        page = _AsyncPageMock()
+        browser.new_context = AsyncMock(return_value=context)
+        context.new_page = AsyncMock(return_value=page)
+        context.add_init_script = AsyncMock()
+        fetcher._ensure_async_browser = AsyncMock(return_value=browser)
+        fetcher._setup_page_async = AsyncMock()
+        fetcher.extra_headers = None
+        fetcher.verify = True
+        agent.fetcher = fetcher
+
+        await agent._create_page_async(None)
+
+        handler = page.route.call_args.args[1]
+        redirect = MagicMock()
+        redirect.request.resource_type = "document"
+        redirect.request.frame.parent_frame = None  # 顶层文档，非 iframe
+        redirect.request.url = "http://169.254.169.254/latest/meta-data/"
+        redirect.abort = AsyncMock()
+        redirect.continue_ = AsyncMock()
+        await handler(redirect)
+
+        redirect.abort.assert_awaited_once()
+        assert agent._nav_blocked == ["http://169.254.169.254/latest/meta-data/"]
+
+    @pytest.mark.asyncio
+    async def test_safe_goto_navigates_to_preflighted_final_url(self) -> None:
+        """预检命中重定向时，导航直接落到已校验的链尾并带上 referer。"""
+        from web_crawler.exceptions import UnsafeTargetError
+
+        class _Resp:
+            def __init__(self, status: int, headers: dict[str, str]) -> None:
+                self.status = status
+                self.headers = headers
+
+            async def dispose(self) -> None:
+                pass
+
+        class _Req:
+            def __init__(self) -> None:
+                self.responses = [
+                    _Resp(302, {"location": "/final"}),
+                    _Resp(200, {}),
+                ]
+
+            async def get(self, url: str, **kwargs: Any) -> _Resp:
+                return self.responses.pop(0)
+
+        agent = _make_agent()
+        agent.url_guard = lambda url: None
+        agent._context = MagicMock()
+        agent._context.request = _Req()
+        page = _AsyncPageMock()
+        page.goto = AsyncMock()
+
+        await agent._safe_goto_async(page, "https://public.example/start")
+
+        args, kwargs = page.goto.await_args
+        assert args[0] == "https://public.example/final"
+        assert kwargs["referer"] == "https://public.example/start"
+
+        # 预检发现链上非公网目标时，任何浏览器请求都不得发出
+        agent._context.request = _Req()
+        agent._context.request.responses = [
+            _Resp(302, {"location": "http://169.254.169.254/"}),
+        ]
+        agent.url_guard = lambda url: "no" if "169.254" in url else None
+        with pytest.raises(UnsafeTargetError, match="重定向目标"):
+            await agent._safe_goto_async(page, "https://public.example/start")
+        assert page.goto.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_safe_goto_without_request_context_fails_closed(self) -> None:
+        """上下文没有 request API 时无法预检，必须失败关闭而不是退化为普通 goto。"""
+        from web_crawler.exceptions import UnsafeTargetError
+
+        agent = _make_agent()
+        agent.url_guard = lambda url: None
+        agent._context = MagicMock()
+        agent._context.request = None
+        page = _AsyncPageMock()
+        page.goto = AsyncMock()
+
+        with pytest.raises(UnsafeTargetError, match="无法获取浏览器请求上下文"):
+            await agent._safe_goto_async(page, "https://public.example/start")
+        page.goto.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_safe_goto_refuses_when_preflight_raises(self) -> None:
+        """预检请求异常（结果未知）时失败关闭：不得发起浏览器导航。"""
+        from web_crawler.exceptions import UnsafeTargetError
+
+        agent = _make_agent()
+        agent.url_guard = lambda url: None
+        agent._context = MagicMock()
+        agent._context.request = MagicMock()
+        agent._context.request.get = AsyncMock(side_effect=RuntimeError("connection reset"))
+        page = _AsyncPageMock()
+        page.goto = AsyncMock()
+
+        with pytest.raises(UnsafeTargetError, match="未完成"):
+            await agent._safe_goto_async(page, "https://public.example/start")
+        page.goto.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_safe_goto_maps_route_guard_block_to_unsafe_target(self) -> None:
+        """route 守卫 abort 导致 goto 抛错时，必须归类为 unsafe_target。"""
+        from web_crawler.exceptions import UnsafeTargetError
+
+        agent = _make_agent()
+        agent.url_guard = lambda url: None
+        agent._context = MagicMock()
+        agent._context.request = _ok_request()
+        page = _AsyncPageMock()
+        page.url = "https://public.example/start"
+
+        async def fake_goto(url: str, **kwargs: Any) -> None:
+            agent._nav_blocked.append("http://169.254.169.254/")
+            raise RuntimeError("net::ERR_FAILED")
+
+        page.goto = AsyncMock(side_effect=fake_goto)
+        with pytest.raises(UnsafeTargetError, match="重定向目标"):
+            await agent._safe_goto_async(page, "https://public.example/start")
+
+        # 守卫未拦截时原始网络错误原样上抛
+        page.goto = AsyncMock(side_effect=RuntimeError("net::ERR_CONNECTION_RESET"))
+        with pytest.raises(RuntimeError, match="net::ERR_CONNECTION_RESET"):
+            await agent._safe_goto_async(page, "https://public.example/start")
+
+    @pytest.mark.asyncio
+    async def test_safe_goto_detects_route_guard_block_after_successful_goto(self) -> None:
+        """goto 未抛错但守卫已 abort（JS 导航）时，仍需失败关闭。"""
+        from web_crawler.exceptions import UnsafeTargetError
+
+        agent = _make_agent()
+        agent.url_guard = lambda url: None
+        agent._context = MagicMock()
+        agent._context.request = _ok_request()
+        page = _AsyncPageMock()
+        page.url = "https://public.example/start"
+
+        async def fake_goto(url: str, **kwargs: Any) -> None:
+            agent._nav_blocked.append("http://169.254.169.254/")
+
+        page.goto = AsyncMock(side_effect=fake_goto)
+        with pytest.raises(UnsafeTargetError, match="重定向目标"):
+            await agent._safe_goto_async(page, "https://public.example/start")
+
+    @pytest.mark.asyncio
+    async def test_safe_goto_rejects_disallowed_landing_url(self) -> None:
+        """浏览器改写后的最终 URL 必须再过一次门禁。"""
+        from web_crawler.exceptions import UnsafeTargetError
+
+        agent = _make_agent()
+        agent.url_guard = lambda url: None if url.startswith("https://public.") else "no"
+        agent._context = MagicMock()
+        agent._context.request = _ok_request()
+        page = _AsyncPageMock()
+        page.goto = AsyncMock()
+        page.url = "https://evil.example/landing"
+
+        with pytest.raises(UnsafeTargetError, match="navigation landed"):
+            await agent._safe_goto_async(page, "https://public.example/start")
 
     @pytest.mark.asyncio
     async def test_create_page_async_handles_init_script_exception(self) -> None:
@@ -2335,6 +2553,18 @@ class TestTryRecoverPage:
         ok, page = await agent._try_recover_page_async("https://x.example")
         assert ok is False
         assert page is None
+
+    @pytest.mark.asyncio
+    async def test_try_recover_page_async_reraises_unsafe_target(self) -> None:
+        """恢复导航命中门禁时不能吞成"恢复失败"，必须上抛拒绝原因。"""
+        from web_crawler.exceptions import UnsafeTargetError
+
+        agent = _make_agent()
+        agent._create_page_async = AsyncMock(return_value=(MagicMock(), _AsyncPageMock()))  # type: ignore[assignment]
+        agent._safe_goto_async = AsyncMock(side_effect=UnsafeTargetError("blocked"))  # type: ignore[assignment]
+
+        with pytest.raises(UnsafeTargetError, match="blocked"):
+            await agent._try_recover_page_async("https://x.example")
 
 
 # ---------------------------------------------------------------------------
@@ -3065,3 +3295,110 @@ class TestRotateScreenshots:
 
         agent = _make_agent()
         agent._rotate_screenshots(_FakeDir(), "t")  # 不抛异常
+
+
+class TestLateNavigationRefusal:
+    """晚到导航拦截的复核游标：每条记录只复核一次，已处理的拒绝不会让之后每步失败。"""
+
+    def test_noop_without_url_guard(self) -> None:
+        agent = _make_agent()
+        agent._nav_blocked.append("http://169.254.169.254/")
+        assert agent._late_navigation_refusal("https://public.example/") is None
+        assert agent._nav_checked == 0
+
+    def test_reports_new_block_once(self) -> None:
+        agent = _make_agent()
+        agent.url_guard = lambda url: None
+        agent._nav_blocked.append("http://169.254.169.254/")
+
+        reason = agent._late_navigation_refusal("https://public.example/")
+        assert reason is not None
+        assert "169.254.169.254" in reason
+        # 同一条记录已复核，后续步骤不得重复判定
+        assert agent._late_navigation_refusal("https://public.example/") is None
+
+    def test_only_fresh_blocks_are_checked(self) -> None:
+        agent = _make_agent()
+        agent.url_guard = lambda url: None
+        agent._nav_blocked.append("http://old.internal/")
+        assert agent._late_navigation_refusal("https://public.example/") is not None
+        agent._nav_blocked.append("http://10.0.0.1/")
+
+        reason = agent._late_navigation_refusal("https://public.example/")
+        assert reason is not None
+        assert "10.0.0.1" in reason
+        assert "old.internal" not in reason
+
+    def test_landing_on_non_public_url_is_refused(self) -> None:
+        agent = _make_agent()
+        agent.url_guard = lambda url: "non-public" if "169.254" in url else None
+
+        reason = agent._late_navigation_refusal("http://169.254.169.254/")
+        assert reason is not None
+        assert "navigation landed" in reason
+
+    def test_iframe_landing_on_non_public_url_is_refused(self) -> None:
+        agent = _make_agent()
+        agent.url_guard = lambda url: "non-public" if "169.254" in url else None
+
+        reason = agent._late_navigation_refusal(
+            "https://public.example/", ["https://public.example/", "http://169.254.169.254/"]
+        )
+        assert reason is not None
+        assert "frame" in reason
+
+    def test_guarded_frames_untouched_without_url_guard(self) -> None:
+        """未配置门禁时不读取页面框架（独立使用的既有行为保持不变）。"""
+        agent = _make_agent()
+        assert agent._guarded_frames(object()) == []
+
+    def test_reset_run_state_clears_cursor_and_records(self) -> None:
+        agent = _make_agent()
+        agent._nav_blocked.append("http://10.0.0.1/")
+        agent._nav_checked = 1
+        agent._reset_run_state("https://public.example/")
+        assert agent._nav_blocked == []
+        assert agent._nav_checked == 0
+
+
+class TestFinalNavigationRefusal:
+    """收尾复核：页面不可读时失败关闭；iframe 落点经 agent 接线生效。"""
+
+    def test_noop_without_url_guard(self) -> None:
+        agent = _make_agent()
+        assert agent._final_navigation_refusal(object()) is None
+
+    def test_unreadable_frames_fail_closed_with_clear_reason(self) -> None:
+        """页面已关闭时 page.frames 抛异常：必须转为拒绝原因，而不是裸 RuntimeError 逃逸。"""
+        agent = _make_agent()
+        agent.url_guard = lambda url: None
+
+        class _ClosedPage:
+            url = "https://public.example/"
+
+            @property
+            def frames(self) -> list[Any]:
+                raise RuntimeError("Target page, context or browser has been closed")
+
+        reason = agent._final_navigation_refusal(_ClosedPage())
+        assert reason is not None
+        assert reason.startswith("navigation check incomplete")
+        assert "closed" in reason
+
+    def test_iframe_landing_is_seen_through_agent_wiring(self) -> None:
+        """iframe 落点经 _guarded_frames → _final_navigation_refusal 接线被拒绝。"""
+        agent = _make_agent()
+        agent.url_guard = lambda url: "non-public" if "169.254" in url else None
+
+        class _Frame:
+            def __init__(self, url: str) -> None:
+                self.url = url
+
+        class _Page:
+            url = "https://public.example/"
+            frames = [_Frame("https://public.example/"), _Frame("http://169.254.169.254/x")]
+
+        reason = agent._final_navigation_refusal(_Page())
+        assert reason is not None
+        assert "169.254.169.254" in reason
+        assert "frame" in reason

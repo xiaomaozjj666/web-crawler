@@ -33,6 +33,13 @@ from typing import Any
 
 from .. import __version__
 from .._cli import add_output_arguments, configure_logging, output_mode
+from .._nav_guard import (
+    frame_urls,
+    install_context_navigation_guard,
+    install_navigation_guard,
+    safe_goto_sync,
+    settle_refusal,
+)
 from ..ai.analyzer import JSAnalyzer
 from ..ai.captcha import CaptchaManager
 from ..ai.hooks import HookLibrary, generate_combined_script, main_world_script
@@ -193,7 +200,9 @@ class ReverseMCPServer(
             return None
         try:
             config = ReverseAgentConfig()
-            return ReverseAgent(config=config, provider=self.provider)
+            # Agent 自己持有浏览器：把逐跳导航门禁交给它，避免重定向绕过
+            # _tool_reverse_engineer_url 的入口 URL 校验。
+            return ReverseAgent(config=config, provider=self.provider, url_guard=_check_url)
         except Exception:
             return None
 
@@ -232,13 +241,37 @@ class ReverseMCPServer(
                 ignore_https_errors=not fetcher.verify,
             )
             try:
+                # 上下文级守卫覆盖弹窗（window.open 的新页面不经过 page.route）；
+                # 主页面再挂页面级守卫，两者共享同一拦截列表
+                blocked_nav = install_context_navigation_guard(context, _check_url)
                 page = context.new_page()
+                # route 守卫先于导航安装：拦截 JS 主动发起的文档级跳转；HTTP 3xx 由
+                # safe_goto_sync 用共享 cookie 的 APIRequestContext 预检整条链，失败关闭。
+                install_navigation_guard(page, _check_url, blocked=blocked_nav)
                 if hooks:
                     page.add_init_script(main_world_script(generate_combined_script(hooks)))
-                page.goto(url, wait_until="domcontentloaded", timeout=fetcher.timeout * 1000)
+                safe_goto_sync(
+                    page,
+                    context.request,
+                    url,
+                    _check_url,
+                    blocked=blocked_nav,
+                    wait_until="domcontentloaded",
+                    timeout=fetcher.timeout * 1000,
+                )
                 if wait_time > 0:
                     page.wait_for_timeout(int(wait_time * 1000))
-                return task_fn(page)
+                result = task_fn(page)
+                # JS 导航的拦截可能晚于 goto 返回：等待与任务执行之后再复核一次
+                late = settle_refusal(
+                    blocked_nav,
+                    getattr(page, "url", ""),
+                    _check_url,
+                    frame_urls(page),
+                )
+                if late:
+                    raise UnsafeTargetError(late)
+                return result
             finally:
                 context.close()
 
@@ -532,6 +565,8 @@ class ReverseMCPServer(
         started = time.monotonic()
         try:
             raw = handler(args)
+        except UnsafeTargetError as exc:
+            raw = _error("unsafe target", details=str(exc))
         except TimeoutError as exc:
             raw = _error("timeout", details=str(exc))
         except ImportError as exc:

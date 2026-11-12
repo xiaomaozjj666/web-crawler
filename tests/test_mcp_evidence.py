@@ -557,6 +557,17 @@ def test_error_classifies_url_gate_messages() -> None:
     assert userinfo["kind"] == "invalid_request"
 
 
+def test_error_classifies_navigation_block_as_unsafe_target() -> None:
+    parsed = json.loads(
+        _error(
+            "浏览器操作失败",
+            details="navigation blocked: 重定向目标 'http://169.254.169.254/' 不是公网地址",
+        )
+    )
+    assert parsed["kind"] == "unsafe_target"
+    assert parsed["retryable"] is False
+
+
 def test_error_classifies_browser_and_invalid_params() -> None:
     browser = json.loads(_error("浏览器操作失败", details="playwright crash"))
     assert browser["kind"] == "browser_unavailable"

@@ -11,7 +11,7 @@ import ipaddress
 import socket
 from urllib.parse import urlsplit
 
-from .._ssrf import normalize_ip_literal
+from .._ssrf import _is_blocked_ip, is_unsafe_hostname, normalize_ip_literal
 
 # -- 目标/URL 安全门禁 ---------------------------------------------------------
 #
@@ -21,9 +21,17 @@ from .._ssrf import normalize_ip_literal
 
 
 def _ip_is_global(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """判断 IP 是否可视为公网可达（排除私网/环回/链路本地/保留/组播/未指定）。"""
+    """判断 IP 是否可视为公网可达。
+
+    阻断表与 ``_ssrf`` 共用 :func:`~web_crawler._ssrf._is_blocked_ip`（含 CGNAT
+    ``100.64.0.0/10``，阿里云元数据 ``100.100.100.200`` 落在其中）。标准库的
+    ``is_private`` 并不覆盖 CGNAT（实测 ``100.100.100.200`` 的 ``is_private``
+    与 ``is_global`` 均为 False），因此不能只靠它判定——此前的独立排除列表正是
+    由此漏掉了云元数据地址。其余排除项作为额外保守层保留。
+    """
     return not (
-        ip.is_private
+        _is_blocked_ip(ip)
+        or ip.is_private
         or ip.is_loopback
         or ip.is_link_local
         or ip.is_reserved
@@ -61,9 +69,16 @@ def _host_is_public(host: str) -> bool:
     为公网）。主机名解析后逐一判定，任一地址非公网即视为否；解析失败视为
     非公网（保守拒绝，deny by default）。
     """
+    # 与 _ssrf.host_is_unsafe 相同的规范化：去首尾空白与末尾点（"169.254.169.254."
+    # 若不去点，DNS 桩返回公网时会被放行，两处判定即分叉）
+    host = host.strip().rstrip(".")
     addr = normalize_ip_literal(host)
     if addr is not None:
         return _ip_is_global(addr)
+    # 静态主机名黑名单（localhost / *.local / 云元数据主机名）与 _ssrf.host_is_unsafe
+    # 同源：不依赖 DNS 结果即拒绝（REVIEW.md 第 1 条：三处判定须保持一致）
+    if is_unsafe_hostname(host):
+        return False
     ips = _resolve_host_ips(host)
     if not ips:
         return False

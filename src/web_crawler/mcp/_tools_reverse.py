@@ -77,12 +77,17 @@ class ReverseToolsMixin(HostContract):
                     )
 
                 progress_bus.subscribe(_on_step_end)
-                run_agent = type(self.agent)(
-                    config=run_config,
-                    provider=self.agent.provider,
-                    analyzer=self.agent.analyzer,
-                    event_bus=progress_bus,
-                )
+                agent_kwargs: dict[str, Any] = {
+                    "config": run_config,
+                    "provider": self.agent.provider,
+                    "analyzer": self.agent.analyzer,
+                    "event_bus": progress_bus,
+                }
+                # 复用原 Agent 的逐跳导航门禁；测试替身可能没有该属性。
+                url_guard = getattr(self.agent, "url_guard", None)
+                if url_guard is not None:
+                    agent_kwargs["url_guard"] = url_guard
+                run_agent = type(self.agent)(**agent_kwargs)
                 try:
                     result = run_agent.run(url=url, task=task)
                 finally:

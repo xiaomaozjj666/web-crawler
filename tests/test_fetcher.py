@@ -2769,8 +2769,16 @@ def test_send_once_sync_httpx_pinned_contract(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(fetcher_mod, "HAS_CURL_CFFI", False)
     monkeypatch.setattr(fetcher_mod, "HAS_HTTPX", True)
-    monkeypatch.delenv("HTTPS_PROXY", raising=False)
-    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    # 代理变量大小写变体与 ALL_PROXY 都需清理（libcurl/httpx 会读取任意一种）
+    for _var in (
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "ALL_PROXY",
+        "https_proxy",
+        "http_proxy",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(_var, raising=False)
 
     raw_resp = MagicMock()
     raw_resp.url = "https://93.184.216.34/"

@@ -68,6 +68,10 @@ def _classify_error(error: str, extra: dict[str, Any]) -> tuple[str, str | None,
             "私网",
             "内网",
             "非公网",
+            "不是公网",
+            "navigation blocked",
+            "navigation landed",
+            "navigation check incomplete",
             "安全门禁",
         )
     ):

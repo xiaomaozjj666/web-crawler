@@ -17,6 +17,7 @@ select_option / new_tab / switch_tab / close_tab / humanize 变体、
 from __future__ import annotations
 
 import importlib
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -157,6 +158,17 @@ async def test_host_contract_stubs_raise() -> None:
         await executor._try_extract_param_async(None, "p")
     with pytest.raises(NotImplementedError):
         executor._setup_page_listeners(None)
+
+
+async def test_navigation_without_host_guard_fails_closed() -> None:
+    """宿主未实现导航门禁时，navigate 必须报错，不得退化为裸 page.goto（fail-open）。"""
+    executor = ActionExecutor()
+    page = MagicMock()
+    page.goto = AsyncMock()
+    action = _support_action(action_type="navigate", params={"url": "https://public.example/"})
+    with pytest.raises(NotImplementedError):
+        await executor._act_async(page, action, step=1)
+    page.goto.assert_not_awaited()
 
 
 async def test_unknown_action_error_message_unchanged() -> None:

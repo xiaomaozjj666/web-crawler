@@ -596,6 +596,11 @@ def test_normalize_ip_literal_types() -> None:
         "::ffff:169.254.169.254",  # mapped 云元数据
         "::ffff:10.0.0.1",
         "::ffff:192.168.0.1",
+        # CGNAT 段（100.64.0.0/10）：标准库 is_private 不覆盖，曾被误判为公网
+        "100.100.100.200",  # 阿里云元数据
+        "100.64.0.1",
+        "100.127.255.254",
+        "::ffff:100.100.100.200",
     ],
 )
 def test_ssrf_gate_rejects_noncanonical_private(host: str) -> None:
@@ -621,11 +626,22 @@ def test_ssrf_gate_allows_public_literals(host: str) -> None:
         "http://127.1/",
         "http://[::ffff:127.0.0.1]/",
         "http://[::ffff:169.254.169.254]/",
+        "http://100.100.100.200/latest/meta-data/",
+        "http://100.64.0.1/",
     ],
 )
 def test_ssrf_gate_check_url_rejects_noncanonical(url: str) -> None:
     """URL 门禁集成层面：非规范 host 写法返回错误信息（拒绝）。"""
     assert _check_url(url) is not None
+
+
+@pytest.mark.parametrize("host", ["metadata.google.internal", "printer.local", "api.localhost"])
+def test_ssrf_gate_rejects_static_unsafe_hostnames_even_if_dns_is_public(
+    host: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """静态危险主机名不依赖 DNS 结果即拒绝（与 _ssrf.host_is_unsafe 同源）。"""
+    monkeypatch.setattr(socket, "getaddrinfo", _RoundsResolver([["93.184.216.34"]]))
+    assert _host_is_public(host) is False
 
 
 def test_ssrf_gate_deny_by_default_on_dns_failure(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -646,8 +662,21 @@ def test_ssrf_gate_rejects_hostname_resolving_to_private(monkeypatch: pytest.Mon
     monkeypatch.setattr(socket, "getaddrinfo", _RoundsResolver([["93.184.216.34", "fd00::1"]]))
     assert _host_is_public("mixed.example") is False
 
+    # CGNAT：域名解析到云元数据地址同样拒绝（与字面量判定一致）
+    monkeypatch.setattr(socket, "getaddrinfo", _RoundsResolver([["100.100.100.200"]]))
+    assert _host_is_public("metadata-alias.example") is False
+
 
 def test_ssrf_gate_allows_hostname_resolving_to_public(monkeypatch: pytest.MonkeyPatch) -> None:
     """主机名全部解析到公网时放行（现有行为不变）。"""
     monkeypatch.setattr(socket, "getaddrinfo", _RoundsResolver([["93.184.216.34"]]))
     assert _host_is_public("public.example") is True
+
+
+@pytest.mark.parametrize("host", ["169.254.169.254.", "100.100.100.200.", " 127.0.0.1. "])
+def test_ssrf_gate_literal_trailing_dot_is_normalized_like_ssrf(
+    host: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """字面 IP 带末尾点（或首尾空白）与 _ssrf 同样规范化后判定，不依赖 DNS 桩。"""
+    monkeypatch.setattr(socket, "getaddrinfo", _RoundsResolver([["93.184.216.34"]]))
+    assert _host_is_public(host) is False

@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -147,6 +148,11 @@ class _AsyncLoopPage:
     @property
     def url(self) -> str:
         return self._url
+
+    @property
+    def frames(self) -> list[Any]:
+        """仅主框架（与真实 Page.frames 同形：列表，含主框架自身）。"""
+        return [SimpleNamespace(url=self._url)]
 
     async def title(self) -> str:
         return self._title
@@ -1941,3 +1947,149 @@ class TestSmallUncoveredBranches:
             assert agent._page is None
         finally:
             agent.close()
+
+
+class TestLateNavigationAbort:
+    """运行期间晚到的导航拦截：必须中止运行，且不得进入崩溃恢复路径。"""
+
+    @pytest.mark.asyncio
+    async def test_late_block_aborts_arun_without_crash_recovery(self) -> None:
+        from web_crawler.exceptions import UnsafeTargetError
+
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
+            patch("web_crawler.ai.reverse_agent.safe_goto_async", new=AsyncMock()),
+        ):
+            agent, _page, _ = _make_loop_agent(
+                replies=['{"action_type": "done"}'],
+                max_steps=5,
+            )
+            agent.url_guard = lambda url: None if url.startswith("https://x.") else "no"
+
+            async def observe(page: Any, step: int) -> Observation:
+                # JS 导航在 goto 返回后才被 route 守卫拦截
+                agent._nav_blocked.append("http://169.254.169.254/")
+                return _make_observation()
+
+            agent._observe_async = AsyncMock(side_effect=observe)  # type: ignore[assignment]
+            agent._try_recover_page_async = AsyncMock(return_value=(True, MagicMock()))  # type: ignore[assignment]
+            try:
+                with pytest.raises(UnsafeTargetError, match="重定向目标"):
+                    await agent.arun("https://x.example", "task")
+                assert agent._observe_async.await_count == 1
+                agent._try_recover_page_async.assert_not_called()
+            finally:
+                agent.close()
+
+    async def test_late_block_before_loop_exit_is_refused(self) -> None:
+        """循环经 should_stop 等非观察路径退出时，退出前的晚到拦截仍须在收尾复核中拒绝。"""
+        from web_crawler.exceptions import UnsafeTargetError
+
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
+            patch("web_crawler.ai.reverse_agent.safe_goto_async", new=AsyncMock()),
+        ):
+            agent, _page, _ = _make_loop_agent(
+                replies=['{"action_type": "done"}'],
+                max_steps=5,
+            )
+            agent.url_guard = lambda url: None if url.startswith("https://x.") else "no"
+
+            def stop() -> bool:
+                # 循环在观察前退出：JS 导航的拦截在退出前已经发生
+                agent._nav_blocked.append("http://169.254.169.254/")
+                return True
+
+            agent.config.should_stop = stop
+            agent._observe_async = AsyncMock(return_value=_make_observation())  # type: ignore[assignment]
+            try:
+                with pytest.raises(UnsafeTargetError, match="重定向目标"):
+                    await agent.arun("https://x.example", "task")
+                agent._observe_async.assert_not_awaited()
+            finally:
+                agent.close()
+
+
+class TestFinalStepPageSwitch:
+    """末步动作切换了当前页（如 new_tab）：收尾复核必须针对最新页，而非循环局部旧页。"""
+
+    @pytest.mark.asyncio
+    async def test_final_check_uses_current_page_after_last_step_switch(self) -> None:
+        from web_crawler.exceptions import UnsafeTargetError
+
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
+            patch("web_crawler.ai.reverse_agent.safe_goto_async", new=AsyncMock()),
+        ):
+            agent, old_page, _ = _make_loop_agent(
+                replies=['{"action_type": "scroll"}'],
+                max_steps=1,
+            )
+            agent.url_guard = lambda url: None if url.startswith("https://x.") else "no"
+            # 旧页干净（URL 合法、无拦截 frame）：若收尾误用旧页，测试必须不抛出
+            old_page._url = "https://x.example/"
+
+            class _SwitchedPage(_AsyncLoopPage):
+                """切换后的新页：主框架干净，但 iframe 落在云元数据地址。"""
+
+                @property
+                def frames(self) -> list[Any]:
+                    return [
+                        SimpleNamespace(url=self._url),
+                        SimpleNamespace(url="http://169.254.169.254/latest/"),
+                    ]
+
+            new_page = _SwitchedPage(url="https://x.example/")
+
+            async def observe_and_switch(page: Any, *, step: int = 0) -> Any:
+                # 模拟末步动作把当前页切到新标签页：只改 agent 的引用，循环局部 page 不变
+                agent._page = new_page
+                return _make_observation(url="https://x.example/")
+
+            agent._observe_async = observe_and_switch  # type: ignore[assignment]
+            try:
+                with pytest.raises(UnsafeTargetError, match="frame"):
+                    await agent.arun("https://x.example", "task")
+            finally:
+                agent.close()
+class TestActionNavigateUnsafeTarget:
+    """动作层 navigate 被逐跳门禁拒绝：必须原样上抛，不得吞成 act_error。"""
+
+    @pytest.mark.asyncio
+    async def test_navigate_step_unsafe_target_propagates_without_act_error(self) -> None:
+        from web_crawler.exceptions import UnsafeTargetError
+
+        async def fake_goto(
+            page: Any, request_context: Any, url: str, check_url: Any, **kwargs: Any
+        ) -> None:
+            # 入口导航正常完成；只有动作层导航到 /next 才被逐跳门禁拒绝
+            if url.endswith("/next"):
+                raise UnsafeTargetError(
+                    "navigation blocked: 重定向目标 'http://169.254.169.254/' 不是公网地址"
+                )
+
+        with (
+            patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
+            patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
+            patch("web_crawler.ai.reverse_agent.safe_goto_async", new=AsyncMock(side_effect=fake_goto)),
+        ):
+            # 桩页面 URL 必须过门禁：observe 阶段的落点复核先于动作执行
+            agent, _page, _ = _make_loop_agent(
+                page=_AsyncLoopPage(url="https://x.example/"),
+                replies=[
+                    '{"action_type": "navigate", "params": {"url": "https://x.example/next"}}'
+                ],
+                max_steps=5,
+            )
+            agent.url_guard = lambda url: None if url.startswith("https://x.") else "no"
+            agent._try_recover_page_async = AsyncMock(return_value=(True, MagicMock()))  # type: ignore[assignment]
+            try:
+                with pytest.raises(UnsafeTargetError, match="重定向目标"):
+                    await agent.arun("https://x.example", "task")
+                # 门禁拒绝不是动作故障：不得进入崩溃恢复路径
+                agent._try_recover_page_async.assert_not_called()
+            finally:
+                agent.close()

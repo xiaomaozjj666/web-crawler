@@ -91,6 +91,18 @@ class ActionExecutor:
         """宿主契约 stub：页面事件监听（实现见 ReverseAgent._setup_page_listeners）。"""
         raise NotImplementedError
 
+    async def _safe_goto_async(self, page: Any, url: str) -> None:
+        """宿主契约 stub：受门禁的导航（实现见 ReverseAgent._safe_goto_async）。
+
+        导航是安全边界：宿主未实现时必须报错，而不是退化为裸 ``page.goto``
+        （那会绕过逐跳 SSRF 门禁，即 fail-open）。
+        """
+        raise NotImplementedError
+
+    async def _install_nav_guard_async(self, page: Any) -> None:
+        """宿主契约 stub：页面级导航门禁（实现见 ReverseAgent._install_nav_guard_async）。"""
+        raise NotImplementedError
+
     # ------------------------------------------------------------------
     # 动作分发与降级
     # ------------------------------------------------------------------
@@ -108,7 +120,7 @@ class ActionExecutor:
         if atype == "navigate":
             url = action.params.get("url")
             if url:
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await self._safe_goto_async(page, url)
                 await asyncio.sleep(self.config.wait_after_navigate)
             return None
         if atype == "inject_hook":
@@ -310,6 +322,8 @@ class ActionExecutor:
             await self.fetcher._setup_page_async(new_page)  # type: ignore[union-attr]
         except Exception:
             pass
+        # 逐跳导航门禁同样覆盖新标签页（未配置 url_guard 时是空操作）。
+        await self._install_nav_guard_async(new_page)
         self._setup_page_listeners(new_page)
         self._tabs[name] = new_page
         if "main" not in self._tabs:
@@ -325,7 +339,7 @@ class ActionExecutor:
                     details=nav_check.details,
                 )
             else:
-                await new_page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await self._safe_goto_async(new_page, url)
                 await asyncio.sleep(self.config.wait_after_navigate)
         self._page = new_page
         self._emit(

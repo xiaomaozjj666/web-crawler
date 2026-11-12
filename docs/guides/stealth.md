@@ -138,7 +138,9 @@ with StealthyFetcher(google_search=True, humanize=True) as f:
   （A + AAAA 全覆盖）以 `CURLOPT_RESOLVE` 逐请求钉给 libcurl——连接强制
   使用已校验地址，URL / Host 头 / SNI 保持原始主机名。
 - **浏览器路径（缓解）**：Playwright 的 DNS 由浏览器完成，无法逐跳插桩，
-  为已知边界。
+  为已知边界。重定向链由 `APIRequestContext` 逐跳预检（失败关闭），但预检与
+  浏览器真正连接之间仍有 DNS 重绑定窗口，无法像 curl 路径那样钉扎。
+  iframe（子框架）的重定向链同样不经预检，只能在落点上事后复核。
 
 ### Power Mode（默认关闭）
 
