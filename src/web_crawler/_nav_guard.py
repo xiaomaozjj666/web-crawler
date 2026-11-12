@@ -45,12 +45,39 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable
 from typing import Any, NamedTuple
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
+from ._ssrf import validate_url_host
 from .exceptions import UnsafeTargetError
 
 # 与 ``mcp._ssrf_gate._check_url`` 相同契约：返回错误信息表示拒绝，None 表示放行。
 UrlCheck = Callable[[str], str | None]
+
+
+def power_aware_url_guard() -> UrlCheck:
+    """本地入口（app UI / ``web-crawler-reverse run`` CLI）的导航门禁工厂。
+
+    与 MCP 浏览器工具的严格门禁（``mcp._ssrf_gate._check_url``，不认 Power
+    Mode）不同：本地工具面向可信环境，host 校验随 ``WEB_CRAWLER_POWER_MODE=1``
+    放行（与 fetcher 入口同一信任模型），localhost 调试不受阻；http/https
+    scheme 白名单始终生效，Power Mode 也不放行非 http(s) 目标。
+    """
+
+    def check(url: str) -> str | None:
+        try:
+            parsed = urlsplit(url)
+        except ValueError:
+            return f"invalid url: {url!r}"
+        if parsed.scheme not in ("http", "https"):
+            return f"scheme not allowed: {parsed.scheme!r}（仅支持 http/https）"
+        try:
+            validate_url_host(url, resolve=True)
+        except UnsafeTargetError as exc:
+            return str(exc)
+        return None
+
+    return check
+
 
 # 视为重定向的状态码（300/304/305 不改变导航语义，按终止处理）。
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
@@ -133,6 +160,8 @@ def _make_guard(check_url: UrlCheck, blocked: list[str]) -> Callable[[Any], None
             if not _gate(check_url, url):
                 route.continue_()
                 return
+            if not _is_subframe(route):
+                blocked.append(url)
             route.abort()
         except Exception:
             # 守卫自身出错：请求必须被结束（否则导航挂起）并记为拒绝（失败关闭）

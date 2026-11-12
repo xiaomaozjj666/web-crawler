@@ -2271,3 +2271,48 @@ class TestTaskErrorMessage:
         _seed_task("err-2", "https://e.com/y", {"out": "."}, ".")
         database.update_task_status("err-2", "error", error_message="x" * 5000)
         assert len(database.get_task("err-2")["error_message"]) == 4000
+
+
+def test_run_job_passes_power_aware_url_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ReverseAgentRunner 构造的 Agent 必须带 Power Mode 兼容的导航门禁。"""
+    from types import SimpleNamespace
+
+    import web_crawler.ai.llm as llm_module
+    import web_crawler.ai.reverse_agent as ra_module
+    from web_crawler.app import _ui_runner as runner_module
+    from web_crawler.app._ui_state import ReverseJobState
+
+    captured: dict[str, Any] = {}
+
+    class _MockAgent:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        def run(self, url: str, task: str = "") -> dict:
+            return {
+                "success": True,
+                "analysis": {},
+                "compiled_script": "",
+                "target_params_found": {},
+                "judge_result": {},
+            }
+
+        def close(self) -> None:
+            pass
+
+    class _MockProvider:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+    monkeypatch.setattr(llm_module, "DeepSeekProvider", _MockProvider)
+    monkeypatch.setattr(ra_module, "ReverseAgent", _MockAgent)
+    monkeypatch.setattr(ra_module, "ReverseAgentConfig", lambda **kw: SimpleNamespace())
+
+    job = ReverseJobState(id="t", url="https://x.example", task="t", config={})
+    runner_module.ReverseAgentRunner().run_job(job)
+
+    guard = captured.get("url_guard")
+    assert callable(guard)
+    assert guard("http://127.0.0.1/") is not None
+    assert guard("https://93.184.216.34/") is None
+    assert job.status == "done"

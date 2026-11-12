@@ -103,6 +103,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   浏览器导航与 pentest 目标校验均受影响。现与 `_ssrf` 共用同一阻断表
   （`_is_blocked_ip`），字面量、IPv4-mapped 与域名解析结果三种形式一致判定。
   README / SECURITY.md 一直声明默认拒绝 CGNAT，本次使代码与文档对齐。
+- **app UI 与 `web-crawler-reverse run` CLI 的逆向 Agent 接入导航门禁**：
+  两处入口此前构造 `ReverseAgent` 未传 `url_guard`，浏览器导航完全未经 SSRF
+  校验（与 MCP 路径不一致）。现统一接 `power_aware_url_guard()`：http/https
+  白名单始终生效；host 校验与 fetcher 入口同一信任模型，
+  `WEB_CRAWLER_POWER_MODE=1` 下放行私网目标（localhost 调试不受阻）。MCP
+  浏览器工具的严格门禁（不认 Power Mode）保持不变。
 - **导航宿主契约改为显式报错（去掉 fail-open 回退）**：`ActionExecutor` 的
   导航路径曾用 `getattr` 探测宿主实现，缺失时退化为裸 `page.goto`，会绕过逐跳
   门禁。现为显式契约 stub（未实现即 `NotImplementedError`），导航动作失败关闭。

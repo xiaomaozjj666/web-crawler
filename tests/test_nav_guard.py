@@ -14,6 +14,7 @@ from web_crawler._nav_guard import (
     install_context_navigation_guard_async,
     install_navigation_guard,
     install_navigation_guard_async,
+    power_aware_url_guard,
     resolve_redirect_chain_async,
     resolve_redirect_chain_sync,
     safe_goto_async,
@@ -956,3 +957,26 @@ def test_landing_check_still_refuses_data_page_url() -> None:
 
     assert reason is not None
     assert "data:" in reason
+
+
+class TestPowerAwareUrlGuard:
+    """本地入口（app UI / CLI）门禁：host 校验认 Power Mode，scheme 白名单恒生效。"""
+
+    def test_public_allowed_private_and_scheme_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("WEB_CRAWLER_POWER_MODE", raising=False)
+        guard = power_aware_url_guard()
+        # 公网 IP 字面量：不触发 DNS，纯本地判定
+        assert guard("https://93.184.216.34/") is None
+        assert guard("http://127.0.0.1/") is not None
+        assert guard("http://169.254.169.254/") is not None
+        assert guard("file:///etc/passwd") is not None
+
+    def test_power_mode_allows_private_but_not_scheme(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("WEB_CRAWLER_POWER_MODE", "1")
+        guard = power_aware_url_guard()
+        assert guard("http://127.0.0.1:8080/debug") is None
+        assert guard("file:///etc/passwd") is not None

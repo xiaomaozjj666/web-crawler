@@ -321,6 +321,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     可保存成功路径脚本到指定文件。
     """
     # 延迟导入：避免 CLI 启动时加载 camoufox 等重依赖
+    from web_crawler._nav_guard import power_aware_url_guard
     from web_crawler.ai.llm import DEFAULT_MODEL, DeepSeekProvider
     from web_crawler.ai.reverse_agent import ReverseAgent, ReverseAgentConfig
 
@@ -346,7 +347,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
 
     provider = DeepSeekProvider(model=args.model or DEFAULT_MODEL)
-    agent = ReverseAgent(config=config, provider=provider)
+    agent = ReverseAgent(config=config, provider=provider, url_guard=power_aware_url_guard())
     try:
         result = agent.run(url=args.url, task=args.task or "")
     except Exception as exc:

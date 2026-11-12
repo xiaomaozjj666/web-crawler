@@ -187,3 +187,39 @@ def test_cli_run_save_script_to_file(
 
     result = json.loads(result_file.read_text(encoding="utf-8"))
     assert result["success"] is True
+
+
+def test_cmd_run_passes_power_aware_url_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """cmd_run 构造的 Agent 必须带 Power Mode 兼容的导航门禁（本地入口 fail-closed）。"""
+    from web_crawler.mcp import cli as cli_module
+
+    captured: dict[str, Any] = {}
+
+    class _MockAgent:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+            self.config = kwargs.get("config")
+
+        def run(self, url: str, task: str = "") -> dict:
+            return {"success": True, "target_params_found": {}, "steps": 1, "compiled_script": ""}
+
+        def close(self) -> None:
+            pass
+
+    class _MockProvider:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+    import web_crawler.ai.llm as llm_module
+
+    monkeypatch.setattr(llm_module, "DeepSeekProvider", _MockProvider)
+    monkeypatch.setattr("web_crawler.ai.reverse_agent.ReverseAgent", _MockAgent)
+
+    parser = cli_module.build_parser()
+    args = parser.parse_args(["run", "--url", "https://test.example.com", "--task", "t"])
+    assert cli_module.cmd_run(args) == 0
+
+    guard = captured.get("url_guard")
+    assert callable(guard)
+    assert guard("http://127.0.0.1/") is not None
+    assert guard("https://93.184.216.34/") is None

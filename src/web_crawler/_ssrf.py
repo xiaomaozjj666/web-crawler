@@ -292,8 +292,8 @@ def validate_url_host(url: str, *, resolve: bool = False) -> None:
     体系），既有 ``except ValueError`` / ``pytest.raises(ValueError)``
     断言不受影响；新代码可统一 ``except WebCrawlerError`` 捕获。
 
-    Power Mode（``WEB_CRAWLER_POWER_MODE=1``）下放行 host 校验（scheme 白名单
-    由 :func:`validate_url_scheme` 独立保证，始终生效）。
+    Power Mode（``WEB_CRAWLER_POWER_MODE=1``）下放行 host 校验（http/https
+    scheme 白名单由 fetcher / app 入口独立保证，始终生效）。
     """
     if is_power_mode():
         return

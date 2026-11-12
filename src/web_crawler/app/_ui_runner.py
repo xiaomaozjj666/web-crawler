@@ -106,6 +106,7 @@ class ReverseAgentRunner:
         """子线程入口：构造 Agent 并同步运行，事件实时推到 job。"""
         # 延迟导入：避免 UI 启动时加载 camoufox 等重依赖
         try:
+            from web_crawler._nav_guard import power_aware_url_guard
             from web_crawler.ai.llm import DEFAULT_MODEL, DeepSeekProvider
             from web_crawler.ai.reverse_agent import ReverseAgent, ReverseAgentConfig
             from web_crawler.ai.watchdog import EventBus
@@ -134,7 +135,12 @@ class ReverseAgentRunner:
             # "停止"按钮接线：should_stop 回调由库侧每步循环顶部检查，
             # 返回 True 时立即中断循环并标记 stopped（见下方最终状态判断）。
             config.should_stop = job.stop_event.is_set
-            agent = ReverseAgent(config=config, provider=provider, event_bus=bus)
+            agent = ReverseAgent(
+                config=config,
+                provider=provider,
+                event_bus=bus,
+                url_guard=power_aware_url_guard(),
+            )
             bus.subscribe(lambda evt: self._on_event(job, evt, agent))
 
             # 同步运行（在子线程中阻塞）

@@ -2055,6 +2055,8 @@ class TestFinalStepPageSwitch:
                     await agent.arun("https://x.example", "task")
             finally:
                 agent.close()
+
+
 class TestActionNavigateUnsafeTarget:
     """动作层 navigate 被逐跳门禁拒绝：必须原样上抛，不得吞成 act_error。"""
 
@@ -2074,7 +2076,9 @@ class TestActionNavigateUnsafeTarget:
         with (
             patch("web_crawler.ai.reverse_agent.CamoufoxFetcher"),
             patch("web_crawler.ai.reverse_agent.asyncio.sleep", new=AsyncMock()),
-            patch("web_crawler.ai.reverse_agent.safe_goto_async", new=AsyncMock(side_effect=fake_goto)),
+            patch(
+                "web_crawler.ai.reverse_agent.safe_goto_async", new=AsyncMock(side_effect=fake_goto)
+            ),
         ):
             # 桩页面 URL 必须过门禁：observe 阶段的落点复核先于动作执行
             agent, _page, _ = _make_loop_agent(
