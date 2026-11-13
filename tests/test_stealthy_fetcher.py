@@ -44,9 +44,46 @@ def _make_sync_page(
     return page
 
 
+def _fake_sync_request(responses: list[Any] | None = None) -> Any:
+    """预检用 APIRequestContext 桩：默认 200 + 空头（视为链尾）；responses 逐个弹出。"""
+    seq = list(responses or [])
+
+    def _get(url: str, **kwargs: Any) -> Any:
+        if seq:
+            return seq.pop(0)
+        resp = MagicMock()
+        resp.status = 200
+        resp.headers = {}
+        resp.dispose = MagicMock()
+        return resp
+
+    req = MagicMock()
+    req.get = MagicMock(side_effect=_get)
+    return req
+
+
+def _fake_async_request(responses: list[Any] | None = None) -> Any:
+    """异步版预检桩。"""
+    seq = list(responses or [])
+
+    async def _get(url: str, **kwargs: Any) -> Any:
+        if seq:
+            return seq.pop(0)
+        resp = AsyncMock()
+        resp.status = 200
+        resp.headers = {}
+        resp.dispose = AsyncMock()
+        return resp
+
+    req = MagicMock()
+    req.get = AsyncMock(side_effect=_get)
+    return req
+
+
 def _make_sync_context(page: MagicMock | None = None) -> MagicMock:
     ctx = MagicMock()
     ctx.new_page.return_value = page if page is not None else _make_sync_page()
+    ctx.request = _fake_sync_request()
     return ctx
 
 
@@ -84,6 +121,7 @@ def _make_async_page(
 def _make_async_context(page: AsyncMock | None = None) -> AsyncMock:
     ctx = AsyncMock()
     ctx.new_page.return_value = page if page is not None else _make_async_page()
+    ctx.request = _fake_async_request()
     return ctx
 
 

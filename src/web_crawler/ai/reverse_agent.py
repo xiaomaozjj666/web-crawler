@@ -63,6 +63,7 @@ from .._nav_guard import (
     install_navigation_guard_async,
     safe_goto_async,
     settle_refusal,
+    settle_refusal_async,
 )
 from ..exceptions import UnsafeTargetError
 from ..fetchers.camoufox import CamoufoxFetcher
@@ -499,7 +500,7 @@ class ReverseAgent(ActionExecutor):
                 try:
                     observation = await self._observe_async(page, step=step)
                     last_observation = observation
-                    late = self._late_navigation_refusal(
+                    late = await self._late_navigation_refusal_async(
                         observation.url, self._guarded_frames(page)
                     )
                     if late:
@@ -778,11 +779,14 @@ class ReverseAgent(ActionExecutor):
             # 的 JS 导航不会再被观察到，收尾前对"当前页"复核一次。self._page 为最新页，
             # 循环局部变量 page 可能仍指向已被切换掉的旧页；避免把拦截页面的 hook 数据带入结果
             final_page = self._page if self._page is not None else page
-            late = self._final_navigation_refusal(final_page)
+            late = await self._final_navigation_refusal_async(final_page)
             if late:
                 raise UnsafeTargetError(late)
-            # 合并最后一次观察的缓存，避免结果 hook_data 几乎为空
-            final_hook_data = self._merge_final_hook_data(await self._read_hook_data_async(page))
+            # 合并最后一次观察的缓存，避免结果 hook_data 几乎为空；读最新页
+            # （末步切换标签页后旧页的 hook 记录不是任务产出，缓存合并兜底旧数据）
+            final_hook_data = self._merge_final_hook_data(
+                await self._read_hook_data_async(final_page)
+            )
             return self._build_run_result(
                 stopped=stopped,
                 target_params_found=target_params_found,
@@ -1001,6 +1005,29 @@ class ReverseAgent(ActionExecutor):
     def _guarded_frames(self, page: Any) -> list[str]:
         """门禁启用时取页面全部框架（含 iframe）的 URL；未启用时不触碰页面对象。"""
         return frame_urls(page) if self.url_guard is not None else []
+
+    async def _late_navigation_refusal_async(
+        self, page_url: str, frames: Iterable[str] = ()
+    ) -> str | None:
+        """异步版 :meth:`_late_navigation_refusal`：门禁（可能含同步 DNS）入线程池。
+
+        游标推进保持在事件循环线程内（与同步版语义一致：先推进再判定）。
+        """
+        if self.url_guard is None:
+            return None
+        fresh = self._nav_blocked[self._nav_checked :]
+        self._nav_checked = len(self._nav_blocked)
+        return await settle_refusal_async(fresh, page_url, self.url_guard, frames)
+
+    async def _final_navigation_refusal_async(self, page: Any) -> str | None:
+        """收尾复核（异步）：页面已关闭或框架不可读时失败关闭，而非裸异常逃逸。"""
+        if self.url_guard is None:
+            return None
+        try:
+            frames = frame_urls(page)
+        except Exception as exc:
+            return f"navigation check incomplete: 无法读取页面框架（{exc}）"
+        return await self._late_navigation_refusal_async(getattr(page, "url", ""), frames)
 
     def _final_navigation_refusal(self, page: Any) -> str | None:
         """收尾复核：页面已关闭或框架不可读时失败关闭，并给出明确原因而非裸异常。"""

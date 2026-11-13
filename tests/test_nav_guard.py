@@ -20,6 +20,7 @@ from web_crawler._nav_guard import (
     safe_goto_async,
     safe_goto_sync,
     settle_refusal,
+    settle_refusal_async,
 )
 from web_crawler.exceptions import UnsafeTargetError
 
@@ -980,3 +981,63 @@ class TestPowerAwareUrlGuard:
         guard = power_aware_url_guard()
         assert guard("http://127.0.0.1:8080/debug") is None
         assert guard("file:///etc/passwd") is not None
+
+
+@pytest.mark.asyncio
+async def test_async_gate_runs_off_event_loop_thread() -> None:
+    """N-3 契约：异步路径的门禁（可能含同步 DNS）必须在线程池执行，不阻塞事件循环。"""
+    import threading
+
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+
+    def check(url: str) -> str | None:
+        seen.append(threading.get_ident())
+        return None
+
+    req = _AsyncReq([_AsyncResp(200)])
+    probe = await resolve_redirect_chain_async(req, PUBLIC, check)
+    assert probe.complete is True
+    assert seen, "门禁未被调用"
+    assert all(t != loop_thread for t in seen), "门禁在事件循环线程内执行（阻塞 loop）"
+
+
+@pytest.mark.asyncio
+async def test_settle_refusal_async_offloads_gate() -> None:
+    """settle_refusal_async 同样把门禁判定移出事件循环线程。"""
+    import threading
+
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+
+    def check(url: str) -> str | None:
+        seen.append(threading.get_ident())
+        return "non-public" if "169.254" in url else None
+
+    reason = await settle_refusal_async([], PUBLIC, check, ["http://169.254.169.254/x"])
+    assert reason is not None and "frame" in reason
+    assert all(t != loop_thread for t in seen)
+
+
+def test_safe_goto_sync_explicit_referer_wins() -> None:
+    """调用方显式 referer（fetcher google_search）覆盖入口 URL 规则。"""
+    req = _SafeReq(_SafeResp(302, "/final"), _SafeResp(200))
+    page = _SafePage(url="https://public.example/final")
+    safe_goto_sync(
+        page,
+        req,
+        PUBLIC,
+        _allow,
+        blocked=[],
+        timeout=5000,
+        referer="https://www.google.com/",
+    )
+    assert page.goto_calls[0][1]["referer"] == "https://www.google.com/"
+
+
+def test_safe_goto_sync_no_referer_no_redirect_keeps_default() -> None:
+    """未重定向且未显式指定 referer 时不附带 referer（保持浏览器默认行为）。"""
+    req = _SafeReq(_SafeResp(200))
+    page = _SafePage(url=PUBLIC)
+    safe_goto_sync(page, req, PUBLIC, _allow, blocked=[], timeout=5000)
+    assert "referer" not in page.goto_calls[0][1]

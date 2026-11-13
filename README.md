@@ -568,7 +568,7 @@ GitHub Actions 在每次 push 时运行 lint、类型检查、带覆盖率的测
 
 **DNS 解析复查（默认开启）**：对主机名先做一次 `getaddrinfo` 解析、逐地址核对拒绝段，防 DNS 重绑定型 SSRF；解析失败按保守策略拒绝。结果带 **60 秒 TTL 缓存**（解析失败负缓存 10 秒，有界 LRU），同一主机不会重复解析，性能开销可忽略。库层默认开启（`Fetcher(resolve_hosts=False)` 可关），app 层入口始终开启。
 
-**浏览器导航逐跳校验（MCP 工具 / ReverseAgent）**：`page.goto` 会在浏览器内部自动跟随 302，而 Camoufox/Juggler 的 `page.route` 只拦截首个请求（实测重定向跳转不进 handler）。因此 MCP 浏览器工具与 Agent 在导航前先用共享 cookie 的 `APIRequestContext` 逐跳预检整条重定向链（每一跳过同一 URL 门禁，含 `Refresh` 头跳转），再导航到已校验目标；`page.route` 守卫继续拦截 JS 主动发起的文档级导航，导航结束后还会复核最终 URL 与各 iframe 的落点。被拒目标在浏览器发出请求前即失败，错误类别为 `unsafe_target`。预检未完成（网络异常、无请求上下文）同样失败关闭，不会退化为普通导航；JS 导航的晚到拦截在任务结束与 Agent 每步观察前复核。残余风险：(1) 预检与浏览器连接之间的 DNS 重绑定窗口无法像 curl 那样钉扎，此路径为缓解而非根治；(2) iframe 的重定向链不经预检，落点复核只能在内网内容返回后事后拒绝，内网请求本身可能已发出。
+**浏览器导航逐跳校验（浏览器 fetcher / MCP 工具 / ReverseAgent）**：`page.goto` 会在浏览器内部自动跟随 302，而 Camoufox/Juggler 的 `page.route` 只拦截首个请求（实测重定向跳转不进 handler）。因此全部浏览器导航入口（DynamicFetcher / StealthyFetcher / CamoufoxFetcher 的 fetch 与截图、MCP 浏览器工具、逆向 Agent）在导航前先用共享 cookie 的 `APIRequestContext` 逐跳预检整条重定向链（每一跳过同一 URL 门禁，含 `Refresh` 头跳转），再导航到已校验目标；`page.route` 守卫继续拦截 JS 主动发起的文档级导航——meta-refresh 与脚本导航的后续文档请求经 `page.route` 可见并被守卫拦截（Chromium 与 Camoufox 双引擎实测）；弹窗（`window.open`）的新页面不经 `page.route`，由 `BrowserContext` 层安装的同一守卫覆盖（实测无守卫时弹窗可直接访问内网）。分层语义：子框架文档请求被 route 守卫拒绝时只阻断、不判任务失败；iframe 落点复核发现内网落点仍会判任务失败（事后拒绝）。导航结束后还会复核最终 URL 与各 iframe 的落点。被拒目标在浏览器发出请求前即失败，错误类别为 `unsafe_target`。预检未完成（网络异常、无请求上下文）同样失败关闭，不会退化为普通导航；JS 导航的晚到拦截在任务结束与 Agent 每步观察前复核；异步路径中的门禁判定（含 DNS 解析）在线程池执行，不阻塞事件循环。残余风险：(1) 预检与浏览器连接之间的 DNS 重绑定窗口无法像 curl 那样钉扎，此路径为缓解而非根治；(2) iframe 的重定向链不经预检，落点复核只能在内网内容返回后事后拒绝，内网请求本身可能已发出。
 
 如果你在**自己可信的环境**中需要访问内网服务或云元数据类目标，可开启个人 Power Mode——只放行 host 校验，`http/https` scheme 白名单始终保留：
 

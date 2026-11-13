@@ -141,6 +141,14 @@ with StealthyFetcher(google_search=True, humanize=True) as f:
   为已知边界。重定向链由 `APIRequestContext` 逐跳预检（失败关闭），但预检与
   浏览器真正连接之间仍有 DNS 重绑定窗口，无法像 curl 路径那样钉扎。
   iframe（子框架）的重定向链同样不经预检，只能在落点上事后复核。
+  弹窗（`window.open`）的新页面不经过 `page.route`，由上下文级（`BrowserContext`）
+  route 守卫覆盖；子框架文档请求被 route 守卫拒绝时只阻断、不判任务失败
+  （iframe 落点复核发现内网落点仍会判任务失败）。
+  meta-refresh 与脚本导航的后续文档请求经 `page.route` 可见并被守卫拦截
+  （Chromium 与 Camoufox 双引擎实测），跳转目标自身为 302 链时链后段仍不经
+  预检（与主框架同类边界）。全部浏览器导航入口（MCP 工具、逆向 Agent 与
+  三个浏览器 fetcher）共用同一守卫；异步路径中的门禁判定（含 DNS 解析）在
+  线程池执行，不阻塞事件循环。
 
 ### Power Mode（默认关闭）
 

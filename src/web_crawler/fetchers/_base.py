@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from .._ssrf import (
@@ -120,6 +120,24 @@ class BaseFetcher:
             validate_url_scheme(url)
         else:
             validate_url(url, resolve=getattr(self, "resolve_hosts", False))
+
+    def _nav_check(self) -> Any:
+        """浏览器导航逐跳门禁：与入口校验同源（同一 ``_validate_target``）。
+
+        返回 :data:`~web_crawler._nav_guard.UrlCheck` 形态的判定函数：把入口校验
+        的异常语义转换为"返回拒绝原因"的契约，保证每一跳的判定与入口完全一致，
+        不产生第二份判定逻辑。
+        """
+        from ..exceptions import UnsafeTargetError
+
+        def check(url: str) -> str | None:
+            try:
+                self._validate_target(url)
+            except UnsafeTargetError as exc:
+                return str(exc)
+            return None
+
+        return check
 
     def _resolve_proxy(self) -> str | None:
         """解析下一个请求要使用的代理。

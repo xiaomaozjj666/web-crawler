@@ -83,10 +83,10 @@ class ReverseToolsMixin(HostContract):
                     "analyzer": self.agent.analyzer,
                     "event_bus": progress_bus,
                 }
-                # 复用原 Agent 的逐跳导航门禁；测试替身可能没有该属性。
-                url_guard = getattr(self.agent, "url_guard", None)
-                if url_guard is not None:
-                    agent_kwargs["url_guard"] = url_guard
+                # 复用原 Agent 的逐跳导航门禁（与宿主同配置）。ReverseAgent 恒有
+                # 该属性；缺失说明宿主对象不合法——AttributeError 上抛，而非
+                # 静默造出一个不带门禁的子 Agent（失败关闭）。
+                agent_kwargs["url_guard"] = self.agent.url_guard
                 run_agent = type(self.agent)(**agent_kwargs)
                 try:
                     result = run_agent.run(url=url, task=task)

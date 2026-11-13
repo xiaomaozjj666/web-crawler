@@ -2275,6 +2275,7 @@ class TestTaskErrorMessage:
 
 def test_run_job_passes_power_aware_url_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     """ReverseAgentRunner 构造的 Agent 必须带 Power Mode 兼容的导航门禁。"""
+    monkeypatch.delenv("WEB_CRAWLER_POWER_MODE", raising=False)
     from types import SimpleNamespace
 
     import web_crawler.ai.llm as llm_module

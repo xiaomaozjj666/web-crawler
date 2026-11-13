@@ -333,10 +333,12 @@ class _FakeAgent:
         provider: Any = None,
         analyzer: Any = None,
         event_bus: Any = None,
+        url_guard: Any = None,
     ) -> None:
         self.config = config
         self.provider = provider
         self.analyzer = analyzer
+        self.url_guard = url_guard  # 与 ReverseAgent 契约一致：_tools_reverse 直读本属性
 
     def run(self, url: str, task: str = "") -> dict:
         return {

@@ -48,10 +48,47 @@ def _make_sync_page(
     return page
 
 
+def _fake_sync_request(responses: list[Any] | None = None) -> Any:
+    """预检用 APIRequestContext 桩：默认 200 + 空头（视为链尾）；responses 逐个弹出。"""
+    seq = list(responses or [])
+
+    def _get(url: str, **kwargs: Any) -> Any:
+        if seq:
+            return seq.pop(0)
+        resp = MagicMock()
+        resp.status = 200
+        resp.headers = {}
+        resp.dispose = MagicMock()
+        return resp
+
+    req = MagicMock()
+    req.get = MagicMock(side_effect=_get)
+    return req
+
+
+def _fake_async_request(responses: list[Any] | None = None) -> Any:
+    """异步版预检桩。"""
+    seq = list(responses or [])
+
+    async def _get(url: str, **kwargs: Any) -> Any:
+        if seq:
+            return seq.pop(0)
+        resp = AsyncMock()
+        resp.status = 200
+        resp.headers = {}
+        resp.dispose = AsyncMock()
+        return resp
+
+    req = MagicMock()
+    req.get = AsyncMock(side_effect=_get)
+    return req
+
+
 def _make_sync_context(page: MagicMock | None = None) -> MagicMock:
     """构造伪造的 Playwright 同步 BrowserContext。"""
     ctx = MagicMock()
     ctx.new_page.return_value = page if page is not None else _make_sync_page()
+    ctx.request = _fake_sync_request()
     return ctx
 
 
@@ -91,6 +128,7 @@ def _make_async_page(
 def _make_async_context(page: AsyncMock | None = None) -> AsyncMock:
     ctx = AsyncMock()
     ctx.new_page.return_value = page if page is not None else _make_async_page()
+    ctx.request = _fake_async_request()
     return ctx
 
 
@@ -2004,3 +2042,55 @@ def test_param_validation_precedes_playwright_missing() -> None:
         pytest.raises(ValueError, match="cdp_url 与 user_data_dir"),
     ):
         DynamicFetcher(cdp_url="http://localhost:9222", user_data_dir="pw-profile")
+
+
+# ---------------------------------------------------------------------------
+# 导航守卫（P-1）：fetcher 浏览器导航逐跳校验
+# ---------------------------------------------------------------------------
+def test_render_page_refuses_private_redirect_before_goto() -> None:
+    """预检发现 302 → 内网：必须在 goto 之前拒绝，且异常类型为 UnsafeTargetError。"""
+    from web_crawler.exceptions import UnsafeTargetError
+
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+    # conftest 全局设 WEB_CRAWLER_ALLOW_PRIVATE_HOSTS=1：拒绝类测试必须显式关闭
+    f = DynamicFetcher(allow_private_hosts=False)
+    page = _make_sync_page()
+    ctx = _make_sync_context(page)
+    ctx.request = _fake_sync_request(
+        [_make_sync_response(302, {"location": "http://169.254.169.254/latest/meta-data/"})]
+    )
+    browser = _make_sync_browser(ctx)
+
+    with pytest.raises(UnsafeTargetError, match="重定向目标"):
+        f._render_page(browser, "https://93.184.216.34/x", None)
+    page.goto.assert_not_called()
+    f.close()
+
+
+def test_render_page_landing_check_refuses_private_iframe() -> None:
+    """iframe 落点为内网：渲染完成后、返回内容前被任务级复核拒绝。"""
+    from types import SimpleNamespace
+
+    from web_crawler.exceptions import UnsafeTargetError
+
+    if not compat.HAS_PLAYWRIGHT:
+        pytest.skip("playwright not installed")
+    f = DynamicFetcher(allow_private_hosts=False)  # conftest 默认放行本地，测试需显式关闭
+    page = _make_sync_page()
+    page.frames = [SimpleNamespace(url="http://169.254.169.254/x")]
+    ctx = _make_sync_context(page)
+    browser = _make_sync_browser(ctx)
+
+    with pytest.raises(UnsafeTargetError, match="frame"):
+        f._render_page(browser, "https://93.184.216.34/x", None)
+    f.close()
+
+
+def test_fetch_preserves_unsafe_target_error_type() -> None:
+    """入口校验拒绝时不被包装成 FetchError（调用方可精确分类 unsafe_target）。"""
+    from web_crawler.exceptions import UnsafeTargetError
+
+    f = DynamicFetcher(allow_private_hosts=False)  # conftest 默认放行本地，测试需显式关闭
+    with pytest.raises(UnsafeTargetError):
+        f.fetch("http://127.0.0.1/admin")

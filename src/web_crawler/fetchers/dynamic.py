@@ -33,7 +33,7 @@ from urllib.parse import unquote, urlparse
 from typing_extensions import Self
 
 from ..compat import require_playwright
-from ..exceptions import FetchError
+from ..exceptions import FetchError, UnsafeTargetError
 from ._base import BaseFetcher
 from .proxy import ProxyPool
 
@@ -374,12 +374,28 @@ class DynamicFetcher(BaseFetcher):
         try:
             page = context.new_page()
             self._setup_page(page)
+            # 逐跳导航守卫（预检重定向链 + route 拦截 + 落点复核），判定与
+            # 入口校验同源（见 _base._nav_check）
+            from .._nav_guard import (
+                frame_urls,
+                install_navigation_guard,
+                safe_goto_sync,
+                settle_refusal,
+            )
+            from ..exceptions import UnsafeTargetError
+
+            check = self._nav_check()
+            blocked_nav = install_navigation_guard(page, check)
             referer = "https://www.google.com/" if self.google_search else None
-            resp = page.goto(
+            resp = safe_goto_sync(
+                page,
+                context.request,
                 url,
+                check,
+                blocked=blocked_nav,
                 wait_until="domcontentloaded",
-                referer=referer,
                 timeout=self.timeout * 1000,
+                referer=referer,
             )
             self._post_load(page)
             if self.wait_selector:
@@ -392,6 +408,10 @@ class DynamicFetcher(BaseFetcher):
                     page.wait_for_load_state("networkidle", timeout=self.wait_timeout * 1000)
                 except PlaywrightTimeoutError:
                     pass
+            # 任务级复核：JS 导航的拦截可能晚于 goto 返回，iframe 落点不经预检
+            late = settle_refusal(blocked_nav, getattr(page, "url", ""), check, frame_urls(page))
+            if late:
+                raise UnsafeTargetError(late)
             content = page.content().encode("utf-8", errors="replace")
             status = resp.status if resp is not None else 200
             headers = dict(resp.headers) if resp is not None else {}
@@ -418,6 +438,9 @@ class DynamicFetcher(BaseFetcher):
         proxy_settings = self._parse_proxy(proxy)
         try:
             return self._render_page(browser, url, proxy_settings)
+        except UnsafeTargetError:
+            # 安全拒绝不包装成 FetchError：保持异常类型可被调用方精确分类
+            raise
         except Exception as exc:
             raise FetchError(f"dynamic fetch of {url} failed: {exc}") from exc
 
@@ -475,12 +498,26 @@ class DynamicFetcher(BaseFetcher):
         try:
             page = await context.new_page()
             await self._setup_page_async(page)
+            # 逐跳导航守卫（异步路径门禁经线程池执行，不阻塞事件循环）
+            from .._nav_guard import (
+                frame_urls,
+                install_navigation_guard_async,
+                safe_goto_async,
+                settle_refusal_async,
+            )
+
+            check = self._nav_check()
+            blocked_nav = await install_navigation_guard_async(page, check)
             referer = "https://www.google.com/" if self.google_search else None
-            resp = await page.goto(
+            resp = await safe_goto_async(
+                page,
+                context.request,
                 url,
+                check,
+                blocked=blocked_nav,
                 wait_until="domcontentloaded",
-                referer=referer,
                 timeout=self.timeout * 1000,
+                referer=referer,
             )
             await self._post_load_async(page)
             if self.wait_selector:
@@ -492,6 +529,12 @@ class DynamicFetcher(BaseFetcher):
                     await page.wait_for_load_state("networkidle", timeout=self.wait_timeout * 1000)
                 except PlaywrightTimeoutError:
                     pass
+            # 任务级复核：JS 导航的拦截可能晚于 goto 返回，iframe 落点不经预检
+            late = await settle_refusal_async(
+                blocked_nav, getattr(page, "url", ""), check, frame_urls(page)
+            )
+            if late:
+                raise UnsafeTargetError(late)
             content = (await page.content()).encode("utf-8", errors="replace")
             status = resp.status if resp is not None else 200
             headers = dict(resp.headers) if resp is not None else {}
@@ -517,6 +560,9 @@ class DynamicFetcher(BaseFetcher):
         proxy_settings = self._parse_proxy(proxy)
         try:
             return await self._render_page_async(browser, url, proxy_settings)
+        except UnsafeTargetError:
+            # 安全拒绝不包装成 FetchError：保持异常类型可被调用方精确分类
+            raise
         except Exception as exc:
             raise FetchError(f"dynamic async fetch of {url} failed: {exc}") from exc
 
@@ -588,9 +634,26 @@ class DynamicFetcher(BaseFetcher):
                 page.set_viewport_size({"width": viewport_width, "height": 768})
             self._setup_page(page)
 
+            # 逐跳导航守卫（同 fetch 路径；截图内容同样可能被用于下游决策）
+            from .._nav_guard import (
+                frame_urls,
+                install_navigation_guard,
+                safe_goto_sync,
+                settle_refusal,
+            )
+
+            check = self._nav_check()
+            blocked_nav = install_navigation_guard(page, check)
             referer = "https://www.google.com/" if self.google_search else None
-            page.goto(
-                url, wait_until="domcontentloaded", referer=referer, timeout=self.timeout * 1000
+            safe_goto_sync(
+                page,
+                context.request,
+                url,
+                check,
+                blocked=blocked_nav,
+                wait_until="domcontentloaded",
+                timeout=self.timeout * 1000,
+                referer=referer,
             )
             self._post_load(page)
 
@@ -603,6 +666,11 @@ class DynamicFetcher(BaseFetcher):
                     page.wait_for_load_state("networkidle", timeout=self.wait_timeout * 1000)
                 except PlaywrightTimeoutError:
                     pass
+
+            # 截图前复核：晚到的 JS 导航拦截与 iframe 落点
+            late = settle_refusal(blocked_nav, getattr(page, "url", ""), check, frame_urls(page))
+            if late:
+                raise UnsafeTargetError(late)
 
             # 获取整页尺寸
             dims: dict[str, float] = page.evaluate("""() => ({
@@ -698,9 +766,26 @@ class DynamicFetcher(BaseFetcher):
                 await page.set_viewport_size({"width": viewport_width, "height": 768})
             await self._setup_page_async(page)
 
+            # 逐跳导航守卫（同 fetch 路径；异步门禁经线程池执行）
+            from .._nav_guard import (
+                frame_urls,
+                install_navigation_guard_async,
+                safe_goto_async,
+                settle_refusal_async,
+            )
+
+            check = self._nav_check()
+            blocked_nav = await install_navigation_guard_async(page, check)
             referer = "https://www.google.com/" if self.google_search else None
-            await page.goto(
-                url, wait_until="domcontentloaded", referer=referer, timeout=self.timeout * 1000
+            await safe_goto_async(
+                page,
+                context.request,
+                url,
+                check,
+                blocked=blocked_nav,
+                wait_until="domcontentloaded",
+                timeout=self.timeout * 1000,
+                referer=referer,
             )
             await self._post_load_async(page)
 
@@ -713,6 +798,13 @@ class DynamicFetcher(BaseFetcher):
                     await page.wait_for_load_state("networkidle", timeout=self.wait_timeout * 1000)
                 except PlaywrightTimeoutError:
                     pass
+
+            # 截图前复核：晚到的 JS 导航拦截与 iframe 落点
+            late = await settle_refusal_async(
+                blocked_nav, getattr(page, "url", ""), check, frame_urls(page)
+            )
+            if late:
+                raise UnsafeTargetError(late)
 
             dims: dict[str, float] = await page.evaluate("""() => ({
                 width: Math.max(

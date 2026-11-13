@@ -75,8 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   即拒绝：预检异常未完成、无请求上下文、或门禁本身抛错，都不再退化为普通导航。
   `page.route` 守卫继续拦截 JS 主动发起的文档级导航；导航完成后、任务结束与
   Agent 每步观察前复核落点与晚到的拦截（JS 导航的 abort 可能在 `goto` 返回之后
-  才发生），被拒目标统一报告为 `unsafe_target`。同步与异步导航共用一套判定与
-  入口（`safe_goto_sync` / `safe_goto_async`）。
+  才发生），被拒目标统一报告为 `unsafe_target`。弹窗（`window.open`）产生的新
+  页面不经过 `page.route`（实测可直接访问内网），因此在 `BrowserContext` 层安装
+  同一守卫覆盖弹窗。注意分层语义：子框架（iframe）的文档请求被 route 守卫拒绝
+  时只阻断请求、不判任务失败；但 iframe 的落点复核（``settle_refusal``）发现
+  内网落点仍会判任务失败（事后拒绝，见下文残余风险）。同步与异步导航共用一套判定与入口（`safe_goto_sync` / `safe_goto_async`）。
   **残余风险（缓解，非根治）**：
   1. 预检与浏览器真正连接之间仍存在 DNS 重绑定窗口。curl 路径可用
      `CURLOPT_RESOLVE` 钉扎，Playwright 无等价能力，浏览器路径仅为缓解。
@@ -88,8 +91,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
      refresh steps——`;` / `,` / 空白分隔符、`url=` 关键字可省略（省略时整个
      余部即目标 URL）、引号形式截断于闭合引号；无时间前缀与空目标（原地刷新）
      放行，十进制时长（含前导点 ``.5``）等规范外形式失败关闭拒绝。
-     HTML `<meta http-equiv="refresh">` 与脚本跳转未经预检，依赖 route 守卫
-     （是否经 route 可见未实测）。
+     HTML `<meta http-equiv="refresh">` 与脚本跳转未经预检、由 route 守卫拦截：
+     Chromium 与 Camoufox 双引擎实测（2026-11-13）二者的后续文档请求均经
+     `page.route` 可见，守卫实际拦截得到；其目标自身为 302 链时链后段仍不经
+     预检（与主框架同类边界）。
   **验证**：单元与回归测试覆盖失败关闭、晚到拦截、游标语义与 iframe 落点接线；
   独立审查发现的五项已修复并补回归测试——Refresh 逗号/空白分隔与无 `url=`
   关键字形态绕过预检、收尾复核在已关闭页面上抛裸异常、`data:` / `blob:` 子框架
@@ -109,6 +114,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   白名单始终生效；host 校验与 fetcher 入口同一信任模型，
   `WEB_CRAWLER_POWER_MODE=1` 下放行私网目标（localhost 调试不受阻）。MCP
   浏览器工具的严格门禁（不认 Power Mode）保持不变。
+- **浏览器 fetcher 导航接入逐跳守卫**：DynamicFetcher / StealthyFetcher /
+  CamoufoxFetcher 的 `fetch` / `async_fetch` / `screenshot_tiles`（含异步）此前
+  仅入口 URL 校验，`page.goto` 内部跟随的 302 未经校验（与已修复的 MCP 绕过
+  同类）。现统一经 `_nav_guard.safe_goto_*`（预检链 + route 守卫 + 落点/iframe
+  复核），逐跳判定与入口校验同源（`_nav_check` 复用 `_validate_target`）；
+  `UnsafeTargetError` 不再被包装成 `FetchError`。真浏览器端到端
+  （`tests/test_e2e_nav_guard.py`，nightly 运行）：302 与 `Refresh` 头跳内网
+  在请求发出前拒绝、目标端点零命中。
+- **异步路径的同步 DNS 移出事件循环**：route 处理器、异步预检链与 Agent
+  每步/收尾复核中的门禁判定（可能含 `getaddrinfo`）改为线程池执行
+  （`_nav_guard._agate` / `settle_refusal_async`），不再阻塞 asyncio loop；
+  同步路径行为不变。
+- **`_tools_reverse` 去掉 getattr 回退**：子 run Agent 直读
+  `self.agent.url_guard`（ReverseAgent 恒有该属性），缺失即宿主对象不合法
+  直接报错，与「无 fail-open」原则一致。
 - **导航宿主契约改为显式报错（去掉 fail-open 回退）**：`ActionExecutor` 的
   导航路径曾用 `getattr` 探测宿主实现，缺失时退化为裸 `page.goto`，会绕过逐跳
   门禁。现为显式契约 stub（未实现即 `NotImplementedError`），导航动作失败关闭。

@@ -180,12 +180,28 @@ class CamoufoxFetcher(DynamicFetcher):
         try:
             page = context.new_page()
             self._setup_page(page)
+            # 逐跳导航守卫（预检重定向链 + route 拦截 + 落点复核），判定与
+            # 入口校验同源（见 _base._nav_check）
+            from .._nav_guard import (
+                frame_urls,
+                install_navigation_guard,
+                safe_goto_sync,
+                settle_refusal,
+            )
+            from ..exceptions import UnsafeTargetError
+
+            check = self._nav_check()
+            blocked_nav = install_navigation_guard(page, check)
             referer = "https://www.google.com/" if self.google_search else None
-            resp = page.goto(
+            resp = safe_goto_sync(
+                page,
+                context.request,
                 url,
+                check,
+                blocked=blocked_nav,
                 wait_until="domcontentloaded",
-                referer=referer,
                 timeout=self.timeout * 1000,
+                referer=referer,
             )
             self._post_load(page)
             if self.wait_selector:
@@ -197,6 +213,10 @@ class CamoufoxFetcher(DynamicFetcher):
                     page.wait_for_load_state("networkidle", timeout=self.wait_timeout * 1000)
                 except PlaywrightTimeoutError:
                     pass
+            # 任务级复核：JS 导航的拦截可能晚于 goto 返回，iframe 落点不经预检
+            late = settle_refusal(blocked_nav, getattr(page, "url", ""), check, frame_urls(page))
+            if late:
+                raise UnsafeTargetError(late)
             content = page.content().encode("utf-8", errors="replace")
             status = resp.status if resp is not None else 200
             headers = dict(resp.headers) if resp is not None else {}
@@ -222,12 +242,27 @@ class CamoufoxFetcher(DynamicFetcher):
         try:
             page = await context.new_page()
             await self._setup_page_async(page)
+            # 逐跳导航守卫（异步路径门禁经线程池执行，不阻塞事件循环）
+            from .._nav_guard import (
+                frame_urls,
+                install_navigation_guard_async,
+                safe_goto_async,
+                settle_refusal_async,
+            )
+            from ..exceptions import UnsafeTargetError
+
+            check = self._nav_check()
+            blocked_nav = await install_navigation_guard_async(page, check)
             referer = "https://www.google.com/" if self.google_search else None
-            resp = await page.goto(
+            resp = await safe_goto_async(
+                page,
+                context.request,
                 url,
+                check,
+                blocked=blocked_nav,
                 wait_until="domcontentloaded",
-                referer=referer,
                 timeout=self.timeout * 1000,
+                referer=referer,
             )
             await self._post_load_async(page)
             if self.wait_selector:
@@ -239,6 +274,12 @@ class CamoufoxFetcher(DynamicFetcher):
                     await page.wait_for_load_state("networkidle", timeout=self.wait_timeout * 1000)
                 except PlaywrightTimeoutError:
                     pass
+            # 任务级复核：JS 导航的拦截可能晚于 goto 返回，iframe 落点不经预检
+            late = await settle_refusal_async(
+                blocked_nav, getattr(page, "url", ""), check, frame_urls(page)
+            )
+            if late:
+                raise UnsafeTargetError(late)
             content = (await page.content()).encode("utf-8", errors="replace")
             status = resp.status if resp is not None else 200
             headers = dict(resp.headers) if resp is not None else {}

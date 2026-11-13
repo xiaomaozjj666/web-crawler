@@ -191,6 +191,7 @@ def test_cli_run_save_script_to_file(
 
 def test_cmd_run_passes_power_aware_url_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     """cmd_run 构造的 Agent 必须带 Power Mode 兼容的导航门禁（本地入口 fail-closed）。"""
+    monkeypatch.delenv("WEB_CRAWLER_POWER_MODE", raising=False)
     from web_crawler.mcp import cli as cli_module
 
     captured: dict[str, Any] = {}

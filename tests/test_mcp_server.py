@@ -729,10 +729,12 @@ class _FakeAgent:
         provider: Any = None,
         analyzer: Any = None,
         event_bus: Any = None,
+        url_guard: Any = None,
     ) -> None:
         self.config = config or _FakeAgentConfig()
         self.provider = provider
         self.analyzer = analyzer
+        self.url_guard = url_guard  # 与 ReverseAgent 契约一致：子 run Agent 直读本属性
         self.run_called = False
         self.closed = False
 
@@ -2587,11 +2589,13 @@ def test_tool_reverse_engineer_url_step_end_callback(
             provider: Any = None,
             analyzer: Any = None,
             event_bus: Any = None,
+            url_guard: Any = None,
         ) -> None:
             self.config = config or _FakeAgentConfig()
             self.provider = provider
             self.analyzer = analyzer
             self.event_bus = event_bus
+            self.url_guard = url_guard
 
         def run(self, url: str, task: str = "") -> dict:
             # 模拟 agent 发出 step.end 事件
@@ -3060,9 +3064,14 @@ def test_tool_reverse_engineer_url_max_steps_capped(
             provider: Any = None,
             analyzer: Any = None,
             event_bus: Any = None,
+            url_guard: Any = None,
         ) -> None:
             super().__init__(
-                config=config, provider=provider, analyzer=analyzer, event_bus=event_bus
+                config=config,
+                provider=provider,
+                analyzer=analyzer,
+                event_bus=event_bus,
+                url_guard=url_guard,
             )
             recorded["config"] = config
 
@@ -3101,9 +3110,14 @@ def test_tool_reverse_engineer_url_run_config_preserves_base(
             provider: Any = None,
             analyzer: Any = None,
             event_bus: Any = None,
+            url_guard: Any = None,
         ) -> None:
             super().__init__(
-                config=config, provider=provider, analyzer=analyzer, event_bus=event_bus
+                config=config,
+                provider=provider,
+                analyzer=analyzer,
+                event_bus=event_bus,
+                url_guard=url_guard,
             )
             recorded["config"] = config
 

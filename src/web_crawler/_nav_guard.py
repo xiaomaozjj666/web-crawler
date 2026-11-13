@@ -18,7 +18,9 @@ Playwright 的 ``page.goto`` 会自动跟随 HTTP 重定向，且跳转发生在
   内部跟随的重定向跳转（只有首个请求进 handler），因此这一层是防 302
   绕过的关键。
 * :func:`safe_goto_sync` / :func:`safe_goto_async` 把上面两层与落点复核编排
-  成一个入口；MCP 浏览器工具与逆向 Agent 的导航统一经此。**失败关闭**：预检异常、预检
+  成一个入口；MCP 浏览器工具、逆向 Agent 与三个浏览器 fetcher
+  （DynamicFetcher / StealthyFetcher / CamoufoxFetcher）的导航统一经此。
+  **失败关闭**：预检异常、预检
   未完成、缺少 request 上下文、链上存在非公网目标、route 守卫拦截、落点非公网，
   任一情形都抛 :class:`~web_crawler.exceptions.UnsafeTargetError`。
 
@@ -35,15 +37,19 @@ Playwright 的 ``page.goto`` 会自动跟随 HTTP 重定向，且跳转发生在
   属于事后拦截。
 * 子框架（iframe）的重定向链不经预检：浏览器在子框架内部跟随的 302 同样不经
   route。子框架的直接请求会被逐个判定，但跳转链的后段未被校验。
-* fetcher 自身的浏览器导航（DynamicFetcher / StealthyFetcher / CamoufoxFetcher
-  的 ``fetch``）不经本模块守卫，仅有入口 URL 校验；本守卫覆盖 MCP 浏览器工具
-  与逆向 Agent 的导航路径。
+* meta-refresh 与脚本导航：双引擎实测（Chromium + Camoufox，2026-11-13）其
+  后续文档请求均经 ``page.route`` 可见并被守卫拦截；跳转目标自身是 302 链时
+  链后段仍不经预检（与主框架同类边界）。
+* 异步上下文中的门禁判定（可能含同步 ``getaddrinfo``）经线程池执行
+  （:func:`_agate`），不阻塞事件循环。
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Callable, Iterable
+from functools import partial
 from typing import Any, NamedTuple
 from urllib.parse import urljoin, urlsplit
 
@@ -113,6 +119,16 @@ def _gate(check_url: UrlCheck, url: str) -> str | None:
         return "navigation guard failed"
 
 
+async def _agate(check_url: UrlCheck, url: str) -> str | None:
+    """异步上下文中的门禁调用（:func:`_gate` 的非阻塞版）。
+
+    check_url 可能做同步 DNS 解析（``socket.getaddrinfo``，秒级阻塞）；事件循环
+    内直接调用会卡住整个 loop，因此放到默认线程池执行。
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _gate, check_url, url)
+
+
 def _refuse(reason: str) -> UnsafeTargetError:
     """统一的导航拒绝异常，消息前缀固定便于日志与分类检索。"""
     return UnsafeTargetError(f"navigation blocked: {reason}")
@@ -180,7 +196,8 @@ def _make_guard_async(check_url: UrlCheck, blocked: list[str]) -> Callable[[Any]
                 await route.continue_()
                 return
             url = _request_url(route)
-            if not _gate(check_url, url):
+            # 门禁可能做同步 DNS：经线程池执行，不阻塞事件循环（见 _agate）
+            if not await _agate(check_url, url):
                 await route.continue_()
                 return
             if not _is_subframe(route):
@@ -202,6 +219,11 @@ def install_navigation_guard(
     文档请求；``page.goto`` 会因此抛错，调用方应据此返回 ``unsafe_target``。
     传入 ``blocked`` 可让同一会话的多个页面共享拦截记录。仅覆盖该页；弹窗等
     新页面请同时安装 :func:`install_context_navigation_guard`。
+
+    注册顺序约束：Playwright 后注册者先执行，且本守卫放行时用 ``continue_()``
+    短路整条 handler 链——因此本守卫必须是该 route 层**最后注册**的 handler；
+    之后若在同一 ``page.route("**/*")`` 上再注册别的 handler（如资源拦截），
+    会被本守卫的 ``continue_()`` 旁路而失效。
     """
     blocked = [] if blocked is None else blocked
     page.route("**/*", _make_guard(check_url, blocked))
@@ -395,7 +417,7 @@ async def resolve_redirect_chain_async(
 ) -> RedirectProbe:
     """异步版 :func:`resolve_redirect_chain_sync`（Playwright async API）。"""
     # 入口 URL 也必须在发起任何请求前校验（见同步版说明）。
-    entry_error = _gate(check_url, url)
+    entry_error = await _agate(check_url, url)
     if entry_error:
         return RedirectProbe(url, (url,), (url,), True)
     current = url
@@ -417,7 +439,7 @@ async def resolve_redirect_chain_async(
             blocked.append(location)
             return RedirectProbe(current, tuple(chain), tuple(blocked), True)
         nxt = urljoin(current, location)
-        if _gate(check_url, nxt):
+        if await _agate(check_url, nxt):
             blocked.append(nxt)
             return RedirectProbe(current, tuple(chain), tuple(blocked), True)
         chain.append(nxt)
@@ -454,16 +476,15 @@ _BROWSER_INTERNAL_PREFIXES = ("about:", "chrome-error:")
 _NON_NETWORK_PREFIXES = ("data:", "blob:")
 
 
-def _post_goto_refusal(
-    blocked: list[str], before: int, page_url: Any, check_url: UrlCheck
-) -> str | None:
-    """导航完成后的复核：route 守卫是否拦过新请求、落点是否仍为公网。
-
-    浏览器内部页（``about:blank``、``chrome-error:`` 错误页）不含网络内容，不做
-    落点判定；导航被 abort 时真正的拦截已记录在 ``blocked`` 中。
-    """
+def _blocked_refusal(blocked: list[str], before: int) -> str | None:
+    """route 守卫新增拦截记录 → 拒绝原因（纯内存判定，无 DNS）。"""
     if len(blocked) > before:
         return f"navigation blocked: 重定向目标 {blocked[-1]!r} 不是公网地址"
+    return None
+
+
+def _landing_refusal(page_url: Any, check_url: UrlCheck) -> str | None:
+    """落点 URL 门禁判定（可能触发同步 DNS，事件循环内须用异步版）。"""
     if (
         isinstance(page_url, str)
         and page_url
@@ -473,6 +494,33 @@ def _post_goto_refusal(
         if error:
             return f"navigation landed on disallowed url {page_url!r}: {error}"
     return None
+
+
+async def _landing_refusal_async(page_url: Any, check_url: UrlCheck) -> str | None:
+    """异步版 :func:`_landing_refusal`：门禁经线程池执行（见 :func:`_agate`）。"""
+    if (
+        isinstance(page_url, str)
+        and page_url
+        and not page_url.startswith(_BROWSER_INTERNAL_PREFIXES)
+    ):
+        error = await _agate(check_url, page_url)
+        if error:
+            return f"navigation landed on disallowed url {page_url!r}: {error}"
+    return None
+
+
+def _post_goto_refusal(
+    blocked: list[str], before: int, page_url: Any, check_url: UrlCheck
+) -> str | None:
+    """导航完成后的复核：route 守卫是否拦过新请求、落点是否仍为公网。
+
+    浏览器内部页（``about:blank``、``chrome-error:`` 错误页）不含网络内容，不做
+    落点判定；导航被 abort 时真正的拦截已记录在 ``blocked`` 中。
+    """
+    refusal = _blocked_refusal(blocked, before)
+    if refusal:
+        return refusal
+    return _landing_refusal(page_url, check_url)
 
 
 def frame_urls(page: Any) -> list[str]:
@@ -519,6 +567,23 @@ def settle_refusal(
     return None
 
 
+async def settle_refusal_async(
+    blocked: list[str],
+    page_url: Any,
+    check_url: UrlCheck,
+    frames: Iterable[str] = (),
+) -> str | None:
+    """异步版 :func:`settle_refusal`：门禁（可能含同步 DNS）放入线程池执行。
+
+    供事件循环内的调用方（逆向 Agent 主循环、异步 fetcher）使用，避免逐帧
+    DNS 解析阻塞整个 loop。
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None, partial(settle_refusal, blocked, page_url, check_url, frames)
+    )
+
+
 def _preflight_timeout(timeout: float) -> int:
     """预检超时（毫秒）：不超过导航超时与 :data:`PREFLIGHT_TIMEOUT_CAP_MS`。
 
@@ -541,12 +606,15 @@ def safe_goto_sync(
     blocked: list[str],
     wait_until: str = "domcontentloaded",
     timeout: float = 30000,
-) -> None:
+    referer: str | None = None,
+) -> Any:
     """同步页面的受门禁导航：预检整条跳转链 → 导航到已校验链尾 → 复核落点。
 
     前置条件：守卫已由 :func:`install_navigation_guard` 安装在 ``page`` 上，且
     传入的 ``blocked`` 与安装时为同一列表。所有拒绝都发生在 ``goto`` 之前或之后
     的判定中，且拒绝路径一律抛 :class:`~web_crawler.exceptions.UnsafeTargetError`。
+    ``referer`` 为调用方显式指定的来源（如 fetcher 的 google_search）；未指定时
+    发生重定向才以入口 URL 作为 referer。返回 ``page.goto`` 的响应对象。
     """
     if request_context is None:
         raise _refuse(_NO_REQUEST_CONTEXT + "（按失败关闭拒绝导航）")
@@ -561,15 +629,21 @@ def safe_goto_sync(
     if refusal:
         raise _refuse(refusal)
     before = len(blocked)
+    goto_kwargs = _goto_kwargs(url, probe, wait_until, timeout)
+    if referer is not None:
+        goto_kwargs["referer"] = referer
     try:
-        page.goto(probe.url, **_goto_kwargs(url, probe, wait_until, timeout))
+        resp = page.goto(probe.url, **goto_kwargs)
     except Exception as exc:
         if len(blocked) > before:
             raise _refuse(f"重定向目标 {blocked[-1]!r} 不是公网地址") from exc
         raise
+    # goto 成功不等于安全：落点复核必须执行完毕才能把响应交出去
+    # （曾写成 return page.goto(...)，成功路径直接返回、跳过落点复核——3 个测试当场抓住）
     refusal = _post_goto_refusal(blocked, before, getattr(page, "url", ""), check_url)
     if refusal:
         raise UnsafeTargetError(refusal)
+    return resp
 
 
 async def safe_goto_async(
@@ -581,8 +655,9 @@ async def safe_goto_async(
     blocked: list[str],
     wait_until: str = "domcontentloaded",
     timeout: float = 30000,
-) -> None:
-    """异步版 :func:`safe_goto_sync`（Playwright async API）。"""
+    referer: str | None = None,
+) -> Any:
+    """异步版 :func:`safe_goto_sync`（Playwright async API）。返回 ``page.goto`` 响应。"""
     if request_context is None:
         raise _refuse(_NO_REQUEST_CONTEXT + "（按失败关闭拒绝导航）")
     probe = await resolve_redirect_chain_async(
@@ -596,12 +671,19 @@ async def safe_goto_async(
     if refusal:
         raise _refuse(refusal)
     before = len(blocked)
+    goto_kwargs = _goto_kwargs(url, probe, wait_until, timeout)
+    if referer is not None:
+        goto_kwargs["referer"] = referer
     try:
-        await page.goto(probe.url, **_goto_kwargs(url, probe, wait_until, timeout))
+        resp = await page.goto(probe.url, **goto_kwargs)
     except Exception as exc:
         if len(blocked) > before:
             raise _refuse(f"重定向目标 {blocked[-1]!r} 不是公网地址") from exc
         raise
-    refusal = _post_goto_refusal(blocked, before, getattr(page, "url", ""), check_url)
+    refusal = _blocked_refusal(blocked, before)
     if refusal:
         raise UnsafeTargetError(refusal)
+    refusal = await _landing_refusal_async(getattr(page, "url", ""), check_url)
+    if refusal:
+        raise UnsafeTargetError(refusal)
+    return resp
