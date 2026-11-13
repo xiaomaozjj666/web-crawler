@@ -165,16 +165,23 @@ def _make_guard(check_url: UrlCheck, blocked: list[str]) -> Callable[[Any], None
     主框架文档被拒：记入 ``blocked`` 并 abort，调用方据此判定任务失败。
     子框架（iframe）文档被拒：只 abort、不记入——第三方广告框指向私网或解析
     失败的域名不应杀掉整次任务；请求本身已被阻断，不会向内网发出。
+
+    放行路径用 :meth:`~playwright.sync_api.Route.fallback` 而非 ``continue_``：
+    Playwright 按"后注册先执行"派发处理器链，``continue_()`` 会终结整条链——
+    守卫后注册（最后执行的是最先注册的资源拦截器之前的逻辑，即守卫最先跑）时
+    ``continue_()`` 会让先注册的资源拦截器（block_images 等）再也收不到请求；
+    ``fallback()`` 把请求交还给链上更早注册的处理器，链耗尽时等效放行。
     """
 
     def _guard(route: Any) -> None:
         try:
             if not _is_document(route):
-                route.continue_()
+                # 非文档请求交给链上更早注册的处理器（资源拦截器等）
+                route.fallback()
                 return
             url = _request_url(route)
             if not _gate(check_url, url):
-                route.continue_()
+                route.fallback()
                 return
             if not _is_subframe(route):
                 blocked.append(url)
@@ -188,17 +195,17 @@ def _make_guard(check_url: UrlCheck, blocked: list[str]) -> Callable[[Any], None
 
 
 def _make_guard_async(check_url: UrlCheck, blocked: list[str]) -> Callable[[Any], Any]:
-    """异步版 :func:`_make_guard`。"""
+    """异步版 :func:`_make_guard`（放行路径同为 ``fallback``，见其文档）。"""
 
     async def _guard(route: Any) -> None:
         try:
             if not _is_document(route):
-                await route.continue_()
+                await route.fallback()
                 return
             url = _request_url(route)
             # 门禁可能做同步 DNS：经线程池执行，不阻塞事件循环（见 _agate）
             if not await _agate(check_url, url):
-                await route.continue_()
+                await route.fallback()
                 return
             if not _is_subframe(route):
                 blocked.append(url)
@@ -220,10 +227,12 @@ def install_navigation_guard(
     传入 ``blocked`` 可让同一会话的多个页面共享拦截记录。仅覆盖该页；弹窗等
     新页面请同时安装 :func:`install_context_navigation_guard`。
 
-    注册顺序约束：Playwright 后注册者先执行，且本守卫放行时用 ``continue_()``
-    短路整条 handler 链——因此本守卫必须是该 route 层**最后注册**的 handler；
-    之后若在同一 ``page.route("**/*")`` 上再注册别的 handler（如资源拦截），
-    会被本守卫的 ``continue_()`` 旁路而失效。
+    注册顺序约束：Playwright 按"后注册先执行"派发 handler 链，``continue_()``
+    会终结整条链——**先注册**的 handler 会被后注册者的 ``continue_()`` 旁路；
+    本守卫放行时用 ``fallback()`` 把请求交还链上更早注册的处理器（资源拦截等），
+    链耗尽时等效放行，因此守卫必须在资源拦截器**之后**注册（即最先执行）。
+    反之，守卫安装**之后**若再注册对文档请求 ``continue_()`` 的 handler，该
+    handler 会先于守卫执行并旁路守卫（安全洞）——禁止这样做。
     """
     blocked = [] if blocked is None else blocked
     page.route("**/*", _make_guard(check_url, blocked))

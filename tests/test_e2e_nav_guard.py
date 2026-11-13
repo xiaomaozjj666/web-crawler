@@ -60,6 +60,7 @@ class _GuardServer:
 
     def __init__(self) -> None:
         self.private_hits: list[str] = []
+        self.image_hits: list[str] = []
         self._lock = threading.Lock()
         server = ThreadingHTTPServer(("127.0.0.1", 0), self._make_handler())
         self.port = server.server_address[1]
@@ -81,6 +82,16 @@ class _GuardServer:
                     with outer._lock:
                         outer.private_hits.append(self.path)
                     self._respond(200, b"PRIVATE-HIT")
+                elif path == "/hit-image":
+                    with outer._lock:
+                        outer.image_hits.append(self.path)
+                    self._respond(200, b"IMG", headers={"Content-Type": "image/png"})
+                elif path == "/imgpage":
+                    self._respond(
+                        200,
+                        b'<html><body><img src="/hit-image"></body></html>',
+                        headers={"Content-Type": "text/html"},
+                    )
                 elif path == "/ok":
                     self._respond(200, b"OK-PAGE-CONTENT")
                 elif path == "/start302":
@@ -193,13 +204,6 @@ def test_e2e_fetcher_preflight_refuses_refresh_header_to_private(guard_server: A
 # 实测记录：无守卫时 Chromium 与 Camoufox 的后续文档请求均进 page.route 且
 # 服务器收到命中（.arts/route_visibility.json，2026-11-13）。
 # ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# meta-refresh / JS 导航的 route 可见性（双引擎实测后的固化：守卫必须拦截）
-# 实测记录：无守卫时 Chromium 与 Camoufox 的后续文档请求均进 page.route 且
-# 服务器收到命中（.arts/route_visibility.json，2026-11-13）。
-# ---------------------------------------------------------------------------
 @pytest.mark.parametrize("entry,marker", [("/meta2", "meta-refresh"), ("/jsnav2", "js-nav")])
 def test_e2e_route_guard_intercepts_meta_and_js_navigation(
     guard_server: Any, entry: str, marker: str
@@ -226,3 +230,24 @@ def test_e2e_route_guard_intercepts_meta_and_js_navigation(
             context.close()
         finally:
             browser.close()
+
+
+def test_e2e_block_images_survives_guard_chain(guard_server: Any) -> None:
+    """Important-1 回归：导航守卫与资源拦截共存——图片请求被拦截（服务器零命中）。
+
+    Playwright 的 route 链按"后注册先执行"派发；守卫（后注册）放行时用
+    fallback 而非 continue_，否则先注册的资源拦截器永远收不到请求。
+    """
+    f = DynamicFetcher(
+        allow_private_hosts=True,
+        headless=True,
+        timeout=15,
+        block_images=True,
+    )
+    try:
+        resp = f.fetch(f"{guard_server.base}/imgpage")
+        assert resp.status == 200
+        assert b"<img" in resp.content
+        assert guard_server.image_hits == [], "图片请求穿透了守卫链（block_images 失效）"
+    finally:
+        f.close()

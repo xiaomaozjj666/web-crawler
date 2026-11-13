@@ -184,6 +184,7 @@ class CamoufoxFetcher(DynamicFetcher):
             # 入口校验同源（见 _base._nav_check）
             from .._nav_guard import (
                 frame_urls,
+                install_context_navigation_guard,
                 install_navigation_guard,
                 safe_goto_sync,
                 settle_refusal,
@@ -191,7 +192,9 @@ class CamoufoxFetcher(DynamicFetcher):
             from ..exceptions import UnsafeTargetError
 
             check = self._nav_check()
-            blocked_nav = install_navigation_guard(page, check)
+            # context 级守卫覆盖弹窗（window.open 的新页面不经过 page.route）
+            blocked_nav = install_context_navigation_guard(context, check)
+            install_navigation_guard(page, check, blocked=blocked_nav)
             referer = "https://www.google.com/" if self.google_search else None
             resp = safe_goto_sync(
                 page,
@@ -245,6 +248,7 @@ class CamoufoxFetcher(DynamicFetcher):
             # 逐跳导航守卫（异步路径门禁经线程池执行，不阻塞事件循环）
             from .._nav_guard import (
                 frame_urls,
+                install_context_navigation_guard_async,
                 install_navigation_guard_async,
                 safe_goto_async,
                 settle_refusal_async,
@@ -252,7 +256,9 @@ class CamoufoxFetcher(DynamicFetcher):
             from ..exceptions import UnsafeTargetError
 
             check = self._nav_check()
-            blocked_nav = await install_navigation_guard_async(page, check)
+            # context 级守卫覆盖弹窗（window.open 的新页面不经过 page.route）
+            blocked_nav = await install_context_navigation_guard_async(context, check)
+            await install_navigation_guard_async(page, check, blocked=blocked_nav)
             referer = "https://www.google.com/" if self.google_search else None
             resp = await safe_goto_async(
                 page,

@@ -1511,13 +1511,13 @@ def test_run_browser_task_injects_hooks_in_main_world(
     page.goto.assert_called_once()
     page.wait_for_timeout.assert_called_once_with(500)
     context.close.assert_called_once()
-    # 导航守卫：文档请求走门禁后放行，子资源不逐跳判定
+    # 导航守卫：文档请求走门禁后放行（fallback 交还链上更早的处理器），子资源不逐跳判定
     handler = page.route.call_args.args[1]
     allowed = MagicMock()
     allowed.request.resource_type = "document"
     allowed.request.url = "http://127.0.0.1:9/x"
     handler(allowed)
-    allowed.continue_.assert_called_once()
+    allowed.fallback.assert_called_once()
 
     # 未通过 SSRF 门禁时不得触碰浏览器
     monkeypatch.setattr(server_module, "_check_url", lambda url: "blocked target")

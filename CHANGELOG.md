@@ -129,6 +129,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`_tools_reverse` 去掉 getattr 回退**：子 run Agent 直读
   `self.agent.url_guard`（ReverseAgent 恒有该属性），缺失即宿主对象不合法
   直接报错，与「无 fail-open」原则一致。
+- **修复资源拦截与导航守卫互斥（route 链 fallback 语义）**：Playwright 按
+  「后注册先执行」派发 route 处理器且 `continue_()` 终结整条链，守卫放行
+  `continue_()` 会让先注册的 `block_images` / `disable_resources` 静默失效
+  （独立审查用真实 Chromium 复现）。现放行路径一律 `fallback()` 交还链上
+  更早注册的处理器，真浏览器 E2E 锁定图片零命中；守卫必须在资源拦截器
+  之后注册，其后注册并 `continue_()` 文档请求的处理器会绕过守卫（文档已
+  声明为禁止）。
+- **fetcher 安装 context 级导航守卫**：`window.open` 弹窗不经过 `page.route`，
+  六个 fetcher 导航点现同时安装 BrowserContext 层守卫（与 page 级共享拦截
+  记录），弹窗导航同样失败关闭。
 - **导航宿主契约改为显式报错（去掉 fail-open 回退）**：`ActionExecutor` 的
   导航路径曾用 `getattr` 探测宿主实现，缺失时退化为裸 `page.goto`，会绕过逐跳
   门禁。现为显式契约 stub（未实现即 `NotImplementedError`），导航动作失败关闭。

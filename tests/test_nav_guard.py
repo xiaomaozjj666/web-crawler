@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from web_crawler._nav_guard import (
+    _make_guard,
     _redirect_target,
     frame_urls,
     install_context_navigation_guard,
@@ -35,10 +36,15 @@ class _Route:
     def __init__(self, url: str, resource_type: str = "document") -> None:
         self.request = _Request(url, resource_type)
         self.continued = False
+        self.fell_back = False
         self.aborted = False
 
     def continue_(self) -> None:
         self.continued = True
+
+    def fallback(self) -> None:
+        # 守卫放行 = 交还链上更早注册的处理器（本桩直接标记）
+        self.fell_back = True
 
     def abort(self) -> None:
         self.aborted = True
@@ -62,7 +68,7 @@ def test_sync_guard_allows_public_document() -> None:
     route = _Route("https://example.com/a")
     page.handler(route)
 
-    assert route.continued is True
+    assert route.fell_back is True
     assert route.aborted is False
     assert blocked == []
 
@@ -91,7 +97,7 @@ def test_sync_guard_passes_non_document_without_checking() -> None:
     route = _Route("http://127.0.0.1/app.js", resource_type="script")
     page.handler(route)
 
-    assert route.continued is True
+    assert route.fell_back is True
     assert calls == []  # 子资源不走逐跳判定（输出侧打码负责）
 
 
@@ -122,6 +128,9 @@ class _AsyncRoute(_Route):
     async def continue_(self) -> None:  # type: ignore[override]
         self.continued = True
 
+    async def fallback(self) -> None:  # type: ignore[override]
+        self.fell_back = True
+
     async def abort(self) -> None:  # type: ignore[override]
         self.aborted = True
 
@@ -143,11 +152,11 @@ async def test_async_guard_allows_and_blocks() -> None:
 
     allowed = _AsyncRoute("https://public.example/a")
     await page.handler(allowed)
-    assert allowed.continued is True and allowed.aborted is False
+    assert allowed.fell_back is True and allowed.aborted is False
 
     denied = _AsyncRoute("http://10.0.0.1/admin")
     await page.handler(denied)
-    assert denied.aborted is True and denied.continued is False
+    assert denied.aborted is True and denied.fell_back is False
     assert blocked == ["http://10.0.0.1/admin"]
 
 
@@ -165,7 +174,7 @@ async def test_async_guard_skips_non_document() -> None:
     route = _AsyncRoute("https://example.com/api", resource_type="xhr")
     await page.handler(route)
 
-    assert route.continued is True
+    assert route.fell_back is True
     assert calls == []
 
 
@@ -879,8 +888,8 @@ def test_sync_guard_handler_exception_records_and_aborts() -> None:
     """handler 内部异常（continue 失败）：必须 abort 并记录，不能让请求挂起。"""
 
     class _BrokenRoute(_Route):
-        def continue_(self) -> None:
-            raise RuntimeError("continue failed")
+        def fallback(self) -> None:
+            raise RuntimeError("fallback failed")
 
     page = _Page()
     blocked = install_navigation_guard(page, _allow)
@@ -895,8 +904,8 @@ def test_sync_guard_handler_exception_records_and_aborts() -> None:
 @pytest.mark.asyncio
 async def test_async_guard_handler_exception_records_and_aborts() -> None:
     class _BrokenAsyncRoute(_AsyncRoute):
-        async def continue_(self) -> None:  # type: ignore[override]
-            raise RuntimeError("continue failed")
+        async def fallback(self) -> None:  # type: ignore[override]
+            raise RuntimeError("fallback failed")
 
     page = _AsyncPage()
     blocked = await install_navigation_guard_async(page, _allow)
@@ -1041,3 +1050,67 @@ def test_safe_goto_sync_no_referer_no_redirect_keeps_default() -> None:
     page = _SafePage(url=PUBLIC)
     safe_goto_sync(page, req, PUBLIC, _allow, blocked=[], timeout=5000)
     assert "referer" not in page.goto_calls[0][1]
+
+
+class _ChainPage:
+    """按 Playwright 语义派发的最小 route 链模型：后注册先执行。
+
+    fallback() → 交还下一个（更早注册的）handler；continue_() → 终结整条链；
+    abort() → 终结。用于验证"守卫 + 资源拦截器"组合下两者都生效。
+    """
+
+    def __init__(self) -> None:
+        self._older: list[Any] = []  # 先注册
+        self._newer: list[Any] = []  # 后注册（守卫）
+
+    def register(self, handler: Any, *, newer: bool) -> None:
+        (self._newer if newer else self._older).append(handler)
+
+    def _dispatch(self, route: Any, handlers: list[Any]) -> None:
+        # handlers 按注册顺序；Playwright 从最新开始
+        idx = len(handlers) - 1
+        while idx >= 0:
+            handler = handlers[idx]
+            handler(route)
+            if route.aborted or route.continued:
+                return
+            if route.fell_back:
+                idx -= 1
+                continue
+            # handler 既未终结也未交还：视为链耗尽放行
+            return
+
+    def dispatch(self, route: Any) -> None:
+        self._dispatch(route, self._older + self._newer)
+
+
+def test_guard_registered_last_does_not_bypass_resource_blocker() -> None:
+    """Important-1 回归：守卫后注册（先执行），fallback 必须把非文档请求交还先注册的资源拦截器。"""
+    page = _ChainPage()
+    images: list[str] = []
+
+    def blocker(route: Any) -> None:  # 先注册：拦截 image
+        if route.request.resource_type == "image":
+            images.append(route.request.url)
+            route.abort()
+            return
+        route.continue_()
+
+    blocked: list[str] = []
+    page.register(blocker, newer=False)
+    page.register(_make_guard(_deny_metadata, blocked), newer=True)  # 后注册：守卫先执行
+
+    doc = _Route(PUBLIC)
+    page.dispatch(doc)
+    assert doc.fell_back or doc.continued
+    assert doc.aborted is False
+
+    img = _Route("https://public.example/pic.png", resource_type="image")
+    page.dispatch(img)
+    assert images == ["https://public.example/pic.png"], "资源拦截器被守卫旁路（Important-1 回归）"
+    assert img.aborted is True
+
+    bad = _Route("http://169.254.169.254/x")
+    page.dispatch(bad)
+    assert bad.aborted is True
+    assert blocked == ["http://169.254.169.254/x"]
