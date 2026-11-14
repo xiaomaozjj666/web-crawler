@@ -22,6 +22,7 @@ _HELP = (
     "  web-crawler-reverse      JS 逆向 Agent CLI\n"
     "  web-crawler-mcp          MCP 服务器\n"
     "  crawler-ui               本地 Web 控制台\n"
+    "  web-captcha              验证码识别（URL 一键式 / 本地图片）\n"
     "\n"
     "文档: https://xiaomaozjj666.github.io/web-crawler/\n"
 )

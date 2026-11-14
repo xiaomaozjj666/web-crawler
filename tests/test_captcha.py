@@ -28,6 +28,7 @@ def test_captcha_type_values() -> None:
         "recaptcha_v2",
         "recaptcha_v3",
         "geetest",
+        "yidun",
         "unknown",
         "none",
     }

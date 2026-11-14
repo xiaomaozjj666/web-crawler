@@ -50,6 +50,7 @@ class CaptchaType(Enum):
     RECAPTCHA_V2 = "recaptcha_v2"
     RECAPTCHA_V3 = "recaptcha_v3"
     GEETEST = "geetest"
+    YIDUN = "yidun"
     UNKNOWN = "unknown"
     NONE = "none"
 
@@ -78,6 +79,13 @@ _GEETEST_SELECTORS: tuple[str, ...] = (
     ".geetest_panel",
     ".geetest_widget",
     ".geetest_container",
+)
+
+# 易盾容器探测：bg 图/滑块手柄命中其一即视为易盾
+_YIDUN_SELECTORS: tuple[str, ...] = (
+    "img.yidun_bg-img",
+    ".yidun_slider",
+    '[class*="yidun_bg-img"]',
 )
 
 # 各类型验证码通过后写入页面的 token 字段名
@@ -131,6 +139,7 @@ class CaptchaDetector:
             self._detect_turnstile,
             self._detect_recaptcha,
             self._detect_geetest,
+            self._detect_yidun,
         ):
             info = fn(page)
             if info is not None:
@@ -219,6 +228,32 @@ class CaptchaDetector:
                 )
         return None
 
+    def _detect_yidun(self, page: Any) -> CaptchaInfo | None:
+        """易盾（网易智企）：bg 图/滑块手柄命中即判定。"""
+        for sel in _YIDUN_SELECTORS:
+            try:
+                el = page.query_selector(sel)
+            except Exception as exc:
+                logger.debug("yidun container probe failed for %r: %s", sel, exc)
+                el = None
+            if el is not None:
+                return CaptchaInfo(
+                    type=CaptchaType.YIDUN,
+                    container_selector=sel,
+                )
+        return None
+
+    async def _detect_yidun_async(self, page: Any) -> CaptchaInfo | None:
+        """易盾检测异步版（镜像 _query_async 模式）。"""
+        for sel in _YIDUN_SELECTORS:
+            el = await self._query_async(page, sel, what="yidun container")
+            if el is not None:
+                return CaptchaInfo(
+                    type=CaptchaType.YIDUN,
+                    container_selector=sel,
+                )
+        return None
+
     @staticmethod
     def _read_data_sitekey(page: Any) -> str | None:
         """从页面上任意带 data-sitekey 的元素读取 sitekey。"""
@@ -245,6 +280,7 @@ class CaptchaDetector:
             self._detect_turnstile_async,
             self._detect_recaptcha_async,
             self._detect_geetest_async,
+            self._detect_yidun_async,
         ):
             info = await fn(page)
             if info is not None:
@@ -356,6 +392,7 @@ class CaptchaSolver:
             CaptchaType.RECAPTCHA_V2: self._solve_recaptcha_v2,
             CaptchaType.RECAPTCHA_V3: self._solve_recaptcha_v3,
             CaptchaType.GEETEST: self._solve_geetest,
+            CaptchaType.YIDUN: self._solve_yidun,
             CaptchaType.UNKNOWN: self._solve_unknown,
         }
         handler = dispatch.get(info.type)
@@ -469,6 +506,78 @@ class CaptchaSolver:
         end = (start[0] + distance, start[1])
         self._humanize_drag(page, start, end)
         return self._wait_for_token(page, info, timeout=self.max_wait * 0.5)
+
+    def _solve_yidun(self, page: Any, info: CaptchaInfo) -> bool:
+        """易盾滑块：URL 抓原图（带 alpha）→ 定位 → 拖拽（1:1）→ 读判定。
+
+        2026-11-14 Camoufox/IAB 双栈实测要点：
+        - 元素截图是合成像素（透明区透出背景），会毁掉件的 alpha 掩码——
+          必须按 img.src 抓 PNG 原图（FileReader 在页面内转 dataURL）。
+        - 页面可能有触发式/嵌入式/弹出式多个实例，bg/handle 全部按
+          "可见矩形"筛选，拖拽前先 scrollIntoView（折叠线下鼠标事件
+          会被视口裁掉）。
+        - 判定读容器 tips：成功 / 换图（失败自动刷新）均可在 max_wait
+          内观测。
+        """
+        if self.image_solver is None:
+            return False
+        # 1) 定位可见实例的 bg/piece/handle
+        geo = page.evaluate(
+            "(() => { const b=[...document.querySelectorAll('img.yidun_bg-img')].find(b=>{const r=b.getBoundingClientRect(); return r.width>50;}); if (!b) return null; const w=b.closest('.yidun'); const p=w && w.querySelector('img.yidun_jigsaw'); const h=w && w.querySelector('.yidun_slider'); if (!p || !h) return null; const hr=h.getBoundingClientRect(); return { bg: b.src, piece: p.src, hx: hr.x + hr.width/2, hy: hr.y + hr.height/2 }; })()"
+        )
+        if not geo:
+            return False
+        # 2) 按按 URL 抓原图（FileReader 页面内转 dataURL，绕开 Xray 限制）
+        import base64 as b64mod
+
+        data_url = page.evaluate(
+            "async (u) => { const r = await fetch(u); const blob = await r.blob(); return await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(blob); }); }",
+            geo["bg"],
+        )
+        piece_url = page.evaluate(
+            "async (u) => { const r = await fetch(u); const blob = await r.blob(); return await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(blob); }); }",
+            geo["piece"],
+        )
+        bg_bytes = b64mod.b64decode(data_url.split(",", 1)[1])
+        piece_bytes = b64mod.b64decode(piece_url.split(",", 1)[1])
+
+        # 3) 定位
+        try:
+            sol = self.image_solver.solve_slider(bg_bytes, piece_bytes)
+        except Exception as exc:
+            logger.warning("yidun slider recognition failed: %s", exc)
+            return False
+        if sol is None:
+            return False
+
+        # 4) 滚进视口 + 拖拽（件左缘 = 拖距，1:1）
+        page.evaluate(
+            "(() => { const b=[...document.querySelectorAll('img.yidun_bg-img')].find(b=>{const r=b.getBoundingClientRect(); return r.width>50;}); if (b) b.scrollIntoView({block: 'center'}); return 1; })()"
+        )
+        handle_box = page.evaluate(
+            "(() => { const w=[...document.querySelectorAll('.yidun')].find(w=>w.querySelector('img.yidun_bg-img')); const h=w && w.querySelector('.yidun_slider'); if (!h) return null; const r=h.getBoundingClientRect(); return { x: r.x + r.width/2, y: r.y + r.height/2 }; })()"
+        )
+        if not handle_box:
+            return False
+        start = (float(handle_box["x"]), float(handle_box["y"]))
+        self._humanize_drag(page, start, (start[0] + sol.x, start[1]))
+
+        # 5) 判定：tips 出现「成功」→ True；换图/回到「向右拖动」→ False
+        deadline = time.monotonic() + self.max_wait
+        bg_before = geo["bg"]
+        while time.monotonic() < deadline:
+            state = page.evaluate(
+                "(() => { const w=[...document.querySelectorAll('.yidun')].find(w=>w.querySelector('img.yidun_bg-img')); const t=w && w.querySelector('.yidun_tips__text'); const b=w && w.querySelector('img.yidun_bg-img'); return { tips: t ? t.textContent.trim() : '', bg: b ? b.src.slice(-24) : '' }; })()"
+            )
+            if state:
+                if "成功" in state["tips"]:
+                    return True
+                if state["bg"] and state["bg"] != bg_before[-24:]:
+                    return False  # 校验失败自动换图
+                if "向右拖动" in state["tips"]:
+                    return False
+            time.sleep(0.5)
+        return False
 
     def _geetest_detect_offset(self, page: Any) -> float | None:
         """用 image_solver 识别极验拼图缺口 x 偏移；失败返回 None。
@@ -850,6 +959,68 @@ class CaptchaManager:
         if info is None or info.type is CaptchaType.NONE:
             return True
         return self.solver.solve(page, info)
+
+    def solve_url(
+        self,
+        url: str,
+        *,
+        headless: bool = False,
+        fetch_timeout: float = 180.0,
+        fetcher_kwargs: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """一键式入口：Camoufox（反指纹 Firefox）打开 ``url`` → detect → solve。
+
+        把 detect/solve 路由、image_solver（math_mode/bbox 协议/剪影探测器）
+        与 Camoufox 拟人输入串成一条主线——调用方不再自己拼装浏览器和流程。
+
+        返回结构化结果 dict：``url`` / ``type``（验证码类型；``"none"`` 表示
+        页面无验证码）/ ``solved``（True=通过，False=需人工，None=页面无验证
+        码）/ ``steps``（过程事件）。
+
+        需要 ``camoufox`` 可选依赖（``pip install web-crawler[camoufox]`` 后
+        ``camoufox fetch`` 拉取浏览器），未安装时抛 ImportError 带安装指引。
+        """
+        from ..compat import require_camoufox
+        from ..fetchers.camoufox import CamoufoxFetcher
+
+        require_camoufox()
+
+        holder: dict[str, Any] = {"url": url, "type": None, "solved": None, "steps": []}
+
+        def action(page: Any) -> None:
+            try:
+                info = self.detector.detect(page)
+            except Exception as exc:
+                holder["steps"].append(f"detect-fail: {exc}")
+                holder["type"] = CaptchaType.UNKNOWN.value
+                holder["solved"] = False
+                return
+            if info is None:
+                holder["type"] = CaptchaType.NONE.value
+                holder["solved"] = None
+                return
+            holder["type"] = info.type.value
+            if info.type is CaptchaType.NONE:
+                holder["solved"] = None
+                return
+            try:
+                holder["solved"] = self.solver.solve(page, info)
+            except Exception as exc:
+                logger.warning("solve_url solve failed for %s: %s", info.type.value, exc)
+                holder["solved"] = False
+            holder["steps"].append(f"solved[{info.type.value}]={holder['solved']}")
+
+        kwargs = dict(fetcher_kwargs or {})
+        with CamoufoxFetcher(
+            os="windows",
+            humanize=True,
+            headless=headless,
+            timeout=fetch_timeout,
+            page_action=action,
+            **kwargs,
+        ) as fetcher:
+            fetcher.fetch(url)
+        return holder
 
 
 __all__ = [

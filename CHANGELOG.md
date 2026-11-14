@@ -63,6 +63,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   DeepSeekProvider——与文本 LLM 的 `DEEPSEEK_API_KEY` 分离，视觉调用
   （图片验证码识别）可单独计费/限速。`ReverseAgent` 与 MCP
   `solve_captcha_image` 的 `ImageCaptchaSolver` 构造已接入。
+- **验证码识别统一入口**：`CaptchaManager.solve_url(url)` 一键式——Camoufox
+  （反指纹 Firefox）打开页面 → 自动检测类型 → 路由到对应求解器 → 返回
+  结构化结果（type/solved/steps）；detect/solve 路由、image_solver
+  （math_mode/bbox 协议/剪影探测器）与拟人输入不再需要调用方自己拼装。
+  新增 `CaptchaType.YIDUN`（易盾）：检测器（bg 图/滑块手柄）+ 求解器
+  （URL 抓带 alpha 原图→定位→1:1 拟人拖拽→tips 判定；多实例按可见性
+  筛选、拖前 scrollIntoView 防视口裁剪）。新增 CLI 入口
+  `web-captcha`（`page <url>` 一键式 / `image <path> --math` 本地识别）。
 - **`ImageSolverConfig.math_mode`（数学运算验证码）**：2026-11-14 对
   生成器站实测发现缺口——校验方要算式答案而旧实现只回 OCR 碎片（把
   "7*1" 过滤成 "1" 直接交出去）。开启后本地路径允许运算符字符并对
