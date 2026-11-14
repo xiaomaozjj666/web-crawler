@@ -24,6 +24,11 @@ MAX_JOBS = 50
 # JS 逆向 Agent 任务注册表
 REVERSE_JOBS: dict[str, ReverseJobState] = {}
 REVERSE_JOBS_LOCK = threading.Lock()
+
+MAX_CAPTCHA_JOBS = 30
+CAPTCHA_JOBS: dict[str, CaptchaJobState] = {}
+CAPTCHA_JOBS_LOCK = threading.Lock()
+
 MAX_REVERSE_JOBS = 20
 
 
@@ -84,6 +89,46 @@ class JobState:
                 "percent": percent,
                 "output_dir": self.output_dir,
                 "exit_code": self.exit_code,
+            }
+
+
+@dataclass
+class CaptchaJobState:
+    """验证码识别任务的实时状态（solve_url 一键式流程）。"""
+
+    id: str
+    url: str
+    headless: bool = False
+    status: str = "running"  # running / done / error
+    created_at: float = field(default_factory=time.time)
+    finished_at: float | None = None
+    result: dict = field(default_factory=dict)  # solve_url 的结构化结果
+    error: str = ""
+    state_lock: Any = field(default_factory=threading.RLock)
+
+    def snapshot(self) -> dict[str, object]:
+        """返回可 JSON 序列化的完整状态快照。"""
+        with self.state_lock:
+            return {
+                "id": self.id,
+                "url": self.url,
+                "headless": self.headless,
+                "status": self.status,
+                "result": dict(self.result),
+                "error": self.error,
+                "created_at": self.created_at,
+                "finished_at": self.finished_at,
+            }
+
+    def job_summary(self) -> dict[str, object]:
+        """返回任务列表所需的最小字段（用于 /captcha/jobs）。"""
+        with self.state_lock:
+            return {
+                "id": self.id,
+                "url": self.url,
+                "status": self.status,
+                "created_at": self.created_at,
+                "finished_at": self.finished_at,
             }
 
 

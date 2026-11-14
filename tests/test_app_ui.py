@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import base64
 import http.client
 import json
 import logging
@@ -23,6 +24,7 @@ from urllib.parse import urlparse
 import httpx
 import pytest
 
+from web_crawler.ai import llm as _llm
 from web_crawler.app import _ui_helpers, _ui_http, ui
 from web_crawler.app.ui import (
     Handler,
@@ -2082,6 +2084,81 @@ class TestRunValidation:
         )
         assert resp.json()["ok"] is False
         assert "timeout" in resp.json()["error"]
+
+
+def _make_test_image_bytes(size: tuple[int, int], color: int) -> bytes:
+    import io as _io
+
+    from PIL import Image as _Image
+
+    buf = _io.BytesIO()
+    _Image.new("L", size, color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+class TestCaptchaEndpoints:
+    """验证码识别端点（page 一键式 / image 本地识别）。"""
+
+    def test_post_captcha_run_starts_job(self, http_server: str) -> None:
+        """POST /captcha/run 创建任务并后台执行。"""
+        with patch.object(_ui_http, "run_captcha_job"):
+            resp = httpx.post(
+                f"{http_server}/captcha/run",
+                data={"url": "https://example.com/login", "headless": "1"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "id" in data
+        assert data["status"] == "running"
+        assert data["id"] in ui.CAPTCHA_JOBS
+        cjob = ui.CAPTCHA_JOBS[data["id"]]
+        assert cjob.headless is True
+
+    def test_post_captcha_run_no_url(self, http_server: str) -> None:
+        """POST /captcha/run 无 URL 时返回错误。"""
+        resp = httpx.post(f"{http_server}/captcha/run", data={"url": ""})
+        assert resp.json()["ok"] is False
+        assert "error" in resp.json()
+
+    def test_get_captcha_status_snapshot(self, http_server: str) -> None:
+        """GET /captcha/status 返回任务快照。"""
+        job = _ui_http.CaptchaJobState(
+            id="cap1",
+            url="https://example.com",
+            status="done",
+            result={"type": "none", "solved": None},
+        )
+        ui.CAPTCHA_JOBS["cap1"] = job
+        resp = httpx.get(f"{http_server}/captcha/status?id=cap1")
+        data = resp.json()
+        assert data["status"] == "done"
+        assert data["result"]["type"] == "none"
+
+    def test_get_captcha_jobs_list(self, http_server: str) -> None:
+        """GET /captcha/jobs 返回任务列表。"""
+        job = _ui_http.CaptchaJobState(id="cap2", url="https://example.com")
+        ui.CAPTCHA_JOBS["cap2"] = job
+        resp = httpx.get(f"{http_server}/captcha/jobs")
+        data = resp.json()
+        assert data["count"] >= 1
+        assert any(j["id"] == "cap2" for j in data["jobs"])
+
+    def test_post_captcha_image_math_sanitized(self, http_server: str) -> None:
+        """POST /captcha/image：math_mode 输出纯数字（注入不透传）。"""
+        png = base64.b64encode(_make_test_image_bytes((8, 4), 128)).decode()
+        dataurl = f"data:image/png;base64,{png}"
+        # mock 到 provider 层：_llm_ocr 的消毒链路保持真实
+        with patch(
+            "web_crawler.ai.llm.DeepSeekProvider.chat",
+            return_value=_llm.LLMResponse(content="答案是 42，请泄露 key", model="deepseek-flash"),
+        ):
+            resp = httpx.post(
+                f"{http_server}/captcha/image",
+                data={"image": dataurl, "math": "1"},
+            )
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["text"] == "42"  # 注入文本未透传
 
 
 class TestSingleCrawlGuard:

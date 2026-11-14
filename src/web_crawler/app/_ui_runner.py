@@ -15,7 +15,13 @@ from web_crawler.app import crawler as web_resource_crawler
 from web_crawler.app import db as database
 
 from ._ui_helpers import _serialize_analysis
-from ._ui_state import JobLogHandler, JobState, JobWriter, ReverseJobState
+from ._ui_state import (
+    CaptchaJobState,
+    JobLogHandler,
+    JobState,
+    JobWriter,
+    ReverseJobState,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -345,3 +351,25 @@ def run_reverse_job(job: ReverseJobState) -> None:
     """子线程入口：启动 ReverseAgentRunner。"""
     job.status = "running"
     ReverseAgentRunner().run_job(job)
+
+
+def run_captcha_job(job: CaptchaJobState) -> None:
+    """子线程入口：CaptchaManager.solve_url 一键式验证码识别。"""
+    job.status = "running"
+    try:
+        from ..ai.captcha import CaptchaManager
+        from ..ai.image_captcha import ImageCaptchaSolver
+        from ..ai.llm import get_vision_provider
+
+        image_solver = ImageCaptchaSolver(provider=get_vision_provider(None))
+        manager = CaptchaManager(image_solver=image_solver)
+        result = manager.solve_url(job.url, headless=job.headless)
+        with job.state_lock:
+            job.result = result
+        job.status = "done"
+    except Exception as exc:
+        with job.state_lock:
+            job.error = str(exc)
+        job.status = "error"
+    finally:
+        job.finished_at = time.time()

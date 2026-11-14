@@ -298,6 +298,7 @@
     </div>
     <div class="tabs" role="tablist" aria-label="功能页签">
       <button class="tab active" id="tabbtn-crawler" role="tab" aria-selected="true" aria-controls="tab-crawler" data-tab="crawler">网页采集</button>
+      <button class="tab" id="tabbtn-captcha" role="tab" aria-selected="false" aria-controls="tab-captcha" data-tab="captcha">验证码识别</button>
       <button class="tab" id="tabbtn-reverse" role="tab" aria-selected="false" aria-controls="tab-reverse" data-tab="reverse">JS 逆向 Agent</button>
       <button class="tab" id="tabbtn-history" role="tab" aria-selected="false" aria-controls="tab-history" data-tab="history">任务历史</button>
     </div>
@@ -404,6 +405,45 @@
   2. 下载 / 去重 / 跳过的结果
   3. 清单与报告的输出路径
 任务完成后，可到「任务历史」查看每次采集的结果。</pre>
+      </div>
+    </div>
+
+    <!-- ========== Tab: 验证码识别 ========== -->
+    <div id="tab-captcha" class="tab-content" role="tabpanel" aria-labelledby="tabbtn-captcha">
+      <div class="captcha-panel" style="max-width: 980px;">
+        <h2>验证码识别</h2>
+        <p style="color: var(--muted); font-size: 13px;">
+          两种模式：<b>页面识别</b>（Camoufox 打开目标页，自动检测类型并求解，约 1-3 分钟）；
+          <b>图片识别</b>（本地图片文本 / 数学运算，秒级）。
+        </p>
+
+        <fieldset style="border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin: 14px 0;">
+          <legend style="font-weight: 600; font-size: 14px;">页面识别（一键式）</legend>
+          <label style="display: block; margin: 10px 0 5px; font-size: 13px;">目标页面 URL</label>
+          <input id="cap-page-url" type="text" placeholder="https://example.com/login" style="width: 100%; padding: 9px 12px; font-size: 13px;" />
+          <label style="display: flex; align-items: center; gap: 6px; margin: 10px 0; font-size: 13px;">
+            <input id="cap-page-headless" type="checkbox" /> 无头模式（默认有头，行为更真实）
+          </label>
+          <button id="cap-page-btn" class="btn" style="padding: 9px 18px; font-size: 13px;">开始识别</button>
+          <div id="cap-page-status" style="margin-top: 10px; font-size: 13px; color: var(--muted);"></div>
+          <pre id="cap-page-result" style="margin-top: 10px; padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; white-space: pre-wrap; display: none;"></pre>
+        </fieldset>
+
+        <fieldset style="border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin: 14px 0;">
+          <legend style="font-weight: 600; font-size: 14px;">图片识别（文本 / 数学）</legend>
+          <input id="cap-img-file" type="file" accept="image/png,image/jpeg,image/webp" style="font-size: 13px;" />
+          <label style="display: flex; align-items: center; gap: 6px; margin: 10px 0; font-size: 13px;">
+            <input id="cap-img-math" type="checkbox" /> 数学运算验证码（输出算式答案）
+          </label>
+          <button id="cap-img-btn" class="btn" style="padding: 9px 18px; font-size: 13px;">识别图片</button>
+          <div id="cap-img-result" style="margin-top: 10px; font-size: 14px; font-weight: 600;"></div>
+        </fieldset>
+
+        <h3 style="margin-top: 20px;">识别历史</h3>
+        <table id="cap-jobs" style="width: 100%; font-size: 13px; border-collapse: collapse;">
+          <thead><tr><th style="text-align:left;">时间</th><th style="text-align:left;">URL</th><th style="text-align:left;">状态</th></tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
     </div>
 
@@ -1782,6 +1822,106 @@
         if (tab.dataset.tab === 'history') loadHistory(1);
       };
     });
+  </script>
+
+  <script>
+  // ===== 验证码识别 tab =====
+  (function() {
+    var capJobTimer = null;
+
+    function capPoll(id) {
+      if (capJobTimer) clearInterval(capJobTimer);
+      capJobTimer = setInterval(function() {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '/captcha/status?id=' + encodeURIComponent(id));
+        xhr.onload = function() {
+          var st;
+          try { st = JSON.parse(xhr.responseText); } catch (e) { return; }
+          document.getElementById('cap-page-status').textContent =
+            '状态: ' + st.status + (st.error ? (' — ' + st.error) : '');
+          if (st.status === 'done' || st.status === 'error') {
+            clearInterval(capJobTimer);
+            capJobTimer = null;
+            var out = document.getElementById('cap-page-result');
+            out.style.display = 'block';
+            out.textContent = JSON.stringify(st.result || { error: st.error || st.status }, null, 2);
+            capRefreshJobs();
+          }
+        };
+        xhr.send();
+      }, 2500);
+    }
+
+    function capRefreshJobs() {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', '/captcha/jobs');
+      xhr.onload = function() {
+        var data;
+        try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
+        var tbody = document.querySelector('#cap-jobs tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        (data.jobs || []).forEach(function(j) {
+          var tr = document.createElement('tr');
+          var t = new Date((j.created_at || 0) * 1000).toLocaleTimeString();
+          tr.innerHTML = '<td>' + t + '</td><td>' + (j.url || '') +
+            '</td><td>' + (j.status || '') + '</td>';
+          tbody.appendChild(tr);
+        });
+      };
+      xhr.send();
+    }
+
+    document.getElementById('cap-page-btn').addEventListener('click', function() {
+      var url = document.getElementById('cap-page-url').value.trim();
+      if (!url) { capSetStatus('请输入目标页面 URL'); return; }
+      document.getElementById('cap-page-result').style.display = 'none';
+      capSetStatus('已提交，Camoufox 启动并求解中（约 1-3 分钟，请勿关闭页面）…');
+      var body = 'url=' + encodeURIComponent(url) +
+        '&headless=' + (document.getElementById('cap-page-headless').checked ? '1' : '0');
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', '/captcha/run');
+      xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+      xhr.onload = function() {
+        var data;
+        try { data = JSON.parse(xhr.responseText); } catch (e) { capSetStatus('提交失败'); return; }
+        if (data.id) { capPoll(data.id); } else { capSetStatus('提交失败: ' + (data.error || '')); }
+      };
+      xhr.onerror = function() { capSetStatus('网络错误'); };
+      xhr.send(body);
+    });
+
+    document.getElementById('cap-img-btn').addEventListener('click', function() {
+      var fileInput = document.getElementById('cap-img-file');
+      var out = document.getElementById('cap-img-result');
+      if (!fileInput.files.length) { out.textContent = '请先选择图片文件'; out.style.color = 'crimson'; return; }
+      var reader = new FileReader();
+      reader.onload = function() {
+        out.textContent = '识别中…'; out.style.color = 'inherit';
+        var body = 'image=' + encodeURIComponent(reader.result) +
+          '&math=' + (document.getElementById('cap-img-math').checked ? '1' : '0');
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', '/captcha/image');
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        xhr.onload = function() {
+          var data;
+          try { data = JSON.parse(xhr.responseText); } catch (e) { out.textContent = '解析失败'; return; }
+          if (data.ok) {
+            out.textContent = '识别结果: ' + data.text + (data.math ? '（算式答案）' : '');
+            out.style.color = 'green';
+          } else {
+            out.textContent = '识别失败: ' + (data.error || '');
+            out.style.color = 'crimson';
+          }
+        };
+        xhr.send(body);
+      };
+      reader.readAsDataURL(fileInput.files[0]);
+    });
+
+    capRefreshJobs();
+    setInterval(capRefreshJobs, 15000);
+  })();
   </script>
 </body>
 </html>

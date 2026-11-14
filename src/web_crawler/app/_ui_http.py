@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -31,14 +32,18 @@ from ._ui_helpers import (
     build_reverse_config,
     output_path,
 )
-from ._ui_runner import run_job, run_reverse_job
+from ._ui_runner import run_captcha_job, run_job, run_reverse_job
 from ._ui_state import (
+    CAPTCHA_JOBS,
+    CAPTCHA_JOBS_LOCK,
     JOBS,
     JOBS_LOCK,
+    MAX_CAPTCHA_JOBS,
     MAX_JOBS,
     MAX_REVERSE_JOBS,
     REVERSE_JOBS,
     REVERSE_JOBS_LOCK,
+    CaptchaJobState,
     JobState,
     ReverseJobState,
 )
@@ -167,6 +172,20 @@ class Handler(BaseHTTPRequestHandler):
             # 返回所有历史任务列表（按创建时间倒序）
             with REVERSE_JOBS_LOCK:
                 jobs = [rj.job_summary() for rj in REVERSE_JOBS.values()]
+            jobs.sort(key=lambda j: cast(float, j.get("created_at", 0.0)), reverse=True)
+            self.respond_json({"jobs": jobs, "count": len(jobs)})
+            return
+        if self.path.startswith("/captcha/status"):
+            query = parse_qs(urlparse(self.path).query)
+            cjob = CAPTCHA_JOBS.get(query.get("id", [""])[0])
+            if not cjob:
+                self.respond_json({"status": "missing", "error": "任务不存在"})
+                return
+            self.respond_json(cjob.snapshot())
+            return
+        if self.path.startswith("/captcha/jobs"):
+            with CAPTCHA_JOBS_LOCK:
+                jobs = [cj.job_summary() for cj in CAPTCHA_JOBS.values()]
             jobs.sort(key=lambda j: cast(float, j.get("created_at", 0.0)), reverse=True)
             self.respond_json({"jobs": jobs, "count": len(jobs)})
             return
@@ -418,6 +437,51 @@ class Handler(BaseHTTPRequestHandler):
                             del REVERSE_JOBS[jid]
             threading.Thread(target=run_reverse_job, args=(rjob,), daemon=True).start()
             self.respond_json({"id": job_id, "status": "running"})
+            return
+        if path == "/captcha/run":
+            form = self.read_form()
+            url = form.get("url", [""])[0].strip()
+            headless = form.get("headless", [""])[0] == "1"
+            if not url:
+                self.respond_json({"ok": False, "error": "URL 不能为空"})
+                return
+            job_id = uuid.uuid4().hex[:12]
+            cjob = CaptchaJobState(id=job_id, url=url, headless=headless)
+            with CAPTCHA_JOBS_LOCK:
+                CAPTCHA_JOBS[job_id] = cjob
+                if len(CAPTCHA_JOBS) > MAX_CAPTCHA_JOBS:
+                    for jid in list(CAPTCHA_JOBS.keys()):
+                        cj = CAPTCHA_JOBS[jid]
+                        if cj.status in ("done", "error"):
+                            del CAPTCHA_JOBS[jid]
+            threading.Thread(target=run_captcha_job, args=(cjob,), daemon=True).start()
+            self.respond_json({"id": job_id, "status": "running"})
+            return
+        if path == "/captcha/image":
+            form = self.read_form()
+            image_b64 = form.get("image", [""])[0].strip()
+            math_mode = form.get("math", [""])[0] == "1"
+            if not image_b64:
+                self.respond_json({"ok": False, "error": "缺少图片数据"})
+                return
+            try:
+                from ..ai.image_captcha import ImageCaptchaSolver, ImageSolverConfig
+                from ..ai.llm import get_vision_provider
+
+                provider = get_vision_provider(None)
+                solver = ImageCaptchaSolver(
+                    provider=provider, config=ImageSolverConfig(math_mode=math_mode)
+                )
+                raw = (
+                    base64.b64decode(image_b64.split(",", 1)[1])
+                    if image_b64.startswith("data:")
+                    else base64.b64decode(image_b64)
+                )
+                text = solver.solve_text(raw, mime="image/png")
+            except Exception as exc:
+                self.respond_json({"ok": False, "error": f"识别失败: {exc}"})
+                return
+            self.respond_json({"ok": bool(text), "text": text, "math": math_mode})
             return
         if path == "/reverse/stop":
             rstop = REVERSE_JOBS.get(query.get("id", [""])[0])

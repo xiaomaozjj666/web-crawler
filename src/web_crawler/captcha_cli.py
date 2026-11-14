@@ -53,7 +53,8 @@ def cmd_page(args: argparse.Namespace) -> int:
 def cmd_image(args: argparse.Namespace) -> int:
     """image 子命令：本地图片文本/数学识别。"""
     solver = _build_image_solver(math_mode=args.math)
-    text = solver.solve_text(open(args.path, "rb").read(), mime="image/png")
+    with open(args.path, "rb") as f:
+        text = solver.solve_text(f.read(), mime="image/png")
     if not text:
         print(
             json.dumps(

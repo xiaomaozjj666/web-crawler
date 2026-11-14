@@ -63,6 +63,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   DeepSeekProvider——与文本 LLM 的 `DEEPSEEK_API_KEY` 分离，视觉调用
   （图片验证码识别）可单独计费/限速。`ReverseAgent` 与 MCP
   `solve_captcha_image` 的 `ImageCaptchaSolver` 构造已接入。
+- **App UI 新增「验证码识别」面板**：crawler-ui 本地控制台第三个 tab——
+  页面识别（URL → Camoufox → 检测 → 求解 → 结构化结果，后台任务 +
+  2.5s 轮询进度）与图片识别（本地图片文本/数学，秒级出结果）双面板，
+  识别历史列表。端点：`POST /captcha/run`、`GET /captcha/status`、
+  `GET /captcha/jobs`、`POST /captcha/image`（均走 Host 白名单 + 同源
+  校验，与既有端点同防护级别）。识别能力从此在产品主界面可达，
+  不再只属于 Python API / CLI / MCP。
 - **验证码识别统一入口**：`CaptchaManager.solve_url(url)` 一键式——Camoufox
   （反指纹 Firefox）打开页面 → 自动检测类型 → 路由到对应求解器 → 返回
   结构化结果（type/solved/steps）；detect/solve 路由、image_solver

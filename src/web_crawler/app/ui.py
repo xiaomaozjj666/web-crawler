@@ -61,12 +61,16 @@ from web_crawler.app._ui_runner import (
     wait_for_resume,  # noqa: F401
 )
 from web_crawler.app._ui_state import (
+    CAPTCHA_JOBS,  # noqa: F401
+    CAPTCHA_JOBS_LOCK,  # noqa: F401
     JOBS,  # noqa: F401
     JOBS_LOCK,  # noqa: F401
+    MAX_CAPTCHA_JOBS,  # noqa: F401
     MAX_JOBS,  # noqa: F401
     MAX_REVERSE_JOBS,  # noqa: F401
     REVERSE_JOBS,  # noqa: F401
     REVERSE_JOBS_LOCK,  # noqa: F401
+    CaptchaJobState,  # noqa: F401
     JobLogHandler,  # noqa: F401
     JobState,  # noqa: F401
     JobWriter,  # noqa: F401
