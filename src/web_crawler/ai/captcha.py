@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import math
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -405,9 +406,33 @@ class CaptchaSolver:
         self._humanize_click(page, anchor)
         if self._wait_for_token(page, info, timeout=self.max_wait * 0.5):
             return True
+        # 2026-11-14 Google 官方 demo 实测：风控拦截时挑战 iframe 永远不进
+        # 可视区（spinner 挂起、bframe 停在屏外 y=-9999），图片挑战流程无从
+        # 触达。此时提前显式失败并注明原因，不再空跑图片挑战等待。
+        if not self._recaptcha_challenge_visible(page):
+            logger.warning(
+                "reCAPTCHA challenge iframe never became visible after the "
+                "checkbox click (risk-gated?); skipping image challenge, "
+                "falling back to human"
+            )
+            return False
         if self.image_solver is not None and self._solve_image_challenge(page, info):
             return self._wait_for_token(page, info, timeout=self.max_wait * 0.5)
         return False
+
+    def _recaptcha_challenge_visible(self, page: Any) -> bool:
+        """bframe 挑战 iframe 是否出现在可视区（停在屏外 = 风控未放行）。"""
+        frame_el = _first_query(page, ('iframe[src*="bframe"]', "iframe[title*='验证']"))
+        if frame_el is None:
+            return False
+        try:
+            box = frame_el.bounding_box()
+            if box is None:
+                return False
+            return float(box.get("y", -9999.0)) > -100.0 and float(box.get("width", 0.0)) > 100.0
+        except Exception as exc:
+            logger.debug("recaptcha bframe bounding_box failed: %s", exc)
+            return False
 
     def _solve_recaptcha_v3(self, page: Any, info: CaptchaInfo) -> bool:
         # reCAPTCHA v3 是无感的，直接等 token
@@ -446,30 +471,34 @@ class CaptchaSolver:
         return self._wait_for_token(page, info, timeout=self.max_wait * 0.5)
 
     def _geetest_detect_offset(self, page: Any) -> float | None:
-        """用 image_solver 识别极验拼图缺口 x 偏移；失败返回 None。"""
+        """用 image_solver 识别极验拼图缺口 x 偏移；失败返回 None。
+
+        2026-11-14 对极验官方 demo 实测修正：拼图件是 ``.geetest_canvas_slice``
+        （与背景同宽的全幅 canvas），背景是 ``.geetest_canvas_bg``。旧实现
+        截 ``.geetest_slider_button``（拖拽手柄）当拼图件、``.geetest_panel``
+        （控件外壳）当背景，模板匹配对象完全错误——手柄是 66×66 的圆形
+        图标，与拼图内容无关。
+        """
         if self.image_solver is None:
             return None
-        panel = _first_query(page, _GEETEST_SELECTORS)
-        if panel is None:
+        bg_el = _first_query(page, (".geetest_canvas_bg", ".geetest_window"))
+        if bg_el is None:
             return None
         try:
-            bg_bytes = panel.screenshot()
+            bg_bytes = bg_el.screenshot()
         except Exception as exc:
-            logger.warning("failed to screenshot geetest panel: %s", exc)
+            logger.warning("failed to screenshot geetest background canvas: %s", exc)
             return None
-        slider_el = _first_query(
-            page,
-            (".geetest_slider_button", ".geetest_btn_slide", ".geetest_slider"),
-        )
-        if slider_el is None:
+        piece_el = _first_query(page, (".geetest_canvas_slice", ".geetest_slice"))
+        if piece_el is None:
             return None
         try:
-            slider_bytes = slider_el.screenshot()
+            piece_bytes = piece_el.screenshot()
         except Exception as exc:
-            logger.warning("failed to screenshot geetest slider button: %s", exc)
+            logger.warning("failed to screenshot geetest slice canvas: %s", exc)
             return None
         try:
-            sol = self.image_solver.solve_slider(bg_bytes, slider_bytes)
+            sol = self.image_solver.solve_slider(bg_bytes, piece_bytes)
         except Exception as exc:
             logger.warning("slider gap recognition failed: %s", exc)
             return None
@@ -504,6 +533,14 @@ class CaptchaSolver:
             logger.warning("failed to screenshot challenge iframe: %s", exc)
             return False
         prompt = self._read_challenge_prompt(page, info) or "请按提示点击对应元素"
+        # 2026-11-14 hCaptcha 实测：拖拽连线/拖动放置类挑战不是点选范式，
+        # 点选求解只会给出错误坐标并烧掉挑战次数——显式跳过交人工。
+        if re.search(r"拖动|拖拽|拖至|drag\s", prompt, re.IGNORECASE):
+            logger.info(
+                "challenge prompt indicates a drag task (%r); click solver skipped",
+                prompt[:48],
+            )
+            return False
         try:
             sol = self.image_solver.solve_click(img_bytes, prompt)
         except Exception as exc:

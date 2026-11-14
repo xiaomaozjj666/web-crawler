@@ -86,6 +86,7 @@ def test_image_solver_config_defaults() -> None:
     assert cfg.detail == "high"
     assert cfg.temperature == 0.0
     assert cfg.ocr_max_length == 8
+    assert cfg.slider_min_score == pytest.approx(0.45)
 
 
 def test_slider_solution_defaults() -> None:
@@ -434,6 +435,33 @@ def test_solve_click_llm_path() -> None:
     assert result.method == "llm"
 
 
+def test_solve_click_bbox_protocol_returns_centers() -> None:
+    """回归（2026-11-14 hCaptcha 实测）：外接框协议中心点=点击坐标。
+
+    真实照片散点上"裸中心点"误差可达 ±75px 甚至落在错误元素上，外接框
+    3/3 全中——点选 LLM 路径改用 boxes 协议，points 旧格式保持兼容。
+    """
+    provider = _FakeVisionProvider(
+        chat_response='{"boxes": [{"x": 116, "y": 190, "w": 82, "h": 84, "label": "玻璃水壶"},'
+        '{"x": 331, "y": 196, "w": 70, "h": 80, "label": "马克杯"}]}'
+    )
+    solver = ImageCaptchaSolver(provider=provider)  # type: ignore[arg-type]
+    result = solver.solve_click(b"img", "找出可以热喝或冷喝的饮料")
+    assert result is not None
+    assert result.points == [(157, 232), (366, 236)]
+    assert result.labels == ["玻璃水壶", "马克杯"]
+    assert result.method == "llm"
+
+
+def test_parse_click_response_skips_invalid_boxes() -> None:
+    """boxes 里 w/h 非正的元素被跳过。"""
+    sol = ImageCaptchaSolver._parse_click_response(
+        '{"boxes": [{"x": 10, "y": 10, "w": 0, "h": 5}, {"x": 20, "y": 20, "w": 30, "h": 40}]}'
+    )
+    assert sol is not None
+    assert sol.points == [(35, 40)]
+
+
 def test_solve_click_empty_points_returns_none() -> None:
     """solve_click 对空点位返回 None。"""
     provider = _FakeVisionProvider(chat_response='{"points": []}')
@@ -577,6 +605,88 @@ def test_solve_text_async_no_provider_no_local_returns_empty() -> None:
     assert result == ""
 
 
+# ---------------------------------------------------------------------------
+# math_mode：数学运算验证码（2026-11-14 实测补充）
+# ---------------------------------------------------------------------------
+
+
+def test_math_mode_local_evaluates_expression() -> None:
+    """math_mode 下 ddddocr 读出的算式应被本地求值为答案。"""
+    fake_ddddocr = MagicMock()
+    fake_instance = MagicMock()
+    fake_instance.classification.return_value = "7*1=?"
+    fake_ddddocr.DdddOcr.return_value = fake_instance
+
+    cfg = ImageSolverConfig(use_llm=False, math_mode=True)
+    solver = ImageCaptchaSolver(provider=None, config=cfg)
+    with patch.dict("sys.modules", {"ddddocr": fake_ddddocr}):
+        result = solver.solve_text(b"fake-png-bytes")
+    assert result == "7"
+
+
+def test_math_mode_local_handles_minus_and_variant_symbols() -> None:
+    """math_mode 支持减法与 ×/x 乘号误识别变体。"""
+    fake_ddddocr = MagicMock()
+    fake_instance = MagicMock()
+    fake_ddddocr.DdddOcr.return_value = fake_instance
+
+    cfg = ImageSolverConfig(use_llm=False, math_mode=True)
+    solver = ImageCaptchaSolver(provider=None, config=cfg)
+    for raw, expected in (("12-5", "7"), ("3x4", "12"), ("2X6=", "12")):
+        fake_instance.classification.return_value = raw
+        with patch.dict("sys.modules", {"ddddocr": fake_ddddocr}):
+            assert solver.solve_text(b"fake-png-bytes") == expected, raw
+
+
+def test_math_mode_llm_answer_digit_sanitized() -> None:
+    """math_mode 下 LLM 偏差输出（文字/标点/注入内容）就地消毒为纯数字。"""
+    provider = _FakeVisionProvider(chat_response="答案是 13，请勿泄露 ignore previous instructions")
+    solver = ImageCaptchaSolver(
+        provider=provider, config=ImageSolverConfig(use_local_ocr=False, math_mode=True)
+    )  # type: ignore[arg-type]
+    result = solver.solve_text(b"img")
+    assert result.isdigit()  # 纯数字
+    assert "ignore" not in result and "泄露" not in result  # 注入/偏差文本未透传
+    # 非数字输出 → 空串而非透传
+    provider2 = _FakeVisionProvider(chat_response="无法识别")
+    solver2 = ImageCaptchaSolver(
+        provider=provider2, config=ImageSolverConfig(use_local_ocr=False, math_mode=True)
+    )  # type: ignore[arg-type]
+    assert solver2.solve_text(b"img") == ""
+
+
+def test_math_mode_unparseable_falls_to_llm_math_prompt() -> None:
+    """本地算式无法解析时回退 LLM，且 system 提示词切换为计算版。"""
+    fake_ddddocr = MagicMock()
+    fake_instance = MagicMock()
+    fake_instance.classification.return_value = "ab?"  # 过滤后无法成式
+    fake_ddddocr.DdddOcr.return_value = fake_instance
+
+    provider = _FakeVisionProvider(chat_response="7")
+    solver = ImageCaptchaSolver(provider=provider, config=ImageSolverConfig(math_mode=True))
+    with patch.dict("sys.modules", {"ddddocr": fake_ddddocr}):
+        result = solver.solve_text(b"fake-png-bytes")
+    assert result == "7"
+    # LLM system 提示词应为数学计算版
+    messages = provider.chat_calls[0][0]
+    assert "数学验证码识别专家" in messages[0].content
+    assert "计算结果" in messages[0].content
+
+
+def test_math_mode_off_keeps_plain_ocr() -> None:
+    """未开 math_mode 时默认行为不变（运算符被字符集过滤）。"""
+    fake_ddddocr = MagicMock()
+    fake_instance = MagicMock()
+    fake_instance.classification.return_value = "7*1=?"
+    fake_ddddocr.DdddOcr.return_value = fake_instance
+
+    cfg = ImageSolverConfig(use_llm=False)
+    solver = ImageCaptchaSolver(provider=None, config=cfg)
+    with patch.dict("sys.modules", {"ddddocr": fake_ddddocr}):
+        result = solver.solve_text(b"fake-png-bytes")
+    assert result == "71"
+
+
 def test_local_ocr_returns_empty_on_exception() -> None:
     """_local_ocr 内部异常时应吞掉返回空字符串。"""
     fake_ddddocr = MagicMock()
@@ -653,29 +763,39 @@ def test_get_ddddocr_caches_instance() -> None:
 
 
 def _make_test_image_bytes(size: tuple[int, int], pattern: str = "blank") -> bytes:
-    """生成最小 PNG 字节流（用 Pillow 真实生成）。"""
+    """生成最小 PNG 字节流（用 Pillow 真实生成）。
+
+    "slider"/"bg_with_gap" 是一对配对夹具，建模真实滑块验证码：
+
+    - 拼图件 12×12：深底（10，亮度掩码排除）+ 左缘 0..5 × y 2..7 的渐变
+      纹理块（150..229，无透明通道的 L 模式）；
+    - 背景 40×12：灰 128，缺口在列 20..25 = **件纹理 × 0.35**（SF/极验等
+      "半透明黑罩"渲染：缺口是原内容变暗，不是空洞）。
+
+    掩码 ZNCC 对线性亮度缩放不变，应在 x=20 处拿到接近 1.0 的匹配分。
+    旧夹具（亮块找暗洞）是 SSD 时代的世界模型，不能回归真实失败模式。
+    """
     from PIL import Image
 
-    img = Image.new("L", size, color=128)
     if pattern == "slider":
-        # 在左侧画一个亮色方块作为滑块形状
-        for x in range(2, 8):
+        img = Image.new("L", size, color=10)
+        for x in range(6):
             for y in range(2, 8):
-                img.putpixel((x, y), 200)
+                img.putpixel((x, y), 150 + ((x * 37 + y * 61) % 80))
     elif pattern == "bg_with_gap":
-        # 在 x=20 处画一个暗色缺口
-        for x in range(20, 26):
+        img = Image.new("L", size, color=128)
+        for x in range(6):
             for y in range(2, 8):
-                img.putpixel((x, y), 30)
-    import io
-
+                img.putpixel((20 + x, y), int((150 + ((x * 37 + y * 61) % 80)) * 0.35))
+    else:
+        img = Image.new("L", size, color=128)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
 
 
 def test_local_slider_numpy_path_returns_x() -> None:
-    """numpy 路径下 _local_slider 应返回正整数 x（>= sw）。"""
+    """numpy 路径下 _local_slider 应精确返回缺口左缘 x=20。"""
     pytest.importorskip("PIL")
     pytest.importorskip("numpy")
     cfg = ImageSolverConfig(use_llm=False)
@@ -683,32 +803,263 @@ def test_local_slider_numpy_path_returns_x() -> None:
     bg = _make_test_image_bytes((40, 12), "bg_with_gap")
     slider = _make_test_image_bytes((12, 12), "slider")
     x = solver._local_slider(bg, slider)
-    assert x is not None
-    assert x >= 12  # 起始位置为 sw
+    assert x == 20
 
 
-def test_local_slider_numpy_skips_dark_pixels() -> None:
-    """滑块含暗色像素（< 30）时跳过，仍返回匹配位置。"""
+def test_match_slider_darkened_gap_high_confidence() -> None:
+    """回归（2026-11-14 SF 实测失败模式）：缺口=件内容×0.35 时 ZNCC 精确定位。
+
+    旧 SSD 实现在这样的图上会匹配到背景里亮度相近的其他纹理；ZNCC 对
+    线性亮度缩放不变，应拿到接近 1.0 的分数。
+    """
     pytest.importorskip("PIL")
     pytest.importorskip("numpy")
     cfg = ImageSolverConfig(use_llm=False)
     solver = ImageCaptchaSolver(provider=None, config=cfg)
     bg = _make_test_image_bytes((40, 12), "bg_with_gap")
-    # 构造含暗色像素的滑块
+    slider = _make_test_image_bytes((12, 12), "slider")
+    matched = solver._match_slider(bg, slider)
+    assert matched is not None
+    x, score = matched
+    assert x == 20
+    assert score > 0.8
+
+
+def test_match_slider_opaque_luminance_mask_still_works() -> None:
+    """无透明通道的 L 模式件走亮度掩码（>30），行为向后兼容。"""
+    pytest.importorskip("PIL")
+    pytest.importorskip("numpy")
+    cfg = ImageSolverConfig(use_llm=False)
+    solver = ImageCaptchaSolver(provider=None, config=cfg)
+    bg = _make_test_image_bytes((40, 12), "bg_with_gap")
+    slider = _make_test_image_bytes((12, 12), "slider")  # L 模式，无 alpha
+    assert solver._match_slider(bg, slider) is not None
+
+
+def test_match_slider_palette_transparency_uses_alpha_mask() -> None:
+    """调色板透明 PNG（P 模式 + tRNS）应以 alpha 为掩码，不被调色板 RGB 污染。
+
+    回归背景：SF piece 实图为 P/RGBA 透明件；旧实现 convert("L") 后按
+    亮度设掩码，透明区的调色板 RGB 若非黑会整体污染匹配。
+    """
+    pytest.importorskip("PIL")
+    pytest.importorskip("numpy")
     import io
 
     from PIL import Image
 
-    img = Image.new("L", (12, 12), color=10)  # 大部分像素 < 30
-    for x in range(2, 8):
+    # 件：P 模式，索引 0 = 透明（调色板 RGB 是纯白！），索引 1..4 = 纹理块
+    # 索引 1..4 的 convert("L") 亮度 = 0.299R+0.587G+0.114B ≈ 87/111/140/105
+    piece = Image.new("P", (12, 12), color=0)
+    piece.putpalette(
+        [255, 255, 255, 200, 40, 30, 60, 120, 200, 30, 200, 120, 105, 105, 105] + [0] * (768 - 15)
+    )
+    texture = [1, 2, 3, 4, 3, 2]
+    for x in range(6):
         for y in range(2, 8):
-            img.putpixel((x, y), 200)  # 少量亮色像素
+            piece.putpixel((x, y), texture[(x + y) % len(texture)])
+    piece.info["transparency"] = 0
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    piece.save(buf, format="PNG", transparency=0)
     slider = buf.getvalue()
+
+    # 背景：灰 128，缺口列 20..25 = 件亮度 × 0.5（线性缩放，ZNCC 应精确命中）
+    bg = Image.new("L", (40, 12), color=128)
+    lums = [87, 111, 140, 105]
+    for x in range(6):
+        for y in range(2, 8):
+            bg.putpixel((20 + x, y), int(lums[texture[(x + y) % len(texture)] - 1] * 0.5))
+    buf = io.BytesIO()
+    bg.save(buf, format="PNG")
+    bgr = buf.getvalue()
+
+    cfg = ImageSolverConfig(use_llm=False)
+    solver = ImageCaptchaSolver(provider=None, config=cfg)
+    matched = solver._match_slider(bgr, slider)
+    assert matched is not None
+    x, _score = matched
+    assert x == 20
+
+
+def test_match_slider_low_score_returns_none() -> None:
+    """背景与件无相关结构（分数低于门限）时返回 None，不输出自信的错误解。"""
+    pytest.importorskip("PIL")
+    pytest.importorskip("numpy")
+    cfg = ImageSolverConfig(use_llm=False)
+    solver = ImageCaptchaSolver(provider=None, config=cfg)
+    slider = _make_test_image_bytes((12, 12), "slider")
+    # 均匀背景 + 均匀"缺口"：无位置信号
+    bg = _make_test_image_bytes((40, 12), "blank")
+    assert solver._match_slider(bg, slider) is None
+
+
+def test_match_slider_low_score_falls_to_llm() -> None:
+    """本地匹配低于门限时 solve_slider 应回退 LLM 而非返回低分坐标。"""
+    pytest.importorskip("PIL")
+    pytest.importorskip("numpy")
+    provider = _FakeVisionProvider(chat_response='{"x": 25, "confidence": 0.5}')
+    cfg = ImageSolverConfig(use_llm=True)
+    solver = ImageCaptchaSolver(provider=provider, config=cfg)  # type: ignore[arg-type]
+    bg = _make_test_image_bytes((40, 12), "blank")
+    slider = _make_test_image_bytes((12, 12), "slider")
+    result = solver.solve_slider(bg, slider)
+    assert result is not None
+    assert result.method == "llm"
+    assert result.x == 25
+
+
+def test_match_slider_full_canvas_piece() -> None:
+    """回归（2026-11-14 极验实测）：全宽 canvas 拼图件必须裁剪到 blob 再滑窗。
+
+    极验把拼图件画在与背景同宽的全幅 canvas 上（blob 在 canvas 左缘附近）；
+    旧实现 sw==bw 时滑窗范围为空、必然无解。裁剪后应精确定位，且返回的
+    x 折算回原始 png 左缘坐标系（canvas-left = 匹配位置 - blob 左偏移）。
+    """
+    pytest.importorskip("PIL")
+    pytest.importorskip("numpy")
+    import io
+
+    from PIL import Image
+
+    # 件：全幅 canvas 40×12（与背景同宽），blob 位于 x[4..9] y[2..7] 纹理
+    piece = Image.new("RGBA", (40, 12), (0, 0, 0, 0))
+    tex = {}
+    for dx in range(6):
+        for y in range(2, 8):
+            v = 150 + ((dx * 37 + y * 61) % 80)
+            tex[(dx, y)] = v
+            piece.putpixel((4 + dx, y), (v, v, v, 255))
+    buf = io.BytesIO()
+    piece.save(buf, format="PNG")
+    slider = buf.getvalue()
+
+    # 背景：灰 128，缺口在列 24..29 = 件纹理 × 0.35（canvas-left 目标 = 20）
+    bg = Image.new("L", (40, 12), color=128)
+    for dx in range(6):
+        for y in range(2, 8):
+            bg.putpixel((24 + dx, y), int(tex[(dx, y)] * 0.35))
+    buf = io.BytesIO()
+    bg.save(buf, format="PNG")
+    bgr = buf.getvalue()
+
+    cfg = ImageSolverConfig(use_llm=False)
+    solver = ImageCaptchaSolver(provider=None, config=cfg)
+    matched = solver._match_slider(bgr, slider)
+    assert matched is not None
+    x, score = matched
+    assert x == 20  # 缺口左缘 24 - blob 左偏移 4
+    assert score > 0.8
+
+
+def test_match_slider_silhouette_flat_dark_hole() -> None:
+    """回归（2026-11-14 易盾/极验实测）：平色填充洞走剪影异常二级探测器。
+
+    缺口填纯色（无内容结构）时 ZNCC 无峰（门控拒绝）；探测器应凭
+    "足印亮度 vs 环带亮度的台阶" 定位洞的位置。暗洞与亮洞两个方向都要命中。
+    """
+    pytest.importorskip("PIL")
+    pytest.importorskip("numpy")
+    import io
+
+    from PIL import Image
+
+    # 件：RGBA 20×12，blob x[2..7] y[3..8] 带纹理（150..229）
+    piece = Image.new("RGBA", (20, 12), (0, 0, 0, 0))
+    tex = {}
+    for dx in range(6):
+        for y in range(3, 9):
+            v = 150 + ((dx * 41 + y * 53) % 80)
+            tex[(dx, y)] = v
+            piece.putpixel((2 + dx, y), (v, v, v, 255))
+    buf = io.BytesIO()
+    piece.save(buf, format="PNG")
+    slider = buf.getvalue()
+
+    cfg = ImageSolverConfig(use_llm=False)
+    solver = ImageCaptchaSolver(provider=None, config=cfg)
+
+    # 暗洞：背景灰 140，缺口列 30..35 填纯色 45（无内容结构）
+    bg = Image.new("L", (80, 12), color=140)
+    for dx in range(6):
+        for y in range(3, 9):
+            bg.putpixel((30 + dx, y), 45)
+    buf = io.BytesIO()
+    bg.save(buf, format="PNG")
+    matched = solver._match_slider(buf.getvalue(), slider)
+    assert matched is not None
+    x, score = matched
+    assert x == 28  # 洞左缘 30 - blob 左偏移 2
+    assert 0 < score <= 0.7
+
+    # 亮洞：背景灰 60，缺口填纯色 200
+    bg2 = Image.new("L", (80, 12), color=60)
+    for dx in range(6):
+        for y in range(3, 9):
+            bg2.putpixel((50 + dx, y), 200)
+    buf = io.BytesIO()
+    bg2.save(buf, format="PNG")
+    matched2 = solver._match_slider(buf.getvalue(), slider)
+    assert matched2 is not None
+    x2, _score2 = matched2
+    assert x2 == 48  # 洞左缘 50 - blob 左偏移 2
+
+
+def test_match_slider_rejects_oversize_images() -> None:
+    """资源上限：超大图（不可信输入灼烧 CPU）直接拒绝，两路径一致。"""
+    pytest.importorskip("PIL")
+    pytest.importorskip("numpy")
+    cfg = ImageSolverConfig(use_llm=False)
+    solver = ImageCaptchaSolver(provider=None, config=cfg)
+    bg = _make_test_image_bytes((2600, 1800), "blank")  # 468 万像素 > 400 万上限
+    slider = _make_test_image_bytes((12, 12), "slider")
+    assert solver._match_slider(bg, slider) is None
+    # 纯 Pillow 路径同样拒绝
+    with patch.dict("sys.modules", {"numpy": None}):
+        assert solver._match_slider(bg, slider) is None
+
+
+def test_silhouette_detector_rejects_uniform_background() -> None:
+    """无洞的均匀背景：探测器不得误报（三重门限全不过 → None）。"""
+    pytest.importorskip("PIL")
+    pytest.importorskip("numpy")
+    cfg = ImageSolverConfig(use_llm=False)
+    solver = ImageCaptchaSolver(provider=None, config=cfg)
+    slider = _make_test_image_bytes((12, 12), "slider")
+    bg = _make_test_image_bytes((40, 12), "blank")
+    assert solver._match_slider(bg, slider) is None
+
+
+def test_llm_slider_rejects_out_of_bounds_x() -> None:
+    """回归（2026-11-14 易盾实测）：LLM 幻觉越界 x 必须被拒绝。
+
+    背景图 40px 宽，LLM 回 x=340（越界）应返回 None 而不是穿透给调用方。
+    """
+    pytest.importorskip("PIL")
+    provider = _FakeVisionProvider(chat_response='{"x": 340, "confidence": 0.72}')
+    cfg = ImageSolverConfig(use_pillow_slider=False)
+    solver = ImageCaptchaSolver(provider=provider, config=cfg)  # type: ignore[arg-type]
+    bg = _make_test_image_bytes((40, 12), "blank")
+    slider = _make_test_image_bytes((12, 12), "slider")
+    assert solver.solve_slider(bg, slider) is None
+    # 界内合法值不受影响
+    provider2 = _FakeVisionProvider(chat_response='{"x": 25, "confidence": 0.72}')
+    solver2 = ImageCaptchaSolver(provider=provider2, config=cfg)  # type: ignore[arg-type]
+    result = solver2.solve_slider(bg, slider)
+    assert result is not None
+    assert result.x == 25
+
+
+def test_local_slider_numpy_skips_dark_pixels() -> None:
+    """件内暗色像素（亮度掩码 < 30）不参与匹配，仍精确定位缺口。"""
+    pytest.importorskip("PIL")
+    pytest.importorskip("numpy")
+    cfg = ImageSolverConfig(use_llm=False)
+    solver = ImageCaptchaSolver(provider=None, config=cfg)
+    bg = _make_test_image_bytes((40, 12), "bg_with_gap")
+    # 配对夹具的件本身就以深底（10）包裹纹理块，暗色像素被掩码排除
+    slider = _make_test_image_bytes((12, 12), "slider")
     x = solver._local_slider(bg, slider)
-    assert x is not None
-    assert x >= 12
+    assert x == 20
 
 
 def test_local_slider_numpy_returns_none_on_invalid_image() -> None:
@@ -734,7 +1085,7 @@ def test_local_slider_returns_none_when_slider_larger_than_bg() -> None:
 
 
 def test_local_slider_falls_back_to_pillow_only_when_numpy_missing() -> None:
-    """numpy 不可用时回退到 _pillow_only_slider 路径。"""
+    """numpy 不可用时回退到 _pillow_only_slider 路径，同样精确定位。"""
     pytest.importorskip("PIL")
     cfg = ImageSolverConfig(use_llm=False)
     solver = ImageCaptchaSolver(provider=None, config=cfg)
@@ -743,42 +1094,30 @@ def test_local_slider_falls_back_to_pillow_only_when_numpy_missing() -> None:
     # 让 numpy 导入失败但 PIL 可用
     with patch.dict("sys.modules", {"numpy": None}):
         x = solver._local_slider(bg, slider)
-    assert x is not None
+    assert x == 20
 
 
 def test_pillow_only_slider_returns_x() -> None:
-    """纯 Pillow 路径下 _pillow_only_slider 应返回正整数 x。"""
+    """纯 Pillow 路径下 _pillow_only_slider 应精确返回缺口 x=20。"""
     pytest.importorskip("PIL")
     cfg = ImageSolverConfig(use_llm=False)
     solver = ImageCaptchaSolver(provider=None, config=cfg)
     bg = _make_test_image_bytes((40, 12), "bg_with_gap")
     slider = _make_test_image_bytes((12, 12), "slider")
     x = solver._pillow_only_slider(bg, slider)
-    assert x is not None
-    assert x >= 12
+    assert x == 20
 
 
 def test_pillow_only_slider_skips_dark_pixels() -> None:
-    """纯 Pillow 路径下滑块含暗色像素（< 30）时跳过，仍返回匹配位置。"""
+    """纯 Pillow 路径下件内暗色像素（亮度掩码 < 30）不参与匹配。"""
     pytest.importorskip("PIL")
     cfg = ImageSolverConfig(use_llm=False)
     solver = ImageCaptchaSolver(provider=None, config=cfg)
     bg = _make_test_image_bytes((40, 12), "bg_with_gap")
-    # 构造含暗色像素的滑块：大部分像素 < 30，少量亮色像素
-    import io
-
-    from PIL import Image
-
-    img = Image.new("L", (12, 12), color=10)  # 大部分像素 < 30
-    for x in range(2, 8):
-        for y in range(2, 8):
-            img.putpixel((x, y), 200)  # 少量亮色像素
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    slider = buf.getvalue()
+    # 配对夹具的件以深底（10）包裹纹理块，暗色像素被掩码排除
+    slider = _make_test_image_bytes((12, 12), "slider")
     x = solver._pillow_only_slider(bg, slider)
-    assert x is not None
-    assert x >= 12
+    assert x == 20
 
 
 def test_pillow_only_slider_returns_none_on_invalid_image() -> None:
@@ -802,7 +1141,11 @@ def test_pillow_only_slider_returns_none_when_slider_larger_than_bg() -> None:
 
 
 def test_solve_slider_local_pillow_returns_solution() -> None:
-    """solve_slider 在 Pillow 路径成功时返回 SliderSolution(method='pillow')。"""
+    """solve_slider 在 Pillow 路径成功时返回 SliderSolution(method='pillow')。
+
+    confidence 改为实测 ZNCC 分（旧值为硬编码 0.7），夹具缺口=件×0.35
+    应得到接近 1.0 的分数。
+    """
     pytest.importorskip("PIL")
     pytest.importorskip("numpy")
     cfg = ImageSolverConfig(use_pillow_slider=True, use_llm=False)
@@ -812,8 +1155,8 @@ def test_solve_slider_local_pillow_returns_solution() -> None:
     result = solver.solve_slider(bg, slider)
     assert result is not None
     assert result.method == "pillow"
-    assert result.x >= 12
-    assert result.confidence == pytest.approx(0.7)
+    assert result.x == 20
+    assert 0.45 <= result.confidence <= 1.0
 
 
 def test_solve_slider_async_local_pillow_returns_solution() -> None:

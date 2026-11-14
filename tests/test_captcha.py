@@ -166,6 +166,24 @@ def test_solve_image_challenge_screenshot_failure_returns_false() -> None:
     assert solver._solve_image_challenge(page, info) is False
 
 
+def test_solve_image_challenge_drag_prompt_skipped() -> None:
+    """回归（2026-11-14 hCaptcha 实测）：拖拽连线类提示词 → 跳过点选求解。
+
+    拖拽放置范式与点选不同，点选求解只会给出错误坐标并烧掉挑战次数——
+    显式跳过交人工，且不得调用 solve_click。
+    """
+    img_solver = MagicMock(spec=ImageCaptchaSolver)
+    solver = CaptchaSolver(image_solver=img_solver)
+    iframe = MagicMock()
+    iframe.bounding_box.return_value = {"x": 0, "y": 0, "width": 100, "height": 100}
+    iframe.screenshot.return_value = b"img"
+    page = _make_page({_HCAPTCHA_IFRAME: iframe})
+    info = CaptchaInfo(type=CaptchaType.HCAPTCHA, container_selector=_HCAPTCHA_IFRAME)
+    with patch.object(solver, "_read_challenge_prompt", return_value="请拖动右侧的线段以完成连线"):
+        assert solver._solve_image_challenge(page, info) is False
+    img_solver.solve_click.assert_not_called()
+
+
 def test_solve_image_challenge_solve_click_returns_none_returns_false() -> None:
     """solve_click 返回 None 时图像挑战返回假。"""
     img_solver = MagicMock(spec=ImageCaptchaSolver)
@@ -247,22 +265,22 @@ def test_geetest_detect_offset_no_image_solver_returns_none() -> None:
 
 
 def test_geetest_detect_offset_panel_screenshot_failure_returns_none() -> None:
-    """极验偏移检测面板截图失败时返回 None。"""
+    """极验偏移检测背景 canvas 截图失败时返回 None。"""
     img_solver = MagicMock(spec=ImageCaptchaSolver)
     solver = CaptchaSolver(image_solver=img_solver)
-    panel = MagicMock()
-    panel.screenshot.side_effect = RuntimeError("snap fail")
-    page = _make_page({".geetest_panel": panel})
+    bg_el = MagicMock()
+    bg_el.screenshot.side_effect = RuntimeError("snap fail")
+    page = _make_page({".geetest_canvas_bg": bg_el})
     assert solver._geetest_detect_offset(page) is None
 
 
 def test_geetest_detect_offset_no_slider_element_returns_none() -> None:
-    """极验偏移检测无滑块元素时返回 None。"""
+    """极验偏移检测无拼图件 canvas 时返回 None。"""
     img_solver = MagicMock(spec=ImageCaptchaSolver)
     solver = CaptchaSolver(image_solver=img_solver)
-    panel = MagicMock()
-    panel.screenshot.return_value = b"bg"
-    page = _make_page({".geetest_panel": panel})  # 缺 slider_button
+    bg_el = MagicMock()
+    bg_el.screenshot.return_value = b"bg"
+    page = _make_page({".geetest_canvas_bg": bg_el})  # 缺 slice canvas
     assert solver._geetest_detect_offset(page) is None
 
 
@@ -273,14 +291,14 @@ def test_geetest_detect_offset_returns_solver_x() -> None:
     img_solver = MagicMock(spec=ImageCaptchaSolver)
     img_solver.solve_slider.return_value = SliderSolution(x=150, method="pillow")
     solver = CaptchaSolver(image_solver=img_solver)
-    panel = MagicMock()
-    panel.screenshot.return_value = b"bg"
-    slider_el = MagicMock()
-    slider_el.screenshot.return_value = b"slider"
+    bg_el = MagicMock()
+    bg_el.screenshot.return_value = b"bg"
+    slice_el = MagicMock()
+    slice_el.screenshot.return_value = b"slice"
     page = _make_page(
         {
-            ".geetest_panel": panel,
-            ".geetest_slider_button": slider_el,
+            ".geetest_canvas_bg": bg_el,
+            ".geetest_canvas_slice": slice_el,
         }
     )
     result = solver._geetest_detect_offset(page)
@@ -292,14 +310,14 @@ def test_geetest_detect_offset_solver_returns_none() -> None:
     img_solver = MagicMock(spec=ImageCaptchaSolver)
     img_solver.solve_slider.return_value = None
     solver = CaptchaSolver(image_solver=img_solver)
-    panel = MagicMock()
-    panel.screenshot.return_value = b"bg"
-    slider_el = MagicMock()
-    slider_el.screenshot.return_value = b"slider"
+    bg_el = MagicMock()
+    bg_el.screenshot.return_value = b"bg"
+    slice_el = MagicMock()
+    slice_el.screenshot.return_value = b"slice"
     page = _make_page(
         {
-            ".geetest_panel": panel,
-            ".geetest_slider_button": slider_el,
+            ".geetest_canvas_bg": bg_el,
+            ".geetest_canvas_slice": slice_el,
         }
     )
     assert solver._geetest_detect_offset(page) is None
@@ -770,7 +788,7 @@ def test_solve_recaptcha_v2_auto_token_pass() -> None:
 
 
 def test_solve_recaptcha_v2_image_challenge_path_success() -> None:
-    """reCAPTCHA v2 图像挑战路径成功。"""
+    """reCAPTCHA v2 图像挑战路径成功（挑战 iframe 可见时才走图像求解）。"""
     img_solver = MagicMock(spec=ImageCaptchaSolver)
     solver = CaptchaSolver(max_wait=10.0, humanize=False, image_solver=img_solver)
     info = CaptchaInfo(type=CaptchaType.RECAPTCHA_V2, container_selector=_RECAPTCHA_IFRAME)
@@ -778,6 +796,11 @@ def test_solve_recaptcha_v2_image_challenge_path_success() -> None:
     anchor = MagicMock()
     anchor.bounding_box.return_value = None
     page.frame_locator.return_value.locator.return_value.element_handle.return_value = anchor
+    # 挑战 iframe 可见（风控放行）：_recaptcha_challenge_visible 依赖
+    # query_selector('iframe[src*="bframe"]') 的 bounding_box
+    bframe = MagicMock()
+    bframe.bounding_box.return_value = {"x": 10.0, "y": 300.0, "width": 300.0, "height": 150.0}
+    page.query_selector.side_effect = lambda sel: bframe if "bframe" in sel else None
     with (
         patch.object(solver, "_wait_for_token", side_effect=[False, True]),
         patch.object(solver, "_solve_image_challenge", return_value=True),
@@ -785,6 +808,30 @@ def test_solve_recaptcha_v2_image_challenge_path_success() -> None:
     ):
         result = solver._solve_recaptcha_v2(page, info)
     assert result is True
+
+
+def test_solve_recaptcha_v2_risk_gated_returns_false_early() -> None:
+    """回归（2026-11-14 Google demo 实测）：风控拦截时挑战 iframe 停在屏外，
+    应提前显式失败（不空跑图片挑战）。"""
+    img_solver = MagicMock(spec=ImageCaptchaSolver)
+    solver = CaptchaSolver(max_wait=10.0, humanize=False, image_solver=img_solver)
+    info = CaptchaInfo(type=CaptchaType.RECAPTCHA_V2, container_selector=_RECAPTCHA_IFRAME)
+    page = MagicMock()
+    anchor = MagicMock()
+    anchor.bounding_box.return_value = None
+    page.frame_locator.return_value.locator.return_value.element_handle.return_value = anchor
+    # 挑战 iframe 停在屏外（y=-9999，实测的风控拦截特征）
+    bframe = MagicMock()
+    bframe.bounding_box.return_value = {"x": 1.0, "y": -9999.0, "width": 300.0, "height": 150.0}
+    page.query_selector.side_effect = lambda sel: bframe if "bframe" in sel else None
+    with (
+        patch.object(solver, "_wait_for_token", return_value=False),
+        patch.object(solver, "_solve_image_challenge") as mock_challenge,  # 不应被调用
+        patch("web_crawler.ai.captcha.time.sleep"),
+    ):
+        result = solver._solve_recaptcha_v2(page, info)
+    assert result is False
+    mock_challenge.assert_not_called()
 
 
 def test_solve_recaptcha_v2_token_fail_no_image_solver_returns_false() -> None:
@@ -977,14 +1024,14 @@ def test_geetest_detect_offset_solver_exception_returns_none() -> None:
 
 
 def test_geetest_detect_offset_slider_screenshot_exception_returns_none() -> None:
-    """slider 截图抛错 → 返回 None。"""
+    """slice canvas 截图抛错 → 返回 None。"""
     img_solver = MagicMock(spec=ImageCaptchaSolver)
     solver = CaptchaSolver(image_solver=img_solver)
-    panel = MagicMock()
-    panel.screenshot.return_value = b"bg"
-    slider_el = MagicMock()
-    slider_el.screenshot.side_effect = RuntimeError("snap fail")
-    page = _make_page({".geetest_panel": panel, ".geetest_slider_button": slider_el})
+    bg_el = MagicMock()
+    bg_el.screenshot.return_value = b"bg"
+    slice_el = MagicMock()
+    slice_el.screenshot.side_effect = RuntimeError("snap fail")
+    page = _make_page({".geetest_canvas_bg": bg_el, ".geetest_canvas_slice": slice_el})
     assert solver._geetest_detect_offset(page) is None
 
 

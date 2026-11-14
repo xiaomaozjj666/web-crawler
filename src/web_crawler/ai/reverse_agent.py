@@ -104,7 +104,7 @@ from .dom_pruner import DomPruner, PrunedDom
 from .guardrails import ActionGuard, GuardrailResult
 from .hooks import generate_combined_script, main_world_script
 from .judge import JudgeResult, TaskJudge
-from .llm import DEFAULT_MODEL, DeepSeekProvider, LLMMessage, LLMProvider
+from .llm import DEFAULT_MODEL, DeepSeekProvider, LLMMessage, LLMProvider, get_vision_provider
 from .loop import ContextCompressor, LoopDetector
 from .planner import Plan, Planner
 from .recorder import RunRecorder
@@ -191,11 +191,13 @@ class ReverseAgent(ActionExecutor):
         # 已复核过的拦截记录游标：晚到拦截只报告一次，已处理的拒绝不会让之后每步失败
         self._nav_checked = 0
         # 验证码管理器：若启用 image_captcha，注入 ImageCaptchaSolver，
-        # 让图片挑战出现时自动用 LLM Vision / 本地 OCR 识别
+        # 让图片挑战出现时自动用 LLM Vision / 本地 OCR 识别。
+        # provider 走 get_vision_provider：主 provider 不支持 vision 时
+        # 可由 LLM_VISION_API_KEY 单独注入视觉模型（如逆向 DeepSeek Flash）。
         if self.config.enable_image_captcha:
             from .image_captcha import ImageCaptchaSolver
 
-            image_solver = ImageCaptchaSolver(provider=self.provider)
+            image_solver = ImageCaptchaSolver(provider=get_vision_provider(self.provider))
         else:
             image_solver = None
         self.captcha_manager = CaptchaManager(image_solver=image_solver)

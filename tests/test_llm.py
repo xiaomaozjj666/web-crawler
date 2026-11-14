@@ -404,8 +404,10 @@ def test_deepseek_provider_default(monkeypatch: pytest.MonkeyPatch) -> None:
     assert p.api_key_env == "DEEPSEEK_API_KEY"
     assert p.base_url == llm_mod.DEEPSEEK_BASE_URL
     assert p.name == "deepseek"
-    # 默认不支持 vision
-    assert p.capabilities.vision is False
+    # 改判（2026-11-14 实测 api.deepseek.com/v1）：默认模型 deepseek-flash
+    # 已原生支持 image_url 消息，vision=True；旧断言"默认不支持 vision"
+    # 只在 deepseek-vision-* 命名时代成立。
+    assert p.capabilities.vision is True
     assert p.capabilities.json_mode is True
     assert p.capabilities.streaming is True
 
@@ -417,6 +419,72 @@ def test_deepseek_provider_vision_model_enables_vision(monkeypatch: pytest.Monke
     assert p.capabilities.vision is True
     # known_models 应保持原样
     assert "deepseek-v4-pro" in p.capabilities.known_models
+
+
+def test_deepseek_provider_v4_pro_no_vision(monkeypatch: pytest.MonkeyPatch) -> None:
+    """deepseek-v4-pro 未实测 vision，保持 vision=False。"""
+    monkeypatch.setattr(llm_mod, "_DOTENV_LOADED", True)
+    p = DeepSeekProvider(model="deepseek-v4-pro", api_key="k")
+    assert p.capabilities.vision is False
+
+
+# ---------------------------------------------------------------------------
+# get_vision_provider：视觉专用 provider 协商
+# ---------------------------------------------------------------------------
+
+
+def test_get_vision_provider_preferred_vision_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    """preferred 已支持 vision 时原样返回，不查环境变量。"""
+    monkeypatch.setattr(llm_mod, "_DOTENV_LOADED", True)
+    monkeypatch.delenv("LLM_VISION_API_KEY", raising=False)
+    preferred = DeepSeekProvider(api_key="k")  # deepseek-flash → vision=True
+    assert llm_mod.get_vision_provider(preferred) is preferred
+
+
+def test_get_vision_provider_preferred_no_vision_no_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """preferred 不支持 vision 且未设 LLM_VISION_API_KEY 时原样返回。"""
+    monkeypatch.setattr(llm_mod, "_DOTENV_LOADED", True)
+    monkeypatch.delenv("LLM_VISION_API_KEY", raising=False)
+
+    class _TextOnly:
+        capabilities = ProviderCapabilities(vision=False)
+
+    preferred = _TextOnly()
+    assert llm_mod.get_vision_provider(preferred) is preferred
+    assert llm_mod.get_vision_provider(None) is None
+
+
+def test_get_vision_provider_env_key_builds_deepseek(monkeypatch: pytest.MonkeyPatch) -> None:
+    """preferred 不支持 vision 且设了 LLM_VISION_API_KEY 时构造专用 provider。"""
+    monkeypatch.setattr(llm_mod, "_DOTENV_LOADED", True)
+    monkeypatch.setenv("LLM_VISION_API_KEY", "sk-vision-test")
+    monkeypatch.delenv("LLM_VISION_BASE_URL", raising=False)
+
+    class _TextOnly:
+        capabilities = ProviderCapabilities(vision=False)
+
+    provider = llm_mod.get_vision_provider(_TextOnly())
+    assert isinstance(provider, DeepSeekProvider)
+    assert provider.api_key == "sk-vision-test"
+    assert provider.capabilities.vision is True
+    # None preferred 同样可用环境变量构造
+    provider2 = llm_mod.get_vision_provider(None)
+    assert isinstance(provider2, DeepSeekProvider)
+    assert provider2.api_key == "sk-vision-test"
+
+
+def test_get_vision_provider_env_base_url_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LLM_VISION_BASE_URL 可覆盖视觉 provider 端点。"""
+    monkeypatch.setattr(llm_mod, "_DOTENV_LOADED", True)
+    monkeypatch.setenv("LLM_VISION_API_KEY", "sk-vision-test")
+    monkeypatch.setenv("LLM_VISION_BASE_URL", "https://reverse.example.com/v1")
+
+    class _TextOnly:
+        capabilities = ProviderCapabilities(vision=False)
+
+    provider = llm_mod.get_vision_provider(_TextOnly())
+    assert isinstance(provider, DeepSeekProvider)
+    assert provider.base_url == "https://reverse.example.com/v1"
 
 
 def test_openai_provider_default(monkeypatch: pytest.MonkeyPatch) -> None:

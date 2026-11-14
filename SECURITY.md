@@ -84,6 +84,8 @@
 - `.env` 文件由 `python-dotenv` 可选加载（存在则读，不存在则跳过）；`.env` 已在 `.gitignore` 中，不会入库。
 - key 传入后由调用方管理生命周期——库不持久化 key、不缓存到磁盘、进程结束后随对象回收。
 - `ReverseAgent` 的 `RunRecorder` 事件日志与 checkpoint 只记录动作/观察/思考文本，不记录 HTTP 头中的 `Authorization`。
+- 图片验证码识别（`ImageCaptchaSolver`）的 LLM Vision / math_mode 路径会把**目标站点的验证码图片**以 base64 上传到所配 LLM 端点：请确认目标站点授权自动化处理，且外发数据不含敏感内容；视觉调用可用 `LLM_VISION_API_KEY` / `LLM_VISION_BASE_URL` 与文本 key 分离计费，key 处理遵循上述同一条款。
+- 已知第三方设计弱点（2026-11-14 观察，非本项目可控）：SF-Captcha（AJ-Captcha 内核）把校验答案以 AES 加密的 `pointJson` 下发给客户端、密钥在同响应的 `secretKey` 字段中一并下发——客户端可就地解密答案。该弱点属服务端部署设计，使用该内核的集成方应要求供应商改型（服务端校验 + 密钥不下发）。
 
 ### Power Mode
 

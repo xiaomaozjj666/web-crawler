@@ -429,9 +429,12 @@ class ReverseToolsMixin(HostContract):
             return _error("mode must be one of: text / slider / click")
         mime = args.get("mime", "image/png")
 
-        # 用 self.provider（可能支持 vision）构造 ImageCaptchaSolver
+        # 用 get_vision_provider 协商：self.provider 支持 vision 则复用，
+        # 否则回退 LLM_VISION_API_KEY 注入的专用视觉模型
+        from ..ai.llm import get_vision_provider
+
         cfg = ImageSolverConfig()
-        solver = ImageCaptchaSolver(provider=self.provider, config=cfg)
+        solver = ImageCaptchaSolver(provider=get_vision_provider(self.provider), config=cfg)
         limitations = ["识别结果由 Vision/OCR 生成，需在提交前人工或回放校验。"]
 
         try:

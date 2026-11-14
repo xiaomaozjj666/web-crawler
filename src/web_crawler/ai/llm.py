@@ -466,8 +466,9 @@ class DeepSeekProvider(OpenAICompatibleProvider):
 
     name = "deepseek"
 
-    # DeepSeek-V4.1-Flash 支持 JSON 模式与流式输出；vision 由调用方按模型名
-    # 通过 capabilities 覆盖（DeepSeek-Vision 系列）。
+    # DeepSeek-V4.1-Flash 支持 JSON 模式与流式输出。vision 能力在 __init__ 按
+    # 模型名开启：deepseek-flash 已实测支持 OpenAI image_url 消息（见下），
+    # "deepseek-vision-*" 命名保留兼容未来专用视觉模型。
     capabilities = ProviderCapabilities(
         vision=False,
         json_mode=True,
@@ -494,8 +495,10 @@ class DeepSeekProvider(OpenAICompatibleProvider):
             api_key_env="DEEPSEEK_API_KEY",
             default_headers=default_headers,
         )
-        # deepseek-vision-* 视为支持 vision
-        if "vision" in model.lower():
+        # deepseek-flash 于 2026-11-14 对 api.deepseek.com/v1 实测：带 OpenAI
+        # image_url 的消息返回 HTTP 200，即 flash 已原生支持 vision；
+        # deepseek-vision-* 命名同样视为支持 vision。
+        if "vision" in model.lower() or model.lower() == "deepseek-flash":
             self.capabilities = ProviderCapabilities(
                 vision=True,
                 json_mode=True,
@@ -701,6 +704,35 @@ def get_provider(name: str = "deepseek", **kwargs: Any) -> LLMProvider:
     return _PROVIDERS[key](**kwargs)
 
 
+def get_vision_provider(preferred: LLMProvider | None = None) -> LLMProvider | None:
+    """返回 vision 可用的 provider，供图片验证码识别等视觉调用方使用。
+
+    优先级：
+
+    1. ``preferred`` 已声明 vision 能力 → 原样返回（调用方注入的专用视觉
+       模型优先）；
+    2. 环境变量 ``LLM_VISION_API_KEY`` 存在 → 以其构造 DeepSeekProvider
+       （``deepseek-flash`` 实测支持 vision；端点可用 ``LLM_VISION_BASE_URL``
+       覆盖）——与文本 LLM 的 ``DEEPSEEK_API_KEY`` 分离，允许视觉调用
+       单独计费/限速；
+    3. 都不满足 → 原样返回 ``preferred``（可能为 None，调用方退回本地路径）。
+    """
+    # .env 常规在 provider 构造时才加载；本函数需要在构造前读
+    # LLM_VISION_API_KEY，故先显式触发一次（进程级幂等）。
+    _load_dotenv_once()
+    if preferred is not None:
+        caps = getattr(preferred, "capabilities", None)
+        if caps is not None and getattr(caps, "vision", False):
+            return preferred
+    api_key = os.environ.get("LLM_VISION_API_KEY", "")
+    if api_key:
+        return DeepSeekProvider(
+            api_key=api_key,
+            base_url=os.environ.get("LLM_VISION_BASE_URL", DEEPSEEK_BASE_URL),
+        )
+    return preferred
+
+
 __all__ = [
     "DEEPSEEK_BASE_URL",
     "DEFAULT_MODEL",
@@ -715,6 +747,7 @@ __all__ = [
     "QwenProvider",
     "available_providers",
     "get_provider",
+    "get_vision_provider",
     "register_provider",
     "select_provider",
 ]

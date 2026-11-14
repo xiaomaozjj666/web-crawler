@@ -24,6 +24,12 @@ export DEEPSEEK_API_KEY=sk-...       # Linux / macOS
 key 不记入日志、不出现在异常消息中、不落盘缓存——详见
 [SECURITY.md · LLM API key 处理](https://github.com/xiaomaozjj666/web-crawler/blob/master/SECURITY.md)。
 
+**视觉调用（图片验证码识别）**：`deepseek-flash` 已支持 image_url 消息。
+图片验证码识别默认复用同一 provider；如需单独计费/限速，设
+`LLM_VISION_API_KEY`（可用 `LLM_VISION_BASE_URL` 覆盖端点）即可注入
+专用视觉模型，优先级高于文本 key。注意：启用该路径后，目标站点的
+验证码图片会上传到所配端点（数据流提示见模块 docstring 与 SECURITY.md）。
+
 ## LLM 供应商层
 
 供应商层是纯 `httpx` 实现的 OpenAI 兼容抽象，四个工厂函数即可玩转：

@@ -57,8 +57,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   （此前仅靠全局 gitignore 兜底，其他贡献者机器上可能污染 git status）。
 - 新增 `tests/test_version_flags.py`：6 个 CLI 的版本标志回归 +
   `python -m web_crawler` 子进程行为（--version/--help/未知参数）。
+- **`llm.get_vision_provider(preferred)`**：视觉调用方专用 provider 协商。
+  `preferred` 已支持 vision 时原样返回；否则读环境变量
+  `LLM_VISION_API_KEY`（可用 `LLM_VISION_BASE_URL` 覆盖端点）构造
+  DeepSeekProvider——与文本 LLM 的 `DEEPSEEK_API_KEY` 分离，视觉调用
+  （图片验证码识别）可单独计费/限速。`ReverseAgent` 与 MCP
+  `solve_captcha_image` 的 `ImageCaptchaSolver` 构造已接入。
+- **`ImageSolverConfig.math_mode`（数学运算验证码）**：2026-11-14 对
+  生成器站实测发现缺口——校验方要算式答案而旧实现只回 OCR 碎片（把
+  "7*1" 过滤成 "1" 直接交出去）。开启后本地路径允许运算符字符并对
+  "a op b" 型算式直接求值；LLM 路径切换为计算提示词直接输出答案数字。
+  真图验证：LLM 路径 `7*1=?` → `7` 全对（ground truth 由页面校验确认）。
+- **滑块二级探测器：剪影填充异常**（`_detect_silhouette_anomaly`）：
+  针对"缺口 = 平色/提亮/变暗填充、内容结构被破坏"的家族（易盾半透明
+  提亮、极验平黑洞——ZNCC 内容相关性无信号、此前必败）。件 blob 足印
+  亮度 vs 环带亮度的台阶 × 填充平坦度先验，三重门限（score≥50、
+  |diff|≥45、峰值显著性≥15，显著性排除半径取一个洞宽）全过才接受。
+  阈值由 8 对真图标定：易盾 178（真值 179，1px）、极验 87（真值 89，
+  2px）命中，ZNCC 通过家族 6 张分数 19.7~39.7 全部拒绝且无回归。
+- **点选 LLM 路径改用外接框协议**：2026-11-14 hCaptcha 真图实测，真实
+  照片散点上"裸中心点"误差可达 ±75px 甚至落在错误元素上，而外接框
+  3/3 全中（玻璃水壶/马克杯/带吸管饮料，语义标签正确）。提示词改为
+  返回 `{"boxes": [...]}`（中心点=点击坐标），旧 `points` 格式保持兼容。
+- **reCAPTCHA v2 风控拦截快速显式失败**：Google 官方 demo 实测——风控
+  拦截时挑战 iframe 永远不进可视区（spinner 挂起、bframe 停在屏外
+  y=-9999），图片挑战流程无从触达。`_solve_recaptcha_v2` 现在检测该
+  状态后提前显式失败并记 warning（不再空跑图片挑战等待），新增
+  `_recaptcha_challenge_visible`。
+- **本地滑块匹配资源上限**：目标站点的验证码图是不可信输入，超大图会让
+  ZNCC/剪影两级匹配的计算量失控（CPU 灼烧）。`_match_slider` 现在对
+  背景 >400 万像素 / 件 >50 万像素的输入直接拒绝（fail-closed），与
+  `_prepare_vision_image` 对 LLM 路径的上限同思路，numpy/纯 Pillow 两
+  路径一致。
+- **math_mode LLM 答案消毒**：数字过滤用显式 ASCII 集合而非 `isdigit`
+  （后者会放过 ² 等上标字符），LLM 偏差输出（标点/文字/提示注入）不会
+  透传给调用方。
+- **拖拽类挑战类型守卫**：hCaptcha 实测连续派发"拖动右侧线段完成连线"
+  新题型（非点选范式），点选求解只会给出错误坐标并烧掉挑战次数。
+  `_solve_image_challenge` 读到含"拖动/拖拽/drag"的提示词时显式跳过
+  点选求解交人工（`solve_click` 不再被误调）。
 
 ### Changed
+
+- **滑块缺口本地匹配 SSD → 掩码 ZNCC**（`ImageCaptchaSolver._match_slider`，
+  `_local_slider` 保留为只返回 x 的兼容包装）：旧 SSD 对"缺口被半透明
+  黑罩变暗"的真实滑块验证码（SF 顺丰、极验等）系统性失配——拼图件内容
+  与变暗后的缺口绝对差极大，反而匹配到背景里亮度相近的其他纹理（2026-11-14
+  对 SF-Captcha 在线演示实测 3 张仅 1 张命中）。ZNCC 对线性亮度缩放不变；
+  掩码改以 RGBA alpha 为权威（调色板透明 PNG 经 `convert("L")` 会把透明区
+  按调色板 RGB 计入，污染掩码）；新增低分门控
+  `ImageSolverConfig.slider_min_score`（默认 0.45）——背景与件无相关结构时
+  本地路径返回失败并让位给 LLM vision，不再输出自信但错误的坐标；
+  `SliderSolution.confidence` 从硬编码 0.7 改为实测 ZNCC 分。修复后对
+  5 张 SF 真图本地定位全部正确，浏览器端到端拖动连续两次获得服务器
+  判定通过（repCode 0000）。
+- **DeepSeekProvider 对 `deepseek-flash` 开启 vision 能力**：2026-11-14 对
+  api.deepseek.com/v1 实测，`deepseek-flash` 已原生接受 OpenAI image_url
+  消息（旧断言"默认模型不支持 vision"只在 deepseek-vision-* 命名时代
+  成立；`deepseek-vision` 现为非法模型名，合法值仅 deepseek-flash /
+  deepseek-v4-pro）。`ImageCaptchaSolver` 的 LLM vision 路径因此对默认
+  provider 直接可用，点选验证码（solve_click）不再因 provider 判否而
+  永远返回 None。
 
 - MCP 成功结果的顶层字段保持向后兼容；新增的 `meta`、`evidence_id`、
   `limitations`、`unknowns`、`coverage` 均为附加字段，旧客户端可忽略。
@@ -67,6 +126,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **全宽 canvas 拼图件导致滑窗范围为空（2026-11-14 极验官方 demo 实测）**：
+  极验把拼图件画在与背景同宽的全幅 canvas 上，`_match_slider` 以件图宽度
+  作滑窗尺寸时 `sw==bw`、滑窗范围为空、本地匹配必然无解。现在件与掩码先
+  裁剪到 blob bbox（numpy 与纯 Pillow 两路径一致），滑窗按裁剪件进行、
+  行带保持 `[by0..by1]` 对齐（件 canvas 与背景同高叠放），返回 x 折算回
+  原始 png 左缘坐标系（widget 移动的是整幅 canvas）。
+- **LLM 滑块路径幻觉越界 x 穿透（2026-11-14 易盾真图实测）**：LLM 曾对
+  320px 宽的背景回出 x=340（越界 161px），旧解析只拦负值。新增
+  `_reject_out_of_bounds`：x 越出背景图宽度视为识别失败返回 None，
+  sync/async 两路径一致。
+- **极验偏移检测用错元素（官方 demo 实测确认）**：`_geetest_detect_offset`
+  旧实现截 `.geetest_slider_button`（66×66 拖拽手柄）当拼图件、
+  `.geetest_panel`（控件外壳）当背景，模板匹配对象完全错误。改为
+  `.geetest_canvas_bg` + `.geetest_canvas_slice`（真背景与真拼图件）。
+- **点选系统提示词不覆盖宫格多选语义**：`_CLICK_SYSTEM_PROMPT` 原文只写
+  "按顺序点击"（语序点选），对 hCaptcha/reCAPTCHA 类宫格多选挑战会返回
+  空点集；提示词扩为两类题型都支持，并要求坐标落在元素上而非空白处。
 - **浏览器工具重定向 SSRF 绕过（失败关闭）**：`page.goto` 会在浏览器内部自动跟随 302，
   而 Camoufox/Juggler 的 `page.route` 只拦截首个请求（实测重定向跳转不进
   handler），公网 URL 可借 302 跳到内网/云元数据，绕过 MCP 的入口 URL 门禁。
