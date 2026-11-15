@@ -9,11 +9,14 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any, cast
 
 from web_crawler.app import crawler as web_resource_crawler
+from web_crawler.exceptions import ConfigError
+from web_crawler.parser.rules import ExtractionRules
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -148,6 +151,8 @@ def _validate_float_field(name: str, raw: str, default: float, minimum: float) -
         parsed = float(text)
     except ValueError:
         raise ValueError(f"{name} 必须是数字") from None
+    if not math.isfinite(parsed):
+        raise ValueError(f"{name} 必须是有限数字")
     if parsed < minimum:
         raise ValueError(f"{name} 不能小于 {minimum}")
     return parsed
@@ -173,8 +178,7 @@ def build_args(form: dict[str, list[str]]) -> argparse.Namespace:
         out_val = DEFAULT_OUTPUT
     args = web_resource_crawler.build_parser().parse_args(
         [
-            "--url",
-            value("url"),
+            f"--url={value('url')}",
             "--out",
             output_path(out_val),
             "--max-pages",
@@ -189,8 +193,7 @@ def build_args(form: dict[str, list[str]]) -> argparse.Namespace:
             str(retries),
             "--max-bytes",
             str(max_bytes),
-            "--block-keyword",
-            value("block_keywords", DEFAULT_BLOCK_KEYWORDS),
+            f"--block-keyword={value('block_keywords', DEFAULT_BLOCK_KEYWORDS)}",
         ]
     )
     args.header = header_values(form)
@@ -209,11 +212,14 @@ def build_args(form: dict[str, list[str]]) -> argparse.Namespace:
     args.smart_extract = checked("smart_extract")
     args.resume_crawl = checked("resume_crawl")
     args.extract_text = checked("extract_text")
+    args.keep_page_samples = checked("keep_page_samples")
     args.crawl_pages = checked("crawl_pages")
     args.respect_robots = checked("respect_robots")
     args.stealth = checked("stealth")
     args.save_config = ""
     args.load_config = ""
+    rules_text = value("field_rules").strip()
+    args.field_rules = ExtractionRules.from_json(rules_text).to_dict() if rules_text else None
     return args
 
 
@@ -227,6 +233,7 @@ _DB_CONFIG_FIELDS = (
     "timeout",
     "retries",
     "max_bytes",
+    "block_keyword",
     "same_domain",
     "include_css_urls",
     "video_mode",
@@ -245,12 +252,59 @@ _DB_CONFIG_FIELDS = (
     "crawl_pages",
     "respect_robots",
     "stealth",
+    "keep_page_samples",
+    "field_rules",
 )
 
 
 def _task_config_for_db(args: argparse.Namespace) -> dict[str, object]:
     """把任务参数序列化为可入库 dict（白名单字段,不含 Cookie 等敏感头）。"""
     return {name: getattr(args, name) for name in _DB_CONFIG_FIELDS}
+
+
+def portable_crawl_config(args: argparse.Namespace) -> dict[str, object]:
+    config = _task_config_for_db(args)
+    # 输出目录与页面样本保留选项按本地任务决定。
+    local_fields = {"out", "keep_page_samples", "stealth", "strip_overlays"}
+    return {key: value for key, value in config.items() if key not in local_fields}
+
+
+def normalize_crawl_config(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ConfigError("采集配置必须是 JSON 对象")
+    form: dict[str, list[str]] = {}
+    numeric = {"max_pages", "workers", "delay", "timeout", "retries", "max_bytes"}
+    for name in numeric:
+        if value.get(name) is not None:
+            form[name] = [str(value[name])]
+    if not isinstance(value.get("url"), str):
+        raise ConfigError("采集配置需要网页 URL")
+    form["url"] = [value["url"]]
+    keywords = value.get("block_keyword")
+    if keywords is not None:
+        if not isinstance(keywords, list) or not all(isinstance(word, str) for word in keywords):
+            raise ValueError("block_keyword 必须是字符串列表")
+        form["block_keywords"] = ["\n".join(keywords)]
+    if value.get("field_rules") is not None:
+        form["field_rules"] = [json.dumps(value["field_rules"], ensure_ascii=False)]
+    booleans = (
+        set(_DB_CONFIG_FIELDS)
+        - numeric
+        - {
+            "url",
+            "out",
+            "block_keyword",
+            "field_rules",
+            "keep_page_samples",
+        }
+    )
+    for name in booleans:
+        setting = value.get(name)
+        if setting is not None and not isinstance(setting, bool):
+            raise ValueError(f"{name} 必须为布尔值")
+        if setting:
+            form[name] = ["1"]
+    return portable_crawl_config(build_args(form))
 
 
 def build_args_from_task(task: dict[str, Any]) -> argparse.Namespace:
@@ -268,19 +322,17 @@ def build_args_from_task(task: dict[str, Any]) -> argparse.Namespace:
     config = task.get("config")
     if not isinstance(config, dict) or not config:
         raise ValueError("原任务没有可复用的配置")
-    args = argparse.Namespace(**config)
-    args.url = task.get("url") or getattr(args, "url", "")
-    if not args.url:
+    url = task.get("url") or config.get("url")
+    if not isinstance(url, str) or not url:
         raise ValueError("原任务没有记录目标 URL")
-    out = task.get("output_dir") or getattr(args, "out", "")
-    if not out:
+    out = task.get("output_dir") or config.get("out")
+    if not isinstance(out, str) or not out:
         raise ValueError("原任务没有记录输出目录")
+    args = build_args({"url": [url]})
     args.out = out
-    # 老记录可能缺字段（早期版本白名单更窄）；补齐成 None 再入库，
-    # 否则 _task_config_for_db 的 getattr 会抛 AttributeError、写库静默失败
     for name in _DB_CONFIG_FIELDS:
-        if not hasattr(args, name):
-            setattr(args, name, None)
+        if name not in {"url", "out"} and config.get(name) is not None:
+            setattr(args, name, config[name])
     return args
 
 

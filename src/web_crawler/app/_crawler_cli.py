@@ -163,6 +163,10 @@ Examples:
         action="store_true",
         help="Extract readable article text from saved HTML pages.",
     )
+    parser.add_argument("--rules", help="Apply a JSON field rule file to each scanned page.")
+    parser.add_argument(
+        "--sample", help="Validate rules on a local HTML file. --url labels the result if supplied."
+    )
     parser.add_argument("--save-config", help="Save crawl configuration to a JSON file and exit.")
     parser.add_argument("--load-config", help="Load crawl configuration from a JSON file.")
     add_output_arguments(parser)

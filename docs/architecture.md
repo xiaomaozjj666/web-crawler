@@ -160,9 +160,38 @@ mkdocs.yml                # API 文档站点配置
 
 ### 应用层 `src/web_crawler/app/`
 
-- **`crawler.py`** 并发资源下载器：续传、去重、sitemap 发现
-- **`ui.py`** 本地 Web UI，支持 [资源采集器] 与 [JS 逆向 Agent] 双 Tab，
-  SSE 实时推送 `/reverse/stream`，截图画廊，任务模板
+- **`crawler.py`** 是 CLI 和 Web UI 共用的资源采集入口，负责编排扫描、下载、提取和报告。
+- **`_crawler_post.py`** 复用解析层的 `Selector`。正文和结构化提取共享同一个 DOM，分别写出原有的文本、JSON 和 CSV 文件。
+- **`_ui_runner.py`** 按任务保存页面提取结果，并将运行摘要和资源清单一起写入 SQLite。`db.py` 通过任务 ID 和来源 URL 关联页面与资源，输出目录可在多次运行之间复用。
+- **`ui.py`** 提供本地工作台。任务概览显示各面板的运行状态，采集任务详情汇集诊断、日志、资源与页面提取内容。
+
+```mermaid
+flowchart LR
+    CLI[web-crawler] --> Crawl[采集入口]
+    UI[网页采集] --> Crawl
+    Crawl --> Summary[运行摘要与诊断]
+    Crawl --> Content[Selector 正文与结构化提取]
+    Crawl --> Manifest[资源清单]
+    Summary --> Reports[CLI 与导出报告]
+    Content --> Files[文本、JSON 与 CSV]
+    Summary --> History[采集任务详情]
+    Content --> History
+    Manifest --> History
+```
+
+**`parser/rules.py`** 定义版本化的 CSS/XPath 字段规则。控制台用任务中保留的 HTML 验证规则，资源采集器在提取阶段把同一结果写入 `rule_items.jsonl`，`web-crawler-startproject --rules` 生成的 Spider 将同一结构交给 feed 管道。每条结果用 `page_url` 记录来源。
+
+```mermaid
+flowchart LR
+    Page[任务页面样本] --> Verify[验证字段规则]
+    Verify --> Rules[字段规则 JSON]
+    Rules --> CLI[资源采集器]
+    Rules --> Spider[Spider 批量提取]
+    CLI --> Items[带页面来源的字段结果]
+    Spider --> Items
+```
+
+控制台导出的采集配置可交给 `web-crawler --load-config` 使用。输出目录和页面样本保留由当前任务决定。页面样本按任务 ID 和 URL 保存在 SQLite，复用磁盘输出目录后仍可验证原任务的内容。
 
 ## 单模型策略
 

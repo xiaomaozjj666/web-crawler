@@ -30,7 +30,6 @@ from web_crawler.app.crawler_net import (
     decode_text,
     extract_title,
     is_blocked_url,
-    normalize_url,
     output_path_for_url,
     same_domain,
 )
@@ -57,15 +56,13 @@ def _resolved_encoding(fallback: str | None, content_type: str) -> str:
     return "utf-8"
 
 
-def _seed_page_queue(ctx: _CrawlContext) -> None:
+def _seed_page_queue(ctx: _CrawlContext, root_url: str) -> None:
     """种子 URL 入队并按 --sitemap 做站点地图页面发现。"""
     args = ctx.args
-    root_url = normalize_url(args.url)
-    if root_url:
-        ctx.enqueue_page(root_url)
+    ctx.enqueue_page(root_url)
 
     if args.sitemap:
-        parsed = urlparse(args.url)
+        parsed = urlparse(root_url)
         sitemap_url = f"{parsed.scheme}://{parsed.netloc}/sitemap.xml"
         _log.info("discovering pages from %s", sitemap_url)
         sitemap_urls = discover_sitemap_urls(sitemap_url, ctx.headers, args.timeout)
@@ -91,6 +88,31 @@ def _restore_state(ctx: _CrawlContext) -> None:
     ctx.queued_pages = set(ctx.page_queue)
     ctx.seen_pages = set(saved.get("seen_pages", []))
     ctx.page_titles = {k: str(v) for k, v in saved.get("page_titles", {}).items()}
+    saved_files = saved.get("page_files", {})
+    if isinstance(saved_files, dict):
+        for url, entry in saved_files.items():
+            if (
+                url in ctx.page_titles
+                and isinstance(entry, list)
+                and len(entry) == 2
+                and all(isinstance(value, str) for value in entry)
+            ):
+                try:
+                    path = (ctx.output_dir / entry[0]).resolve()
+                except (OSError, ValueError, RuntimeError):
+                    continue
+                if path.is_relative_to(ctx.output_dir / "pages"):
+                    ctx.page_files[url] = (path, entry[1])
+    stats = saved.get("page_scan")
+    if isinstance(stats, dict):
+        failed = stats.get("failed")
+        skipped = stats.get("skipped")
+        first_error = stats.get("first_error")
+        ctx.page_scan = {
+            "failed": max(0, failed) if isinstance(failed, int) else 0,
+            "skipped": max(0, skipped) if isinstance(skipped, int) else 0,
+            "first_error": first_error if isinstance(first_error, str) else "",
+        }
     for rdict in saved.get("resources", []):
         ctx.all_resources.append(Resource(**rdict))
     if ctx.dedup and saved.get("sha256_set"):
@@ -112,6 +134,7 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
     """
     args = ctx.args
     cancelled = False  # 统一取消标志：任何阶段触发取消后跳过后续耗时步骤并返回 1
+    saved_paths = {str(path).casefold() for path, _ in ctx.page_files.values()}
     while ctx.page_queue and len(ctx.seen_pages) < args.max_pages:
         try:
             cr.wait_if_paused(args)
@@ -128,15 +151,18 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
         if not page_url or page_url in ctx.seen_pages:  # pragma: no cover - 防御性：队列已预过滤
             continue
         if is_blocked_url(page_url, ctx.block_keywords):
+            ctx.page_scan["skipped"] += 1
             _log.info("blocked page: %s", page_url)
             continue
         if args.same_domain and not same_domain(
             page_url, args.url
         ):  # pragma: no cover - 防御性：入队时已过滤
+            ctx.page_scan["skipped"] += 1
             continue
         if ctx.robots and not ctx.robots.can_fetch(
             args.user_agent, page_url
         ):  # pragma: no cover - 防御性：页面 robots 检查
+            ctx.page_scan["skipped"] += 1
             _log.info("robots.txt skipped page: %s", page_url)
             continue
 
@@ -145,7 +171,7 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
             args,
             phase="page",
             current_url=page_url,
-            pages_scanned=len(ctx.seen_pages),
+            pages_scanned=len(ctx.page_titles),
             total_pages=args.max_pages,
             total_resources=0,
             processed_resources=0,
@@ -162,12 +188,19 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
                 control_args=args,
             )
         except Exception as exc:
-            _log.error("%s", render_error(exc, context=page_url))
+            if isinstance(exc, RuntimeError) and str(exc) == "cancelled by user":
+                return True
+            diagnostic = render_error(exc, context=page_url)
+            _log.error("%s", diagnostic)
+            ctx.page_scan["failed"] += 1
+            if not ctx.page_scan["first_error"]:
+                ctx.page_scan["first_error"] = diagnostic[:4000]
             continue
 
         page_path = output_path_for_url(page_url, ctx.output_dir, "text/html", prefix="pages")
         if not page_path.suffix:  # pragma: no cover - text/html 总是返回带后缀的路径
             page_path = page_path.with_suffix(".html")
+        page_path = ctx_mod.reserve_page_path(page_path, page_url, saved_paths)
         page_path.parent.mkdir(parents=True, exist_ok=True)
         page_path.write_bytes(data)
 
@@ -204,6 +237,11 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
                             page_queue=list(ctx.page_queue),
                             seen_pages=list(ctx.seen_pages),
                             page_titles=ctx.page_titles,
+                            page_files={
+                                url: [path.relative_to(ctx.output_dir).as_posix(), encoding]
+                                for url, (path, encoding) in ctx.page_files.items()
+                            },
+                            page_scan=ctx.page_scan,
                             resources=ctx.resource_dicts(),
                             sha256_set=ctx.dedup.seen_hashes() if ctx.dedup else [],
                         )

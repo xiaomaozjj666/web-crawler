@@ -20,6 +20,7 @@ from ._ui_helpers import _as_int
 JOBS: dict[str, JobState] = {}
 JOBS_LOCK = threading.Lock()
 MAX_JOBS = 50
+ACTIVE_JOB_STATUSES = frozenset({"running", "paused", "cancelling", "finishing"})
 
 # JS 逆向 Agent 任务注册表
 REVERSE_JOBS: dict[str, ReverseJobState] = {}
@@ -47,12 +48,17 @@ class JobState:
     exit_code: int | None = None
     # 失败原因（一句话）：落库供「任务历史」直接展示，避免用户只能翻日志
     error: str = ""
+    summary: dict[str, Any] = field(default_factory=dict)
     pause_event: threading.Event = field(default_factory=threading.Event)
     stop_event: threading.Event = field(default_factory=threading.Event)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
         self.pause_event.set()
+
+    def is_active(self) -> bool:
+        with self.lock:
+            return self.status in ACTIVE_JOB_STATUSES
 
     def append(self, text: str) -> None:
         with self.lock:
@@ -75,13 +81,17 @@ class JobState:
 
     def snapshot(self) -> dict[str, object]:
         with self.lock:
+            url = getattr(self.args, "url", "")
             percent = 0
             if self.total_resources:
                 percent = min(100, int(self.processed_resources * 100 / self.total_resources))
             return {
                 "id": self.id,
                 "status": self.status,
+                "url": url if isinstance(url, str) else "",
                 "log": self.log,
+                "error": self.error,
+                "summary": dict(self.summary),
                 "total_resources": self.total_resources,
                 "processed_resources": self.processed_resources,
                 "current_url": self.current_url,
@@ -317,12 +327,7 @@ class JobWriter(io.StringIO):
 
 
 class JobLogHandler(logging.Handler):
-    """把 crawler logger 的日志记录转发到 job.log。
-
-    替代失效的进程级 redirect_stdout/redirect_stderr:logging 的 StreamHandler
-    在 import 时就绑定了原始 stderr,redirect 对它无效;而 crawler 的全部输出
-    都走 logging,因此直接挂一个自定义 handler 转发最可靠。
-    """
+    """把 crawler logger 的日志记录转发到 job.log。"""
 
     def __init__(self, job: JobState) -> None:
         super().__init__()

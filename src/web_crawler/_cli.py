@@ -15,11 +15,26 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Literal, TextIO
+from typing import Any, Literal, TextIO, TypedDict
 
 from web_crawler.exceptions import ConfigError, FetchError, ParseError, UnsafeTargetError
 
 OutputMode = Literal["normal", "quiet", "verbose", "json"]
+
+
+class PageScanSummary(TypedDict):
+    failed: int
+    skipped: int
+    first_error: str
+
+
+CRAWL_STATUS_TITLES = {
+    "success": "爬取完成",
+    "partial": "爬取完成（有失败）",
+    "error": "爬取失败",
+    "skipped": "页面已按规则跳过",
+    "cancelled": "爬取已取消",
+}
 
 
 def add_output_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -134,6 +149,7 @@ def emit_error(
     args: argparse.Namespace | object | None = None,
     *,
     context: str = "",
+    stream: TextIO | None = None,
 ) -> None:
     """按当前模式输出错误；JSON 模式仍保证 stdout 只有一个 JSON 文档。"""
     if output_mode(args) == "json":
@@ -147,10 +163,11 @@ def emit_error(
                     "hint": info.hint,
                     **({"context": context} if context else {}),
                 },
-            }
+            },
+            stream=stream,
         )
         return
-    print(render_error(exc, context=context), file=sys.stderr)
+    print(render_error(exc, context=context), file=sys.stderr if stream is None else stream)
 
 
 def format_bytes(size: float) -> str:
@@ -243,6 +260,29 @@ class ProgressReporter:
             self._active = False
 
 
+def crawl_status(
+    pages: int,
+    page_scan: PageScanSummary | None,
+    resources_failed: int,
+    *,
+    cancelled: bool = False,
+    rule_results: dict[str, int] | None = None,
+) -> str:
+    if cancelled:
+        return "cancelled"
+    if page_scan and page_scan["failed"] and not pages:
+        return "error"
+    if (
+        resources_failed
+        or (page_scan and page_scan["failed"])
+        or (rule_results and (rule_results["pages_missing_required"] or rule_results["errors"]))
+    ):
+        return "partial"
+    if page_scan and page_scan["skipped"] and not pages:
+        return "skipped"
+    return "success"
+
+
 def crawl_summary(
     *,
     pages: int,
@@ -251,25 +291,32 @@ def crawl_summary(
     started_at: float,
     output_dir: str,
     cancelled: bool = False,
+    page_scan: PageScanSummary | None = None,
+    rule_results: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """从 ManifestRow 列表构造稳定的机器/人类共用摘要。"""
     succeeded = sum(1 for row in rows if str(row.status).startswith("ok"))
     failed = sum(1 for row in rows if str(row.status).startswith("error"))
     skipped = max(0, len(rows) - succeeded - failed)
+    listed_only = sum(1 for row in rows if row.status == "listed only")
     byte_count = sum(int(row.bytes) for row in rows if str(row.status).startswith("ok"))
-    status = "cancelled" if cancelled else ("partial" if failed else "success")
     return {
         "schema_version": 1,
         "command": "web-crawler",
-        "status": status,
+        "status": crawl_status(
+            pages, page_scan, failed, cancelled=cancelled, rule_results=rule_results
+        ),
         "pages_scanned": pages,
+        "page_scan": page_scan or {"failed": 0, "skipped": 0, "first_error": ""},
         "resources_found": resources,
         "succeeded": succeeded,
         "failed": failed,
         "skipped": skipped,
+        "listed_only": listed_only,
         "duration_seconds": round(max(0.0, time.time() - started_at), 3),
         "bytes": byte_count,
         "output_dir": output_dir,
+        **({"rule_results": rule_results} if rule_results is not None else {}),
     }
 
 
@@ -287,13 +334,30 @@ def emit_crawl_summary(
     if mode == "json":
         emit_json(summary, stream=target)
         return
-    title = {"success": "爬取完成", "partial": "爬取完成（有失败）", "cancelled": "爬取已取消"}.get(
-        str(summary.get("status")), "爬取结束"
+    title = CRAWL_STATUS_TITLES.get(str(summary.get("status")), "爬取结束")
+    page_scan = summary.get("page_scan") or {}
+    listed = summary.get("listed_only", 0)
+    rules = summary.get("rule_results")
+    rules_line = (
+        f"  字段规则处理/缺必填/错误：{rules['pages']}/{rules['pages_missing_required']}/{rules['errors']}\n"
+        if rules is not None
+        else ""
+    )
+    listed_line = f"  仅列出：{listed}\n" if listed else ""
+    page_scan_line = (
+        f"  页面失败/跳过：{page_scan.get('failed', 0)}/{page_scan.get('skipped', 0)}\n"
+        if page_scan.get("failed") or page_scan.get("skipped")
+        else ""
+    )
+    error_line = (
+        f"  首个页面错误：{page_scan['first_error']}\n" if page_scan.get("first_error") else ""
     )
     target.write(
         f"\n{title}\n"
-        f"  成功/失败/跳过：{summary['succeeded']}/{summary['failed']}/{summary['skipped']}\n"
+        f"  成功/失败/跳过：{summary['succeeded']}/{summary['failed']}/{summary['skipped'] - listed}\n"
+        f"{listed_line}"
         f"  页面/资源：{summary['pages_scanned']}/{summary['resources_found']}\n"
+        f"{page_scan_line}{error_line}{rules_line}"
         f"  耗时：{summary['duration_seconds']:.3f}s\n"
         f"  数据量：{format_bytes(int(summary['bytes']))}\n"
         f"  输出目录：{summary['output_dir']}\n"

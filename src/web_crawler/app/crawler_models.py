@@ -12,7 +12,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from web_crawler.parser.rules import FieldResult
 
 
 @dataclass(frozen=True)
@@ -37,3 +41,22 @@ class ManifestRow:
     page_title: str
     diagnostic: str
     sha256: str = ""
+
+
+@dataclass(frozen=True)
+class PageExtraction:
+    """从一次任务中提取的页面正文及结构化数据。"""
+
+    url: str
+    title: str
+    text: str
+    data: dict[str, object] | None
+    rule_result: FieldResult | None = None
+
+
+@dataclass(frozen=True)
+class ResourceCrawlResult:
+    summary: dict[str, Any]
+    rows: list[ManifestRow]
+    sources: list[Resource]
+    dependencies: set[tuple[str, str]] = field(default_factory=set)

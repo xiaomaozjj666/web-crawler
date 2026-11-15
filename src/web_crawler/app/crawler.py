@@ -57,6 +57,7 @@ from web_crawler._cli import (
     crawl_summary,
     emit_crawl_summary,
     emit_error,
+    emit_json,
     output_mode,
 )
 from web_crawler.app._crawler_cli import build_parser
@@ -68,6 +69,7 @@ from web_crawler.app._crawler_context import (  # noqa: F401
     clear_crawl_state,
     load_config_from_file,
     load_crawl_state,
+    load_extraction_rules,
     save_config_to_file,
     save_crawl_state,
 )
@@ -93,7 +95,7 @@ from web_crawler.app._crawler_scan import (
     _scan_pages,
     _seed_page_queue,
 )
-from web_crawler.app.crawler_models import ManifestRow, Resource
+from web_crawler.app.crawler_models import ManifestRow, Resource, ResourceCrawlResult
 from web_crawler.app.crawler_net import *
 from web_crawler.app.crawler_report import *
 
@@ -126,7 +128,7 @@ from web_crawler.app._crawler_core import (  # noqa: F401
 
 def crawl(args: argparse.Namespace) -> int:
     """为爬取主流程安装统一进度回调，并保证动态行与外部回调正确收尾。"""
-    reporter = ProgressReporter(output_mode(args))
+    reporter = ProgressReporter(output_mode(args), stream=getattr(args, "output_stream", None))
     had_callback = hasattr(args, "progress_callback")
     previous_callback = getattr(args, "progress_callback", None)
 
@@ -154,16 +156,22 @@ def _emit_summary(
     started_at: float,
     *,
     cancelled: bool = False,
-) -> None:
+) -> int:
     summary = crawl_summary(
-        pages=len(ctx.seen_pages),
-        resources=len(resources),
+        pages=len(ctx.page_titles),
+        resources=len(ctx.queue) or len(resources),
         rows=rows,
         started_at=started_at,
         output_dir=str(ctx.output_dir),
         cancelled=cancelled,
+        page_scan=ctx.page_scan,
+        rule_results=ctx.rule_summary(),
     )
-    emit_crawl_summary(summary, args)
+    on_result = getattr(args, "result_callback", None)
+    if on_result is not None:
+        on_result(ResourceCrawlResult(summary, rows, ctx.all_resources, ctx.resource_dependencies))
+    emit_crawl_summary(summary, args, stream=getattr(args, "output_stream", None))
+    return {"cancelled": 1, "error": 3}.get(summary["status"], 0)
 
 
 def _crawl(args: argparse.Namespace) -> int:
@@ -195,12 +203,22 @@ def _crawl(args: argparse.Namespace) -> int:
     try:
         extra_headers = parse_headers(args.header)
     except ValueError as exc:
-        emit_error(exc, args, context="--header")
+        emit_error(exc, args, context="--header", stream=getattr(args, "output_stream", None))
+        return 2
+    try:
+        rules = load_extraction_rules(args)
+    except (OSError, ValueError) as exc:
+        emit_error(exc, args, context="--rules", stream=getattr(args, "output_stream", None))
         return 2
 
     headers = {"User-Agent": args.user_agent, **extra_headers}
     output_dir = Path(args.out).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        root_url = normalize_url(args.url)
+    except ValueError as exc:
+        _log.error("%s", exc)
+        root_url = ""
 
     ctx = _CrawlContext(
         args=args,
@@ -208,45 +226,36 @@ def _crawl(args: argparse.Namespace) -> int:
         output_dir=output_dir,
         max_bytes=args.max_bytes if args.max_bytes > 0 else None,
         block_keywords=parse_block_keywords(args.block_keyword),
-        robots=make_robots_parser(args.url, headers, args.timeout) if args.respect_robots else None,
+        robots=(
+            make_robots_parser(root_url, headers, args.timeout)
+            if root_url and args.respect_robots
+            else None
+        ),
         rate_limiter=DomainRateLimiter(default_delay=max(0.0, args.delay)),
         dedup=ContentDedup() if args.dedup else None,
+        rules=rules,
     )
 
     # ── 页面发现与扫描 ──
-    _seed_page_queue(ctx)
-    _restore_state(ctx)
-    cancelled = _scan_pages(ctx)
+    cancelled = False
+    if root_url:
+        _seed_page_queue(ctx, root_url)
+        _restore_state(ctx)
+        cancelled = _scan_pages(ctx)
+    else:
+        ctx.page_scan["failed"] = 1
+        ctx.page_scan["first_error"] = "无法采集起始 URL，请检查 URL 格式和目标访问限制。"
+        _log.error("%s", ctx.page_scan["first_error"])
 
     resources = _filter_resources(ctx)
 
     # 阶段入口守卫：页面扫描期间已取消 → 跳过下载阶段与后处理
     if cancelled or core.should_stop(args):
         _log.info("crawl cancelled; skipping download phase")
-        _emit_summary(args, ctx, resources, [], crawl_start_time, cancelled=True)
-        return 1
+        return _emit_summary(args, ctx, resources, [], crawl_start_time, cancelled=True)
 
     if not resources:
         _log.info("no resources found")
-        write_manifests(output_dir, [])
-        write_summary(
-            output_dir,
-            [],
-            len(ctx.seen_pages),
-            start_time=crawl_start_time,
-            end_time=time.time(),
-            config=report_config,
-        )
-        write_run_report(
-            output_dir,
-            [],
-            len(ctx.seen_pages),
-            start_time=crawl_start_time,
-            end_time=time.time(),
-            config=report_config,
-        )
-        _emit_summary(args, ctx, resources, [], crawl_start_time)
-        return 0
 
     # ── 下载阶段（并发）──
     ctx.queue = list(resources)
@@ -261,20 +270,20 @@ def _crawl(args: argparse.Namespace) -> int:
         _log.warning("failed to open JSONL manifest: %s", exc)
 
     manifest_rows: list[ManifestRow] = []
-    cancelled = _run_downloads(ctx, manifest_rows) or cancelled
+    if resources:
+        cancelled = _run_downloads(ctx, manifest_rows)
 
     # ── 后处理 ──
     video_count, failed_count = _post_process(
         ctx, manifest_rows, crawl_start_time, report_config, cancelled=cancelled
     )
-    _log_crawl_summary(
-        ctx, manifest_rows, resources, crawl_start_time, cancelled, video_count, failed_count
-    )
+    _log_crawl_summary(ctx, manifest_rows, resources, crawl_start_time, video_count, failed_count)
 
-    # 统一退出码：0 成功 / 1 用户取消 / 2 参数错误
-    is_cancelled = cancelled or core.should_stop(args)
-    _emit_summary(args, ctx, resources, manifest_rows, crawl_start_time, cancelled=is_cancelled)
-    return 1 if is_cancelled else 0
+    # 统一退出码：0 已完成 / 1 用户取消 / 2 参数错误 / 3 页面全部失败
+    is_cancelled = cancelled or (not ctx.result_committed and core.should_stop(args))
+    return _emit_summary(
+        args, ctx, resources, manifest_rows, crawl_start_time, cancelled=is_cancelled
+    )
 
 
 # ── 入口 ───────────────────────────────────────────────────────────
@@ -299,30 +308,39 @@ def main() -> None:
         except (OSError, ValueError) as exc:
             emit_error(exc, args, context=args.load_config)
             raise SystemExit(2) from exc
-        # CLI 显式提供的参数覆盖配置文件
-        for key, value in vars(args).items():
-            if key == "load_config":
-                continue
-            if value is not None and value != parser.get_default(key):
-                config[key] = value
-        # 以 parser 默认值为底，配置文件/CLI 覆盖其上：保证保存文件缺省
-        # 的字段（如 include_pattern/stealth）在 load 后仍然存在，
-        # 避免 crawl() 访问缺失属性崩溃（save→load 往返兼容）
-        defaults = {key: parser.get_default(key) for key in vars(args)}
-        defaults.update(config)
+        # 显式参数即使恰好等于默认值，也要覆盖文件中的配置。
+        defaults = vars(args).copy()
+        allowed = defaults.keys() | {"field_rules"}
+        allowed -= {"load_config", "save_config", "rules", "sample"}
+        defaults.update({key: value for key, value in config.items() if key in allowed})
+        parser.set_defaults(**dict.fromkeys(vars(args)))
+        defaults.update(
+            {key: value for key, value in vars(parser.parse_args()).items() if value is not None}
+        )
         args = argparse.Namespace(**defaults)
+
+    if args.sample:
+        try:
+            rules = load_extraction_rules(args)
+            if rules is None:
+                raise ValueError("--sample 需要 --rules 或含字段规则的采集配置")
+            html = Path(args.sample).read_text(encoding=args.encoding or "utf-8-sig")
+            result = rules.extract(html, page_url=args.url or "")
+        except (OSError, ValueError, LookupError) as exc:
+            emit_error(exc, args, context="--sample")
+            raise SystemExit(2) from exc
+        emit_json(result)
+        return
 
     if args.save_config:
         if not args.url:
             parser.error("--url is required when using --save-config")
         try:
             save_config_to_file(args, args.save_config)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             emit_error(exc, args, context=args.save_config)
             raise SystemExit(2) from exc
         if output_mode(args) == "json":
-            from web_crawler._cli import emit_json
-
             emit_json(
                 {
                     "status": "success",

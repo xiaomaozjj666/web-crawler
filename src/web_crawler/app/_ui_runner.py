@@ -6,13 +6,15 @@ Agent 的子线程执行器（ReverseAgentRunner / run_reverse_job）。
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import time
+import zlib
+from contextlib import suppress
 from pathlib import Path
 
 from web_crawler.app import crawler as web_resource_crawler
 from web_crawler.app import db as database
+from web_crawler.app.crawler_models import ManifestRow, PageExtraction, ResourceCrawlResult
 
 from ._ui_helpers import _serialize_analysis
 from ._ui_state import (
@@ -27,58 +29,145 @@ _log = logging.getLogger(__name__)
 
 
 def run_job(job: JobState) -> None:
+    result = ResourceCrawlResult({}, [], [])
+    extraction_counts = {"extracted_pages": 0, "extraction_save_failures": 0}
+    sample_counts = {"page_samples": 0, "page_samples_skipped": 0}
+    sample_bytes = 0
+
+    def save_result(value: ResourceCrawlResult) -> None:
+        nonlocal result
+        result = value
+
+    def save_extraction(extraction: PageExtraction) -> None:
+        try:
+            database.save_page_extraction(job.id, extraction)
+            extraction_counts["extracted_pages"] += 1
+        except Exception as exc:
+            extraction_counts["extraction_save_failures"] += 1
+            job.append(f"\n页面提取结果保存失败：{extraction.url} · {exc}\n")
+
+    def save_sample(url: str, title: str, html: str) -> None:
+        nonlocal sample_bytes
+        raw = html.encode("utf-8") if len(html) <= database.MAX_PAGE_SAMPLE_BYTES else None
+        if raw is None or len(raw) > database.MAX_PAGE_SAMPLE_BYTES:
+            sample_counts["page_samples_skipped"] += 1
+            return
+        sample = zlib.compress(raw)
+        if sample_bytes + len(sample) > database.MAX_TASK_SAMPLE_BYTES:
+            sample_counts["page_samples_skipped"] += 1
+            return
+        try:
+            database.save_page_sample(job.id, url, title, sample)
+        except Exception as exc:
+            sample_counts["page_samples_skipped"] += 1
+            job.append(f"\n页面样本保存失败：{url} · {exc}\n")
+        else:
+            sample_counts["page_samples"] += 1
+            sample_bytes += len(sample)
+
+    def begin_finalization() -> bool:
+        while True:
+            with job.lock:
+                if job.stop_event.is_set():
+                    return False
+                if job.pause_event.is_set():
+                    job.status = "finishing"
+                    return True
+            job.pause_event.wait(0.2)
+
     job.args.wait_if_paused = lambda: wait_for_resume(job)
     job.args.should_stop = job.stop_event.is_set
     job.args.progress_callback = job.progress
-    writer = JobWriter(job)
+    job.args.result_callback = save_result
+    job.args.extraction_callback = save_extraction
+    job.args.page_sample_callback = (
+        save_sample if getattr(job.args, "keep_page_samples", False) else None
+    )
+    job.args.begin_finalization = begin_finalization
+    job.args.output_stream = JobWriter(job)
     log_handler = JobLogHandler(job)
     log_handler.setFormatter(
         logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
     )
-    # 挂载 crawler 日志 handler：crawler 的全部输出走 logging,redirect_stdout 对其无效
     web_resource_crawler.attach_log_handler(log_handler)
+    error = ""
     try:
-        with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
-            code = web_resource_crawler.crawl(job.args)
-        with job.lock:
-            # 取消任务的退出码统一为 1（crawl 已返回 1,此处兜底确保语义一致）
-            job.exit_code = 1 if job.stop_event.is_set() else code
-            job.status = "cancelled" if job.stop_event.is_set() else "done"
+        code = web_resource_crawler.crawl(job.args)
+    except Exception as exc:
+        code = 1
+        error = str(exc) or type(exc).__name__
+    finally:
+        web_resource_crawler.detach_log_handler(log_handler)
+        del job.args.result_callback, job.args.extraction_callback
+        del job.args.page_sample_callback
+        del job.args.output_stream, job.args.begin_finalization
+
+    summary = dict(result.summary)
+    with job.lock:
+        cancelled = job.stop_event.is_set() or summary.get("status") == "cancelled"
+        if summary:
+            summary.update(extraction_counts)
+            summary.update(sample_counts)
+            job.total_resources = summary["resources_found"]
+            job.processed_resources = len(result.rows)
+            job.pages_scanned = summary["pages_scanned"]
+        job.current_url = ""
+        job.summary = summary
+        job.status = "finishing"
+    if cancelled:
+        status, code, error = "cancelled", 1, ""
+        job.append("\n采集已取消\n")
+    elif code == 0:
+        outcome = summary.get("status")
+        status = outcome if outcome in {"partial", "skipped"} else "done"
         report_html = Path(job.output_dir) / "run_report.html"
         report_md = Path(job.output_dir) / "run_report.md"
         job.append(f"\n完成，退出码：{code}\n输出目录：{job.output_dir}\n")
-        if report_html.exists():
-            job.append(f"可视化报告：{report_html}\n")
-        if report_md.exists():
-            job.append(f"Markdown 报告：{report_md}\n")
+        with suppress(OSError):
+            if report_html.is_file():
+                job.append(f"可视化报告：{report_html}\n")
+            if report_md.is_file():
+                job.append(f"Markdown 报告：{report_md}\n")
+    else:
+        status = "error"
+        page_error = summary.get("page_scan", {}).get("first_error", "")
+        if page_error:
+            error = page_error.split("\n", 1)[0].strip()
+        error = error or f"采集退出码为 {code}，详见运行日志"
+        job.append(f"\n任务出错：{error}\n")
+
+    def persist(result_rows: list[ManifestRow] | None) -> None:
+        database.update_task_status(
+            job.id,
+            status,
+            exit_code=code,
+            log=job.log,
+            total_resources=job.total_resources,
+            processed_resources=job.processed_resources,
+            pages_scanned=job.pages_scanned,
+            current_url=job.current_url,
+            error_message=error,
+            result_rows=result_rows,
+            resource_sources=result.sources,
+            resource_dependencies=result.dependencies,
+            summary=summary,
+        )
+
+    try:
+        persist(result.rows)
     except Exception as exc:
-        with job.lock:
-            job.exit_code = 1
-            job.status = "error"
-            job.error = str(exc)
-        job.append(f"\n任务出错：{exc}\n")
-    finally:
-        # 卸载日志 handler：任务结束后 crawler 日志不再写入该 job
-        web_resource_crawler.detach_log_handler(log_handler)
-        # 持久化到数据库
+        _log.exception("db persist failed for %s", job.id)
+        status, code = "error", code or 1
+        error = f"任务历史保存失败：{exc}"
+        job.append(f"\n{error}\n输出目录：{job.output_dir}\n")
         try:
-            database.update_task_status(
-                job.id,
-                job.status,
-                exit_code=job.exit_code,
-                log=job.log,
-                total_resources=job.total_resources,
-                processed_resources=job.processed_resources,
-                pages_scanned=job.pages_scanned,
-                current_url=job.current_url,
-                error_message=job.error or None,
-            )
-            # 采集成功时导入结果清单
-            if job.status == "done":
-                count = database.import_results(job.id, job.output_dir)
-                job.append(f"已导入 {count} 条结果到数据库\n")
-        except Exception:  # pragma: no cover
-            _log.debug("db persist failed for %s", job.id, exc_info=True)
+            persist(None)
+        except Exception:
+            _log.exception("db fallback status write failed for %s", job.id)
+    finally:
+        database.close_thread_connection()
+        with job.lock:
+            job.status, job.exit_code, job.error = status, code, error
 
 
 def wait_for_resume(job: JobState) -> None:
@@ -89,14 +178,11 @@ def wait_for_resume(job: JobState) -> None:
     """
     while True:
         with job.lock:
+            if job.stop_event.is_set():
+                raise RuntimeError("cancelled by user")
             if job.pause_event.is_set():
-                if job.status == "paused":
-                    job.status = "running"
                 return
-            job.status = "paused"
-        if job.stop_event.is_set():
-            raise RuntimeError("cancelled by user")
-        time.sleep(0.2)
+        job.pause_event.wait(0.2)
 
 
 class ReverseAgentRunner:

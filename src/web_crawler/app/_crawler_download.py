@@ -85,6 +85,8 @@ def _process_resource(ctx: _CrawlContext, resource: Resource) -> ManifestRow | N
     返回 None 表示 worker 检测到用户取消（调用方据此中止下载循环）。
     """
     args = ctx.args
+    if cr.should_stop(args):
+        return None
     if ctx.robots and not ctx.robots.can_fetch(args.user_agent, resource.url):
         return row_for("skipped by robots.txt", resource, "", "", 0, ctx.page_titles)
 
@@ -97,7 +99,7 @@ def _process_resource(ctx: _CrawlContext, resource: Resource) -> ManifestRow | N
             current_url=resource.url,
             total_resources=len(ctx.queue),
             processed_resources=ctx.processed_count[0] + 1,
-            pages_scanned=len(ctx.seen_pages),
+            pages_scanned=len(ctx.page_titles),
         )
         return row_for("listed only", resource, "", "", 0, ctx.page_titles)
 
@@ -220,6 +222,10 @@ def _process_resource(ctx: _CrawlContext, resource: Resource) -> ManifestRow | N
         # 线程安全：把新发现的资源加入全局列表
         if local_discoveries:
             with ctx.discovery_lock:
+                if getattr(args, "result_callback", None) is not None:
+                    ctx.resource_dependencies.update(
+                        (resource.url, extra.url) for extra in local_discoveries
+                    )
                 for extra in local_discoveries:
                     if extra.url not in ctx.queued_urls:
                         ctx.queued_urls.add(extra.url)
@@ -255,7 +261,7 @@ def _run_downloads(ctx: _CrawlContext, manifest_rows: list[ManifestRow]) -> bool
         phase="resources",
         total_resources=len(ctx.queue),
         processed_resources=0,
-        pages_scanned=len(ctx.seen_pages),
+        pages_scanned=len(ctx.page_titles),
     )
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
@@ -269,34 +275,29 @@ def _run_downloads(ctx: _CrawlContext, manifest_rows: list[ManifestRow]) -> bool
         failed_count = 0
         bytes_downloaded = 0
 
-        while pending and not cancelled:
-            try:
-                cr.wait_if_paused(args)
-            except RuntimeError:
-                # 暂停期间被取消 → 按取消处理,统一退出码 1
-                _log.info("cancelled by user")
-                cancelled = True
-                break
-            if cr.should_stop(args):
-                for f in pending:
-                    f.cancel()
-                _log.info("cancelled by user")
-                cancelled = True
-                break
+        while pending:
+            if not cancelled:
+                try:
+                    cr.wait_if_paused(args)
+                except RuntimeError:
+                    cancelled = True
+                else:
+                    cancelled = cr.should_stop(args)
+            if cancelled:
+                # 撤销未启动的下载，收集已完成与仍在收尾的下载结果。
+                pending = {future for future in pending if not future.cancel()}
+                if not pending:
+                    break
 
             done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
             for future in done:
                 resource_for_future = futures.pop(future)
-                index += 1
-                ctx.processed_count[0] = index
                 completed_row: ManifestRow | None = None
                 try:
                     result = future.result()
                     if result is None:
-                        # worker 检测到取消 → 与主线程取消路径统一：置标志后退出循环
-                        _log.info("cancelled by user")
                         cancelled = True
-                        break
+                        continue
                     with ctx.manifest_lock:
                         manifest_rows.append(result)
                         _append_jsonl_row(ctx, result)
@@ -313,6 +314,8 @@ def _run_downloads(ctx: _CrawlContext, manifest_rows: list[ManifestRow]) -> bool
                         _append_jsonl_row(ctx, failed_row)
                     completed_row = failed_row
 
+                index += 1
+                ctx.processed_count[0] = index
                 # 增量计数，避免每个资源完成时扫描完整 manifest 导致 O(n²)。
                 if completed_row is not None:
                     if completed_row.status.startswith("error"):
@@ -325,7 +328,7 @@ def _run_downloads(ctx: _CrawlContext, manifest_rows: list[ManifestRow]) -> bool
                     current_url=getattr(resource_for_future, "url", ""),
                     total_resources=download_queue_size,
                     processed_resources=index,
-                    pages_scanned=len(ctx.seen_pages),
+                    pages_scanned=len(ctx.page_titles),
                     failed_resources=failed_count,
                     bytes_downloaded=bytes_downloaded,
                 )
@@ -339,4 +342,6 @@ def _run_downloads(ctx: _CrawlContext, manifest_rows: list[ManifestRow]) -> bool
                         futures[fut] = r
                         pending.add(fut)
                         download_queue_size += 1
+    if cancelled:
+        _log.info("cancelled by user")
     return cancelled

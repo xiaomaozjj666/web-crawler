@@ -13,6 +13,7 @@ from __future__ import annotations
 import html as html_lib
 from pathlib import Path
 
+from web_crawler._cli import CRAWL_STATUS_TITLES
 from web_crawler.app._report_manifests import _ERROR_LABELS
 from web_crawler.app.crawler_models import ManifestRow, Resource
 from web_crawler.app.crawler_net import category_for
@@ -36,6 +37,7 @@ header .meta { color: #6b7280; font-size: 14px; }
 .card.info { border-left: 4px solid #2563eb; }
 .card.warn { border-left: 4px solid #d97706; }
 section { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 20px 22px; margin-bottom: 20px; }
+section pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 section h2 { font-size: 18px; margin: 0 0 14px; padding-bottom: 10px; border-bottom: 1px solid #f0f0f0; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #f0f0f0; vertical-align: top; }
@@ -79,18 +81,47 @@ def _write_html_report(path: Path, ctx: dict[str, object]) -> None:
     def esc(value: object) -> str:
         return html_lib.escape(str(value))
 
+    scan = ctx.get("page_scan")
+    scan = scan if isinstance(scan, dict) else {}
+    first_error = scan.get("first_error")
+    scan_error = (
+        f"<section><h2>首个页面错误</h2><pre>{esc(first_error)}</pre></section>"
+        if first_error
+        else ""
+    )
+    status = CRAWL_STATUS_TITLES.get(str(ctx.get("status")), "爬取结束")
     # 概览卡片
     cards = [
-        ("ok", "扫描页面", ctx.get("pages_scanned", 0), ""),
+        (
+            "ok",
+            "成功扫描页面",
+            ctx.get("pages_scanned", 0),
+            f"失败 {scan.get('failed', 0)} · 跳过 {scan.get('skipped', 0)}",
+        ),
         ("info", "资源总数", resources.get("total", 0), ""),
         ("ok", "成功下载", resources.get("ok", 0), resources.get("downloaded_size", "")),
         ("warn", "仅列出", resources.get("listed_only", 0), ""),
         ("fail", "失败", resources.get("failed", 0), ""),
         ("info", "跳过/去重", resources.get("skipped", 0), f"去重 {resources.get('deduped', 0)}"),
-        ("ok", "成功率", f"{resources.get('success_rate_percent', 100.0)}%", ""),
+        (
+            "ok",
+            "成功率",
+            f"{resources['success_rate_percent']}%" if resources.get("total") else "—",
+            "",
+        ),
         ("info", "总耗时", ctx.get("duration_human", "未知"), ""),
     ]
     card_html = []
+    rules = ctx.get("rule_results")
+    if isinstance(rules, dict):
+        cards.append(
+            (
+                "info",
+                "字段规则处理",
+                rules["pages"],
+                f"缺必填 {rules['pages_missing_required']} · 错误 {rules['errors']}",
+            )
+        )
     for css, label, value, sub in cards:
         card_html.append(
             f'<div class="card {css}"><div class="label">{esc(label)}</div>'
@@ -289,11 +320,16 @@ def _write_html_report(path: Path, ctx: dict[str, object]) -> None:
         "<title>网页资源采集报告</title><style>" + _HTML_CSS + "</style></head><body>"
         "<div class='container'>"
         "<header><h1>网页资源采集报告</h1>"
-        f"<div class='meta'>生成时间：{esc(ctx.get('generated_at', ''))}　·　"
+        f"<div class='meta'>{esc(status)}　·　生成时间：{esc(ctx.get('generated_at', ''))}　·　"
         f"耗时：{esc(ctx.get('duration_human', '未知'))}　·　"
         f"扫描页面：{esc(ctx.get('pages_scanned', 0))}</div></header>"
-        "<div class='cards'>" + "".join(card_html) + "</div>"
-        "<section><h2>抓取配置</h2>" + config_table + "</section>"
+        "<div class='cards'>"
+        + "".join(card_html)
+        + "</div>"
+        + scan_error
+        + "<section><h2>抓取配置</h2>"
+        + config_table
+        + "</section>"
         "<section><h2>按类别分布</h2>" + cat_table + "</section>"
         "<section><h2>按状态分布</h2>" + status_table + "</section>"
         "<section><h2>失败原因分类</h2>" + err_table + "</section>"

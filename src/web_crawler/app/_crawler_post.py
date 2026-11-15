@@ -17,16 +17,17 @@ patch 的模块全局名（``cr.wait_if_paused`` / ``cr.should_stop`` /
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import time
 from collections.abc import Iterator
-from urllib.parse import urlparse
+from typing import TextIO
 
 from web_crawler.app import _crawler_context as ctx_mod
 from web_crawler.app import _crawler_core as cr
 from web_crawler.app._crawler_context import _CrawlContext
-from web_crawler.app.crawler_models import ManifestRow, Resource
-from web_crawler.app.crawler_net import output_path_for_url
+from web_crawler.app._report_extract import _extraction_selector
+from web_crawler.app.crawler_models import ManifestRow, PageExtraction, Resource
 from web_crawler.app.crawler_report import (
     RewriteTable,
     _format_bytes,
@@ -82,8 +83,105 @@ def _iter_page_html(ctx: _CrawlContext) -> Iterator[tuple[str, str]]:
     for page_url, (page_path, encoding) in ctx.page_files.items():
         try:
             yield page_url, page_path.read_text(encoding=encoding, errors="replace")
-        except OSError as exc:
+        except (OSError, LookupError) as exc:
             _log.warning("failed to re-read saved page %s: %s", page_url, exc)
+
+
+def _extract_pages(ctx: _CrawlContext) -> None:
+    args = ctx.args
+    if not (
+        getattr(args, "smart_extract", False)
+        or getattr(args, "extract_text", False)
+        or getattr(args, "page_sample_callback", None)
+        or ctx.rules is not None
+    ) or _post_pause_check(args):
+        return
+    feed = None
+    if ctx.rules is not None:
+        try:
+            feed = (ctx.output_dir / "rule_items.jsonl").open("w", encoding="utf-8", newline="\n")
+        except OSError as exc:
+            ctx.rule_errors += 1
+            _log.warning("could not open field result file: %s", exc)
+    try:
+        _extract_page_contents(ctx, feed)
+    finally:
+        if feed is not None:
+            try:
+                feed.close()
+            except OSError as exc:
+                ctx.rule_errors += 1
+                _log.warning("could not finish field result file: %s", exc)
+
+
+def _extract_page_contents(ctx: _CrawlContext, feed: TextIO | None) -> None:
+    args = ctx.args
+    structured = getattr(args, "smart_extract", False)
+    readable = getattr(args, "extract_text", False)
+    on_extraction = getattr(args, "extraction_callback", None)
+    on_sample = getattr(args, "page_sample_callback", None)
+    extracted_data: list[dict[str, object]] = []
+    text_dir = ctx.output_dir / "extracted_text"
+    if readable:
+        try:
+            text_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            _log.warning("could not create extracted text directory: %s", exc)
+
+    text_count = 0
+    for page_url, html in _iter_page_html(ctx):
+        if _post_pause_check(args):
+            break
+        title = ctx.page_titles.get(page_url, "")
+        if on_sample is not None:
+            on_sample(page_url, title, html)
+        if not (structured or readable or ctx.rules is not None):
+            continue
+        selector = _extraction_selector(html)
+        data = None
+        rule_result = None
+        text = ""
+        if structured:
+            try:
+                data = smart_extract(selector, page_url)
+                extracted_data.append(data)
+            except Exception as exc:
+                _log.warning("smart extraction failed for %s: %s", page_url, exc)
+        if readable:
+            try:
+                text = extract_readable_text(selector)
+                if text:
+                    path = ctx.page_artifact_path(page_url, "extracted_text")
+                    destination = path.with_name(path.name + ".txt")
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_text(text, encoding="utf-8")
+                    text_count += 1
+            except Exception as exc:
+                _log.warning("text extraction failed for %s: %s", page_url, exc)
+        if ctx.rules is not None:
+            try:
+                rule_result = ctx.rules.extract(selector, page_url=page_url)
+                ctx.rule_pages += 1
+                ctx.rule_pages_missing += bool(rule_result["missing_required"])
+                if feed is not None:
+                    try:
+                        feed.write(json.dumps(rule_result, ensure_ascii=False) + "\n")
+                    except OSError:
+                        feed = None
+                        raise
+            except Exception as exc:
+                ctx.rule_errors += 1
+                _log.warning("field extraction failed for %s: %s", page_url, exc)
+        if on_extraction is not None and (text or data is not None or rule_result is not None):
+            on_extraction(PageExtraction(page_url, title, text, data, rule_result))
+
+    if extracted_data:
+        try:
+            write_extracted_data(ctx.output_dir, extracted_data)
+        except OSError as exc:
+            _log.warning("could not write extracted data: %s", exc)
+    if readable:
+        _log.info("extracted text: %d pages -> %s", text_count, text_dir)
 
 
 def _post_process(
@@ -113,14 +211,16 @@ def _post_process(
             # URL→本地路径替换表整次爬取只构建一次（每行一次 Path.resolve 的
             # 文件系统调用只发生在这里），页面 HTML 逐页从磁盘重读
             table = RewriteTable(manifest_rows, output_dir)
+            rewritten_paths: set[str] = set()
             for page_url, html in _iter_page_html(ctx):
                 rewritten = table.apply(html, page_url)
                 if getattr(args, "strip_overlays", False):
                     rewritten = strip_page_overlays(rewritten)
-                rewritten_path = output_path_for_url(
-                    page_url, output_dir, "text/html", prefix="offline_pages"
+                rewritten_path = ctx_mod.reserve_page_path(
+                    ctx.page_artifact_path(page_url, "offline_pages").with_suffix(".html"),
+                    page_url,
+                    rewritten_paths,
                 )
-                rewritten_path = rewritten_path.with_suffix(".html")
                 rewritten_path.parent.mkdir(parents=True, exist_ok=True)
                 rewritten_path.write_text(rewritten, encoding="utf-8")
         except Exception as exc:
@@ -139,51 +239,32 @@ def _post_process(
         except Exception as exc:
             _log.warning("failed to write video/failed manifests: %s", exc)
 
-    # 智能数据抽取
-    if getattr(args, "smart_extract", False) and not _post_pause_check(args):
-        try:
-            extracted_data: list[dict[str, object]] = []
-            for page_url, html in _iter_page_html(ctx):
-                extracted_data.append(smart_extract(html, page_url))
-            if extracted_data:
-                write_extracted_data(output_dir, extracted_data)
-        except Exception as exc:
-            _log.warning("smart extraction failed: %s", exc)
-
-    # 正文抽取
-    if getattr(args, "extract_text", False) and not _post_pause_check(args):
-        try:
-            text_dir = output_dir / "extracted_text"
-            text_dir.mkdir(parents=True, exist_ok=True)
-            count = 0
-            for page_url, html in _iter_page_html(ctx):
-                text = extract_readable_text(html)
-                if not text:
-                    continue
-                name = urlparse(page_url).path.strip("/").replace("/", "_") or "index"
-                (text_dir / f"{name}.txt").write_text(text, encoding="utf-8")
-                count += 1
-            _log.info("extracted text: %d pages -> %s", count, text_dir)
-        except Exception as exc:
-            _log.warning("text extraction failed: %s", exc)
+    _extract_pages(ctx)
 
     if not _post_pause_check(args):
+        begin_finalization = getattr(args, "begin_finalization", None)
+        ctx.result_committed = begin_finalization is None or begin_finalization()
+    if ctx.result_committed:
         try:
             write_summary(
                 output_dir,
                 manifest_rows,
-                len(ctx.seen_pages),
+                len(ctx.page_titles),
                 start_time=crawl_start_time,
                 end_time=time.time(),
                 config=report_config,
+                page_scan=ctx.page_scan,
+                rule_results=ctx.rule_summary(),
             )
             write_run_report(
                 output_dir,
                 manifest_rows,
-                len(ctx.seen_pages),
+                len(ctx.page_titles),
                 start_time=crawl_start_time,
                 end_time=time.time(),
                 config=report_config,
+                page_scan=ctx.page_scan,
+                rule_results=ctx.rule_summary(),
             )
         except Exception as exc:
             _log.warning("failed to write run report: %s", exc)
@@ -192,7 +273,11 @@ def _post_process(
     _close_jsonl(ctx)
 
     # 成功完成后清除续跑状态
-    if getattr(args, "resume_crawl", False) and not _post_pause_check(args):
+    if (
+        getattr(args, "resume_crawl", False)
+        and (ctx.page_titles or not ctx.page_scan["failed"])
+        and ctx.result_committed
+    ):
         try:
             ctx_mod.clear_crawl_state(output_dir)
             _log.info("crawl state cleared")
@@ -207,7 +292,6 @@ def _log_crawl_summary(
     manifest_rows: list[ManifestRow],
     resources: list[Resource],
     crawl_start_time: float,
-    cancelled: bool,
     video_count: int,
     failed_count: int,
 ) -> None:
@@ -219,14 +303,14 @@ def _log_crawl_summary(
     total_bytes = sum(row.bytes for row in manifest_rows if row.status == "ok")
 
     _log.info("")
-    _log.info("Pages scanned:       %d", len(ctx.seen_pages))
-    _log.info("Resources found:     %d", len(resources))
+    _log.info("Pages scanned:       %d", len(ctx.page_titles))
+    _log.info("Resources found:     %d", len(ctx.queue) or len(resources))
     _log.info("Downloaded:          %d (%s)", ok_count, _format_bytes(total_bytes))
     _log.info("Deduplicated:        %d", dedup_count)
-    _log.info("Failed:              %d", failed_count)
+    _log.info("Failed/skipped:      %d", failed_count)
     _log.info("Duration:            %s", format_duration(time.time() - crawl_start_time))
     _log.info("Output:              %s", output_dir)
-    if not (cancelled or cr.should_stop(args)):
+    if ctx.result_committed:
         _log.info("CSV manifest:        %s", output_dir / "resources_manifest.csv")
         _log.info("JSON manifest:       %s", output_dir / "resources_manifest.json")
         _log.info("Summary:             %s", output_dir / "summary.txt")

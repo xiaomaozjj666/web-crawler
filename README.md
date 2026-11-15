@@ -49,6 +49,34 @@ flowchart TB
 | :---: |
 | <img src="docs/screenshots/ui-console.png" alt="Web Crawler 控制台" width="820" /> |
 
+控制台顶部显示网页采集、验证码识别和 JS 逆向的运行状态。网页采集勾选「智能数据提取」或「正文提取」后，可在任务详情的「页面提取」查看内容，并从页面筛选其来源资源。每次任务保存自己的提取结果，复用输出目录后仍可查阅旧任务。磁盘上的正文按主机和页面路径保存到 `extracted_text/`，避免不同页面的同名文件互相覆盖。
+
+### 从页面样本到批量提取
+
+1. 在采集表单展开「字段规则与页面样本」，勾选「保留页面样本用于验证」。任务完成后，在「任务详情 → 页面提取」选择页面并打开「在此页验证字段规则」。验证只处理已保存的 HTML。
+2. 输入 CSS 或 XPath 字段规则，验证成功后可导出 `field-rules.json`，也可通过「用于下一次采集」填入表单。
+3. 用同一份规则进行命令行提取或生成 Spider。三个入口的结果都包含 `page_url`、`item` 和 `missing_required`。
+
+```json
+{"version": 1, "fields": {
+  "title": {"css": "title", "required": true},
+  "heading": {"xpath": "//h1/text()"},
+  "links": {"css": "a::attr(href)", "many": true}
+}}
+```
+
+```bash
+web-crawler --sample saved-page.html --rules field-rules.json --json
+web-crawler --url https://example.com/ --rules field-rules.json --out ./out
+web-crawler-startproject article_fields --rules field-rules.json
+cd article_fields
+python main.py https://example.com/ --output items.jsonl
+```
+
+`required` 标记必填字段，`many` 返回全部非空匹配。未命中的单值为 `null`，多值为 `[]`。采集器把字段结果写入 `rule_items.jsonl`，并在运行摘要和报告中统计缺必填字段的页面。
+
+表单的「导出采集配置」保存目标、采集参数和字段规则，可用 `web-crawler --load-config crawl-config.json --out ./out` 运行。也可以把 CLI 的 `--save-config` 产物导入表单。控制台导出的配置省略请求头、本机输出目录和只适用于本机任务的选项。
+
 ## 功能特性
 
 - **自适应解析器** — `Selector` 基于 `lxml`，支持元素指纹计算与结构相似度重定位：站点改版导致选择器失效时，已保存的指纹会自动在新页面中重新找到对应元素（Scrapling 的标志性能力）。公开 `save` / `retrieve` / `relocate` API 便于显式管理指纹；内置 `find_by_regex`、`re` / `re_first`、`get_all_text`、`prettify`、完整 DOM 遍历（`parent` / `children` / `siblings` / `next` / `previous` / `path`），以及 `ResultList` 批量辅助方法（`css` / `xpath` / `get` / `getall` / `.first` / `.last`）。支持 Scrapling 风格 `::attr(name)` 伪元素直接取属性。
@@ -323,13 +351,16 @@ playwright install chromium        # 仅 DynamicFetcher / StealthyFetcher 需要
 | `--quiet` | 隐藏进度和成功摘要，保留错误及命令本身请求的数据结果 |
 | `--json` | stdout 输出一个机器可解析 JSON 文档，诊断与进度不混入 stdout |
 
-TTY 下爬取进度原地刷新；重定向、管道和 CI 等非 TTY 环境自动降级为节流日志，不会逐条刷屏。结束摘要包含成功、失败、跳过、耗时、数据量和输出目录；`status` 为 `success`、`partial` 或 `cancelled`。网络、解析、配置和安全错误会分级显示，并给出下一步修复建议。
+TTY 下爬取进度原地刷新。重定向、管道和 CI 环境使用节流日志。结束摘要包含成功扫描的页面数、`page_scan` 中的页面失败和跳过数，以及资源、耗时和输出目录。
+
+`status` 为 `success`（完成）、`partial`（存在页面或资源失败）、`skipped`（页面按规则跳过）、`cancelled`（取消）或 `error`（无法完成扫描）。采集退出码为 `0`（完成、部分完成或按规则跳过）、`1`（取消）、`2`（参数错误）或 `3`（页面全部失败）。`listed_only` 是旧版 `skipped` 计数中的仅列出资源数。
 
 ```bash
 web-crawler --url https://example.com --out ./out --json
 # 单页无资源时的字段示例（数值来自实际运行，不是固定模板）：
 # {"schema_version":1,"command":"web-crawler","status":"success","pages_scanned":1,
-#  "resources_found":0,"succeeded":0,"failed":0,"skipped":0,"duration_seconds":0.123,
+#  "page_scan":{"failed":0,"skipped":0,"first_error":""},
+#  "resources_found":0,"succeeded":0,"failed":0,"skipped":0,"listed_only":0,"duration_seconds":0.123,
 #  "bytes":0,"output_dir":"/absolute/path/out"}
 ```
 

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from .adaptive import AdaptiveStorage, compute_fingerprint, similarity_score
 from .links import Link, LinkExtractor
+from .rules import ExtractionRules
 from .selector import Adaptor, Adaptors, Selector
 
 __all__ = [
     "AdaptiveStorage",
     "Adaptor",
     "Adaptors",
+    "ExtractionRules",
     "Link",
     "LinkExtractor",
     "Selector",

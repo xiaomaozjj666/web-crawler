@@ -23,6 +23,7 @@ from web_crawler.app import _crawler_context as ctx_mod
 from web_crawler.app import _crawler_core as core
 from web_crawler.app import _crawler_post as post
 from web_crawler.app import crawler as cr
+from web_crawler.app.crawler_models import PageExtraction
 from web_crawler.exceptions import FetchError
 
 # ========== 数据类 ==========
@@ -799,6 +800,12 @@ class TestStripPageOverlays:
 
 
 class TestSmartExtract:
+    def test_metadata_is_independent_of_attribute_order(self) -> None:
+        html = "<meta content='Cats &amp; Dogs' property='OG:TITLE'><title>Example</title>"
+        result = cr.smart_extract(html, "https://example.com")
+        assert result["og_title"] == "Cats & Dogs"
+        assert result["page_title"] == "Example"
+
     def test_basic(self) -> None:
         """extract_readable_text 提取页面可读文本与元数据。"""
         html = """
@@ -2727,6 +2734,62 @@ class TestCrawlBlockedPages:
 
 
 class TestCrawlCrawlPages:
+    def test_resume_preserves_two_pages_with_case_colliding_paths(self, tmp_path: Path) -> None:
+        args = cr.build_parser().parse_args(
+            [
+                "--url",
+                "https://example.com/News",
+                "--out",
+                str(tmp_path),
+                "--max-pages",
+                "2",
+                "--crawl-pages",
+                "--resume-crawl",
+                "--extract-text",
+                "--rewrite-html",
+            ]
+        )
+        stop = threading.Event()
+        args.should_stop = stop.is_set
+        real_save = ctx_mod.save_crawl_state
+
+        def save_state(output: Path, **state: object) -> None:
+            real_save(output, **state)
+            stop.set()
+
+        pages = [
+            (b'<article>Upper body</article><a href="/news">Other article</a>', "text/html"),
+            (b"<article>Lower body</article>", "text/html"),
+        ]
+        with (
+            patch.object(ctx_mod, "save_crawl_state", side_effect=save_state),
+            patch.object(core, "fetch", side_effect=pages),
+        ):
+            assert cr.crawl(args) == 1
+
+        stop.clear()
+        extracted: list[PageExtraction] = []
+        args.extraction_callback = extracted.append
+        with patch.object(core, "fetch") as fetch:
+            assert cr.crawl(args) == 0
+        fetch.assert_not_called()
+        assert {page.url: page.text for page in extracted} == {
+            "https://example.com/News": "Upper body",
+            "https://example.com/news": "Lower body",
+        }
+        contents = {
+            path.read_text(encoding="utf-8")
+            for path in (tmp_path / "extracted_text").rglob("*.txt")
+        }
+        assert contents == {"Upper body", "Lower body"}
+        offline = [
+            path.read_text(encoding="utf-8")
+            for path in (tmp_path / "offline_pages").rglob("*.html")
+        ]
+        assert len(offline) == 2
+        assert sum("Upper body" in page for page in offline) == 1
+        assert sum("Lower body" in page for page in offline) == 1
+
     def test_crawl_pages_follows_links(self, tmp_path: Path) -> None:
         """--crawl-pages 跟随页面链接并保存状态。"""
         page1 = b'<html><body><a href="/page2">link</a><img src="img.png"></body></html>'
@@ -3490,7 +3553,7 @@ class TestCrawlPageScanningSkips:
         assert exit_code == 0
 
     def test_page_fetch_exception(self, tmp_path: Path) -> None:
-        """页面 fetch 异常时跳过该页面继续。"""
+        """零页成功时，退出码和报告都标明页面失败。"""
         html = b'<html><body><img src="https://example.com/img.png"></body></html>'
 
         def mock_fetch(url: str, *args: Any, **kwargs: Any) -> tuple[bytes, str]:
@@ -3511,7 +3574,12 @@ class TestCrawlPageScanningSkips:
                 ]
             )
             exit_code = cr.crawl(args)
-        assert exit_code == 0
+        assert exit_code == 3
+        report = json.loads((tmp_path / "run_report.json").read_text(encoding="utf-8"))
+        assert report["status"] == "error"
+        assert report["pages_scanned"] == 0
+        assert report["page_scan"]["failed"] == 1
+        assert "connection refused" in report["page_scan"]["first_error"]
 
 
 class TestCrawlVideoOnlyFilter:
@@ -3779,6 +3847,36 @@ class TestCrawlExtractTextEmpty:
 
 
 class TestCrawlDownloadLoopCancellation:
+    def test_cancellation_skips_queued_downloads_and_keeps_completed_row(
+        self, tmp_path: Path
+    ) -> None:
+        html = b'<img src="/a.png"><img src="/b.png"><img src="/c.png">'
+        stopped = False
+        downloads: list[str] = []
+
+        def fetch(url: str, *args: Any, **kwargs: Any) -> tuple[bytes, str]:
+            nonlocal stopped
+            if url.endswith(".png"):
+                downloads.append(url)
+                stopped = True
+                return b"completed", "image/png"
+            return html, "text/html"
+
+        def wait_if_paused() -> None:
+            if stopped:
+                raise RuntimeError("cancelled by user")
+
+        args = cr.build_parser().parse_args(
+            ["--url", "https://example.com", "--out", str(tmp_path), "--workers", "1", "--dedup"]
+        )
+        args.should_stop = lambda: stopped
+        args.wait_if_paused = wait_if_paused
+        with patch.object(core, "fetch", side_effect=fetch):
+            assert cr.crawl(args) == 1
+        assert len(downloads) == 1
+        lines = (tmp_path / "resources_manifest.jsonl").read_text(encoding="utf-8").splitlines()
+        assert [json.loads(line)["url"] for line in lines] == downloads
+
     def test_should_stop_cancels_pending_futures(self, tmp_path: Path) -> None:
         """workers>1 时 should_stop 在下载循环体中返回 True，取消待处理 future。"""
         html = b'<html><body><img src="https://example.com/a.png"><img src="https://example.com/b.png"></body></html>'

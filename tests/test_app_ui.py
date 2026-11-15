@@ -28,6 +28,7 @@ import pytest
 
 from web_crawler.ai import llm as _llm
 from web_crawler.app import _ui_helpers, _ui_http, ui
+from web_crawler.app.crawler_models import ManifestRow, ResourceCrawlResult
 from web_crawler.app.ui import (
     Handler,
     JobState,
@@ -62,13 +63,18 @@ def http_server() -> str:
 
 
 @pytest.fixture(autouse=True)
-def clean_job_registries() -> None:
+def clean_job_registries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """每个测试前后清空 JOBS / REVERSE_JOBS，避免状态泄漏。"""
+    monkeypatch.setattr(ui.database, "_DB_PATH", str(tmp_path / "test_jobs.db"))
+    ui.database.init_db()
     ui.JOBS.clear()
     ui.REVERSE_JOBS.clear()
+    ui.CAPTCHA_JOBS.clear()
     yield
     ui.JOBS.clear()
     ui.REVERSE_JOBS.clear()
+    ui.CAPTCHA_JOBS.clear()
+    ui.database.close_thread_connection()
 
 
 def _make_job_state(**kwargs: Any) -> JobState:
@@ -974,6 +980,41 @@ class TestRunReverseJob:
 
 
 class TestRunJob:
+    def test_result_insert_failure_still_updates_history(self, tmp_path: Path) -> None:
+        job = _make_job_state(output_dir=str(tmp_path))
+        url = "https://example.com"
+        ui.database.create_task(job.id, url, {}, job.output_dir)
+        conn = ui.database._get_conn()
+        conn.execute(
+            "CREATE TRIGGER fail_results BEFORE INSERT ON results "
+            "BEGIN SELECT RAISE(ABORT, 'fixture insert failure'); END"
+        )
+
+        def crawl(args: Any) -> int:
+            row = ManifestRow("listed only", url + "/image.png", "", "", 0, "", "", "", url, "", "")
+            args.result_callback(ResourceCrawlResult({}, [row], []))
+            return 0
+
+        with patch.object(ui.web_resource_crawler, "crawl", side_effect=crawl):
+            run_job(job)
+        task = ui.database.get_task(job.id)
+        assert task is not None
+        assert job.status == task["status"] == "error"
+        assert "fixture insert failure" in task["error_message"]
+        assert ui.database.get_results(job.id)["total"] == 0
+
+    def test_nonzero_exit_is_persisted_as_error(self, tmp_path: Path) -> None:
+        job = _make_job_state(output_dir=str(tmp_path))
+        ui.database.create_task(job.id, "https://example.com", {}, job.output_dir)
+        with patch.object(ui.web_resource_crawler, "crawl", return_value=2):
+            run_job(job)
+        assert job.status == "error"
+        assert job.exit_code == 2
+        task = ui.database.get_task(job.id)
+        assert task is not None
+        assert task["status"] == "error"
+        assert task["error_message"] == job.error
+
     def test_success(self, tmp_path: Path) -> None:
         """crawl 返回 0 时 status=done。"""
         job = _make_job_state(output_dir=str(tmp_path))
@@ -1271,7 +1312,7 @@ class TestHandlerPostRoutes:
         # cancel
         resp = httpx.post(f"{http_server}/cancel?id=ctrl1")
         assert resp.json()["ok"] is True
-        assert job.status == "cancelled"
+        assert job.status == "cancelling"
         assert job.stop_event.is_set()
 
     def test_post_pause_missing(self, http_server: str) -> None:
@@ -1699,12 +1740,146 @@ class TestReadJsonBodyEmpty:
 class TestJobsHistoryApi:
     """/jobs 系列任务历史 API 集成测试，使用临时 SQLite 数据库隔离。"""
 
-    @pytest.fixture(autouse=True)
-    def temp_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """每个测试使用独立的临时数据库，避免污染真实数据。"""
-        monkeypatch.setattr(ui.database, "_DB_PATH", str(tmp_path / "test_jobs.db"))
-        ui.database.init_db()
-        yield
+    def test_portable_config_roundtrip_excludes_local_and_auth_data(self, http_server: str) -> None:
+        rules = {"version": 1, "fields": {"title": {"css": "title", "required": True}}}
+        with httpx.Client(base_url=http_server) as client:
+            exported = client.post(
+                "/crawl/config/export",
+                data={
+                    "url": "https://example.com/a",
+                    "out": "/tmp/out",
+                    "cookie": "session=secret",
+                    "headers": "Authorization: token",
+                    "keep_page_samples": "1",
+                    "block_keywords": "",
+                    "delay": "0.05",
+                    "field_rules": json.dumps(rules),
+                },
+            ).json()["config"]
+            assert not ({"cookie", "header", "headers", "out", "keep_page_samples"} & set(exported))
+            assert exported["delay"] == 0.05
+            assert exported["block_keyword"] == [""]
+            assert exported["field_rules"]["fields"]["title"]["required"] is True
+            loaded = client.post("/crawl/config/import", json=exported).json()["config"]
+            assert loaded == exported
+            assert (
+                client.post("/crawl/config/import", json={**exported, "workers": 0}).status_code
+                == 400
+            )
+
+    def test_activity_counts_active_jobs_across_panels(self, http_server: str) -> None:
+        ui.JOBS["a"] = _make_job_state(status="paused")
+        ui.JOBS["b"] = _make_job_state(status="done")
+        ui.REVERSE_JOBS["a"] = _make_reverse_job()
+        ui.CAPTCHA_JOBS["a"] = _ui_http.CaptchaJobState("a", "https://example.com", status="done")
+        data = httpx.get(f"{http_server}/activity").json()
+        assert data["active"] == {"crawler": 1, "reverse": 1, "captcha": 0}
+
+    def test_extraction_follows_its_task_when_output_dir_is_reused(
+        self, http_server: str, tmp_path: Path
+    ) -> None:
+        url = "https://example.com/article"
+        rules = {"version": 1, "fields": {"title": {"xpath": "//title/text()", "required": True}}}
+        form = {
+            "url": url,
+            "out": str(tmp_path),
+            "smart_extract": "1",
+            "extract_text": "1",
+            "keep_page_samples": "1",
+            "field_rules": json.dumps(rules),
+        }
+
+        def run(client: httpx.Client, html: bytes) -> str:
+            finished = threading.Event()
+
+            def worker(job: JobState) -> None:
+                try:
+                    run_job(job)
+                finally:
+                    finished.set()
+
+            def fetch(page: str, *args: Any, **kwargs: Any) -> tuple[bytes, str]:
+                if page.endswith("/related"):
+                    return (
+                        b'<title>Related</title><link rel="stylesheet" href="/theme.css">',
+                        "text/html",
+                    )
+                if page.endswith(".css"):
+                    return b'body { background-image: url("/nested.png"); }', "text/css"
+                if page.endswith(".png"):
+                    return b"image bytes", "image/png"
+                return html, "text/html"
+
+            core = ui.web_resource_crawler.core
+            with (
+                patch.object(core, "fetch", side_effect=fetch),
+                patch.object(_ui_http, "run_job", side_effect=worker),
+            ):
+                response = client.post(
+                    "/run",
+                    data={**form, "include_css_urls": "1", "crawl_pages": "1", "max_pages": "2"},
+                )
+                job_id = response.json()["id"]
+                assert finished.wait(5)
+            return job_id
+
+        with httpx.Client(base_url=http_server) as client:
+            first = run(client, b"<title>First</title><article>First body</article>")
+            second = run(
+                client,
+                b'<?xml version="1.0" encoding="utf-8"?>'
+                b'<html><title>Second</title><link rel="stylesheet" href="/theme.css">'
+                b'<article>Second body <img src="/image.png"></article>'
+                b'<a href="/related">Related page</a></html>',
+            )
+            first_task = client.get(f"/jobs/{first}").json()
+            assert first_task["status"] == "done"
+            assert first_task["summary"]["extracted_pages"] == 1
+            assert first_task["summary"]["resources_found"] == 0
+            assert first_task["summary"]["page_samples"] == 1
+            pages = client.get(f"/jobs/{first}/pages").json()
+            assert pages["pages"] == [{"page_url": url, "title": "First"}]
+            page = client.get(f"/jobs/{first}/pages", params={"url": url}).json()
+            assert page["body"] == "First body"
+            assert page["data"]["page_title"] == "First"
+            assert page["has_sample"] is True
+            validation = client.post(
+                f"/jobs/{first}/validate-rules", params={"url": url}, json=rules
+            )
+            assert validation.status_code == 200
+            assert validation.json()["result"] == page["rule_result"]
+            assert validation.json()["result"]["item"] == {"title": "First"}
+            missing = client.post(
+                f"/jobs/{first}/validate-rules", params={"url": url + "/absent"}, json=rules
+            )
+            assert missing.status_code == 404
+            second_path = f"/jobs/{second}/results"
+            results = client.get(second_path, params={"source": url}).json()
+            assert {row["url"] for row in results["results"]} == {
+                "https://example.com/image.png",
+                "https://example.com/theme.css",
+                "https://example.com/nested.png",
+            }
+            second_page = client.get(f"/jobs/{second}/pages", params={"url": url}).json()
+            assert second_page["body"] == "Second body"
+            assert client.get(second_path).json()["total"] == 3
+            related = client.get(
+                second_path, params={"source": "https://example.com/related"}
+            ).json()
+            assert {row["url"] for row in related["results"]} == {
+                "https://example.com/theme.css",
+                "https://example.com/nested.png",
+            }
+            assert client.get(second_path, params={"source": url + "/other"}).json()["total"] == 0
+            assert client.get(second_path, params={"page_size": 101}).status_code == 400
+            assert client.delete(f"/jobs/{first}").json()["ok"]
+            assert client.get(f"/jobs/{first}/pages").json()["total"] == 0
+            assert (
+                client.post(
+                    f"/jobs/{first}/validate-rules", params={"url": url}, json=rules
+                ).status_code
+                == 404
+            )
 
     def test_get_jobs_empty(self, http_server: str) -> None:
         """GET /jobs 在空数据库上返回空任务列表。"""
@@ -2207,6 +2382,54 @@ class TestSingleCrawlGuard:
             )
         assert "id" in resp.json()
 
+    def test_cancel_waits_for_worker_and_saves_only_this_runs_results(
+        self, http_server: str, tmp_path: Path
+    ) -> None:
+        url = "https://example.com"
+        (tmp_path / "resources_manifest.jsonl").write_text(
+            '{"url":"https://example.com/old.png"}\n', encoding="utf-8"
+        )
+        stopped = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+
+        def crawl(args: Any) -> int:
+            stopped.set()
+            assert release.wait(5)
+            assert args.should_stop()
+            row = ManifestRow("listed only", url + "/new.png", "", "", 0, "", "", "", url, "", "")
+            args.result_callback(ResourceCrawlResult({}, [row], []))
+            return 1
+
+        def worker(job: JobState) -> None:
+            try:
+                run_job(job)
+            finally:
+                finished.set()
+
+        with (
+            patch.object(ui.web_resource_crawler, "crawl", side_effect=crawl),
+            patch.object(_ui_http, "run_job", side_effect=worker),
+            httpx.Client(base_url=http_server) as client,
+        ):
+            job_id = client.post("/run", data={"url": url, "out": str(tmp_path)}).json()["id"]
+            try:
+                assert stopped.wait(5)
+                assert client.get("/status?active=1").json()["id"] == job_id
+                assert client.post(f"/cancel?id={job_id}").json()["ok"]
+                assert client.get("/status?active=1").json()["status"] == "cancelling"
+                assert client.post("/run", data={"url": url}).json()["active_id"] == job_id
+                assert not client.delete(f"/jobs/{job_id}").json()["ok"]
+            finally:
+                release.set()
+                assert finished.wait(5)
+
+            assert client.get("/status?active=1").json()["status"] == "missing"
+            assert client.get(f"/jobs/{job_id}").json()["status"] == "cancelled"
+            assert not client.post(f"/resume?id={job_id}").json()["ok"]
+            results = client.get(f"/jobs/{job_id}/results").json()["results"]
+            assert [row["url"] for row in results] == [url + "/new.png"]
+
 
 class TestJobLogHandler:
     """crawler 日志经 JobLogHandler 转发到 job.log（替代失效的 redirect_stdout）。"""
@@ -2298,9 +2521,16 @@ class TestBuildArgsFromTask:
 
     def test_fills_fields_missing_from_legacy_config(self) -> None:
         """早期版本存下的配置字段更窄：重建出来的参数也要能安全入库。"""
-        task = {"url": "https://e.com/a", "output_dir": "/tmp/o", "config": {"max_pages": 2}}
+        task = {
+            "url": "https://e.com/a",
+            "output_dir": "/tmp/o",
+            "config": {"max_pages": 2, "timeout": None, "header": ["Cookie: stale"]},
+        }
         args = _ui_helpers.build_args_from_task(task)
         assert args.max_pages == 2
+        assert args.timeout > 0
+        assert args.header == ["Referer: https://e.com/a"]
+        assert args.block_keyword
         # 不该抛 AttributeError
         assert isinstance(_ui_helpers._task_config_for_db(args), dict)
 

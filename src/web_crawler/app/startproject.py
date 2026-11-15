@@ -27,6 +27,7 @@ Scrapy 那种 settings.py 全局配置，组装全部显式发生在 ``main.py``
 from __future__ import annotations
 
 import argparse
+import json
 import keyword
 from pathlib import Path
 from string import Template
@@ -40,6 +41,7 @@ from web_crawler._cli import (
     output_mode,
 )
 from web_crawler.exceptions import ConfigError
+from web_crawler.parser.rules import ExtractionRules
 
 # ── 模板（纯字符串常量；教学站点用 example.com + iana.org 组合保稳）──────────
 
@@ -161,6 +163,58 @@ if __name__ == "__main__":
 
 _REQUIREMENTS_TEMPLATE = "stealth-web-crawler[all]\n"
 
+_FIELD_SPIDER_TEMPLATE = '''\
+"""使用已验证的字段规则采集一组页面。"""
+
+import argparse
+from pathlib import Path
+
+from web_crawler import Fetcher, Spider
+from web_crawler.parser.rules import ExtractionRules
+
+
+class FieldSpider(Spider):
+    name = "fields"
+    respect_robots = True
+
+    def __init__(self, urls, rules, **kwargs):
+        super().__init__(**kwargs)
+        self.start_urls = urls
+        self.field_rules = rules
+
+    def parse(self, response):
+        yield self.field_rules.extract_response(response)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Apply field rules to a list of pages.")
+    parser.add_argument("urls", nargs="+")
+    parser.add_argument("--output", default="items.jsonl")
+    args = parser.parse_args()
+    rules = ExtractionRules.from_file(Path(__file__).with_name("field-rules.json"))
+    with Fetcher() as fetcher:
+        items = FieldSpider(args.urls, rules, fetcher=fetcher, feed_output=args.output).run()
+    print(f"提取了 {len(items)} 个页面，输出 {args.output}")
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+_FIELD_PROJECT_README = Template(
+    """# $name
+
+`field-rules.json` 与控制台和 `web-crawler --rules` 使用相同的格式。
+
+```bash
+pip install -r requirements.txt
+python main.py https://example.com/ https://www.iana.org/ --output items.jsonl
+```
+
+将示例 URL 换成你要采集的页面。每行包含 `page_url`、`item` 和 `missing_required`。
+"""
+)
+
 _README_TEMPLATE = Template(
     """\
 # $name
@@ -238,8 +292,16 @@ def validate_project_name(name: str) -> str:
     return cleaned
 
 
-def build_project_files(name: str) -> dict[Path, str]:
+def build_project_files(name: str, *, rules: ExtractionRules | None = None) -> dict[Path, str]:
     """返回「相对路径 → 文件内容」映射（纯函数，不触盘）。"""
+    if rules is not None:
+        return {
+            Path("main.py"): _FIELD_SPIDER_TEMPLATE,
+            Path("field-rules.json"): json.dumps(rules.to_dict(), ensure_ascii=False, indent=2)
+            + "\n",
+            Path("requirements.txt"): "stealth-web-crawler\n",
+            Path("README.md"): _FIELD_PROJECT_README.substitute(name=name),
+        }
     return {
         Path("spiders") / "example_spider.py": _SPIDER_TEMPLATE,
         Path("main.py"): _MAIN_TEMPLATE,
@@ -248,7 +310,12 @@ def build_project_files(name: str) -> dict[Path, str]:
     }
 
 
-def create_project(name: str, base_dir: Path | None = None) -> Path:
+def create_project(
+    name: str,
+    base_dir: Path | None = None,
+    *,
+    rules: ExtractionRules | None = None,
+) -> Path:
     """在 ``base_dir``（默认当前目录）下生成项目骨架，返回项目根路径。
 
     目标目录已存在且非空时抛 :class:`ConfigError` 拒绝覆盖；已存在但为空
@@ -261,7 +328,7 @@ def create_project(name: str, base_dir: Path | None = None) -> Path:
             raise ConfigError(f"路径 {root} 已存在且不是目录，无法在此生成项目")
         if any(root.iterdir()):
             raise ConfigError(f"目录 {root} 已存在且非空，拒绝覆盖；换个项目名或先清理该目录")
-    for rel_path, content in build_project_files(cleaned).items():
+    for rel_path, content in build_project_files(cleaned, rules=rules).items():
         target = root / rel_path
         target.parent.mkdir(parents=True, exist_ok=True)
         # newline="\n"：Windows 下 write_text 默认会转 CRLF，显式保持 LF
@@ -294,21 +361,25 @@ def main(argv: list[str] | None = None) -> int:
     )
     add_output_arguments(parser)
     parser.add_argument("name", help="项目名（合法 Python 标识符，同时作为目录名）")
+    parser.add_argument("--rules", help="用 JSON 字段规则生成批量提取 Spider")
     args = parser.parse_args(argv)
     configure_logging(args)
     try:
-        root = create_project(args.name)
-    except ConfigError as exc:
+        rules = ExtractionRules.from_file(args.rules) if args.rules else None
+        root = create_project(args.name, rules=rules)
+    except (OSError, ValueError) as exc:
         emit_error(exc, args, context=args.name)
         return 2
 
     mode = output_mode(args)
-    files = sorted(path.as_posix() for path in build_project_files(root.name))
+    files = sorted(path.as_posix() for path in build_project_files(root.name, rules=rules))
     next_steps = [
         f"cd {root.name}",
         'pip install "stealth-web-crawler[all]"',
         "python main.py",
     ]
+    if rules is not None:
+        next_steps[1:] = ["pip install -r requirements.txt", "python main.py https://example.com/"]
     if mode == "json":
         emit_json(
             {
@@ -329,9 +400,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {path}")
     print()
     print("下一步：")
-    print(f"  cd {root.name}")
-    print('  pip install "stealth-web-crawler[all]"    # 开发本库则 pip install -e ".[all]"')
-    print("  python main.py                             # item 会写入 items.jsonl")
+    for step in next_steps:
+        print(f"  {step}")
     print()
     print("文档：https://xiaomaozjj666.github.io/web-crawler/")
     return 0

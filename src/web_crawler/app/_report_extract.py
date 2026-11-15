@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import csv
-import html as html_lib
 import json
 import logging
 import re
@@ -19,7 +18,9 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from web_crawler.app.crawler_models import ManifestRow
-from web_crawler.app.crawler_net import extract_title, same_domain
+from web_crawler.app.crawler_net import same_domain
+from web_crawler.parser import Selector
+from web_crawler.parser.rules import parse_html
 
 # 与 app.crawler 共用同一个 logger：UI 通过 attach_log_handler 挂到
 # "crawler" logger 的 handler 对所有模块日志生效，行为与拆分前一致。
@@ -172,67 +173,52 @@ EXTRACTED_DATA_FIELDS = [
 ]
 
 
-def smart_extract(html: str, page_url: str) -> dict[str, object]:
-    """自动从页面抽取结构化数据。
+def _extraction_selector(source: str | Selector) -> Selector:
+    return parse_html(source) if isinstance(source, str) else source
 
-    返回含常见元数据字段的 dict；无需配置即可用于任意 HTML 页面。
-    """
-    result: dict[str, object] = {
+
+def _visible_text(selector: Selector) -> str:
+    parts = selector.element.xpath(
+        ".//text()[not(ancestor::script or ancestor::style or ancestor::template)]",
+        smart_strings=False,
+    )
+    return " ".join(" ".join(parts).split())
+
+
+def smart_extract(html: str | Selector, page_url: str) -> dict[str, object]:
+    """从页面 DOM 提取元数据和内容计数。"""
+    selector = _extraction_selector(html)
+    title = selector.css_first("title")
+    metadata: dict[str, str] = {}
+    for meta in selector.css("meta[content]"):
+        attribute = meta.attr("property") or meta.attr("name") or ""
+        metadata.setdefault(attribute.lower(), meta.attr("content", ""))
+
+    counts: dict[str, int] = dict.fromkeys(("h1", "h2", "h3", "a", "img", "video"), 0)
+    for element in selector.element.iter():
+        if element.tag in counts:
+            counts[element.tag] += 1
+    return {
         "page_url": page_url,
-        "page_title": extract_title(html),
-    }
-
-    # Open Graph / Twitter / Meta 标签
-    og_patterns = {
-        "og_title": (r'<meta\s+property=["\']og:title["\'][^>]*content=["\']([^"\']*)["\']', False),
-        "og_description": (
-            r'<meta\s+property=["\']og:description["\'][^>]*content=["\']([^"\']*)["\']',
-            False,
+        "page_title": _visible_text(title) if title is not None else "",
+        "og_title": metadata.get("og:title", ""),
+        "og_description": metadata.get("og:description", ""),
+        "og_image": metadata.get("og:image", ""),
+        "og_video": metadata.get("og:video", ""),
+        "meta_description": metadata.get("description", metadata.get("og:description", "")),
+        "meta_keywords": metadata.get("keywords", ""),
+        "h1_count": counts["h1"],
+        "h2_count": counts["h2"],
+        "h3_count": counts["h3"],
+        "link_count": counts["a"],
+        "image_count": counts["img"],
+        "video_count": counts["video"],
+        "text_length": len(_visible_text(selector)),
+        "has_canonical": any(
+            "canonical" in relation.lower().split()
+            for relation in selector.css("link[href]::attr(rel)")
         ),
-        "og_image": (r'<meta\s+property=["\']og:image["\'][^>]*content=["\']([^"\']*)["\']', False),
-        "og_video": (
-            r'<meta\s+property=["\']og:video["\'](?:[^>]*content=["\']([^"\']*)["\'])',
-            False,
-        ),
     }
-    for key, (pattern, _) in og_patterns.items():
-        match = re.search(pattern, html, re.IGNORECASE)
-        result[key] = match.group(1) if match else ""
-
-    # Meta description（回退：og:description）
-    md = re.search(
-        r'<meta\s+name=["\']description["\'][^>]*content=["\']([^"\']*)["\']', html, re.IGNORECASE
-    )
-    result["meta_description"] = md.group(1) if md else result.get("og_description", "")
-
-    # Meta 关键词
-    mk = re.search(
-        r'<meta\s+name=["\']keywords["\'][^>]*content=["\']([^"\']*)["\']', html, re.IGNORECASE
-    )
-    result["meta_keywords"] = mk.group(1) if mk else ""
-
-    # 标题计数
-    result["h1_count"] = len(re.findall(r"<h1[>\s]", html, re.IGNORECASE))
-    result["h2_count"] = len(re.findall(r"<h2[>\s]", html, re.IGNORECASE))
-    result["h3_count"] = len(re.findall(r"<h3[>\s]", html, re.IGNORECASE))
-
-    # 链接/图片/视频计数
-    result["link_count"] = len(re.findall(r"<a\s+", html, re.IGNORECASE))
-    result["image_count"] = len(re.findall(r"<img\s+", html, re.IGNORECASE))
-    result["video_count"] = len(re.findall(r"<video\s+", html, re.IGNORECASE))
-
-    # 文本长度（近似值）
-    text_stripped = re.sub(r"<[^>]+>", "", html)
-    text_stripped = re.sub(r"\s+", " ", text_stripped).strip()
-    result["text_length"] = len(text_stripped)
-
-    # 规范链接（canonical URL）
-    canonical = re.search(
-        r'<link\s+rel=["\']canonical["\'][^>]*href=["\']([^"\']*)["\']', html, re.IGNORECASE
-    )
-    result["has_canonical"] = bool(canonical)
-
-    return result
 
 
 def write_extracted_data(output_dir: Path, data: list[dict[str, object]]) -> None:
@@ -251,41 +237,13 @@ def write_extracted_data(output_dir: Path, data: list[dict[str, object]]) -> Non
     _log.info("extracted data: %s, %s", json_path, csv_path)
 
 
-def extract_readable_text(html: str) -> str:
-    """用简单启发式从 HTML 抽取可读的正文/主要文本。"""
-    # 优先尝试 <article>
-    m = re.search(r"<article[^>]*>(.*?)</article>", html, re.DOTALL | re.IGNORECASE)
-    if m:
-        html = m.group(1)
-    else:
-        # 尝试常见内容容器
-        for selector in (
-            'id="content"',
-            'id="article"',
-            'id="main-content"',
-            'id="post-content"',
-            'class="content"',
-            'class="post-content"',
-            'class="article-content"',
-            'class="entry-content"',
-            'class="main-content"',
-        ):
-            pattern = rf"<div[^>]*{selector}[^>]*>(.*?)</div>"
-            m = re.search(pattern, html, re.DOTALL | re.IGNORECASE)
-            if m:
-                html = m.group(1)
-                break
-        else:
-            # 兜底：<body>
-            m = re.search(r"<body[^>]*>(.*?)</body>", html, re.DOTALL | re.IGNORECASE)
-            if m:
-                html = m.group(1)
-
-    text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = html_lib.unescape(text)
-    text = re.sub(r"\s+", " ", text).strip()
-    # 去掉过短的行（多为导航/模板文字）
-    lines = [line.strip() for line in text.split("\n") if len(line.strip()) > 30]
-    return "\n".join(lines) if lines else text
+def extract_readable_text(html: str | Selector) -> str:
+    """优先提取 article、main 或常见正文容器的可见文本。"""
+    selector = _extraction_selector(html)
+    article = selector.css_first("article")
+    main = selector.css_first(
+        "main, #content, #article, #main-content, #post-content, "
+        ".content, .post-content, .article-content, .entry-content, .main-content"
+    )
+    body = selector.css_first("body")
+    return _visible_text(article or main or body or selector)

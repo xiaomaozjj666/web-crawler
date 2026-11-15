@@ -35,24 +35,32 @@
     main { max-width: 1340px; margin: 20px auto; padding: 0 18px; }
     h1 { font-size: 26px; margin: 0 0 6px; }
     .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-    .subtitle { color: var(--muted); margin: 0 0 18px; font-size: 14px; }
 
     /* Tab 栏（窄屏允许换行，避免文字裁切） */
     .tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 2px solid var(--border); margin-bottom: 18px; align-items: flex-end; }
     .tab { background: none; border: 0; border-bottom: 3px solid transparent; padding: 10px 18px; font-size: 15px; font-weight: 600; cursor: pointer; color: var(--muted); border-radius: 0; transition: color .15s, border-color .15s; }
     .tab:hover { color: var(--text); }
     .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+    .activity-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 18px; }
+    .activity-bar > span { color: var(--muted); font-size: 13px; margin-right: 4px; }
+    .activity-item { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); font-size: 13px; padding: 7px 10px; }
+    .activity-item span { color: var(--muted); font-weight: 500; }
+    .activity-item[data-active="true"] span { color: var(--info-text); font-weight: 700; }
     .theme-toggle { margin-left: auto; background: none; border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; cursor: pointer; color: var(--text); font-size: 13px; }
 
     /* Tab 内容 */
     .tab-content { display: none; }
     .tab-content.active { display: block; }
 
-    /* 采集器 Tab 内部限宽 */
-    #tab-crawler .crawler-inner { max-width: 980px; }
-
-    .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
-    .tag { background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; font-size: 12px; color: var(--muted); }
+    .crawler-inner { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 18px; align-items: start; }
+    .crawl-monitor { position: sticky; top: 16px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+    .crawl-monitor h2 { font-size: 16px; margin: 0; }
+    .crawl-monitor pre { margin-bottom: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .crawl-monitor .buttons { margin-top: 12px; }
+    @media (max-width: 1080px) {
+      .crawler-inner { grid-template-columns: minmax(0, 1fr); }
+      .crawl-monitor { position: static; }
+    }
     form { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
     label { display: block; font-weight: 700; margin: 14px 0 8px; font-size: 14px; }
     input[type=text], input[type=number], textarea, select {
@@ -133,11 +141,13 @@
     .step-counter { font-size: 14px; color: var(--muted); }
     .step-counter strong { color: var(--text); font-size: 16px; }
     .status-badge { padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
-    .status-badge.running { background: rgba(59,130,246,.15); color: var(--info-text); }
+    .status-badge.running, .status-badge.cancelling { background: rgba(59,130,246,.15); color: var(--info-text); }
     .status-badge.done { background: rgba(34,197,94,.18); color: var(--ok-text); }
     .status-badge.error { background: rgba(239,68,68,.15); color: var(--danger-text); }
     .status-badge.cancelled { background: rgba(107,114,128,.15); color: var(--neutral-text); }
     .status-badge.paused { background: rgba(234,179,8,.18); color: var(--warn-text); }
+    .status-badge.partial { background: rgba(234,179,8,.18); color: var(--warn-text); }
+    .status-badge.skipped { background: rgba(107,114,128,.15); color: var(--neutral-text); }
     .status-badge.stopped { background: rgba(107,114,128,.15); color: var(--neutral-text); }
 
     /* 执行轨迹 */
@@ -251,6 +261,22 @@
     .results-head h3 { margin: 0; flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
     .results-head input { flex: 0 1 240px; min-width: 0; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-card); color: var(--text); }
     .results-head .btn-close { flex-shrink: 0; padding: 6px 16px; border-radius: 6px; border: 0; background: #b91c1c; color: #fff; cursor: pointer; }
+    .results-context { margin-bottom: 14px; overflow-wrap: anywhere; }
+    .results-context pre { min-height: 0; max-height: 220px; white-space: pre-wrap; }
+    .results-nav { display: flex; flex-wrap: wrap; gap: 8px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+    .results-nav button, .page-options button { background: var(--bg-card); color: var(--text); border: 1px solid var(--border); }
+    .results-nav button[aria-pressed="true"], .page-options button[aria-pressed="true"] { color: var(--info-text); border-color: var(--primary); }
+    .results-pane { padding-top: 12px; }
+    .results-pane input[type=search] { width: min(100%, 380px); padding: 8px 12px; margin-bottom: 12px; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; }
+    .page-options { display: grid; gap: 6px; }
+    .page-options button { text-align: left; overflow-wrap: anywhere; }
+    .page-extraction { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; overflow-wrap: anywhere; }
+    .page-extraction h4 { margin: 0 0 4px; }
+    .page-extraction details { margin-top: 12px; }
+    .page-extraction pre { min-height: 0; max-height: 280px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .results-diagnostic { color: var(--danger-text); white-space: pre-wrap; }
+    .tool-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0; }
+    .rule-editor { width: 100%; min-height: 118px; }
     .results-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
     table.results-table { width: 100%; border-collapse: collapse; font-size: 13px; }
     .results-table th { padding: 8px; text-align: left; white-space: nowrap; border-bottom: 2px solid var(--border); }
@@ -302,21 +328,23 @@
       <button class="tab" id="tabbtn-reverse" role="tab" aria-selected="false" aria-controls="tab-reverse" data-tab="reverse">JS 逆向 Agent</button>
       <button class="tab" id="tabbtn-history" role="tab" aria-selected="false" aria-controls="tab-history" data-tab="history">任务历史</button>
     </div>
+    <div class="activity-bar" role="group" aria-label="任务概览">
+      <span>任务概览</span>
+      <button type="button" class="activity-item" data-target-tab="crawler">网页采集 <span>—</span></button>
+      <button type="button" class="activity-item" data-target-tab="captcha">验证码识别 <span>—</span></button>
+      <button type="button" class="activity-item" data-target-tab="reverse">JS 逆向 <span>—</span></button>
+    </div>
 
     <!-- ========== Tab 1: 网页资源采集器 ========== -->
     <div id="tab-crawler" class="tab-content active" role="tabpanel" aria-labelledby="tabbtn-crawler">
       <div class="crawler-inner">
-        <p class="subtitle">图片/CSS/JS/视频/字体 · 并发下载 · 自适应限速 · 内容去重</p>
-        <div class="tags">
-          <span class="tag" title="并发：同时下载多个文件，速度快但更占带宽">并发</span>
-          <span class="tag" title="限速：根据站点响应自动放慢请求，避免被封">限速</span>
-          <span class="tag" title="去重：相同内容（SHA256 一致）只保存一份">去重</span>
-          <span class="tag" title="断点续传：下载中断后，从已下载的部分接着下，不用重头再来">断点续传</span>
-          <span class="tag" title="清单：只记录资源地址和类型，不下载文件本身">清单</span>
-          <span class="tag" title="离线页面：把网页 HTML 和资源改写成可离线打开的形式">离线页面</span>
-        </div>
-
         <form id="crawler-form">
+          <div class="tool-actions" role="group" aria-label="采集配置">
+            <button type="button" id="import-crawl-config" class="btn-toolbar">导入采集配置</button>
+            <button type="button" id="export-crawl-config" class="btn-toolbar">导出采集配置</button>
+            <input type="file" id="crawl-config-file" accept=".json,application/json" hidden>
+          </div>
+          <div id="crawl-config-status" class="hint" role="status"></div>
           <label for="url">网页 URL</label>
           <input id="url" name="url" type="text" placeholder="https://example.com" required>
 
@@ -326,7 +354,7 @@
           <div class="row">
             <div><label for="max_pages">最多扫描页面</label><input id="max_pages" name="max_pages" type="number" min="1" value="1"></div>
             <div><label for="workers">并发线程数</label><input id="workers" name="workers" type="number" min="1" max="64" value="8"></div>
-            <div><label for="delay">请求间隔秒数</label><input id="delay" name="delay" type="number" min="0" step="0.1" value="0.3"></div>
+            <div><label for="delay">请求间隔秒数</label><input id="delay" name="delay" type="number" min="0" step="any" value="0.3"></div>
             <div><label for="retries">失败重试</label><input id="retries" name="retries" type="number" min="0" value="2"></div>
           </div>
           <div class="row" style="margin-top:14px">
@@ -387,24 +415,37 @@
             </div>
           </div>
 
+          <details id="crawler-rule-settings" class="section">
+            <summary>字段规则与页面样本</summary>
+            <label class="check"><input type="checkbox" name="keep_page_samples"> 保留页面样本用于验证</label>
+            <p class="hint">样本保存在此任务中，每页最多 2 MiB，压缩后每次任务最多 16 MiB。删除任务时一并删除样本。</p>
+            <label for="crawler-field-rules">字段规则 JSON</label>
+            <textarea id="crawler-field-rules" name="field_rules" class="rule-editor" placeholder="留空时只执行选中的提取选项"></textarea>
+            <div class="tool-actions">
+              <button type="button" id="load-crawl-rules" class="btn-toolbar">加载规则文件</button>
+              <input type="file" id="crawl-rules-file" accept=".json,application/json" hidden>
+            </div>
+          </details>
+
           <div class="action-dock">
             <div class="progress-wrap"><div id="progress-bar" class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="采集进度"></div></div>
-            <div id="status" class="status" role="status" aria-live="polite">等待开始：填写网页 URL 后点「开始采集」（默认下载资源；想只要清单就勾上「只生成清单」）</div>
+            <div id="status" class="status" role="status">等待开始</div>
             <div class="buttons">
               <button id="run-button" type="submit" class="btn-primary">开始采集</button>
               <button id="pause-button" type="button" class="btn-secondary" disabled>暂停</button>
               <button id="resume-button" type="button" class="btn-secondary" disabled>继续</button>
               <button id="cancel-button" type="button" class="btn-danger" disabled>取消</button>
               <button id="open-button" type="button" class="btn-secondary">打开输出文件夹</button>
+              <button id="current-results" type="button" class="btn-secondary" hidden>查看任务详情</button>
             </div>
           </div>
         </form>
 
-        <pre id="log" class="log-empty" aria-label="运行日志">运行日志会显示在这里。点击「开始采集」后，依次可以看到：
-  1. 扫描到的页面与发现的资源
-  2. 下载 / 去重 / 跳过的结果
-  3. 清单与报告的输出路径
-任务完成后，可到「任务历史」查看每次采集的结果。</pre>
+        <section class="crawl-monitor" aria-labelledby="crawl-monitor-title">
+          <h2 id="crawl-monitor-title">运行日志</h2>
+          <p id="crawl-target" class="hint" hidden></p>
+          <pre id="log" class="log-empty" aria-labelledby="crawl-monitor-title">开始采集后，日志将在这里更新。</pre>
+        </section>
       </div>
     </div>
 
@@ -636,7 +677,6 @@
         </div>
       </div>
     </div>
-  </main>
   <script>
     /* ========== 主题切换 ========== */
     (function() {
@@ -660,11 +700,41 @@
       });
       document.querySelectorAll('.tab-content').forEach(function(c) { c.classList.remove('active'); });
       document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+      if (tab.dataset.tab === 'history') loadHistory(1);
     }
     document.querySelectorAll('.tab').forEach(function(tab) {
       tab.tabIndex = tab.classList.contains('active') ? 0 : -1;
       tab.onclick = function() { activateTab(tab); };
     });
+    var activityButtons = document.querySelectorAll('.activity-item');
+    activityButtons.forEach(function(button) {
+      button.onclick = function() {
+        var tab = document.getElementById('tabbtn-' + button.dataset.targetTab);
+        activateTab(tab);
+        tab.focus();
+      };
+    });
+    async function refreshActivity() {
+      try {
+        if (document.hidden) return;
+        var response = await fetch('/activity', { signal: AbortSignal.timeout(5000) });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        var counts = (await response.json()).active;
+        activityButtons.forEach(function(button) {
+          var count = counts[button.dataset.targetTab] || 0;
+          button.dataset.active = count > 0 ? 'true' : 'false';
+          button.querySelector('span').textContent = count ? count + ' 个运行中' : '空闲';
+        });
+      } catch (_) {
+        activityButtons.forEach(function(button) {
+          button.dataset.active = 'false';
+          button.querySelector('span').textContent = '状态不可用';
+        });
+      } finally {
+        setTimeout(refreshActivity, 5000);
+      }
+    }
+    refreshActivity();
     /* 页签键盘操作：左右方向键切换（role=tab 的无障碍惯例） */
     document.querySelector('.tabs').addEventListener('keydown', function(e) {
       var step = e.key === 'ArrowRight' ? 1 : (e.key === 'ArrowLeft' ? -1 : 0);
@@ -688,8 +758,13 @@
     var resumeButton = document.getElementById('resume-button');
     var cancelButton = document.getElementById('cancel-button');
     var openButton = document.getElementById('open-button');
+    var currentResults = document.getElementById('current-results');
+    var crawlTarget = document.getElementById('crawl-target');
     var jobId = null;
     var timer = null;
+    var pollVersion = 0;
+    var pollFailures = 0;
+    var currentJob = null;
 
     async function post(path, data) {
       var response = await fetch(path, { method: 'POST', body: data || new URLSearchParams() });
@@ -700,10 +775,82 @@
       }
       return await response.json();
     }
-    function setRunning(active) {
-      runButton.disabled = active;
-      pauseButton.disabled = !active;
-      cancelButton.disabled = !active;
+    async function postJson(path, data) {
+      var response = await fetch(path, {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)
+      });
+      var result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'HTTP ' + response.status);
+      return result;
+    }
+    function downloadJson(name, value) {
+      var blob = new Blob([JSON.stringify(value, null, 2) + '\n'], {type: 'application/json'});
+      var url = URL.createObjectURL(blob);
+      var link = document.createElement('a');
+      link.href = url;
+      link.download = name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+    }
+    async function localJson(file, limit) {
+      if (file.size > limit) throw new Error('文件超出大小限制');
+      return JSON.parse((await file.text()).replace(/^\uFEFF/, ''));
+    }
+    function applyCrawlConfig(config) {
+      ['cookie', 'referer', 'headers'].forEach(function(name) { form.elements.namedItem(name).value = ''; });
+      Object.keys(config).forEach(function(name) {
+        var fieldName = name === 'block_keyword' ? 'block_keywords' : name;
+        var field = form.elements.namedItem(fieldName);
+        if (!field) return;
+        if (field.type === 'checkbox') field.checked = config[name];
+        else if (name === 'block_keyword') field.value = config[name].join('\n');
+        else if (name === 'field_rules') field.value = config[name] ? JSON.stringify(config[name], null, 2) : '';
+        else field.value = config[name] == null ? '' : String(config[name]);
+      });
+      if (config.field_rules) document.getElementById('crawler-rule-settings').open = true;
+    }
+    var configFeedback = document.getElementById('crawl-config-status');
+    var configFile = document.getElementById('crawl-config-file');
+    var crawlRulesFile = document.getElementById('crawl-rules-file');
+    var crawlRules = document.getElementById('crawler-field-rules');
+    document.getElementById('export-crawl-config').onclick = async function() {
+      try {
+        var data = await post('/crawl/config/export', new URLSearchParams(new FormData(form)));
+        downloadJson('crawl-config.json', data.config);
+        configFeedback.textContent = '采集配置已导出';
+      } catch(e) { configFeedback.textContent = '导出失败：' + e.message; }
+    };
+    document.getElementById('import-crawl-config').onclick = function() { configFile.click(); };
+    configFile.onchange = async function() {
+      if (!this.files.length) return;
+      var file = this.files[0];
+      this.value = '';
+      try {
+        var data = await postJson('/crawl/config/import', await localJson(file, 262144));
+        applyCrawlConfig(data.config);
+        configFeedback.textContent = '采集配置已载入';
+      } catch(e) { configFeedback.textContent = '导入失败：' + e.message; }
+    };
+    document.getElementById('load-crawl-rules').onclick = function() { crawlRulesFile.click(); };
+    crawlRulesFile.onchange = async function() {
+      if (!this.files.length) return;
+      var file = this.files[0];
+      this.value = '';
+      try {
+        crawlRules.value = JSON.stringify(await localJson(file, 131072), null, 2);
+      } catch(e) { configFeedback.textContent = '规则文件读取失败：' + e.message; }
+    };
+    function isActiveCrawl(status) {
+      return ['running', 'paused', 'cancelling', 'finishing'].indexOf(status) >= 0;
+    }
+    function setCrawlControls(status) {
+      runButton.disabled = status === 'starting' || isActiveCrawl(status);
+      pauseButton.disabled = status !== 'running';
+      resumeButton.disabled = status !== 'paused';
+      cancelButton.disabled = status !== 'running' && status !== 'paused';
+      currentResults.hidden = ['done', 'partial', 'skipped', 'error', 'cancelled'].indexOf(status) < 0;
     }
     /* URL 校验：必须含 http(s):// 前缀
        （注意：正则字面量中斜杠必须转义 \/，此前写 \\/ 会终止正则导致整段脚本 SyntaxError） */
@@ -712,18 +859,15 @@
       if (!/^https?:\/\/[^\s]+$/i.test(value)) { return 'URL 必须以 http:// 或 https:// 开头'; }
       return null;
     }
-    /* 状态查询失败重试计数器：连续失败 3 次后停止轮询 */
-    var POLL_FAIL_COUNT = 0;
-    var POLL_FAIL_MAX = 3;
     /* 后端状态值 → 中文（后端仍返回英文枚举，这里只做展示层翻译） */
-    var STATUS_LABELS = { running: '运行中', paused: '已暂停', done: '已完成', error: '失败', cancelled: '已取消', missing: '任务已不存在', stopped: '已停止' };
+    var STATUS_LABELS = { running: '运行中', paused: '已暂停', cancelling: '正在取消', finishing: '正在保存结果', done: '已完成', partial: '完成（有失败项）', skipped: '页面已跳过', error: '失败', cancelled: '已取消', missing: '任务已不存在', stopped: '已停止' };
     var STATUS_HINTS = {
       running: '正在采集，可「暂停」或「取消」',
       paused: '已暂停，点「继续」接着跑',
-      done: '可在「任务历史」查看本次结果',
+      cancelling: '等待当前操作结束',
       error: '原因见下方日志，修改参数后可重试',
       cancelled: '任务已取消，修改参数后可重新开始',
-      missing: '任务记录已丢失（服务可能重启过），请重新开始'
+      missing: '可在「任务历史」查看已保存的记录'
     };
     function formatStatus(data) {
       var st = data.status || '';
@@ -733,46 +877,76 @@
       var parts = [label];
       if (total > 0) { parts.push('资源 ' + processed + '/' + total); }
       else if (processed > 0) { parts.push('资源 ' + processed); }
-      parts.push('页面 ' + (data.pages_scanned || 0));
+      parts.push('已扫描页面 ' + (data.pages_scanned || 0));
+      var summary = data.summary || {};
+      var scan = summary.page_scan || {};
+      if (scan.failed) parts.push('页面失败 ' + scan.failed);
+      if (scan.skipped) parts.push('页面跳过 ' + scan.skipped);
+      if (summary.failed) parts.push('资源失败 ' + summary.failed);
+      if (summary.extracted_pages) parts.push('提取 ' + summary.extracted_pages + ' 页');
+      if (summary.page_samples) parts.push('保留 ' + summary.page_samples + ' 个样本');
+      if (summary.rule_results && summary.rule_results.pages_missing_required) {
+        parts.push('缺必填字段 ' + summary.rule_results.pages_missing_required + ' 页');
+      }
       var text = parts.join(' · ');
       if (data.current_url) { text += ' · 当前：' + data.current_url; }
-      if (STATUS_HINTS[st]) { text += '（' + STATUS_HINTS[st] + '）'; }
+      if (data.error || STATUS_HINTS[st]) { text += '（' + (data.error || STATUS_HINTS[st]) + '）'; }
       return text;
     }
-    async function poll() {
-      if (!jobId) return;
-      var result;
-      try {
-        var response = await fetch('/status?id=' + encodeURIComponent(jobId));
-        if (!response.ok) { throw new Error('HTTP ' + response.status); }
-        result = await response.json();
-        POLL_FAIL_COUNT = 0;
-      } catch(e) {
-        POLL_FAIL_COUNT++;
-        if (POLL_FAIL_COUNT >= POLL_FAIL_MAX) {
-          statusEl.textContent = '状态查询连续失败 ' + POLL_FAIL_COUNT + ' 次，已停止轮询：' + e.message;
-          if (timer) { clearInterval(timer); timer = null; }
-          setRunning(false);
-        } else {
-          statusEl.textContent = '状态查询失败（第 ' + POLL_FAIL_COUNT + ' 次，将重试）：' + e.message;
-        }
-        return;
-      }
+    function renderCrawl(result) {
+      currentJob = result;
+      crawlTarget.textContent = result.url || '';
+      crawlTarget.hidden = !result.url;
       var logText = result.log || '';
-      log.textContent = logText || '正在启动采集进程，日志马上出现…';
+      if (log.textContent !== logText) {
+        var atBottom = log.scrollHeight - log.clientHeight - log.scrollTop < 24;
+        log.textContent = logText || '等待日志…';
+        if (atBottom) log.scrollTop = log.scrollHeight;
+      }
       log.classList.toggle('log-empty', !logText);
       var pct = result.percent || 0;
       bar.style.width = pct + '%';
       bar.setAttribute('aria-valuenow', String(pct));
-      statusEl.textContent = formatStatus(result);
-      if (result.status === 'paused') { pauseButton.disabled = true; resumeButton.disabled = false; }
-      else if (['done', 'error', 'cancelled', 'missing'].indexOf(result.status) >= 0) {
-        /* 任务结束：恢复「开始采集」可再次提交，并停掉轮询 */
-        setRunning(false);
-        resumeButton.disabled = true;
-        if (timer) { clearInterval(timer); timer = null; }
+      var statusText = formatStatus(result);
+      if (statusEl.textContent !== statusText) statusEl.textContent = statusText;
+      setCrawlControls(result.status);
+    }
+    async function poll() {
+      if (!jobId) return;
+      clearTimeout(timer);
+      var version = ++pollVersion;
+      var controller = new AbortController();
+      var deadline = setTimeout(function() { controller.abort(); }, 8000);
+      var result;
+      try {
+        var response = await fetch('/status?id=' + encodeURIComponent(jobId), { signal: controller.signal });
+        if (!response.ok) { throw new Error('HTTP ' + response.status); }
+        result = await response.json();
+      } catch(e) {
+        if (version !== pollVersion) return;
+        pollFailures++;
+        statusEl.textContent = '暂时无法读取任务状态，正在重新连接：' + e.message;
+        timer = setTimeout(poll, Math.min(1000 * 2 ** Math.min(pollFailures, 4), 10000));
+        return;
+      } finally {
+        clearTimeout(deadline);
       }
-      else { pauseButton.disabled = false; resumeButton.disabled = true; }
+      if (version !== pollVersion) return;
+      pollFailures = 0;
+      var wasActive = !currentJob || currentJob.status === 'starting' || isActiveCrawl(currentJob.status);
+      renderCrawl(result);
+      if (isActiveCrawl(result.status)) {
+        timer = setTimeout(poll, 1000);
+      } else if (wasActive && document.getElementById('tab-history').classList.contains('active')) {
+        loadHistory();
+      }
+    }
+    function watchCrawl(id) {
+      jobId = id;
+      pollFailures = 0;
+      renderCrawl({ id: id, status: 'starting' });
+      statusEl.textContent = '正在读取采集任务…';
+      poll();
     }
     form.addEventListener('submit', async function(event) {
       event.preventDefault();
@@ -783,29 +957,29 @@
         form.querySelector('[name=url]').focus();
         return;
       }
-      setRunning(true);
-      resumeButton.disabled = true;
+      setCrawlControls('starting');
       log.textContent = '正在启动采集进程，日志马上出现…';
       log.classList.add('log-empty');
       statusEl.textContent = '正在启动采集…';
       bar.style.width = '0%';
       bar.setAttribute('aria-valuenow', '0');
-      POLL_FAIL_COUNT = 0;
       try {
         var result = await post('/run', new URLSearchParams(new FormData(form)));
-        if (!result.id) { throw new Error(result.error || '启动失败'); }
-        jobId = result.id;
-        if (timer) clearInterval(timer);
-        timer = setInterval(poll, 1000);
-        await poll();
+        var id = result.id || result.active_id;
+        if (!id) { throw new Error(result.error || '启动失败'); }
+        watchCrawl(id);
       } catch(e) {
-        setRunning(false);
+        setCrawlControls(currentJob ? currentJob.status : '');
         statusEl.textContent = '启动失败：' + e.message + '（检查网页 URL 与参数后重试）';
       }
     });
     async function ctrl(path) {
       if (!jobId) return;
-      try { await post(path + '?id=' + encodeURIComponent(jobId)); await poll(); }
+      try {
+        var result = await post(path + '?id=' + encodeURIComponent(jobId));
+        if (!result.ok) throw new Error(result.message || '操作未生效');
+        await poll();
+      }
       catch(e) {
         /* 写入状态行 + 日志区：状态行会被下次 poll 覆盖，日志区持久可见 */
         statusEl.textContent = '操作失败：' + e.message;
@@ -818,10 +992,11 @@
     cancelButton.onclick = function() { ctrl('/cancel'); };
     openButton.onclick = async function() {
       var data = new URLSearchParams();
-      data.set('out', document.getElementById('out').value);
+      data.set('out', (currentJob && currentJob.output_dir) || document.getElementById('out').value);
       try { var result = await post('/open-output', data); statusEl.textContent = result.message; }
       catch(e) { statusEl.textContent = '打开失败：' + e.message; }
     };
+    currentResults.onclick = function() { showResults(jobId, currentJob.url); };
 
     /* ========== JS 逆向 Agent 逻辑 ========== */
     var reverseForm = document.getElementById('reverse-form');
@@ -1475,8 +1650,11 @@
         <select id="history-filter" onchange="loadHistory(1)">
           <option value="all">全部状态</option>
           <option value="done">已完成</option>
+          <option value="partial">完成（有失败项）</option>
+          <option value="skipped">页面已跳过</option>
           <option value="running">运行中</option>
           <option value="paused">已暂停</option>
+          <option value="cancelling">正在取消</option>
           <option value="error">出错</option>
           <option value="cancelled">已取消</option>
         </select>
@@ -1486,15 +1664,35 @@
       <div id="history-list" style="display:flex;flex-direction:column;gap:8px"></div>
       <div id="history-pagination" class="pager"></div>
     </div>
+  </div>
+  </main>
 
     <!-- 结果查看模态 -->
     <div id="results-modal" class="results-mask" role="dialog" aria-modal="true" aria-labelledby="results-title" aria-hidden="true">
       <div class="results-panel">
         <div class="results-head">
           <h3 id="results-title">采集结果</h3>
-          <input id="results-search" type="search" placeholder="搜索 URL/路径/类型" aria-label="搜索采集结果" oninput="loadResults(1)">
           <button type="button" class="btn-close" onclick="closeResults()" aria-label="关闭采集结果">关闭</button>
         </div>
+        <div class="results-context">
+          <p id="results-summary" class="hint" role="status"></p>
+          <p id="results-diagnostic" class="hint results-diagnostic" hidden></p>
+          <button type="button" class="btn-toolbar" id="reuse-task-config" hidden>载入本次采集配置</button>
+          <details id="results-log-details">
+            <summary>运行日志</summary>
+            <pre id="results-log" tabindex="0" aria-label="运行日志内容"></pre>
+          </details>
+        </div>
+        <div class="results-nav" role="group" aria-label="任务产物">
+          <button type="button" id="show-resources" aria-controls="resource-pane" aria-pressed="true">资源清单</button>
+          <button type="button" id="show-pages" aria-controls="page-pane" aria-pressed="false">页面提取</button>
+        </div>
+        <div id="resource-pane" class="results-pane">
+        <div id="results-source" class="hint" hidden>
+          <span id="results-source-url"></span>
+          <button id="clear-results-source" type="button" class="btn-toolbar">查看全部资源</button>
+        </div>
+        <input id="results-search" type="search" placeholder="搜索 URL、路径或类型" aria-label="搜索采集结果" oninput="loadResults(1)">
         <div class="results-table-wrap">
           <table id="results-table" class="results-table">
             <thead>
@@ -1513,14 +1711,67 @@
         </div>
         <p class="table-hint">表格较宽，可左右滑动查看完整内容。</p>
         <div id="results-pagination" class="pager"></div>
+        </div>
+        <div id="page-pane" class="results-pane" hidden>
+          <p id="pages-state" class="hint" role="status"></p>
+          <div id="page-options" class="page-options"></div>
+          <div id="page-pagination" class="pager"></div>
+          <article id="page-extraction" class="page-extraction" hidden>
+            <h4 id="extraction-title"></h4>
+            <p id="extraction-url" class="hint"></p>
+            <button type="button" id="extraction-resources" class="btn-secondary">查看该页资源</button>
+            <details id="extraction-text-details" open>
+              <summary>正文</summary>
+              <pre id="extraction-text" tabindex="0" aria-label="页面正文"></pre>
+            </details>
+            <details id="extraction-data-details">
+              <summary>结构化数据</summary>
+              <pre id="extraction-data" tabindex="0" aria-label="结构化数据内容"></pre>
+            </details>
+            <details id="extraction-rule-result" hidden>
+              <summary>字段规则结果</summary>
+              <pre id="extraction-rule-output" tabindex="0" aria-label="字段规则结果内容"></pre>
+            </details>
+            <details id="rules-workbench">
+              <summary>在此页验证字段规则</summary>
+              <label for="rules-editor">字段规则 JSON</label>
+              <textarea class="rule-editor" id="rules-editor" spellcheck="false"></textarea>
+              <div class="tool-actions">
+                <button type="button" id="import-rules" class="btn-toolbar">加载规则文件</button>
+                <input type="file" id="rules-import-file" accept=".json,application/json" hidden>
+                <button type="button" id="validate-rules" class="btn-primary">验证当前页面</button>
+                <button type="button" id="export-rules" class="btn-toolbar" disabled>导出规则</button>
+                <button type="button" id="use-rules" class="btn-toolbar" disabled>用于下一次采集</button>
+              </div>
+              <p id="rules-status" class="hint" role="status"></p>
+              <pre id="rules-result" tabindex="0" aria-label="规则验证结果" hidden></pre>
+            </details>
+          </article>
+        </div>
       </div>
     </div>
-  </div>
 
   <script>
     var historyPage = 1;
     var resultsTaskId = null;
     var resultsPage = 1;
+    var historyVersion = 0;
+    var resultsVersion = 0;
+    var detailsVersion = 0;
+    var pagesVersion = 0;
+    var extractionVersion = 0;
+    var sourceUrl = '';
+    var selectedPageUrl = '';
+    var sampleAvailable = false;
+    var ruleRequestVersion = 0;
+    var verifiedRules = null;
+    var rulesEditor = document.getElementById('rules-editor');
+    var rulesFeedback = document.getElementById('rules-status');
+    var rulesOutput = document.getElementById('rules-result');
+    var rulesFile = document.getElementById('rules-import-file');
+    var validateRules = document.getElementById('validate-rules');
+    var exportRules = document.getElementById('export-rules');
+    var useRules = document.getElementById('use-rules');
 
     function fmtSize(bytes) {
       if (bytes < 1024) return bytes + ' B';
@@ -1535,17 +1786,14 @@
     }
     /* 状态圆点用的高饱和色（只是装饰条，不承载文字对比度） */
     function statusColor(s) {
-      return {done:'#16a34a',running:'#3b82f6',error:'#ef4444',cancelled:'#6b7280',paused:'#eab308'}[s] || '#6b7280';
-    }
-    function historyStatusLabel(s) {
-      return {running:'运行中',done:'已完成',error:'出错',cancelled:'已取消',paused:'已暂停'}[s] || s || '未知';
+      return {done:'#16a34a',running:'#3b82f6',error:'#ef4444',cancelled:'#6b7280',paused:'#eab308',partial:'#eab308',cancelling:'#3b82f6'}[s] || '#6b7280';
     }
     function historyStatusClass(s) {
-      return ['running','done','error','cancelled','paused'].indexOf(s) >= 0 ? s : 'cancelled';
+      return ['running','done','partial','skipped','error','cancelled','paused','cancelling'].indexOf(s) >= 0 ? s : 'cancelled';
     }
     function goToCrawlerTab() {
       var tab = document.querySelector('.tab[data-tab="crawler"]');
-      if (tab) { tab.click(); }
+      if (tab) { tab.click(); tab.focus(); }
     }
     function resetHistoryFilter() {
       document.getElementById('history-filter').value = 'all';
@@ -1566,10 +1814,36 @@
       '</div>';
     }
 
+    function renderPagination(container, page, totalPages, navigate) {
+      container.replaceChildren();
+      if (totalPages <= 1) return;
+      var previous = 0;
+      var pages = new Set([1, page - 1, page, page + 1, totalPages]);
+      Array.from(pages).filter(function(p) { return p >= 1 && p <= totalPages; })
+        .sort(function(a, b) { return a - b; })
+        .forEach(function(p) {
+          if (p - previous > 1) {
+            var gap = document.createElement('span');
+            gap.textContent = '…';
+            container.appendChild(gap);
+          }
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.textContent = p;
+          if (p === page) { btn.className = 'current'; btn.setAttribute('aria-current', 'page'); }
+          btn.onclick = function() { navigate(p); };
+          container.appendChild(btn);
+          previous = p;
+        });
+    }
+
     function loadHistory(page) {
       if (page) historyPage = page;
+      var version = ++historyVersion;
       var filter = document.getElementById('history-filter').value;
       var list = document.getElementById('history-list');
+      var pg = document.getElementById('history-pagination');
+      pg.replaceChildren();
       list.innerHTML = '<div class="empty-state"><p class="empty-text">正在加载任务列表…</p></div>';
       fetch('/jobs?page=' + historyPage + '&page_size=15&status=' + encodeURIComponent(filter))
         .then(function(r) {
@@ -1577,6 +1851,7 @@
           return r.json();
         })
         .then(function(data) {
+          if (version !== historyVersion) return;
           if (!data.tasks.length) {
             if (data.total > 0) {
               /* 翻过了最后一页 / 刚删完本页：不要说成「还没有任务」 */
@@ -1592,6 +1867,8 @@
             list.innerHTML = '';
           }
           data.tasks.forEach(function(t) {
+            var active = isActiveCrawl(t.status);
+            var id = escapeHtml(t.id);
             var card = document.createElement('div');
             card.className = 'task-card';
             card.innerHTML =
@@ -1605,48 +1882,21 @@
                 '</div>' +
                 ((t.status === 'error' && t.error_message) ? '<div class="task-error" title="失败原因">' + escapeHtml(t.error_message) + '</div>' : '') +
               '</div>' +
-              '<span class="status-badge ' + historyStatusClass(t.status) + '">' + escapeHtml(historyStatusLabel(t.status)) + '</span>' +
+              '<span class="status-badge ' + historyStatusClass(t.status) + '">' + escapeHtml(STATUS_LABELS[t.status] || t.status || '未知') + '</span>' +
               '<div class="task-actions">' +
-                ((t.status === 'error' || t.status === 'cancelled') ? '<button type="button" data-retry-id="' + escapeHtml(t.id) + '" class="btn-secondary">重试</button>' : '') +
-                (t.status === 'done' ? '<button type="button" data-results-id="' + escapeHtml(t.id) + '" data-results-url="' + escapeHtml(t.url || '') + '" class="btn-results">查看结果</button>' : '') +
-                '<button type="button" data-delete-id="' + escapeHtml(t.id) + '" class="btn-delete">删除</button>' +
+                (active ? '<button type="button" data-watch-id="' + id + '" class="btn-results">查看进度</button>' :
+                  '<button type="button" data-results-id="' + id + '" data-results-url="' + escapeHtml(t.url || '') + '" class="btn-results">查看详情</button>') +
+                ((t.status === 'error' || t.status === 'partial' || t.status === 'cancelled') ? '<button type="button" data-retry-id="' + id + '" class="btn-secondary">重试</button>' : '') +
+                (active ? '' : '<button type="button" data-delete-id="' + id + '" class="btn-delete">删除</button>') +
               '</div>';
             list.appendChild(card);
           });
-          // 分页（0 条时不渲染页码）
-          var pg = document.getElementById('history-pagination');
-          pg.innerHTML = '';
           var totalPages = Math.ceil(data.total / data.page_size);
-          if (totalPages > 0) {
-            var pageNums = [];
-            if (totalPages <= 9) {
-              for (var i = 1; i <= totalPages; i++) pageNums.push(i);
-            } else {
-              pageNums.push(1);
-              var s = Math.max(2, historyPage - 1), e = Math.min(totalPages - 1, historyPage + 1);
-              if (s > 2) pageNums.push('…');
-              for (var i = s; i <= e; i++) pageNums.push(i);
-              if (e < totalPages - 1) pageNums.push('…');
-              pageNums.push(totalPages);
-            }
-            pageNums.forEach(function(p) {
-              if (p === '…') {
-                var gap = document.createElement('span');
-                gap.textContent = '…';
-                pg.appendChild(gap);
-                return;
-              }
-              var btn = document.createElement('button');
-              btn.type = 'button';
-              btn.textContent = p;
-              if (p === historyPage) { btn.className = 'current'; btn.setAttribute('aria-current', 'page'); }
-              btn.onclick = function(pp) { return function() { loadHistory(pp); }; }(p);
-              pg.appendChild(btn);
-            });
-          }
+          renderPagination(pg, historyPage, totalPages, loadHistory);
           document.getElementById('history-total').textContent = '共 ' + data.total + ' 个任务';
         })
         .catch(function(err) {
+          if (version !== historyVersion) return;
           list.innerHTML = '<div class="empty-state">' +
             '<p class="empty-title">任务列表加载失败</p>' +
             '<p class="empty-text">' + escapeHtml(err.message) + '。请确认服务仍在运行，然后点下方按钮重试。</p>' +
@@ -1656,11 +1906,11 @@
     }
 
     function deleteTask(id) {
-      if (!confirm('确认删除此任务及其结果？')) return;
-      fetch('/jobs/' + id, { method: 'DELETE' })
+      if (!confirm('删除这条任务记录和资源清单？已下载的文件会保留。')) return;
+      fetch('/jobs/' + encodeURIComponent(id), { method: 'DELETE' })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-          if (data.ok) loadHistory(); else alert('删除失败');
+          if (data.ok) loadHistory(); else alert(data.error || '删除失败');
         })
         .catch(function(err) { alert('删除失败：' + err.message); });
     }
@@ -1669,10 +1919,12 @@
     document.getElementById('history-list').addEventListener('click', function(e) {
       var btn = e.target.closest('button');
       if (!btn) return;
-      if (btn.classList.contains('btn-results')) {
+      if (btn.dataset.watchId) {
+        goToCrawlerTab();
+        watchCrawl(btn.dataset.watchId);
+      } else if (btn.dataset.resultsId) {
         showResults(btn.dataset.resultsId, btn.dataset.resultsUrl);
       } else if (btn.classList.contains('btn-delete')) {
-        if (!window.confirm('确定删除该任务记录吗？（已下载的文件不受影响）')) return;
         deleteTask(btn.dataset.deleteId);
       } else if (btn.dataset.retryId) {
         retryTask(btn.dataset.retryId, btn);
@@ -1682,11 +1934,12 @@
     /* 用库里的任务记录重跑：后端只读入库白名单（不含 Cookie），前端只负责发起与反馈 */
     function retryTask(taskId, btn) {
       if (btn) { btn.disabled = true; btn.textContent = '重试中…'; }
-      fetch('/retry?id=' + encodeURIComponent(taskId), { method: 'POST' })
-        .then(function(r) { return r.json(); })
+      post('/retry?id=' + encodeURIComponent(taskId))
         .then(function(d) {
-          if (d.ok === false) { throw new Error(d.error || '重试失败'); }
-          loadHistory(historyPage);
+          if (!d.id) { throw new Error(d.error || '重试失败'); }
+          if (btn) { btn.disabled = false; btn.textContent = '重试'; }
+          goToCrawlerTab();
+          watchCrawl(d.id);
         })
         .catch(function(err) {
           if (btn) { btn.disabled = false; btn.textContent = '重试'; }
@@ -1695,12 +1948,232 @@
     }
 
     var lastResultsTrigger = null;
+    function resetRulePreview() {
+      ruleRequestVersion++;
+      verifiedRules = null;
+      rulesOutput.hidden = true;
+      validateRules.disabled = !sampleAvailable;
+      exportRules.disabled = true;
+      useRules.disabled = true;
+      rulesFeedback.textContent = sampleAvailable ? '' : '没有保存此页的样本。可在采集表单开启「保留页面样本用于验证」。';
+    }
+    rulesEditor.oninput = resetRulePreview;
+    document.getElementById('import-rules').onclick = function() { rulesFile.click(); };
+    rulesFile.onchange = async function() {
+      if (!this.files.length) return;
+      var file = this.files[0];
+      this.value = '';
+      var version = ruleRequestVersion;
+      try {
+        var data = await localJson(file, 131072);
+        if (version !== ruleRequestVersion) return;
+        rulesEditor.value = JSON.stringify(data, null, 2);
+        resetRulePreview();
+      } catch(e) {
+        if (version === ruleRequestVersion) rulesFeedback.textContent = '规则文件读取失败：' + e.message;
+      }
+    };
+    validateRules.onclick = async function() {
+      if (!sampleAvailable) return;
+      resetRulePreview();
+      var version = ruleRequestVersion;
+      validateRules.disabled = true;
+      rulesFeedback.textContent = '正在验证已保存样本…';
+      try {
+        var path = '/jobs/' + encodeURIComponent(resultsTaskId) + '/validate-rules?url=' + encodeURIComponent(selectedPageUrl);
+        var response = await postJson(path, JSON.parse(rulesEditor.value));
+        if (version !== ruleRequestVersion) return;
+        verifiedRules = response.rules;
+        var missing = response.result.missing_required;
+        rulesFeedback.textContent = missing.length ? '缺少必填字段：' + missing.join('、') : '当前样本验证通过';
+        rulesOutput.textContent = JSON.stringify(response.result, null, 2);
+        rulesOutput.hidden = false;
+        exportRules.disabled = false;
+        useRules.disabled = false;
+      } catch(e) {
+        if (version === ruleRequestVersion) rulesFeedback.textContent = '验证失败：' + e.message;
+      } finally {
+        if (version === ruleRequestVersion) validateRules.disabled = !sampleAvailable;
+      }
+    };
+    exportRules.onclick = function() { if (verifiedRules) downloadJson('field-rules.json', verifiedRules); };
+    useRules.onclick = function() {
+      if (!verifiedRules) return;
+      crawlRules.value = JSON.stringify(verifiedRules, null, 2);
+      closeResults();
+      goToCrawlerTab();
+      document.getElementById('crawler-rule-settings').open = true;
+      crawlRules.focus();
+      configFeedback.textContent = '字段规则已填入采集表单';
+    };
+    function showResultsPane(pane) {
+      var resources = pane === 'resources';
+      document.getElementById('resource-pane').hidden = !resources;
+      document.getElementById('page-pane').hidden = resources;
+      document.getElementById('show-resources').setAttribute('aria-pressed', String(resources));
+      document.getElementById('show-pages').setAttribute('aria-pressed', String(!resources));
+    }
+
+    function setResultsSource(url) {
+      sourceUrl = url;
+      document.getElementById('results-source').hidden = !url;
+      document.getElementById('results-source-url').textContent = url ? '来源页面 · ' + url : '';
+    }
+
+    function taskPagesUrl() {
+      return '/jobs/' + encodeURIComponent(resultsTaskId) + '/pages';
+    }
+
+    async function loadPageOptions(page) {
+      var version = ++pagesVersion;
+      var options = document.getElementById('page-options');
+      var feedback = document.getElementById('pages-state');
+      var pager = document.getElementById('page-pagination');
+      options.replaceChildren();
+      pager.replaceChildren();
+      feedback.textContent = '正在读取已提取页面…';
+      try {
+        var response = await fetch(taskPagesUrl() + '?page=' + page);
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        var data = await response.json();
+        if (version !== pagesVersion) return;
+        feedback.textContent = data.total ? '可查看 ' + data.total + ' 个页面' : '本次任务没有提取结果或验证样本。可在采集表单开启页面提取或样本保留。';
+        data.pages.forEach(function(item) {
+          var button = document.createElement('button');
+          button.type = 'button';
+          button.dataset.url = item.page_url;
+          button.title = item.page_url;
+          button.textContent = item.title || item.page_url;
+          button.setAttribute('aria-pressed', String(selectedPageUrl === item.page_url));
+          button.onclick = function() { loadExtraction(item.page_url); };
+          options.appendChild(button);
+        });
+        renderPagination(pager, page, Math.ceil(data.total / data.page_size), loadPageOptions);
+      } catch(e) {
+        if (version === pagesVersion) feedback.textContent = '页面列表读取失败：' + e.message;
+      }
+    }
+
+    async function loadExtraction(url) {
+      var version = ++extractionVersion;
+      sampleAvailable = false;
+      resetRulePreview();
+      var panel = document.getElementById('page-extraction');
+      var feedback = document.getElementById('pages-state');
+      var options = document.querySelectorAll('#page-options button');
+      options.forEach(function(button) {
+        button.setAttribute('aria-pressed', String(button.dataset.url === url));
+      });
+      panel.hidden = true;
+      feedback.textContent = '正在读取页面内容…';
+      try {
+        var response = await fetch(taskPagesUrl() + '?url=' + encodeURIComponent(url));
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        var item = await response.json();
+        if (version !== extractionVersion) return;
+        selectedPageUrl = item.page_url;
+        document.getElementById('extraction-title').textContent = item.title || '页面提取';
+        document.getElementById('extraction-url').textContent = item.page_url;
+        document.getElementById('extraction-text').textContent = item.body || '';
+        document.getElementById('extraction-text-details').hidden = !item.body;
+        document.getElementById('extraction-data').textContent = item.data ? JSON.stringify(item.data, null, 2) : '';
+        document.getElementById('extraction-data-details').hidden = !item.data;
+        if (!item.body && item.data) document.getElementById('extraction-data-details').open = true;
+        document.getElementById('extraction-rule-result').hidden = !item.rule_result;
+        document.getElementById('extraction-rule-output').textContent = item.rule_result ? JSON.stringify(item.rule_result, null, 2) : '';
+        sampleAvailable = item.has_sample;
+        resetRulePreview();
+        feedback.textContent = '';
+        panel.hidden = false;
+      } catch(e) {
+        if (version === extractionVersion) feedback.textContent = '页面内容读取失败：' + e.message;
+      }
+    }
+
+    document.getElementById('show-resources').onclick = function() { showResultsPane('resources'); };
+    document.getElementById('show-pages').onclick = function() {
+      showResultsPane('pages');
+      loadPageOptions(1);
+    };
+    document.getElementById('extraction-resources').onclick = function() {
+      setResultsSource(selectedPageUrl);
+      document.getElementById('results-search').value = '';
+      showResultsPane('resources');
+      document.getElementById('show-resources').focus();
+      loadResults(1);
+    };
+    document.getElementById('clear-results-source').onclick = function() {
+      setResultsSource('');
+      document.getElementById('results-search').focus();
+      loadResults(1);
+    };
+
     function showResults(taskId, url) {
       resultsTaskId = taskId;
       resultsPage = 1;
       lastResultsTrigger = document.activeElement;
       document.getElementById('results-search').value = '';
-      document.getElementById('results-title').textContent = '采集结果 - ' + (url || taskId);
+      selectedPageUrl = '';
+      sampleAvailable = false;
+      rulesEditor.value = crawlRules.value || JSON.stringify({version: 1, fields: {title: {css: 'title', required: true}}}, null, 2);
+      document.getElementById('rules-workbench').open = false;
+      resetRulePreview();
+      setResultsSource('');
+      showResultsPane('resources');
+      document.getElementById('page-extraction').hidden = true;
+      document.getElementById('page-options').replaceChildren();
+      document.getElementById('show-pages').textContent = '页面提取';
+      document.getElementById('results-title').textContent = '采集详情 · ' + (url || taskId);
+      var summary = document.getElementById('results-summary');
+      var diagnostic = document.getElementById('results-diagnostic');
+      var reuseConfig = document.getElementById('reuse-task-config');
+      var logDetails = document.getElementById('results-log-details');
+      summary.textContent = '正在读取任务记录…';
+      diagnostic.hidden = true;
+      reuseConfig.hidden = true;
+      logDetails.hidden = true;
+      logDetails.open = false;
+      var version = ++detailsVersion;
+      fetch('/jobs/' + encodeURIComponent(taskId))
+        .then(function(r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function(task) {
+          if (version !== detailsVersion) return;
+          summary.textContent = formatStatus(task) +
+            (task.output_dir ? ' · 输出目录：' + task.output_dir : '');
+          var run = task.summary || {};
+          var scan = run.page_scan || {};
+          var message = scan.first_error || task.error_message || '';
+          if (run.extraction_save_failures) {
+            message += (message ? '\n' : '') + run.extraction_save_failures + ' 个页面的提取结果未写入任务历史。';
+          }
+          if (run.page_samples_skipped) {
+            message += (message ? '\n' : '') + run.page_samples_skipped + ' 个页面未保存验证样本。';
+          }
+          diagnostic.textContent = message;
+          diagnostic.hidden = !message;
+          if (run.extracted_pages) document.getElementById('show-pages').textContent = '页面提取 (' + run.extracted_pages + ')';
+          reuseConfig.hidden = !task.config || !task.config.url;
+          reuseConfig.onclick = async function() {
+            try {
+              var response = await postJson('/crawl/config/import', task.config);
+              if (version !== detailsVersion) return;
+              applyCrawlConfig(response.config);
+              closeResults();
+              goToCrawlerTab();
+              configFeedback.textContent = '历史任务配置已载入';
+            } catch(e) {
+              if (version === detailsVersion) summary.textContent = '配置载入失败：' + e.message;
+            }
+          };
+          document.getElementById('results-log').textContent = task.log || '';
+          logDetails.hidden = !task.log;
+        })
+        .catch(function(err) {
+          if (version === detailsVersion) summary.textContent = '任务记录读取失败：' + err.message;
+        });
       var modal = document.getElementById('results-modal');
       modal.classList.add('show');
       modal.setAttribute('aria-hidden', 'false');
@@ -1723,21 +2196,27 @@
 
     function loadResults(page) {
       if (page) resultsPage = page;
+      var version = ++resultsVersion;
       var search = document.getElementById('results-search').value;
-      var url = '/jobs/' + resultsTaskId + '/results?page=' + resultsPage + '&page_size=50';
+      var body = document.getElementById('results-body');
+      var pg = document.getElementById('results-pagination');
+      body.innerHTML = '<tr><td colspan="7">正在读取资源清单…</td></tr>';
+      pg.innerHTML = '';
+      var url = '/jobs/' + encodeURIComponent(resultsTaskId) + '/results?page=' + resultsPage + '&page_size=50';
       if (search) url += '&q=' + encodeURIComponent(search);
+      if (sourceUrl) url += '&source=' + encodeURIComponent(sourceUrl);
       fetch(url)
         .then(function(r) {
           if (!r.ok) { throw new Error('HTTP ' + r.status); }
           return r.json();
         })
         .then(function(data) {
-          var body = document.getElementById('results-body');
+          if (version !== resultsVersion) return;
           body.innerHTML = '';
           if (!data.results.length) {
             var hint = search
               ? '没有匹配「' + escapeHtml(search) + '」的结果，换个关键词试试。'
-              : '这次任务没有记录到资源。若开启了「只生成清单，不下载」，可到保存目录查看清单文件。';
+              : (sourceUrl ? '这个页面没有记录到资源。' : '本次任务没有记录到资源。');
             body.innerHTML = '<tr><td colspan="7" style="padding:28px;text-align:center;color:var(--text-muted)">' + hint + '</td></tr>';
           }
           data.results.forEach(function(r) {
@@ -1747,37 +2226,31 @@
             tr.innerHTML =
               '<td class="cell-url" title="' + escapeHtml(r.url || '') + '">' + escapeHtml(r.url || '-') + '</td>' +
               '<td class="cell-path" title="' + escapeHtml(r.saved_path || '') + '">' + escapeHtml(r.saved_path || '—') + '</td>' +
-              '<td class="cell-page" title="' + escapeHtml(r.page_url || '') + '">' + escapeHtml(r.page_url || '—') + '</td>' +
+              '<td class="cell-page" title="' + escapeHtml(sourceUrl || r.page_url || '') + '">' + escapeHtml(sourceUrl || r.page_url || '—') + '</td>' +
               '<td>' + escapeHtml(r.content_type || '-') + '</td>' +
               /* 清单模式只登记不下载：bytes=0 且没有 saved_path，显示 0 B 会被误读成"空文件" */
-              '<td class="cell-size" title="' + (r.bytes ? '' : '清单模式：只登记了资源地址，未下载文件') + '">' +
-                (r.bytes ? fmtSize(r.bytes) : '<span class="muted">未下载</span>') + '</td>' +
+              '<td class="cell-size">' +
+                (r.saved_path || r.bytes ? fmtSize(r.bytes) : '<span class="muted">—</span>') + '</td>' +
               '<td>' + escapeHtml(r.category || '-') + '</td>' +
-              '<td class="cell-status ' + st.cls + '"' + (st.title ? ' title="' + escapeHtml(st.title) + '"' : '') + '>' + escapeHtml(st.text) + '</td>';
+              '<td class="cell-status ' + st.cls + '"' + (st.title ? ' title="' + escapeHtml(st.title) + '"' : '') + '>' + escapeHtml(st.text) +
+                (r.diagnostic ? '<div class="hint">' + escapeHtml(r.diagnostic) + '</div>' : '') + '</td>';
             body.appendChild(tr);
           });
-          // 分页（0 条时不渲染页码）
-          var pg = document.getElementById('results-pagination');
-          pg.innerHTML = '';
           var totalPages = Math.ceil(data.total / data.page_size);
-          if (totalPages > 0) {
-            for (var i = 1; i <= totalPages; i++) {
-              var btn = document.createElement('button');
-              btn.type = 'button';
-              btn.textContent = i;
-              if (i === resultsPage) { btn.className = 'current'; btn.setAttribute('aria-current', 'page'); }
-              btn.onclick = function(p) { return function() { loadResults(p); }; }(i);
-              pg.appendChild(btn);
-            }
-          }
+          renderPagination(pg, resultsPage, totalPages, loadResults);
         })
         .catch(function(err) {
-          var body = document.getElementById('results-body');
+          if (version !== resultsVersion) return;
           body.innerHTML = '<tr><td colspan="7" style="padding:24px;text-align:center;color:var(--danger-text)">加载失败：' + escapeHtml(err.message) + '。关闭弹窗后重试，或确认服务仍在运行。</td></tr>';
         });
     }
 
     function closeResults() {
+      detailsVersion++;
+      resultsVersion++;
+      pagesVersion++;
+      extractionVersion++;
+      ruleRequestVersion++;
       var modal = document.getElementById('results-modal');
       modal.classList.remove('show');
       modal.setAttribute('aria-hidden', 'true');
@@ -1793,7 +2266,7 @@
     function trapResultsFocus(modal, e) {
       if (e.key !== 'Tab') { return; }
       var nodes = modal.querySelectorAll(
-        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'
       );
       var list = Array.prototype.filter.call(nodes, function(el) {
         return el.offsetWidth > 0 || el.offsetHeight > 0 || el === document.activeElement;
@@ -1814,14 +2287,16 @@
       trapResultsFocus(modal, e);
     });
 
-    // 切换到历史 Tab 时自动加载
-    document.querySelectorAll('.tab').forEach(function(tab) {
-      var orig = tab.onclick;
-      tab.onclick = function() {
-        if (orig) orig.call(tab);
-        if (tab.dataset.tab === 'history') loadHistory(1);
-      };
-    });
+    fetch('/status?active=1')
+      .then(function(response) { return response.ok ? response.json() : null; })
+      .then(function(active) {
+        if (active && active.id && !jobId && !runButton.disabled) {
+          jobId = active.id;
+          renderCrawl(active);
+          if (isActiveCrawl(active.status)) timer = setTimeout(poll, 1000);
+        }
+      })
+      .catch(function() { /* 手动启动时，服务端仍会返回活动任务。 */ });
   </script>
 
   <script>

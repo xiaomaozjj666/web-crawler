@@ -14,10 +14,17 @@ import os
 import sqlite3
 import threading
 import time
+import zlib
+from collections.abc import Iterable
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from .crawler_models import ManifestRow, PageExtraction, Resource
+
 _log = logging.getLogger(__name__)
+MAX_PAGE_SAMPLE_BYTES = 2 * 1024 * 1024
+MAX_TASK_SAMPLE_BYTES = 16 * 1024 * 1024
 
 # 默认放在启动时的当前工作目录：pip 安装后包目录位于 site-packages，
 # 可能无写权限，用户数据写进包内也会随重装/升级丢失。
@@ -44,7 +51,7 @@ def _unregister_conn(conn: sqlite3.Connection) -> None:
 
 
 def fail_stale_running_tasks() -> int:
-    """将上次进程退出遗留的 running/paused 任务标记为 error（UI 启动时调用）。
+    """将上次进程退出遗留的活动任务标记为 error（UI 启动时调用）。
 
     任务状态由内存中的 JobState 驱动，进程退出后内存态丢失，数据库里的
     running/paused 记录永远无法收敛——启动时统一标记，避免历史列表里
@@ -53,10 +60,14 @@ def fail_stale_running_tasks() -> int:
     with _write_lock:
         conn = _get_conn()
         cur = conn.execute(
-            "UPDATE tasks SET status='error', exit_code=1, "
+            "UPDATE tasks SET status='error', exit_code=1, finished_at=?, error_message=?, "
             "log = COALESCE(log, '') || ? "
-            "WHERE status IN ('running', 'paused')",
-            ("\n[启动清理] 程序上次退出时任务未完成，已标记为中断",),
+            "WHERE status IN ('running', 'paused', 'cancelling')",
+            (
+                time.time(),
+                "程序退出时任务未完成",
+                "\n[启动清理] 程序上次退出时任务未完成，已标记为中断",
+            ),
         )
         conn.commit()
         return cur.rowcount
@@ -151,6 +162,7 @@ def init_db() -> None:
                     status      TEXT NOT NULL DEFAULT 'running',
                     exit_code   INTEGER,
                     error_message TEXT DEFAULT '',
+                    summary     TEXT NOT NULL DEFAULT '{}',
                     log         TEXT DEFAULT '',
                     total_resources   INTEGER DEFAULT 0,
                     processed_resources INTEGER DEFAULT 0,
@@ -179,8 +191,37 @@ def init_db() -> None:
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_results_task_id ON results(task_id);
+                CREATE INDEX IF NOT EXISTS idx_results_task_page ON results(task_id, page_url);
                 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
                 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS page_extractions (
+                    task_id     TEXT NOT NULL,
+                    page_url    TEXT NOT NULL,
+                    title       TEXT NOT NULL,
+                    body        TEXT NOT NULL,
+                    data        TEXT,
+                    rule_result TEXT,
+                    sample      BLOB,
+                    PRIMARY KEY (task_id, page_url),
+                    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS resource_sources (
+                    task_id TEXT NOT NULL,
+                    page_url TEXT NOT NULL,
+                    resource_url TEXT NOT NULL,
+                    PRIMARY KEY (task_id, page_url, resource_url),
+                    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+                ) WITHOUT ROWID;
+
+                CREATE TABLE IF NOT EXISTS resource_dependencies (
+                    task_id TEXT NOT NULL,
+                    parent_url TEXT NOT NULL,
+                    child_url TEXT NOT NULL,
+                    PRIMARY KEY (task_id, parent_url, child_url),
+                    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+                ) WITHOUT ROWID;
                 """
             )
             # 轻量迁移：老库没有 error_message 列就补上（不改历史数据）
@@ -188,6 +229,15 @@ def init_db() -> None:
                 cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
                 if "error_message" not in cols:
                     conn.execute("ALTER TABLE tasks ADD COLUMN error_message TEXT DEFAULT ''")
+                if "summary" not in cols:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN summary TEXT NOT NULL DEFAULT '{}'")
+                page_cols = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(page_extractions)")
+                }
+                if "rule_result" not in page_cols:
+                    conn.execute("ALTER TABLE page_extractions ADD COLUMN rule_result TEXT")
+                if "sample" not in page_cols:
+                    conn.execute("ALTER TABLE page_extractions ADD COLUMN sample BLOB")
             except sqlite3.Error:  # pragma: no cover - 迁移失败不阻塞启动
                 pass
             conn.commit()
@@ -223,8 +273,13 @@ def update_task_status(
     processed_resources: int | None = None,
     pages_scanned: int | None = None,
     current_url: str | None = None,
+    *,
+    result_rows: list[ManifestRow] | None = None,
+    resource_sources: Iterable[Resource] = (),
+    resource_dependencies: Iterable[tuple[str, str]] = (),
+    summary: dict[str, Any] | None = None,
 ) -> None:
-    """更新任务状态字段，只更新非 None 的列。"""
+    """更新非空状态字段，可在同一事务中替换本次任务的结果。"""
     sets: list[str] = []
     vals: list[Any] = []
     if exit_code is not None:
@@ -236,6 +291,9 @@ def update_task_status(
     if error_message is not None:
         sets.append("error_message = ?")
         vals.append(error_message[-4000:])
+    if summary is not None:
+        sets.append("summary = ?")
+        vals.append(json.dumps(summary, ensure_ascii=False))
     if total_resources is not None:
         sets.append("total_resources = ?")
         vals.append(total_resources)
@@ -250,15 +308,37 @@ def update_task_status(
         vals.append(current_url)
     sets.append("status = ?")
     vals.append(status)
-    if status in ("done", "error", "cancelled"):
+    if status in ("done", "partial", "skipped", "error", "cancelled"):
         sets.append("finished_at = ?")
         vals.append(time.time())
     vals.append(task_id)
     sql = f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?"
     with _write_lock:
         conn = _get_conn()
-        conn.execute(sql, vals)
-        conn.commit()
+        with conn:
+            updated = conn.execute(sql, vals)
+            if result_rows is not None and updated.rowcount:
+                conn.execute("DELETE FROM results WHERE task_id = ?", (task_id,))
+                _insert_results(conn, task_id, (asdict(row) for row in result_rows))
+                conn.execute("DELETE FROM resource_sources WHERE task_id = ?", (task_id,))
+                conn.execute("DELETE FROM resource_dependencies WHERE task_id = ?", (task_id,))
+                urls = {row.url for row in result_rows}
+                conn.executemany(
+                    "INSERT OR IGNORE INTO resource_sources VALUES (?, ?, ?)",
+                    (
+                        (task_id, resource.page_url, resource.url)
+                        for resource in resource_sources
+                        if resource.page_url and resource.url in urls
+                    ),
+                )
+                conn.executemany(
+                    "INSERT OR IGNORE INTO resource_dependencies VALUES (?, ?, ?)",
+                    (
+                        (task_id, parent, child)
+                        for parent, child in resource_dependencies
+                        if parent in urls and child in urls
+                    ),
+                )
 
 
 def import_results(task_id: str, output_dir: str) -> int:
@@ -309,32 +389,36 @@ def import_results(task_id: str, output_dir: str) -> int:
 
     with _write_lock:
         conn = _get_conn()
-        conn.executemany(
-            """INSERT INTO results
-               (task_id, url, saved_path, content_type, bytes, category,
-                found_in, kind, page_url, page_title, sha256, status, diagnostic)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [
-                (
-                    task_id,
-                    r.get("url", ""),
-                    r.get("saved_path", ""),
-                    r.get("content_type", ""),
-                    _safe_int(r.get("bytes", 0)),
-                    r.get("category", ""),
-                    r.get("found_in", ""),
-                    r.get("kind", ""),
-                    r.get("page_url", ""),
-                    r.get("page_title", ""),
-                    r.get("sha256", ""),
-                    r.get("status", ""),
-                    r.get("diagnostic", ""),
-                )
-                for r in rows
-            ],
-        )
-        conn.commit()
+        with conn:
+            _insert_results(conn, task_id, rows)
     return len(rows)
+
+
+def _insert_results(conn: sqlite3.Connection, task_id: str, rows: Iterable[dict[str, Any]]) -> None:
+    conn.executemany(
+        """INSERT INTO results
+           (task_id, url, saved_path, content_type, bytes, category,
+            found_in, kind, page_url, page_title, sha256, status, diagnostic)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            (
+                task_id,
+                row.get("url", ""),
+                row.get("saved_path", ""),
+                row.get("content_type", ""),
+                _safe_int(row.get("bytes", 0)),
+                row.get("category", ""),
+                row.get("found_in", ""),
+                row.get("kind", ""),
+                row.get("page_url", ""),
+                row.get("page_title", ""),
+                row.get("sha256", ""),
+                row.get("status", ""),
+                row.get("diagnostic", ""),
+            )
+            for row in rows
+        ),
+    )
 
 
 def list_tasks(
@@ -394,6 +478,7 @@ def get_task(task_id: str) -> dict[str, Any] | None:
         "status": r["status"],
         "exit_code": r["exit_code"],
         "error_message": r["error_message"],
+        "summary": json.loads(r["summary"]),
         "log": r["log"],
         "total_resources": r["total_resources"],
         "processed_resources": r["processed_resources"],
@@ -418,21 +503,36 @@ def get_results(
     page: int = 1,
     page_size: int = 50,
     search: str | None = None,
+    *,
+    page_url: str | None = None,
 ) -> dict[str, Any]:
     """分页查询某任务的结果列表。"""
     offset = (page - 1) * page_size
+    dependencies = ""
     where = "WHERE task_id = ?"
     params: list[Any] = [task_id]
+    if page_url:
+        # UNION 避免样式表循环引用时反复遍历同一资源。
+        dependencies = """WITH RECURSIVE page_assets(url) AS (
+            SELECT resource_url FROM resource_sources WHERE task_id = ? AND page_url = ?
+            UNION
+            SELECT child_url FROM resource_dependencies JOIN page_assets ON parent_url = page_assets.url
+            WHERE task_id = ?
+        ) """
+        where += " AND (page_url = ? OR url IN (SELECT url FROM page_assets))"
+        params = [task_id, page_url, task_id, task_id, page_url]
     if search:
-        where += " AND (url LIKE ? OR saved_path LIKE ? OR category LIKE ?)"
+        where += " AND (url LIKE ? OR saved_path LIKE ? OR content_type LIKE ? OR category LIKE ?)"
         kw = f"%{search}%"
-        params += [kw, kw, kw]
+        params += [kw, kw, kw, kw]
 
     conn = _get_conn()
-    total = conn.execute(f"SELECT COUNT(*) FROM results {where}", params).fetchone()[0]
+    total = conn.execute(f"{dependencies}SELECT COUNT(*) FROM results {where}", params).fetchone()[
+        0
+    ]
     rows = conn.execute(
-        f"""SELECT url, saved_path, content_type, bytes, category,
-                  found_in, kind, page_url, page_title, sha256, status
+        f"""{dependencies}SELECT url, saved_path, content_type, bytes, category,
+                  found_in, kind, page_url, page_title, sha256, status, diagnostic
            FROM results {where}
            ORDER BY id LIMIT ? OFFSET ?""",
         params + [page_size, offset],
@@ -453,6 +553,93 @@ def get_results(
                 "page_title": r["page_title"],
                 "sha256": r["sha256"],
                 "status": r["status"],
+                "diagnostic": r["diagnostic"],
             }
         )
     return {"results": results, "total": total, "page": page, "page_size": page_size}
+
+
+def save_page_extraction(task_id: str, extraction: PageExtraction) -> None:
+    data = json.dumps(extraction.data, ensure_ascii=False) if extraction.data is not None else None
+    result = (
+        json.dumps(extraction.rule_result, ensure_ascii=False)
+        if extraction.rule_result is not None
+        else None
+    )
+    with _write_lock:
+        conn = _get_conn()
+        with conn:
+            conn.execute(
+                """INSERT INTO page_extractions (task_id, page_url, title, body, data, rule_result)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(task_id, page_url) DO UPDATE SET
+                     title = excluded.title, body = excluded.body, data = excluded.data,
+                     rule_result = excluded.rule_result""",
+                (task_id, extraction.url, extraction.title, extraction.text, data, result),
+            )
+
+
+def list_extracted_pages(task_id: str, page: int, page_size: int) -> dict[str, Any]:
+    conn = _get_conn()
+    total = conn.execute(
+        "SELECT COUNT(*) FROM page_extractions WHERE task_id = ?", (task_id,)
+    ).fetchone()[0]
+    rows = conn.execute(
+        """SELECT page_url, title FROM page_extractions WHERE task_id = ?
+           ORDER BY page_url LIMIT ? OFFSET ?""",
+        (task_id, page_size, (page - 1) * page_size),
+    )
+    return {"pages": [dict(row) for row in rows], "total": total, "page_size": page_size}
+
+
+def get_page_extraction(task_id: str, page_url: str) -> dict[str, Any] | None:
+    row = (
+        _get_conn()
+        .execute(
+            """SELECT page_url, title, body, data, rule_result, sample IS NOT NULL AS has_sample
+               FROM page_extractions WHERE task_id = ? AND page_url = ?""",
+            (task_id, page_url),
+        )
+        .fetchone()
+    )
+    if row is None:
+        return None
+    return {
+        **dict(row),
+        "data": json.loads(row["data"]) if row["data"] is not None else None,
+        "rule_result": json.loads(row["rule_result"]) if row["rule_result"] is not None else None,
+        "has_sample": bool(row["has_sample"]),
+    }
+
+
+def save_page_sample(task_id: str, page_url: str, title: str, sample: bytes) -> None:
+    with _write_lock:
+        conn = _get_conn()
+        with conn:
+            conn.execute(
+                """INSERT INTO page_extractions (task_id, page_url, title, body, sample)
+                   VALUES (?, ?, ?, '', ?)
+                   ON CONFLICT(task_id, page_url) DO UPDATE SET sample = excluded.sample""",
+                (task_id, page_url, title, sample),
+            )
+
+
+def get_page_sample(task_id: str, page_url: str) -> str | None:
+    row = (
+        _get_conn()
+        .execute(
+            "SELECT sample FROM page_extractions WHERE task_id = ? AND page_url = ?",
+            (task_id, page_url),
+        )
+        .fetchone()
+    )
+    if row is None or row["sample"] is None:
+        return None
+    decoder = zlib.decompressobj()
+    try:
+        html = decoder.decompress(row["sample"], MAX_PAGE_SAMPLE_BYTES + 1)
+        if len(html) <= MAX_PAGE_SAMPLE_BYTES and decoder.eof:
+            return html.decode("utf-8")
+    except (zlib.error, UnicodeError):
+        pass
+    raise ValueError("页面样本已损坏，请重新采集")

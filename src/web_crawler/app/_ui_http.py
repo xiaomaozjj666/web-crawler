@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import argparse
 import base64
 import json
 import logging
@@ -18,6 +19,7 @@ from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
 from web_crawler.app import db as database
+from web_crawler.parser.rules import MAX_RULES_BYTES, ExtractionRules
 
 from ._ui_helpers import (
     DEFAULT_BLOCK_KEYWORDS,
@@ -30,7 +32,9 @@ from ._ui_helpers import (
     build_args,
     build_args_from_task,
     build_reverse_config,
+    normalize_crawl_config,
     output_path,
+    portable_crawl_config,
 )
 from ._ui_runner import run_captcha_job, run_job, run_reverse_job
 from ._ui_state import (
@@ -129,7 +133,92 @@ def _host_header_allowed(host_header: str, bind_host: str, bind_port: int) -> bo
     return True
 
 
+def _active_task_counts() -> dict[str, int]:
+    with JOBS_LOCK:
+        crawler = sum(job.is_active() for job in JOBS.values())
+    with REVERSE_JOBS_LOCK:
+        reverse = sum(job.status == "running" for job in REVERSE_JOBS.values())
+    with CAPTCHA_JOBS_LOCK:
+        captcha = sum(job.status == "running" for job in CAPTCHA_JOBS.values())
+    return {"crawler": crawler, "reverse": reverse, "captcha": captcha}
+
+
+def _pagination(query: dict[str, list[str]], default_size: int) -> tuple[int, int]:
+    try:
+        page = int(query.get("page", ["1"])[0])
+        size = int(query.get("page_size", [str(default_size)])[0])
+    except ValueError as exc:
+        raise ValueError("页码和每页条数必须为整数") from exc
+    if not (1 <= page <= 2**31 - 1 and 1 <= size <= 100):
+        raise ValueError("页码必须为正数，每页支持 1–100 条")
+    return page, size
+
+
 class Handler(BaseHTTPRequestHandler):
+    def finish(self) -> None:
+        try:
+            super().finish()
+        finally:
+            database.close_thread_connection()
+
+    def _start_crawl(self, args: argparse.Namespace) -> None:
+        with JOBS_LOCK:
+            active = next((job for job in JOBS.values() if job.is_active()), None)
+            if active is not None:
+                payload: dict[str, object] = {
+                    "ok": False,
+                    "error": "已有采集任务正在运行，请等待结束",
+                    "active_id": active.id,
+                }
+            else:
+                job_id = uuid.uuid4().hex[:12]
+                job = JobState(id=job_id, args=args, output_dir=str(Path(args.out).resolve()))
+                try:
+                    database.create_task(
+                        job_id, args.url, _task_config_for_db(args), job.output_dir
+                    )
+                except Exception as exc:
+                    _log.exception("db create_task failed for %s", job_id)
+                    payload = {"ok": False, "error": f"无法创建任务记录：{exc}"}
+                else:
+                    JOBS[job_id] = job
+                    while len(JOBS) > MAX_JOBS:
+                        JOBS.pop(next(iter(JOBS)))
+                    try:
+                        threading.Thread(target=run_job, args=(job,), daemon=True).start()
+                    except RuntimeError as exc:
+                        JOBS.pop(job_id)
+                        error = f"无法启动采集线程：{exc}"
+                        database.update_task_status(
+                            job_id, "error", exit_code=1, error_message=error
+                        )
+                        payload = {"ok": False, "error": error}
+                    else:
+                        payload = {"id": job_id, "status": "running"}
+        self.respond_json(payload)
+
+    def _control_crawl(self, job: JobState, action: str) -> dict[str, object]:
+        with job.lock:
+            if action == "/cancel" and job.status == "cancelling":
+                return {"ok": True}
+            if job.status not in {"running", "paused"}:
+                return {"ok": False, "message": "采集正在结束或已结束"}
+            if action == "/pause":
+                job.pause_event.clear()
+                job.status = "paused"
+            elif action == "/resume":
+                job.pause_event.set()
+                job.status = "running"
+            else:
+                job.stop_event.set()
+                job.pause_event.set()
+                job.status = "cancelling"
+            try:
+                database.update_task_status(job.id, job.status)
+            except Exception:
+                _log.exception("db update_task_status failed for %s", job.id)
+        return {"ok": True}
+
     def do_GET(self) -> None:
         # DNS rebinding 防护：所有端点一视同仁，Host 不在白名单直接 403
         if not self._is_host_allowed():
@@ -143,13 +232,20 @@ class Handler(BaseHTTPRequestHandler):
                 "text/html; charset=utf-8",
             )
             return
-        if self.path.startswith("/status"):
+        if path == "/status":
             query = parse_qs(urlparse(self.path).query)
-            job = JOBS.get(query.get("id", [""])[0])
+            with JOBS_LOCK:
+                if query.get("active") == ["1"]:
+                    job = next((j for j in JOBS.values() if j.is_active()), None)
+                else:
+                    job = JOBS.get(query.get("id", [""])[0])
             if not job:
                 self.respond_json({"status": "missing", "log": "任务不存在"})
                 return
             self.respond_json(job.snapshot())
+            return
+        if path == "/activity":
+            self.respond_json({"active": _active_task_counts()})
             return
         if self.path.startswith("/reverse/status"):
             query = parse_qs(urlparse(self.path).query)
@@ -246,25 +342,48 @@ class Handler(BaseHTTPRequestHandler):
         # ── 任务历史 API ──────────────────────────────────────────
         query = parse_qs(urlparse(self.path).query)
         if path == "/jobs":
-            page = int(query.get("page", ["1"])[0])
-            page_size = int(query.get("page_size", ["20"])[0])
+            try:
+                page, page_size = _pagination(query, 20)
+            except ValueError as exc:
+                self.respond_json({"error": str(exc)}, status=400)
+                return
             status = query.get("status", [None])[0]
             self.respond_json(database.list_tasks(page, page_size, status))
             return
-        if path.startswith("/jobs/") and "/results" not in path:
-            task_id = path.split("/jobs/")[1]
+        task_route = re.fullmatch(r"/jobs/([^/]+)(?:/(results|pages))?", path)
+        if task_route is not None:
+            task_id, view = task_route.groups()
+            if view == "pages" and "url" in query:
+                extraction = database.get_page_extraction(task_id, query["url"][0])
+                self.respond_json(
+                    extraction or {"error": "此任务没有该页面的提取结果"},
+                    status=200 if extraction is not None else 404,
+                )
+                return
+            if view:
+                try:
+                    page, page_size = _pagination(query, 20 if view == "pages" else 50)
+                except ValueError as exc:
+                    self.respond_json({"error": str(exc)}, status=400)
+                    return
+                if view == "pages":
+                    self.respond_json(database.list_extracted_pages(task_id, page, page_size))
+                else:
+                    self.respond_json(
+                        database.get_results(
+                            task_id,
+                            page,
+                            page_size,
+                            query.get("q", [None])[0],
+                            page_url=query.get("source", [None])[0],
+                        )
+                    )
+                return
             task = database.get_task(task_id)
             if not task:
                 self.respond(404, b'{"error":"task not found"}', "application/json; charset=utf-8")
                 return
             self.respond_json(task)
-            return
-        if path.startswith("/jobs/") and "/results" in path:
-            task_id = path.split("/jobs/")[1].split("/results")[0]
-            page = int(query.get("page", ["1"])[0])
-            page_size = int(query.get("page_size", ["50"])[0])
-            search = query.get("q", [None])[0]
-            self.respond_json(database.get_results(task_id, page, page_size, search))
             return
         self.send_error(404)
 
@@ -282,40 +401,42 @@ class Handler(BaseHTTPRequestHandler):
             return
         query = parse_qs(urlparse(self.path).query)
         path = urlparse(self.path).path
+        if path in {"/crawl/config/import", "/crawl/config/export"}:
+            try:
+                if path.endswith("/import"):
+                    config = normalize_crawl_config(self.read_json_body(2 * MAX_RULES_BYTES))
+                else:
+                    config = portable_crawl_config(
+                        build_args(self.read_form(keep_blank_values=True))
+                    )
+            except ValueError as exc:
+                self.respond_json({"error": str(exc)}, status=400)
+                return
+            self.respond_json({"config": config})
+            return
+        rules_route = re.fullmatch(r"/jobs/([^/]+)/validate-rules", path)
+        if rules_route is not None:
+            try:
+                rules = ExtractionRules.from_dict(self.read_json_body(MAX_RULES_BYTES))
+                page_url = query.get("url", [""])[0]
+                sample = database.get_page_sample(rules_route[1], page_url)
+                if sample is None:
+                    self.respond_json({"error": "没有保留此页的验证样本"}, status=404)
+                    return
+                result = rules.extract(sample, page_url=page_url)
+            except ValueError as exc:
+                self.respond_json({"error": str(exc)}, status=400)
+                return
+            self.respond_json({"rules": rules.to_dict(), "result": result})
+            return
         if path == "/run":
-            form = self.read_form()
+            form = self.read_form(keep_blank_values=True)
             try:
                 args = build_args(form)
             except ValueError as exc:
                 self.respond_json({"ok": False, "error": str(exc)})
                 return
-            with JOBS_LOCK:
-                # 并发保护：采集任务日志/共享 opener 非并发安全,同一时间只允许一个任务
-                if any(j.status in ("running", "paused") for j in JOBS.values()):
-                    self.respond_json(
-                        {
-                            "ok": False,
-                            "error": "已有采集任务正在运行，请等待完成或先取消",
-                        }
-                    )
-                    return
-                job_id = uuid.uuid4().hex[:12]
-                job = JobState(id=job_id, args=args, output_dir=str(Path(args.out).resolve()))
-                JOBS[job_id] = job
-                # 清理已完成的任务，防止内存泄漏
-                if len(JOBS) > MAX_JOBS:
-                    for jid in list(JOBS.keys()):
-                        j = JOBS[jid]
-                        if j.status in ("done", "error", "cancelled"):
-                            del JOBS[jid]
-            # 写入数据库（剔除 Cookie 等敏感头,不落明文）
-            try:
-                config = _task_config_for_db(args)
-                database.create_task(job_id, args.url, config, job.output_dir)
-            except Exception:  # pragma: no cover
-                _log.debug("db create_task failed", exc_info=True)
-            threading.Thread(target=run_job, args=(job,), daemon=True).start()
-            self.respond_json({"id": job_id, "status": "running"})
+            self._start_crawl(args)
             return
         if path == "/retry":
             # 用库里的任务记录重跑一次：配置来自入库白名单，不碰 Cookie
@@ -329,57 +450,14 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self.respond_json({"ok": False, "error": str(exc)})
                 return
-            with JOBS_LOCK:
-                if any(j.status in ("running", "paused") for j in JOBS.values()):
-                    self.respond_json(
-                        {
-                            "ok": False,
-                            "error": "已有采集任务正在运行，请等待完成或先取消",
-                        }
-                    )
-                    return
-                job_id = uuid.uuid4().hex[:12]
-                job = JobState(id=job_id, args=args, output_dir=str(Path(args.out).resolve()))
-                JOBS[job_id] = job
-                if len(JOBS) > MAX_JOBS:
-                    for jid in list(JOBS.keys()):
-                        j = JOBS[jid]
-                        if j.status in ("done", "error", "cancelled"):
-                            del JOBS[jid]
-            try:
-                database.create_task(job_id, args.url, _task_config_for_db(args), job.output_dir)
-            except Exception:  # pragma: no cover
-                _log.debug("db create_task failed", exc_info=True)
-            threading.Thread(target=run_job, args=(job,), daemon=True).start()
-            self.respond_json({"id": job_id, "status": "running"})
+            self._start_crawl(args)
             return
         if path in {"/pause", "/resume", "/cancel"}:
             existing = JOBS.get(query.get("id", [""])[0])
             if not existing:
                 self.respond_json({"ok": False, "message": "任务不存在"})
                 return
-            if path == "/pause":
-                existing.pause_event.clear()
-                with existing.lock:
-                    existing.status = "paused"
-            elif path == "/resume":
-                existing.pause_event.set()
-                with existing.lock:
-                    existing.status = "running"
-            elif path == "/cancel":
-                existing.stop_event.set()
-                existing.pause_event.set()
-                with existing.lock:
-                    existing.status = "cancelled"
-            # 同步状态到数据库：终态不覆盖（避免迟到的控制请求改写已完成任务的状态）
-            with existing.lock:
-                db_status = existing.status
-            if db_status not in ("done", "error", "cancelled", "missing"):
-                try:
-                    database.update_task_status(existing.id, db_status)
-                except Exception:  # pragma: no cover
-                    _log.debug("db update_task_status failed", exc_info=True)
-            self.respond_json({"ok": True})
+            self.respond_json(self._control_crawl(existing, path))
             return
         if path == "/open-output":
             form = self.read_form()
@@ -387,7 +465,8 @@ class Handler(BaseHTTPRequestHandler):
             # 白名单：仅允许打开默认输出目录或已登记任务的输出目录（含子目录），
             # 防止任意路径被 os.startfile 打开/启动（Windows 上可启动可执行文件）
             resolved = out_dir.resolve()
-            allowed_roots = {str(Path(j.output_dir).resolve()) for j in JOBS.values()}
+            with JOBS_LOCK:
+                allowed_roots = {str(Path(j.output_dir).resolve()) for j in JOBS.values()}
             allowed_roots.add(str(Path(DEFAULT_OUTPUT).resolve()))
             if not any(
                 resolved == Path(root).resolve() or Path(root).resolve() in resolved.parents
@@ -543,15 +622,18 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path.startswith("/jobs/"):
             task_id = path.split("/jobs/")[1]
-            deleted = database.delete_task(task_id)
-            self.respond_json({"ok": deleted})
+            job = JOBS.get(task_id)
+            if job is not None and job.is_active():
+                self.respond_json({"ok": False, "error": "请等待采集结束后再删除记录"})
+            else:
+                self.respond_json({"ok": database.delete_task(task_id)})
             return
         self.send_error(404)  # pragma: no cover
 
-    def read_form(self) -> dict[str, list[str]]:
+    def read_form(self, *, keep_blank_values: bool = False) -> dict[str, list[str]]:
         length = int(self.headers.get("content-length", "0"))
         body = self.rfile.read(length).decode("utf-8", errors="replace")
-        return parse_qs(body)
+        return parse_qs(body, keep_blank_values=keep_blank_values)
 
     def _is_host_allowed(self) -> bool:
         """Host 头白名单校验入口：取 socket 实际绑定地址后调用纯函数判定。
@@ -607,9 +689,12 @@ class Handler(BaseHTTPRequestHandler):
                 return False
         return True
 
-    def read_json_body(self) -> object:
+    def read_json_body(self, max_bytes: int | None = None) -> object:
         """读取请求体并解析为 JSON；解析失败返回 None。"""
         length = int(self.headers.get("content-length", "0"))
+        if max_bytes is not None and not 0 <= length <= max_bytes:
+            self.close_connection = True
+            raise ValueError("请求数据超出大小限制")
         body = self.rfile.read(length).decode("utf-8", errors="replace")
         if not body:
             return None

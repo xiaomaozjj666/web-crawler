@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from web_crawler._cli import CRAWL_STATUS_TITLES, PageScanSummary
 from web_crawler.app._report_context import build_recommendations, build_report_context
 from web_crawler.app._report_html import _write_html_report
 from web_crawler.app._report_manifests import _ERROR_LABELS
@@ -29,13 +30,26 @@ def write_summary(
     start_time: float = 0.0,
     end_time: float = 0.0,
     config: dict[str, object] | None = None,
+    page_scan: PageScanSummary | None = None,
+    rule_results: dict[str, int] | None = None,
 ) -> None:
-    ctx = build_report_context(rows, pages_scanned, start_time, end_time, config=config)
+    ctx = build_report_context(
+        rows,
+        pages_scanned,
+        start_time,
+        end_time,
+        config=config,
+        page_scan=page_scan,
+        rule_results=rule_results,
+    )
     resources = ctx["resources"]
     assert isinstance(resources, dict)
     duration = str(ctx.get("duration_human", "未知"))
     cfg = ctx.get("config", {})
     assert isinstance(cfg, dict)
+    scan = ctx["page_scan"]
+    assert isinstance(scan, dict)
+    success_rate = f"{resources['success_rate_percent']}%" if resources.get("total") else "—"
 
     lines = [
         "═" * 60,
@@ -44,7 +58,9 @@ def write_summary(
         "",
         f"  生成时间      : {ctx.get('generated_at', '')}",
         f"  耗时          : {duration}",
+        f"  结果          : {CRAWL_STATUS_TITLES[str(ctx['status'])]}",
         f"  扫描页面数    : {ctx.get('pages_scanned', 0)}",
+        f"  失败/跳过页面 : {scan['failed']}/{scan['skipped']}",
         f"  资源总数      : {resources.get('total', 0)}",
         "",
         "  ── 抓取配置 ──────────────────────────────────",
@@ -59,12 +75,19 @@ def write_summary(
         f"  仅列出        : {resources.get('listed_only', 0)}",
         f"  失败          : {resources.get('failed', 0)}",
         f"  跳过(去重等)  : {resources.get('skipped', 0)}  (其中去重 {resources.get('deduped', 0)})",
-        f"  成功率        : {resources.get('success_rate_percent', 100.0)}%",
+        f"  成功率        : {success_rate}",
         f"  下载总量      : {resources.get('downloaded_size', '0 B')}",
         f"  去重节省      : {resources.get('dedup_saved_size', '0 B')}",
         "",
         "  ── 按状态分布 ────────────────────────────────",
     ]
+    if scan["first_error"]:
+        lines.extend(["  首个页面错误", str(scan["first_error"]), ""])
+    if rule_results is not None:
+        lines.append(
+            f"  字段规则处理/缺必填/错误：{rule_results['pages']}/"
+            f"{rule_results['pages_missing_required']}/{rule_results['errors']}"
+        )
     by_status = ctx.get("by_status", {})
     assert isinstance(by_status, dict)
     for k, v in by_status.items():
@@ -125,8 +148,18 @@ def write_run_report(
     start_time: float = 0.0,
     end_time: float = 0.0,
     config: dict[str, object] | None = None,
+    page_scan: PageScanSummary | None = None,
+    rule_results: dict[str, int] | None = None,
 ) -> None:
-    ctx = build_report_context(rows, pages_scanned, start_time, end_time, config=config)
+    ctx = build_report_context(
+        rows,
+        pages_scanned,
+        start_time,
+        end_time,
+        config=config,
+        page_scan=page_scan,
+        rule_results=rule_results,
+    )
     ctx["recommendations"] = build_recommendations(ctx)
 
     # ── JSON 报告 ──
@@ -153,7 +186,20 @@ def _write_markdown_report(path: Path, ctx: dict[str, object]) -> None:
         lines.append(f"- **开始时间**: {ctx.get('start_time')}")
         lines.append(f"- **结束时间**: {ctx.get('end_time')}")
     lines.append(f"- **总耗时**: {ctx.get('duration_human', '未知')}")
+    lines.append(f"- **结果** {CRAWL_STATUS_TITLES.get(str(ctx.get('status')), '爬取结束')}")
     lines.append(f"- **扫描页面数**: {ctx.get('pages_scanned', 0)}")
+    rules = ctx.get("rule_results")
+    if isinstance(rules, dict):
+        lines.append(
+            f"- **字段规则处理/缺必填/错误** {rules['pages']}/"
+            f"{rules['pages_missing_required']}/{rules['errors']}"
+        )
+    scan = ctx.get("page_scan")
+    if isinstance(scan, dict):
+        lines.append(f"- **失败/跳过页面** {scan['failed']}/{scan['skipped']}")
+        if scan["first_error"]:
+            lines.extend(["", "## 首个页面错误", ""])
+            lines.extend(f"    {line}" for line in str(scan["first_error"]).splitlines())
     lines.append("")
 
     cfg = ctx.get("config", {})
@@ -199,7 +245,8 @@ def _write_markdown_report(path: Path, ctx: dict[str, object]) -> None:
     lines.append(f"| 仅列出 | {resources.get('listed_only', 0)} |")
     lines.append(f"| 失败 | {resources.get('failed', 0)} |")
     lines.append(f"| 跳过 (含去重 {resources.get('deduped', 0)}) | {resources.get('skipped', 0)} |")
-    lines.append(f"| 成功率 | {resources.get('success_rate_percent', 100.0)}% |")
+    success_rate = f"{resources['success_rate_percent']}%" if resources.get("total") else "—"
+    lines.append(f"| 成功率 | {success_rate} |")
     lines.append(f"| 下载总量 | {resources.get('downloaded_size', '0 B')} |")
     lines.append(f"| 去重节省 | {resources.get('dedup_saved_size', '0 B')} |")
     lines.append("")

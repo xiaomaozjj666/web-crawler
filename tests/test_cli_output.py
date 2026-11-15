@@ -21,6 +21,7 @@ from web_crawler._cli import (
     render_error,
 )
 from web_crawler.app import _crawler_core as core
+from web_crawler.app import _crawler_post as post
 from web_crawler.app import crawler as cr
 from web_crawler.app.crawler_models import ManifestRow
 from web_crawler.exceptions import ConfigError, FetchError, ParseError, UnsafeTargetError
@@ -228,6 +229,51 @@ def test_crawl_json_partial_failure_and_network_hint(
     assert payload["succeeded"] == 0
     assert "[网络错误]" in caplog.text
     assert "下一步" in caplog.text
+
+
+def test_crawl_json_reports_partial_page_failure(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = _crawl_args(tmp_path, "--json", "--crawl-pages", "--max-pages", "2")
+
+    def fetch(url: str, *args: object, **kwargs: object) -> tuple[bytes, str]:
+        if url == "https://example.com":
+            return b'<html><a href="/next">next</a></html>', "text/html"
+        raise OSError("offline")
+
+    with patch.object(core, "fetch", side_effect=fetch):
+        assert cr.crawl(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "partial"
+    assert payload["pages_scanned"] == 1
+    assert payload["page_scan"]["failed"] == 1
+    assert "offline" in payload["page_scan"]["first_error"]
+    report = json.loads((tmp_path / "run_report.json").read_text(encoding="utf-8"))
+    assert report["page_scan"] == payload["page_scan"]
+    assert report["status"] == payload["status"]
+
+
+def test_stop_after_report_commit_keeps_cli_and_report_consistent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = _crawl_args(tmp_path, "--json")
+    stopped = False
+    args.should_stop = lambda: stopped
+    write_report = post.write_run_report
+
+    def write_then_stop(*args: object, **kwargs: object) -> None:
+        nonlocal stopped
+        write_report(*args, **kwargs)  # type: ignore[arg-type]
+        stopped = True
+
+    with (
+        patch.object(core, "fetch", return_value=(b"<html><p>empty</p>", "text/html")),
+        patch.object(post, "write_run_report", side_effect=write_then_stop),
+    ):
+        assert cr.crawl(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    report = json.loads((tmp_path / "run_report.json").read_text(encoding="utf-8"))
+    assert payload["status"] == report["status"] == "success"
 
 
 def test_crawl_quiet_suppresses_summary_and_progress(
