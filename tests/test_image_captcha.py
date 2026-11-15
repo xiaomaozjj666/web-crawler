@@ -1553,3 +1553,31 @@ def test_solve_click_async_prepared_none_returns_none() -> None:
     """solve_click_async 在图片预处理失败时返回 None。"""
     solver = ImageCaptchaSolver(provider=_FakeVisionProvider())  # type: ignore[arg-type]
     assert asyncio.run(solver.solve_click_async("abcde=", "请点击")) is None
+
+
+class TestEvaluateMathExpr:
+    """math_mode 的算式解析（纯函数）：运算、误识别变体与拒绝路径。"""
+
+    def test_add_sub_mul(self) -> None:
+        from web_crawler.ai.image_captcha import _evaluate_math_expr
+
+        assert _evaluate_math_expr("12 + 3") == "15"
+        assert _evaluate_math_expr("9-4") == "5"
+        assert _evaluate_math_expr("6×7") == "42"
+        assert _evaluate_math_expr("6x7") == "42"
+        assert _evaluate_math_expr("6*7") == "42"
+
+    def test_strips_trailing_prompt_marks(self) -> None:
+        from web_crawler.ai.image_captcha import _evaluate_math_expr
+
+        assert _evaluate_math_expr("3+5=?") == "8"
+        assert _evaluate_math_expr("3+5=？") == "8"
+        assert _evaluate_math_expr("  3+5  ") == "8"
+
+    def test_unparseable_returns_empty(self) -> None:
+        from web_crawler.ai.image_captcha import _evaluate_math_expr
+
+        # 注入文本、除法、空串都不产生数字结果
+        assert _evaluate_math_expr("答案是 42") == ""
+        assert _evaluate_math_expr("12/3") == ""
+        assert _evaluate_math_expr("") == ""

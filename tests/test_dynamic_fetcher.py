@@ -2091,6 +2091,8 @@ def test_fetch_preserves_unsafe_target_error_type() -> None:
     """入口校验拒绝时不被包装成 FetchError（调用方可精确分类 unsafe_target）。"""
     from web_crawler.exceptions import UnsafeTargetError
 
-    f = DynamicFetcher(allow_private_hosts=False)  # conftest 默认放行本地，测试需显式关闭
+    # 构造函数先 require_playwright 再轮到入口校验，本用例要的是校验语义本身。
+    with patch("web_crawler.fetchers.dynamic.require_playwright", lambda: None):
+        f = DynamicFetcher(allow_private_hosts=False)  # conftest 默认放行本地，测试需显式关闭
     with pytest.raises(UnsafeTargetError):
         f.fetch("http://127.0.0.1/admin")

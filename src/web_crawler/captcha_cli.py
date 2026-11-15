@@ -38,7 +38,7 @@ def _build_image_solver(math_mode: bool) -> Any:
 
 def cmd_page(args: argparse.Namespace) -> int:
     """page 子命令：URL 一键式 detect → solve。"""
-    from ..ai.captcha import CaptchaManager
+    from .ai.captcha import CaptchaManager
 
     require_camoufox()
     image_solver = _build_image_solver(math_mode=False)

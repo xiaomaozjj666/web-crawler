@@ -3,19 +3,31 @@
 from __future__ import annotations
 
 import base64
-import io
+import struct
+import zlib
 from unittest.mock import MagicMock, patch
 
 from web_crawler.ai.captcha import CaptchaInfo, CaptchaManager, CaptchaType
 from web_crawler.ai.image_captcha import ImageCaptchaSolver, SliderSolution
 
 
-def _tiny_png_bytes(w: int = 8, h: int = 4, color: int = 128) -> bytes:
-    from PIL import Image
+def _png_chunk(tag: bytes, data: bytes) -> bytes:
+    return (
+        struct.pack(">I", len(data))
+        + tag
+        + data
+        + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    )
 
-    buf = io.BytesIO()
-    Image.new("L", (w, h), color).save(buf, format="PNG")
-    return buf.getvalue()
+
+def _tiny_png_bytes(w: int = 8, h: int = 4, color: int = 128) -> bytes:
+    raw = b"".join(b"\x00" + bytes([color]) * w for _ in range(h))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 0, 0, 0, 0))
+        + _png_chunk(b"IDAT", zlib.compress(raw))
+        + _png_chunk(b"IEND", b"")
+    )
 
 
 def _make_yidun_page(geo: dict, states: list[dict]) -> MagicMock:
@@ -126,7 +138,12 @@ def test_solve_url_smoke_none_page() -> None:
             if self.last_kwargs.get("page_action"):
                 self.last_kwargs["page_action"](empty_page)
 
-    with patch("web_crawler.fetchers.camoufox.CamoufoxFetcher", _FakeFetcher):
+    # solve_url 先过 require_camoufox 守卫再取 fetcher：冒烟用例只关心路由，
+    # 默认依赖档没有 camoufox，守卫一并放行
+    with (
+        patch("web_crawler.compat.require_camoufox", lambda: None),
+        patch("web_crawler.fetchers.camoufox.CamoufoxFetcher", _FakeFetcher),
+    ):
         result = manager.solve_url("https://example.com", headless=True)
     assert result["type"] == "none"
     assert result["solved"] is None

@@ -11,9 +11,11 @@ import base64
 import http.client
 import json
 import logging
+import struct
 import sys
 import threading
 import time
+import zlib
 from dataclasses import dataclass
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -2086,14 +2088,24 @@ class TestRunValidation:
         assert "timeout" in resp.json()["error"]
 
 
+def _png_chunk(tag: bytes, data: bytes) -> bytes:
+    return (
+        struct.pack(">I", len(data))
+        + tag
+        + data
+        + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    )
+
+
 def _make_test_image_bytes(size: tuple[int, int], color: int) -> bytes:
-    import io as _io
-
-    from PIL import Image as _Image
-
-    buf = _io.BytesIO()
-    _Image.new("L", size, color).save(buf, format="PNG")
-    return buf.getvalue()
+    width, height = size
+    raw = b"".join(b"\x00" + bytes([color]) * width for _ in range(height))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0))
+        + _png_chunk(b"IDAT", zlib.compress(raw))
+        + _png_chunk(b"IEND", b"")
+    )
 
 
 class TestCaptchaEndpoints:
@@ -2143,8 +2155,14 @@ class TestCaptchaEndpoints:
         assert data["count"] >= 1
         assert any(j["id"] == "cap2" for j in data["jobs"])
 
-    def test_post_captcha_image_math_sanitized(self, http_server: str) -> None:
+    def test_post_captcha_image_math_sanitized(
+        self, http_server: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """POST /captcha/image：math_mode 输出纯数字（注入不透传）。"""
+        # 端点在 get_vision_provider(None) 协商视觉 provider：CI 环境没有 .env，
+        # 显式给键，不依赖开发者机器恰好配置了 LLM_VISION_API_KEY。
+        monkeypatch.setenv("LLM_VISION_API_KEY", "test-key")
+        monkeypatch.setenv("LLM_VISION_BASE_URL", "http://127.0.0.1:9/v1")
         png = base64.b64encode(_make_test_image_bytes((8, 4), 128)).decode()
         dataurl = f"data:image/png;base64,{png}"
         # mock 到 provider 层：_llm_ocr 的消毒链路保持真实
