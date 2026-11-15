@@ -269,7 +269,16 @@ def _field_value(element: Any, attribute: str) -> str:
     return " ".join("".join(element.itertext()).split())
 
 
-def extract_static_items(response: Response, plan: dict[str, Any]) -> list[dict[str, Any]]:
+def _health_score(value: float) -> float:
+    return round(max(0.0, min(1.0, float(value))), 3)
+
+
+def extract_static_items(
+    response: Response,
+    plan: dict[str, Any],
+    *,
+    health_output: str | Path | None = None,
+) -> list[dict[str, Any]]:
     """Extract records with deterministic CSS then fingerprint fallback."""
     from lxml import etree
 
@@ -281,27 +290,37 @@ def extract_static_items(response: Response, plan: dict[str, Any]) -> list[dict[
     root_matches = [item.element for item in response.selector.css(plan["selector"])]
     roots = root_matches
     root_score = 1.0
+    root_source = "css"
     if not roots:
         match, root_score = _best_match(
             candidates, plan["root_fingerprint"], plan["adaptive_threshold"]
         )
         roots = [match] if match is not None else []
+        root_source = "fingerprint" if match is not None else "none"
     output: list[dict[str, Any]] = []
+    health: list[dict[str, Any]] = []
     for root in roots:
         values: dict[str, Any] = {}
+        field_health: dict[str, dict[str, Any]] = {}
         confidence = min(1.0, root_score, float(plan["confidence"]))
         for name, spec in plan["fields"].items():
             selector = spec["selector"]
             matches = root.cssselect(selector) if selector else [root]
             score = 1.0
+            source = "root" if not selector else "css"
             if not matches and selector:
                 match, score = _best_match(
                     list(root.iter()), spec["fingerprint"], plan["adaptive_threshold"]
                 )
                 matches = [match] if match is not None else []
+                source = "fingerprint" if match is not None else "missing"
             if matches:
                 confidence = min(confidence, score)
                 values[name] = _field_value(matches[0], spec["attribute"])
+            field_health[name] = {
+                "source": source if matches else "missing",
+                "score": _health_score(score),
+            }
         output.append(
             {
                 "url": response.url,
@@ -310,10 +329,32 @@ def extract_static_items(response: Response, plan: dict[str, Any]) -> list[dict[
                 "_min_confidence": float(plan["min_confidence"]),
             }
         )
+        health.append(
+            {
+                "url": response.url,
+                "selector": plan["selector"],
+                "root": {"source": root_source, "score": _health_score(root_score)},
+                "fields": field_health,
+                "confidence": _health_score(confidence),
+            }
+        )
     if not roots:
         output.append(
             {"url": response.url, "_confidence": 0.0, "_min_confidence": plan["min_confidence"]}
         )
+        health.append(
+            {
+                "url": response.url,
+                "selector": plan["selector"],
+                "root": {"source": "none", "score": _health_score(root_score)},
+                "fields": {},
+                "confidence": 0.0,
+            }
+        )
+    if health_output is not None:
+        history = SelectorHealthStore(health_output)
+        for event in health:
+            history.record(event)
     return output
 
 
@@ -427,6 +468,33 @@ class IdempotentFeedPipeline:
         return result
 
 
+class SelectorHealthStore:
+    """Append distinct selector-drift events to a deterministic JSONL history."""
+
+    def __init__(self, output: str | Path) -> None:
+        self.output = Path(output)
+        self.seen: set[str] = set()
+        if self.output.exists():
+            for line in self.output.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    self.seen.add(self._key(json.loads(line)))
+
+    @staticmethod
+    def _key(event: Any) -> str:
+        payload = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def record(self, event: dict[str, Any]) -> bool:
+        key = self._key(event)
+        if key in self.seen:
+            return False
+        self.output.parent.mkdir(parents=True, exist_ok=True)
+        with self.output.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+        self.seen.add(key)
+        return True
+
+
 _SPIDER_TEMPLATE = '''"""Generated offline static replay Spider."""
 import json
 from pathlib import Path
@@ -456,7 +524,10 @@ class CompiledReplaySpider(Spider):
 
     def parse(self, response):
         for plan in response.meta["plans"]:
-            for item in extract_static_items(response, plan):
+            items = extract_static_items(
+                response, plan, health_output=BASE / "selector-health.jsonl"
+            )
+            for item in items:
                 item["_field_specs"] = plan["fields"]
                 yield item
 
@@ -473,4 +544,9 @@ if __name__ == "__main__":
 '''
 
 
-__all__ += ["ContractPipeline", "IdempotentFeedPipeline", "extract_static_items"]
+__all__ += [
+    "ContractPipeline",
+    "IdempotentFeedPipeline",
+    "SelectorHealthStore",
+    "extract_static_items",
+]

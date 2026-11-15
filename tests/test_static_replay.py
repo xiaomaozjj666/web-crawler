@@ -67,14 +67,19 @@ def test_static_trace_replays_offline_and_repeat_is_idempotent(tmp_path: Path) -
 
     first = _run(project)
     feed_before = (project / "items.jsonl").read_bytes()
+    health_before = (project / "selector-health.jsonl").read_bytes()
     second = _run(project)
 
     assert len(first["items"]) == 1
     assert first["items"][0]["url"] == "https://fixture.local/items"
     assert first["items"][0]["value"] == 42
     assert json.loads(feed_before) == first["items"][0]
+    health = [json.loads(line) for line in health_before.decode("utf-8").splitlines()]
+    assert health[0]["root"] == {"source": "css", "score": 1.0}
+    assert health[0]["fields"]["value"]["source"] == "css"
     assert second == {"items": []}
     assert (project / "items.jsonl").read_bytes() == feed_before
+    assert (project / "selector-health.jsonl").read_bytes() == health_before
 
 
 def test_drift_uses_fingerprint_then_contract(tmp_path: Path) -> None:

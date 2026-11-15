@@ -18,6 +18,7 @@ from web_crawler.spider.spider import DropItem, Spider
 from web_crawler.spider.static_replay import (
     ContractPipeline,
     IdempotentFeedPipeline,
+    SelectorHealthStore,
     StaticReplayCompiler,
     _coerce,
     _field_value,
@@ -158,19 +159,28 @@ def test_coercion_covers_scalar_types() -> None:
         _coerce("maybe", "bool")
 
 
-def test_extract_static_items_uses_selectors_fingerprints_and_empty_sentinel() -> None:
+def test_extract_static_items_records_selector_health(tmp_path: Path) -> None:
     response = _response()
     plan = _plan(response)
-    items = extract_static_items(response, plan)
+    health_output = tmp_path / "nested" / "selector-health.jsonl"
+    items = extract_static_items(response, plan, health_output=health_output)
     assert items[0]["value"] == "42"
     assert items[0]["_confidence"] == 0.95
     assert items[0]["_min_confidence"] == 0.8
 
     drifted_plan = _plan(response, threshold=0.1)
     drifted = _response('<section id="renamed"><span class="renamed">42</span></section>')
-    drifted_items = extract_static_items(drifted, drifted_plan)
+    drifted_items = extract_static_items(drifted, drifted_plan, health_output=health_output)
     assert drifted_items[0]["value"] == "42"
     assert 0.0 < drifted_items[0]["_confidence"] <= 1.0
+
+    events = [json.loads(line) for line in health_output.read_text(encoding="utf-8").splitlines()]
+    assert len(events) == 2
+    assert events[0]["root"] == {"source": "css", "score": 1.0}
+    assert events[0]["fields"]["value"]["source"] == "css"
+    assert events[1]["root"]["source"] == "fingerprint"
+    assert events[1]["fields"]["value"]["source"] == "fingerprint"
+    assert 0.0 < events[1]["confidence"] <= 1.0
 
     missing = _plan(response)
     missing["selector"] = "#missing"
@@ -178,9 +188,23 @@ def test_extract_static_items_uses_selectors_fingerprints_and_empty_sentinel() -
         lxml_html.fromstring('<aside class="unrelated">other</aside>')
     )
     missing["adaptive_threshold"] = 1.0
-    assert extract_static_items(response, missing) == [
+    assert extract_static_items(response, missing, health_output=health_output) == [
         {"url": _URL, "_confidence": 0.0, "_min_confidence": 0.8}
     ]
+    events = [json.loads(line) for line in health_output.read_text(encoding="utf-8").splitlines()]
+    assert len(events) == 3
+    assert events[2]["root"]["source"] == "none"
+    assert events[2]["fields"] == {}
+    assert events[2]["confidence"] == 0.0
+
+
+def test_selector_health_store_deduplicates_distinct_events(tmp_path: Path) -> None:
+    output = tmp_path / "selector-health.jsonl"
+    event = {"url": _URL, "root": {"source": "css", "score": 1.0}, "fields": {}}
+    assert SelectorHealthStore(output).record(event) is True
+    assert SelectorHealthStore(output).record(event) is False
+    assert SelectorHealthStore(output).record({**event, "confidence": 0.5}) is True
+    assert len(output.read_text(encoding="utf-8").splitlines()) == 2
 
 
 def test_contract_pipeline_coerces_quarantines_and_applies_defaults(tmp_path: Path) -> None:
