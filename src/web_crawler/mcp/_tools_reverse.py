@@ -428,12 +428,13 @@ class ReverseToolsMixin(HostContract):
         if mode not in ("text", "slider", "click"):
             return _error("mode must be one of: text / slider / click")
         mime = args.get("mime", "image/png")
+        math_mode = bool(args.get("math", False))
 
         # 用 get_vision_provider 协商：self.provider 支持 vision 则复用，
         # 否则回退 LLM_VISION_API_KEY 注入的专用视觉模型
         from ..ai.llm import get_vision_provider
 
-        cfg = ImageSolverConfig()
+        cfg = ImageSolverConfig(math_mode=math_mode and mode == "text")
         solver = ImageCaptchaSolver(provider=get_vision_provider(self.provider), config=cfg)
         limitations = ["识别结果由 Vision/OCR 生成，需在提交前人工或回放校验。"]
 

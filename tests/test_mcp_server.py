@@ -1231,7 +1231,7 @@ def test_tool_solve_captcha_browser_error() -> None:
 def _patch_image_captcha(monkeypatch: pytest.MonkeyPatch, solver: Any) -> None:
     """patch image_captcha 模块的 ImageCaptchaSolver 与 ImageSolverConfig。"""
     monkeypatch.setattr("web_crawler.ai.image_captcha.ImageCaptchaSolver", lambda **kw: solver)
-    monkeypatch.setattr("web_crawler.ai.image_captcha.ImageSolverConfig", lambda: MagicMock())
+    monkeypatch.setattr("web_crawler.ai.image_captcha.ImageSolverConfig", lambda **kw: MagicMock())
 
 
 def test_tool_solve_captcha_image_invalid_mode() -> None:

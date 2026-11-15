@@ -277,6 +277,11 @@ def _build_full_tool_definitions() -> list[dict]:
                         "default": "image/png",
                         "description": "图片 MIME 类型",
                     },
+                    "math": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "text 模式专用：数学运算验证码，输出算式答案而非原文",
+                    },
                 },
                 "required": ["mode"],
             },

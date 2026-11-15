@@ -75,3 +75,4 @@ report/
 /_*.json
 # 根目录下的本地临时目录（如批量脚本的中间产物）
 /.tmp_*/
+.pytest-final/

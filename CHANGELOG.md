@@ -70,6 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GET /captcha/jobs`、`POST /captcha/image`（均走 Host 白名单 + 同源
   校验，与既有端点同防护级别）。识别能力从此在产品主界面可达，
   不再只属于 Python API / CLI / MCP。
+- **MCP `solve_captcha_image` 工具新增 `math` 参数**：text 模式下开启
+  math_mode，数学验证码直接返回算式答案（与 CLI/App UI 同能力）。
 - **验证码识别统一入口**：`CaptchaManager.solve_url(url)` 一键式——Camoufox
   （反指纹 Firefox）打开页面 → 自动检测类型 → 路由到对应求解器 → 返回
   结构化结果（type/solved/steps）；detect/solve 路由、image_solver
