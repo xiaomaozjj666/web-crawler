@@ -99,6 +99,7 @@ def test_ui_json_start_status(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     server = MagicMock()
+    server.server_port = ui.PORT
     server.serve_forever.side_effect = KeyboardInterrupt
     monkeypatch.setattr(ui, "ThreadingHTTPServer", lambda address, handler: server)
     monkeypatch.setattr(ui.database, "init_db", lambda: None)
@@ -109,6 +110,7 @@ def test_ui_json_start_status(
     payload = json.loads(captured.out)
     assert payload["status"] == "starting"
     assert payload["command"] == "crawler-ui"
+    assert payload["port"] == ui.PORT
     assert captured.out.count("\n") == 1
     server.server_close.assert_called_once_with()
 

@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **自动签名采集 E2E 用例真正执行**（`tests/test_e2e_reverse_agent.py`）：
+  `full_loop` 与 `hook_capture` 此前在 Windows 上被跳过、且挂着加载期
+  捕获的 xfail。现在：Proactor 事件循环 fixture 替代跳过（临时切换、
+  测后恢复 Selector 策略）；测试页增加按钮点击触发带签名 fetch，断言
+  素材改为「注入后触发」的可捕获请求；`full_loop` 的捕获证据改为历史
+  观测中的 hook_count（hook 缓冲步骤间会重置，最终快照不可靠），并以
+  `target_params_found["sign"]` 为提取终判。两用例实跑通过
+  （14.97s，真实 Camoufox 浏览器）。
+
 - **MCP 证据模型（借鉴 REA 的 evidence / context economy 设计）**：成功结果
   新增 `meta` 信封（`evidence_id` / `evidence_stored` / `evidence_bytes` /
   `elapsed_ms`），结果正文存入进程内 LRU 证据库；`reverse_engineer_url` 在

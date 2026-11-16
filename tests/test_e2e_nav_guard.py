@@ -4,6 +4,7 @@
 
 * 正路径：``allow_private_hosts=True`` 的 fetcher 抓取回环页面——预检、route
   守卫、落点复核全部执行且不阻断正常抓取（回归保护）。
+* 普通脚本请求：浏览器点击后请求本地目录状态，验证 GET 响应和页面渲染。
 * 拒绝路径：注入拒绝 ``/private-hit`` 的判定（子类覆写 ``_nav_check``）——
   302 重定向与 ``Refresh`` 头跳转都必须在请求发出前被预检拒绝，且目标端点
   **零命中**。
@@ -56,7 +57,7 @@ def _proactor_policy_on_win32() -> Any:
 
 
 class _GuardServer:
-    """回环测试服务器：记录对 /private-hit 的命中，提供正常页与跳转页。"""
+    """提供正常资源和跳转页，并记录对受限测试路径的请求。"""
 
     def __init__(self) -> None:
         self.private_hits: list[str] = []
@@ -78,7 +79,7 @@ class _GuardServer:
         class _Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
                 path = self.path.split("?")[0]
-                if path == "/private-hit":
+                if path in {"/private-hit", "/hit-meta", "/hit-js"}:
                     with outer._lock:
                         outer.private_hits.append(self.path)
                     self._respond(200, b"PRIVATE-HIT")
@@ -94,6 +95,23 @@ class _GuardServer:
                     )
                 elif path == "/ok":
                     self._respond(200, b"OK-PAGE-CONTENT")
+                elif path == "/catalog":
+                    self._respond(
+                        200,
+                        b"<button>Load catalog</button><p id='catalog-state'>Idle</p>"
+                        b"<script>document.querySelector('button').onclick = async () => {"
+                        b"const response = await fetch('/catalog-status');"
+                        b"const result = await response.json();"
+                        b"document.getElementById('catalog-state').textContent = result.state;"
+                        b"};</script>",
+                        headers={"Content-Type": "text/html; charset=utf-8"},
+                    )
+                elif path == "/catalog-status":
+                    self._respond(
+                        200,
+                        b'{"state":"Catalog ready"}',
+                        headers={"Content-Type": "application/json"},
+                    )
                 elif path == "/start302":
                     self._respond(302, b"", headers={"Location": "/private-hit"})
                 elif path == "/refresh-private":
@@ -177,6 +195,28 @@ def test_e2e_fetcher_positive_path_through_full_guard(guard_server: Any) -> None
         f.close()
 
 
+def test_e2e_fetcher_renders_catalog_from_browser_request(guard_server: Any) -> None:
+    def load_catalog(page: Any) -> None:
+        with page.expect_response(f"{guard_server.base}/catalog-status", timeout=5000) as pending:
+            page.get_by_role("button", name="Load catalog").click(timeout=5000)
+        response = pending.value
+        assert response.request.method == "GET"
+        assert response.status == 200
+        assert response.json() == {"state": "Catalog ready"}
+        page.get_by_text("Catalog ready", exact=True).wait_for(timeout=5000)
+
+    fetcher = _PathRefusingFetcher(
+        allow_private_hosts=True, headless=True, timeout=10, page_action=load_catalog
+    )
+    try:
+        rendered = fetcher.fetch(f"{guard_server.base}/catalog")
+        assert rendered.status == 200
+        assert b"Catalog ready" in rendered.content
+        assert guard_server.private_hits == []
+    finally:
+        fetcher.close()
+
+
 def test_e2e_fetcher_preflight_refuses_302_to_private_target(guard_server: Any) -> None:
     """302 → 内网路径：预检在请求发出前拒绝，目标端点零命中。"""
     f = _PathRefusingFetcher(allow_private_hosts=True, headless=True, timeout=10)
@@ -204,9 +244,9 @@ def test_e2e_fetcher_preflight_refuses_refresh_header_to_private(guard_server: A
 # 实测记录：无守卫时 Chromium 与 Camoufox 的后续文档请求均进 page.route 且
 # 服务器收到命中（.arts/route_visibility.json，2026-11-13）。
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("entry,marker", [("/meta2", "meta-refresh"), ("/jsnav2", "js-nav")])
+@pytest.mark.parametrize("entry,blocked_path", [("/meta2", "/hit-meta"), ("/jsnav2", "/hit-js")])
 def test_e2e_route_guard_intercepts_meta_and_js_navigation(
-    guard_server: Any, entry: str, marker: str
+    guard_server: Any, entry: str, blocked_path: str
 ) -> None:
     """真浏览器：meta-refresh 与脚本导航的后续文档请求被 route 守卫拦截（零命中）。"""
     from playwright.sync_api import sync_playwright
@@ -225,8 +265,8 @@ def test_e2e_route_guard_intercepts_meta_and_js_navigation(
             install_navigation_guard(page, check, blocked=blocked)
             page.goto(f"{guard_server.base}{entry}", wait_until="domcontentloaded", timeout=10000)
             page.wait_for_timeout(1500)
-            assert guard_server.private_hits == [], marker
-            assert blocked, f"{marker}: 守卫未记录任何拦截"
+            assert guard_server.private_hits == []
+            assert f"{guard_server.base}{blocked_path}" in blocked
             context.close()
         finally:
             browser.close()

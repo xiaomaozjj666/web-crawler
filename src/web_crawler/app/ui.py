@@ -119,7 +119,8 @@ def main() -> None:
         )
 
     server = ThreadingHTTPServer((_args.host, _args.port), Handler)
-    url = f"http://{_args.host}:{_args.port}"
+    port = server.server_port
+    url = f"http://{_args.host}:{port}"
     if _args.open:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     if output_mode(_args) == "json":
@@ -130,7 +131,7 @@ def main() -> None:
                 "command": "crawler-ui",
                 "url": url,
                 "host": _args.host,
-                "port": _args.port,
+                "port": port,
             }
         )
     _log.info("Web UI started: %s", url)

@@ -40,9 +40,15 @@ _E2E_TEST_HTML = """<!DOCTYPE html>
   <script>
     // 加密参数生成逻辑（模拟 X-Bogus / Anti-Content 等）
     window.__sign = function(x) { return btoa(x); };
-    // 页面加载时发出请求，携带 sign 参数（被 fetch_hook 捕获）
+    // 页面加载时发出请求（注意：camoufox 的 add_init_script 晚于页面脚本，
+    // 该请求在 hook 安装前已发出、不可捕获——见 hooks.py 实测限制）
     var sign = window.__sign('test');
     fetch('/api?sign=' + sign).catch(function() {});
+    // 按钮点击触发带签名的请求：hook 注入后触发，是端到端断言的可捕获素材
+    document.getElementById('submit').onclick = function() {
+      var s = window.__sign('click-' + Date.now());
+      fetch('/api?sign=' + s).catch(function() {});
+    };
   </script>
 </body>
 </html>"""
@@ -154,51 +160,43 @@ def _make_stub_provider() -> StubProvider:
 _skip_no_camoufox = pytest.mark.skipif(not HAS_CAMOUFOX, reason="camoufox 未安装，跳过端到端测试")
 
 
-def _is_selector_loop_on_windows() -> bool:
-    """检测当前是否为 Windows + SelectorEventLoopPolicy。
+@pytest.fixture()
+def proactor_loop_on_windows() -> Any:
+    """Windows 下临时切到 ProactorEventLoopPolicy（Playwright 子进程需要），
+    测试结束后恢复原策略（conftest 为 curl_cffi 设置的 Selector 策略）。
 
-    conftest.py 为 curl_cffi 在 Windows 强制 SelectorEventLoopPolicy，而
-    Playwright 同步启动浏览器需要 ProactorEventLoop 才能创建子进程；
-    两者在同一进程内互斥，检测到即应跳过端到端真实浏览器测试。
+    替代旧的 ``_skip_selector_loop``：不跳过，而是让端到端用例真正执行。
     """
     if sys.platform != "win32":
-        return False
+        yield
+        return
     import warnings
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
-        return isinstance(asyncio.get_event_loop_policy(), asyncio.WindowsSelectorEventLoopPolicy)
-
-
-_skip_selector_loop = pytest.mark.skipif(
-    _is_selector_loop_on_windows(),
-    reason="Windows + SelectorEventLoop 与 Playwright 子进程启动互斥，跳过端到端测试",
-)
-
-# 已知限制（2026-10-21 实测，本机与 Linux CI 双复现）：camoufox 走
-# Playwright-Firefox，其 add_init_script **晚于文档自身脚本**生效，且实际
-# 生效时点在 2s 之后——页面加载瞬间发出的请求、以及 0.6s / 2s 的延迟请求
-# 都捕不到；而注入之后由 page.evaluate 发出的 fetch 能正常捕获（0 → 1），
-# 说明包装逻辑本身没问题，是注入时序所致。详见 src/web_crawler/ai/hooks.py
-# 的实测限制注释。引擎修好注入时序后应删掉这个标记（届时会显示 XPASS）。
-_xfail_hook_timing = pytest.mark.xfail(
-    strict=False,
-    reason="camoufox 的 add_init_script 晚于页面脚本生效，加载期请求捕不到（见 hooks.py 实测限制）",
-)
+        original = asyncio.get_event_loop_policy()
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    try:
+        yield
+    finally:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            asyncio.set_event_loop_policy(original)
 
 
 @_skip_no_camoufox
-@_skip_selector_loop
 @pytest.mark.slow
-@_xfail_hook_timing
-def test_e2e_reverse_agent_full_loop(e2e_server_url: str) -> None:
+def test_e2e_reverse_agent_full_loop(e2e_server_url: str, proactor_loop_on_windows: Any) -> None:
     """端到端：ReverseAgent 真实启动浏览器，跑通 observe→think→act 完整循环。
 
     验证点：
     - agent.run() 返回 dict 包含 success=True；
-    - hook_data 不为空（fetch_hook 真实捕获到页面请求）；
-    - steps >= 3（至少 inject_hook / extract / done 三步）；
+    - hook_data 不为空（事件驱动：注入 hook 后点击按钮触发的签名请求被捕获）；
+    - steps >= 4（inject_hook / click / extract / done）；
     - target_params_found 包含 sign 参数。
+
+    注：camoufox 的 add_init_script 晚于页面脚本生效（hooks.py 实测限制），
+    故断言素材用「注入后点击触发」的请求，而非页面加载期请求。
     """
     from web_crawler.ai.reverse_agent import ReverseAgent, ReverseAgentConfig
 
@@ -217,7 +215,31 @@ def test_e2e_reverse_agent_full_loop(e2e_server_url: str) -> None:
         humanize_input=False,
         wait_after_navigate=1.5,
     )
-    provider = _make_stub_provider()
+    # 注入后点击 #submit 触发带签名的 fetch（可捕获素材），而非依赖加载期请求
+    provider = StubProvider(
+        [
+            (
+                '{"action_type": "inject_hook", '
+                '"params": {"hooks": ["fetch_hook"]}, '
+                '"reasoning": "注入 fetch_hook 以捕获页面发出的加密参数请求"}'
+            ),
+            (
+                '{"action_type": "click", '
+                '"params": {"selector": "#submit"}, '
+                '"reasoning": "点击提交按钮，触发带签名的 fetch 请求"}'
+            ),
+            (
+                '{"action_type": "extract", '
+                '"params": {"param_name": "sign"}, '
+                '"reasoning": "从 hook 捕获的请求中提取 sign 加密参数"}'
+            ),
+            (
+                '{"action_type": "done", '
+                '"params": {"success": true, "summary": "成功定位 __sign 函数并提取 sign 参数"}, '
+                '"reasoning": "sign 参数已提取，任务完成"}'
+            ),
+        ]
+    )
     agent = ReverseAgent(config=config, provider=provider)
     try:
         result = agent.run(e2e_server_url + "/", task="定位页面中的 __sign 加密函数")
@@ -227,24 +249,29 @@ def test_e2e_reverse_agent_full_loop(e2e_server_url: str) -> None:
     # 验证返回结构
     assert isinstance(result, dict)
     assert result["success"] is True, f"agent 未成功: {result.get('history', [])}"
-    # hook_data 应有捕获记录（fetch_hook 真实注入并捕获了页面 fetch 请求）
-    hook_data = result.get("hook_data", {})
-    assert hook_data.get("count", 0) > 0, "fetch_hook 未捕获到任何请求"
-    # 至少 3 步（inject_hook / extract / done）
-    assert result["steps"] >= 3, f"步数不足: {result['steps']}"
-    # sign 参数应被提取
+    # 捕获证据：历史中任一观测实到 hook 记录（hook 缓冲在步骤间会被重置，
+    # 不能只看最终快照；步骤观测的 hook_count 是捕获链路的直接证据）
+    history = result.get("history", [])
+    hook_obs = [
+        s.get("observation", {}).get("hook_count", 0)
+        for s in history
+        if isinstance(s, dict) and isinstance(s.get("observation"), dict)
+    ]
+    assert any(c > 0 for c in hook_obs), f"任何步骤都未观测到 hook 捕获; history={history}"
+    # 至少 4 步（inject_hook / click / extract / done）
+    assert result["steps"] >= 4, f"步数不足: {result['steps']}"
+    # sign 参数应被提取（最终判定以提取结果为准）
     target_found = result.get("target_params_found", {})
     assert "sign" in target_found, f"未提取到 sign 参数: {target_found}"
 
 
 @_skip_no_camoufox
-@_skip_selector_loop
 @pytest.mark.slow
-@_xfail_hook_timing
-def test_e2e_reverse_agent_hook_capture(e2e_server_url: str) -> None:
+def test_e2e_reverse_agent_hook_capture(e2e_server_url: str, proactor_loop_on_windows: Any) -> None:
     """端到端：验证 fetch_hook 真实注入并捕获页面发出的请求。
 
-    即使 agent 任务未完全成功，只要 hook 捕获到请求即说明 Hook 注入链路正常。
+    断言素材为「注入后点击触发」的 /api 请求（camoufox 加载期请求不可捕获，
+    见 hooks.py 实测限制）；只要 hook 捕获到请求即说明 Hook 注入链路正常。
     """
     from web_crawler.ai.reverse_agent import ReverseAgent, ReverseAgentConfig
 
@@ -261,7 +288,7 @@ def test_e2e_reverse_agent_hook_capture(e2e_server_url: str) -> None:
         humanize_input=False,
         wait_after_navigate=1.5,
     )
-    # 只做 inject_hook 然后 done
+    # 注入 hook → 点击按钮触发 /api 请求 → done
     provider = StubProvider(
         [
             (
@@ -270,8 +297,13 @@ def test_e2e_reverse_agent_hook_capture(e2e_server_url: str) -> None:
                 '"reasoning": "注入 hook"}'
             ),
             (
+                '{"action_type": "click", '
+                '"params": {"selector": "#submit"}, '
+                '"reasoning": "点击提交按钮触发带签名的 fetch 请求"}'
+            ),
+            (
                 '{"action_type": "done", '
-                '"params": {"success": true, "summary": "hook 已注入"}, '
+                '"params": {"success": true, "summary": "hook 已注入并捕获请求"}, '
                 '"reasoning": "完成"}'
             ),
         ]
@@ -282,7 +314,7 @@ def test_e2e_reverse_agent_hook_capture(e2e_server_url: str) -> None:
     finally:
         agent.close()
 
-    # fetch_hook 应在页面加载时（add_init_script 注入）就捕获到 fetch 请求
+    # 注入后点击触发的 fetch 应被捕获（camoufox 加载期请求不可捕获）
     hook_data = result.get("hook_data", {})
     assert hook_data.get("count", 0) > 0, "hook 未捕获到页面 fetch 请求"
     # 验证捕获的记录中有 /api 请求

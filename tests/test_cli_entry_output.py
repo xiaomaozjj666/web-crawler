@@ -6,6 +6,7 @@ import json
 import logging
 import sys
 from collections.abc import Callable
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -74,8 +75,6 @@ def test_ui_json_emits_one_status_before_serving(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     events: list[str] = []
-    fake_server = MagicMock()
-    fake_server.serve_forever.side_effect = lambda: events.append("serve")
     original_emit = ui.emit_json
 
     def recording_emit(payload: object) -> None:
@@ -83,19 +82,26 @@ def test_ui_json_emits_one_status_before_serving(
         original_emit(payload)
 
     monkeypatch.setattr(ui, "emit_json", recording_emit)
-    monkeypatch.setattr(ui, "ThreadingHTTPServer", lambda *args: fake_server)
     monkeypatch.setattr(ui.database, "init_db", lambda: None)
     monkeypatch.setattr(ui.database, "fail_stale_running_tasks", lambda: 0)
-    monkeypatch.setattr(sys, "argv", ["crawler-ui", "--json", "--port", "8765"])
+    monkeypatch.setattr(sys, "argv", ["crawler-ui", "--json", "--port", "0"])
 
-    ui.main()
+    with ThreadingHTTPServer(("127.0.0.1", 0), ui.Handler) as bound_server:
+        bind_server = MagicMock(return_value=bound_server)
+        monkeypatch.setattr(ui, "ThreadingHTTPServer", bind_server)
+        monkeypatch.setattr(bound_server, "serve_forever", lambda: events.append("serve"))
+        ui.main()
+        bind_server.assert_called_once_with(("127.0.0.1", 0), ui.Handler)
+        actual_port = bound_server.server_port
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert events == ["json", "serve"]
     assert captured.out.count("\n") == 1
     assert payload["status"] == "starting"
-    assert payload["url"] == "http://127.0.0.1:8765"
+    assert actual_port > 0
+    assert payload["port"] == actual_port
+    assert payload["url"] == f"http://127.0.0.1:{actual_port}"
 
 
 @pytest.mark.parametrize(("flag", "warns"), [("--quiet", False), ("--json", True)])
