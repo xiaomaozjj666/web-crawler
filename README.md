@@ -51,6 +51,8 @@ flowchart TB
 
 控制台顶部显示网页采集、验证码识别和 JS 逆向的运行状态。网页采集勾选「智能数据提取」或「正文提取」后，可在任务详情的「页面提取」查看内容，并从页面筛选其来源资源。每次任务保存自己的提取结果，复用输出目录后仍可查阅旧任务。磁盘上的正文按主机和页面路径保存到 `extracted_text/`，避免不同页面的同名文件互相覆盖。
 
+正文提取保留块级结构（段落/标题/列表项各占一行），并剥离 script/style/nav/footer 等页面骨架与连续重复行——直接可作为 LLM 或人工阅读的分析输入，不再是被压成一整行、混着导航噪音的字符串。
+
 ### 从页面样本到批量提取
 
 1. 在采集表单展开「字段规则与页面样本」，勾选「保留页面样本用于验证」。任务完成后，在「任务详情 → 页面提取」打开「字段规则验证」。验证只处理已保存的 HTML。
@@ -369,6 +371,23 @@ web-crawler --url https://example.com --out ./out --json
 ```
 
 `web-crawler-shell URL --json` 是单次抓取模式；`web-crawler-reverse` 的数据结果始终保持 JSON。`web-crawler-mcp` 的 stdout 严格保留 JSON-RPC 协议，不额外插入启动摘要，`--quiet/--verbose` 只控制诊断日志。
+
+### 反爬选项的配套语义（`--stealth` / `--render-js`）
+
+- `--stealth` 是「整套」浏览器伪装：TLS/JA3 指纹走 curl_cffi 浏览器预设，且 User-Agent
+  自动配对成同一浏览器的形态（仅当未显式指定 `--user-agent` 时；显式指定则尊重用户）。
+  指纹伪装成 Chrome 而 UA 还写着爬虫名会被反爬侧一眼识破——2026-11 对 julius.ai 实测：
+  chrome131 指纹 + 爬虫默认 UA 返回 403，UA 配对后同站 200。
+- `--render-js` 页面走 headless Chromium（库级 `DynamicFetcher`，导航逐跳守卫全程生效）
+  渲染完成后再解析，适合 JS 单页站与拒绝纯 HTTP 的站点；渲染失败自动退回普通 HTTP 抓取
+  并记 warning，页面扫描独享此路径，资源下载仍走流式管线。需 `pip install ".[all]"`。
+  2026-11 实测：help.openai.com 对纯 HTTP 与 `--stealth` 均 403，`--render-js` 一次通过。
+- `--respect-robots` 的 robots.txt 请求同样吃到 `--stealth` / `--proxy`；robots 抓取失败
+  会记 warning 后按「无限制」继续（不再静默）。`run_report.json` 的 `config` 块新增
+  `stealth` / `impersonate` / `render_js` / `proxy` 字段，事后可审计每一批抓取的反爬姿势。
+- HTTP 403/401 的错误提示现在会直接指向 `--stealth` / `--render-js`，而不是笼统的
+  「检查网络」。诚实边界：行为级反爬（如 tableau.com 的 JS 挑战）对无头浏览器仍然 403，
+  此时请勿绕过——换有授权的入口或人工获取。
 
 ### Codecov 首次配置（维护者网页操作）
 

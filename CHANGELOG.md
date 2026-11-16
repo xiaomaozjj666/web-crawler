@@ -8,6 +8,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **应用层 CLI 新增 `--render-js`（无头浏览器渲染路径）**：页面扫描走库级
+  `DynamicFetcher`（Playwright Chromium + 导航逐跳守卫）渲染完成后再解析，
+  适配 JS 单页站与拒绝纯 HTTP 的站点；渲染失败自动退回普通 HTTP 抓取并记
+  warning，页面扫描独享此路径、资源下载仍走流式管线。渲染 fetcher 按线程
+  缓存复用（浏览器进程昂贵），crawl 收尾统一释放防泄漏。2026-11 竞品调研
+  实测：help.openai.com 对纯 HTTP 与 `--stealth` 均 403，`--render-js` 一次
+  通过并取回完整官方文档；tableau.com 的行为级 JS 挑战仍 403（诚实边界，
+  不做绕过）。UI 同步新增「JS 渲染（无头浏览器）」开关，配置保存/加载、
+  入库白名单随之补齐。
+- **`--stealth` 补齐 UA 配对**：TLS 指纹伪装成浏览器预设时，User-Agent 也
+  自动换成同族浏览器形态（仅当用户未显式指定 `--user-agent`）。此前指纹是
+  Chrome、UA 却是爬虫默认值，反爬侧一眼识破——julius.ai 实测：chrome131
+  指纹 + 爬虫 UA 403，UA 配对后 200。robots.txt 请求同步吃到 `--stealth`
+  / `--proxy`（`make_robots_parser` 新增 `control_args` 透传）。
+- **正文提取保留块级结构**：`extract_readable_text` 改为段落/标题/列表项
+  各占一行、行内标签不打断段落，并剥离 script/style/form 与 nav/header/
+  footer/aside 页面骨架、去掉连续重复行——提取结果可直接作为 LLM/人工
+  阅读的分析输入（此前 2.8 万字符被压成 0 换行的单行，噪音占比 95%+）。
+- **正文容器按内容量选优**：article/main/常见内容容器多候选并存时按可见
+  文本量取最长者，不再盲取第一个 `<article>`——julius.ai 产品页实测首
+  article 仅 111 字而 main 有 1416 字，盲取会截掉 92% 正文。
+- **导航守卫预检瞬时失败重试**：重定向预检链「没走完」（网络抖动/超时）
+  时整体重试至多 3 次（间隔 0.5s）再失败关闭；blocked 目标是确定性结论，
+  立即返回不重试。julius.ai 实测修复前约 1/4 概率被 `UnsafeTargetError`
+  「预检未完成」误拦，修复后连续 12 次渲染全过。预检异常同步从静默改为
+  warning 留痕（fail-closed 拒绝此前查不到原因，无法区分危险目标与抖动）。
+- **JS 壳页面正文为空不再静默**：`--extract-text` 抽出 0 字时记 warning
+  并提示 `--render-js`（docs.trae.ai 1.87MB 页面此前 0 字仍 status=success）。
+
+### Changed
+
+- **robots 抓取失败不再静默**：记 warning 后按「无限制」继续（行为兼容），
+  但日志留痕——此前 403 会静默变成全放行，合规结论无法复核。
+- **HTTP 403/401 错误提示指向有效方向**：直接建议 `--stealth` /
+  `--render-js` / `--proxy`，不再笼统「检查 URL、DNS、网络」。
+- **成功率不再假 100%**：页面失败导致 0 资源时 `success_rate_percent` 报
+  0%（此前显示 100.0）。
+- **`run_report.json` 的 `config` 块新增 `stealth` / `impersonate` /
+  `render_js` / `proxy`**：事后可审计每一批抓取的反爬姿势（此前两批
+  run_report 因缺 stealth 字段无法对照区分普通/隐身运行）。
+
+### Fixed
+
 - **自动签名采集 E2E 用例真正执行**（`tests/test_e2e_reverse_agent.py`）：
   `full_loop` 与 `hook_capture` 此前在 Windows 上被跳过、且挂着加载期
   捕获的 xfail。现在：Proactor 事件循环 fixture 替代跳过（临时切换、

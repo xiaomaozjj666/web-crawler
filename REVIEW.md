@@ -16,6 +16,8 @@
 
 6. **本地 Web UI 的 Host 白名单** — `src/web_crawler/app/_ui_http.py` 对 GET / POST / DELETE 统一先校验 Host 再进路由，回环绑定只放行 `127.0.0.1` / `localhost` / `[::1]`，`--allow-remote` 退化为形式校验。新增端点若绕过 `_is_host_allowed`，或静态文件路径未规范化，会重新打开 DNS rebinding 与路径穿越面。
 
+7. **`--render-js` 桥接与导航守卫预检重试** — `src/web_crawler/app/_crawler_core.py` 的 `render_page` / 线程本地 `_render_local` 缓存与 `close_render_fetchers`（crawl 收尾必须释放浏览器进程）、`src/web_crawler/app/_crawler_scan.py` 的 `_fetch_page_html` 渲染失败退回静态路径（用户取消不得被吞）、`src/web_crawler/_nav_guard.py` 的预检链重试（只对「链没走完」重试，blocked 目标绝不重试——重试语义变了就是门禁放松）。stealth UA 配对（`_stealth_user_agent`）只在用户未显式指定 UA 时生效；正文容器选优（`_report_extract.py` 的 90% 近峰值 + 优先级）改阈值前先用 julius.ai 与无显式 `<body>` 的迷你页两类样本回归。
+
 ## 重点看
 
 - `src/web_crawler/_ssrf.py`、`src/web_crawler/fetchers/_pin.py`、`src/web_crawler/mcp/_ssrf_gate.py`
@@ -23,6 +25,7 @@
 - `src/web_crawler/mcp/_transport.py`
 - `src/web_crawler/app/_ui_http.py`
 - `src/web_crawler/spider/spider.py`
+- `src/web_crawler/_nav_guard.py`、`src/web_crawler/app/_crawler_core.py`（render 桥接）
 
 ## 可以跳过
 
