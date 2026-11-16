@@ -216,6 +216,7 @@ def build_args(form: dict[str, list[str]]) -> argparse.Namespace:
     args.crawl_pages = checked("crawl_pages")
     args.respect_robots = checked("respect_robots")
     args.stealth = checked("stealth")
+    args.render_js = checked("render_js")
     args.save_config = ""
     args.load_config = ""
     rules_text = value("field_rules").strip()
@@ -252,6 +253,7 @@ _DB_CONFIG_FIELDS = (
     "crawl_pages",
     "respect_robots",
     "stealth",
+    "render_js",
     "keep_page_samples",
     "field_rules",
 )

@@ -4569,3 +4569,427 @@ class TestPostProcessErrorPaths:
         )
         assert (video_count, failed_count) == (0, 0)
         failure.assert_called_once()
+
+
+# ========== --render-js 桥接与 stealth UA 配对（2026-11 竞品调研实测驱动）==========
+
+
+class TestStealthUserAgent:
+    """TLS 指纹伪装必须与 UA 成对：julius.ai 实测 chrome131 指纹 + 爬虫默认 UA = 403。"""
+
+    def test_stealth_pairs_browser_ua_with_fingerprint(self) -> None:
+        """stealth + 默认 UA 时，请求头换成与指纹匹配的浏览器 UA。"""
+        control_args = Mock()
+        control_args.stealth = True
+        control_args.impersonate = "chrome131"
+        control_args.proxy = None
+        fake = Mock()
+        fake.get.return_value = _mock_fetch_response(200, b"data", {"content-type": "text/html"})
+        with patch.object(core, "_get_app_fetcher", return_value=fake):
+            cr.fetch("https://example.com", 30, {}, 0, None, control_args=control_args)
+        sent = fake.get.call_args.kwargs["headers"]["User-Agent"]
+        assert "Chrome/131" in sent
+        assert "ResourceCrawler" not in sent
+
+    def test_stealth_explicit_user_agent_preserved(self) -> None:
+        """用户显式指定的 UA 不被 stealth 覆盖。"""
+        control_args = Mock()
+        control_args.stealth = True
+        control_args.impersonate = "chrome131"
+        control_args.proxy = None
+        fake = Mock()
+        fake.get.return_value = _mock_fetch_response(200, b"data", {})
+        with patch.object(core, "_get_app_fetcher", return_value=fake):
+            cr.fetch(
+                "https://example.com",
+                30,
+                {"User-Agent": "custom-agent"},
+                0,
+                None,
+                control_args=control_args,
+            )
+        assert fake.get.call_args.kwargs["headers"]["User-Agent"] == "custom-agent"
+
+    def test_non_stealth_keeps_default_user_agent(self) -> None:
+        """非 stealth 路径保持爬虫默认 UA（robots 语义与历史行为不变）。"""
+        fake = Mock()
+        fake.get.return_value = _mock_fetch_response(200, b"data", {})
+        with patch.object(core, "_get_app_fetcher", return_value=fake):
+            cr.fetch("https://example.com", 30, {}, 0, None)
+        sent = fake.get.call_args.kwargs["headers"]["User-Agent"]
+        assert sent == ctx_mod.DEFAULT_USER_AGENT
+
+    def test_user_agent_presets(self) -> None:
+        """各指纹预设映射到语义匹配的浏览器 UA。"""
+        assert "Firefox/135.0" in core._stealth_user_agent("firefox135")
+        assert "Edg/" in core._stealth_user_agent("edge101")
+        assert "Chrome/120" in core._stealth_user_agent("chrome120")
+        assert "Version/18" in core._stealth_user_agent("safari18")
+        # 未知预设回退到 Chrome 形态而不是爬虫默认值
+        assert "Chrome/" in core._stealth_user_agent("unknown-preset")
+
+
+class _FakeDynamicFetcher:
+    """记录构造参数与调用序列的 DynamicFetcher 桩。"""
+
+    instances: list[_FakeDynamicFetcher] = []
+
+    def __init__(
+        self,
+        timeout: float,
+        proxy: str | None,
+        extra_headers: dict[str, str] | None,
+        block_images: bool,
+        network_idle: bool,
+    ) -> None:
+        self.timeout = timeout
+        self.proxy = proxy
+        self.extra_headers = extra_headers
+        self.block_images = block_images
+        self.network_idle = network_idle
+        self.closed = False
+        self.fetched: list[str] = []
+        self.response: Mock = _mock_fetch_response(
+            200, b"<html>rendered</html>", {"content-type": "text/html"}
+        )
+        _FakeDynamicFetcher.instances.append(self)
+
+    def fetch(self, url: str) -> Mock:
+        self.fetched.append(url)
+        return self.response
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TestRenderPageBridge:
+    def setup_method(self) -> None:
+        core._render_local.cache = {}
+        _FakeDynamicFetcher.instances = []
+
+    def teardown_method(self) -> None:
+        core._render_local.cache = {}
+        _FakeDynamicFetcher.instances = []
+
+    def test_render_page_success_and_cache(self) -> None:
+        with patch.object(core, "_import_dynamic_fetcher", return_value=_FakeDynamicFetcher):
+            data, ct = core.render_page("https://example.com", 30, {"X-A": "1"})
+        assert data == b"<html>rendered</html>"
+        assert ct == "text/html"
+        assert len(_FakeDynamicFetcher.instances) == 1
+        fake = _FakeDynamicFetcher.instances[0]
+        assert fake.block_images is True
+        assert fake.network_idle is True
+        # 同线程同参数复用实例（浏览器进程昂贵）
+        with patch.object(core, "_import_dynamic_fetcher", return_value=_FakeDynamicFetcher):
+            core.render_page("https://example.com/other", 30, {"X-A": "1"})
+        assert len(_FakeDynamicFetcher.instances) == 1
+        # 默认爬虫 UA 不透传给浏览器（浏览器用自己的真实 UA），其余头保留
+        assert fake.extra_headers == {"X-A": "1"}
+
+    def test_render_page_passes_custom_headers(self) -> None:
+        with patch.object(core, "_import_dynamic_fetcher", return_value=_FakeDynamicFetcher):
+            core.render_page("https://example.com", 30, {"Cookie": "a=b", "User-Agent": "x"})
+        fake = _FakeDynamicFetcher.instances[0]
+        assert fake.extra_headers == {"Cookie": "a=b"}
+
+    def test_render_page_4xx_raises_fetch_error_with_status(self) -> None:
+        class _Forbidden(_FakeDynamicFetcher):
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+                self.response = _mock_fetch_response(403, b"denied", {})
+
+        with (
+            patch.object(core, "_import_dynamic_fetcher", return_value=_Forbidden),
+            pytest.raises(FetchError, match="HTTP Error 403"),
+        ):
+            core.render_page("https://example.com", 30, {})
+
+    def test_close_render_fetchers_closes_cached_instances(self) -> None:
+        with patch.object(core, "_import_dynamic_fetcher", return_value=_FakeDynamicFetcher):
+            core.render_page("https://example.com", 30, {})
+        assert len(_FakeDynamicFetcher.instances) == 1
+        core.close_render_fetchers()
+        assert _FakeDynamicFetcher.instances[0].closed is True
+        assert core._render_local.cache == {}
+
+
+class TestRenderJsScanPath:
+    """页面扫描的 --render-js 分支：渲染优先、失败退回静态 HTTP。"""
+
+    @staticmethod
+    def _render_ctx(tmp_path: Path) -> tuple[Any, Any]:
+        from web_crawler.app._crawler_context import _CrawlContext
+        from web_crawler.app._crawler_scan import _fetch_page_html
+
+        args = argparse.Namespace(
+            url="https://example.com",
+            out=str(tmp_path),
+            timeout=30,
+            retries=0,
+            max_bytes=0,
+            render_js=True,
+            impersonate="chrome131",
+            stealth=False,
+            proxy=None,
+            encoding=None,
+        )
+        ctx = _CrawlContext(
+            args=args,
+            headers={},
+            output_dir=tmp_path,
+            max_bytes=None,
+            block_keywords=[],
+            robots=None,
+            rate_limiter=MagicMock(),
+            dedup=None,
+        )
+        return _fetch_page_html, ctx
+
+    def test_render_success_uses_browser_html(self, tmp_path: Path) -> None:
+        _fetch_page_html, ctx = self._render_ctx(tmp_path)
+        with patch.object(core, "render_page", return_value=(b"<html>browser</html>", "text/html")):
+            data, ct = _fetch_page_html(ctx, "https://example.com")
+        assert data == b"<html>browser</html>"
+        assert ct == "text/html"
+        ctx.rate_limiter.wait_if_needed.assert_called_once()
+        ctx.rate_limiter.record_request.assert_called_once()
+
+    def test_render_failure_falls_back_to_http(self, tmp_path: Path) -> None:
+        _fetch_page_html, ctx = self._render_ctx(tmp_path)
+        with (
+            patch.object(core, "render_page", side_effect=FetchError("render crashed")),
+            patch.object(
+                core, "fetch", return_value=(b"<html>static</html>", "text/html")
+            ) as static_fetch,
+        ):
+            data, ct = _fetch_page_html(ctx, "https://example.com")
+        assert data == b"<html>static</html>"
+        assert ct == "text/html"
+        static_fetch.assert_called_once()
+
+    def test_render_max_bytes_exceeded_falls_back(self, tmp_path: Path) -> None:
+        _fetch_page_html, ctx = self._render_ctx(tmp_path)
+        ctx.max_bytes = 10
+        with (
+            patch.object(core, "render_page", return_value=(b"x" * 100, "text/html")),
+            patch.object(
+                core, "fetch", return_value=(b"<html>small</html>", "text/html")
+            ) as static_fetch,
+        ):
+            data, _ = _fetch_page_html(ctx, "https://example.com")
+        assert data == b"<html>small</html>"
+        static_fetch.assert_called_once()
+
+    def test_render_user_cancel_is_not_swallowed(self, tmp_path: Path) -> None:
+        _fetch_page_html, ctx = self._render_ctx(tmp_path)
+        with (
+            patch.object(core, "render_page", side_effect=RuntimeError("cancelled by user")),
+            pytest.raises(RuntimeError, match="cancelled by user"),
+        ):
+            _fetch_page_html(ctx, "https://example.com")
+
+    def test_crawl_with_render_js_flag(self, tmp_path: Path) -> None:
+        """crawl 集成：--render-js 时页面 HTML 来自渲染路径，资源解析正常。"""
+        html = b'<html><body><img src="logo.png"><p>rendered page</p></body></html>'
+        with patch.object(core, "render_page", return_value=(html, "text/html")) as render:
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--list-only",
+                    "--render-js",
+                    "--workers",
+                    "1",
+                ]
+            )
+            exit_code = cr.crawl(args)
+        assert exit_code == 0
+        render.assert_called_once()
+        manifest = json.loads((tmp_path / "resources_manifest.json").read_text())
+        assert any(row["url"].endswith("logo.png") for row in manifest)
+
+    def test_crawl_closes_render_fetchers_in_finally(self, tmp_path: Path) -> None:
+        """无论抓取成败，crawl 收尾都要释放渲染 fetcher（浏览器进程不泄漏）。"""
+        with patch.object(cr, "close_render_fetchers") as close:
+            args = cr.build_parser().parse_args(
+                ["--url", "https://example.com", "--out", str(tmp_path), "--list-only"]
+            )
+            cr.crawl(args)
+        close.assert_called_once()
+
+
+class TestExtractReadableTextStructure:
+    """正文提取保留块级结构、剥离导航骨架、去掉连续重复行。"""
+
+    def test_blocks_render_on_separate_lines(self) -> None:
+        html = "<main><h1>Title</h1><p>First paragraph text</p><p>Second paragraph</p></main>"
+        result = cr.extract_readable_text(html)
+        lines = result.split("\n")
+        assert lines == ["Title", "First paragraph text", "Second paragraph"]
+
+    def test_inline_tags_do_not_break_paragraph(self) -> None:
+        html = "<article><p>Read the <a href='/docs'>documentation</a> for details.</p></article>"
+        result = cr.extract_readable_text(html)
+        assert result == "Read the documentation for details."
+
+    def test_nav_header_footer_aside_stripped_inside_content_root(self) -> None:
+        html = (
+            "<main>"
+            "<nav><a href='/a'>Nav Link</a></nav>"
+            "<header>Banner Text</header>"
+            "<p>Real content paragraph</p>"
+            "<footer>Copyright Footer</footer>"
+            "<aside>Sidebar Junk</aside>"
+            "</main>"
+        )
+        result = cr.extract_readable_text(html)
+        assert "Real content paragraph" in result
+        assert "Nav Link" not in result
+        assert "Banner Text" not in result
+        assert "Copyright Footer" not in result
+        assert "Sidebar Junk" not in result
+
+    def test_script_style_and_controls_stripped(self) -> None:
+        html = (
+            "<article><style>.x{color:red}</style>"
+            "<script>var a=1;</script>"
+            "<form><input name='q'><button>Go</button></form>"
+            "<p>Visible paragraph text</p></article>"
+        )
+        result = cr.extract_readable_text(html)
+        assert "Visible paragraph text" in result
+        assert "var a" not in result
+        assert "color:red" not in result
+        assert "Go" not in result
+
+    def test_lists_and_nested_blocks(self) -> None:
+        html = "<main><ul><li><p>Nested item paragraph</p></li><li>Plain item</li></ul></main>"
+        result = cr.extract_readable_text(html)
+        lines = result.split("\n")
+        assert "Nested item paragraph" in lines
+        assert "Plain item" in lines
+
+    def test_consecutive_duplicate_lines_removed(self) -> None:
+        html = "<main><div>Same nav text</div><div>Same nav text</div><p>Unique</p></main>"
+        result = cr.extract_readable_text(html)
+        lines = result.split("\n")
+        assert lines.count("Same nav text") == 1
+        assert "Unique" in lines
+
+    def test_loose_text_between_blocks_kept(self) -> None:
+        html = "<main>Lead text <p>Paragraph</p> trailing text</main>"
+        result = cr.extract_readable_text(html)
+        assert "Lead text" in result
+        assert "Paragraph" in result
+        assert "trailing text" in result
+
+    def test_body_fallback_keeps_paragraphs(self) -> None:
+        html = "<body><h2>Section</h2><p>Body paragraph content</p></body>"
+        result = cr.extract_readable_text(html)
+        assert result == "Section\nBody paragraph content"
+
+    def test_existing_contracts_hold(self) -> None:
+        """历史契约不回归：article 优先 / script 剥离 / substring 可匹配。"""
+        article_html = "<nav>x</nav><article><p>Main article text kept</p></article>"
+        assert "Main article text kept" in cr.extract_readable_text(article_html)
+        script_html = (
+            "<article><script>var x = 1;</script><p>Visible text here is long enough</p></article>"
+        )
+        result = cr.extract_readable_text(script_html)
+        assert "var x" not in result
+        assert "Visible text" in result
+
+
+# ========== robots 抓取透传与 403 提示（2026-11 调研实测驱动）==========
+
+
+class TestRobotsControlArgs:
+    def test_control_args_forwarded_to_fetch(self) -> None:
+        """--stealth/--proxy 经 control_args 透传到 robots.txt 抓取。"""
+        control_args = Mock()
+        control_args.stealth = True
+        control_args.impersonate = "chrome131"
+        control_args.proxy = "http://127.0.0.1:7890"
+        with patch.object(
+            core, "fetch", return_value=(b"User-agent: *\nDisallow: /p", "text/plain")
+        ) as fetch:
+            cr.make_robots_parser("https://example.com", {}, 10, control_args=control_args)
+        assert fetch.call_args.kwargs.get("control_args") is control_args
+
+    def test_fetch_failure_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        """robots 抓取失败不再静默：warning 留痕，行为保持「无限制」兼容。"""
+        import logging as _logging
+
+        with (
+            caplog.at_level(_logging.WARNING, logger="crawler"),
+            patch.object(core, "fetch", side_effect=Exception("network error")),
+        ):
+            parser = cr.make_robots_parser("https://example.com", {}, 10)
+        assert parser.can_fetch("*", "https://example.com/anything") is True
+        assert any("robots.txt fetch failed" in record.message for record in caplog.records)
+
+
+class TestForbiddenHint:
+    def test_403_hint_suggests_stealth_and_render(self) -> None:
+        from web_crawler._cli import render_error
+
+        exc = FetchError("HTTP Error 403")
+        exc.status = 403  # type: ignore[attr-defined]
+        rendered = render_error(exc, context="https://example.com")
+        assert "--stealth" in rendered
+        assert "--render-js" in rendered
+
+    def test_non_403_keeps_generic_hint(self) -> None:
+        from web_crawler._cli import render_error
+
+        exc = FetchError("HTTP Error 503")
+        exc.status = 503  # type: ignore[attr-defined]
+        rendered = render_error(exc, context="https://example.com")
+        assert "--delay" in rendered
+        assert "--stealth" not in rendered
+
+
+# ========== 正文容器选优（2026-11 调研实测驱动）==========
+
+
+class TestReadableTextCandidateSelection:
+    def test_prefers_larger_main_over_tiny_article(self) -> None:
+        """julius.ai 实测回归：盲取首 article 会截掉 92% 正文。"""
+        html = (
+            "<main>"
+            "<article>Short teaser</article>"
+            "<p>Real main content line one</p>"
+            "<p>Real main content line two with more detail</p>"
+            "</main>"
+        )
+        result = cr.extract_readable_text(html)
+        assert "Real main content line one" in result
+        assert "Real main content line two" in result
+        assert "Short teaser" in result
+
+    def test_article_preferred_when_volume_close_to_body(self) -> None:
+        """无显式 body 时 lxml 会把 article 归进 head（解析器工件）——
+        article 与 body 文本量接近时仍优先 article，避免丢正文。"""
+        html = (
+            "<html><title>Second</title>"
+            "<article>Second body</article>"
+            "<a href='/related'>Related page</a></html>"
+        )
+        result = cr.extract_readable_text(html)
+        assert "Second body" in result
+
+    def test_container_inline_leaf_text_collected(self) -> None:
+        """lxml 自动包 body 后，行内 <a> 是容器直接子节点：其文本不丢。"""
+        html = (
+            "<html><title>Second</title>"
+            "<article>tiny</article>"
+            "<a href='/r'>Related page</a>"
+            "<a href='/r2'>Second link</a></html>"
+        )
+        result = cr.extract_readable_text(html)
+        # 无块级子节点的容器按段落语义整行合并（保句子完整性优先于逐链接分行）
+        assert "Related page" in result
+        assert "Second link" in result

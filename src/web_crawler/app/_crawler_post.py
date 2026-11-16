@@ -169,6 +169,14 @@ def _extract_page_contents(ctx: _CrawlContext, feed: TextIO | None) -> None:
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     destination.write_text(text, encoding="utf-8")
                     text_count += 1
+                else:
+                    # JS 壳页面此前静默「成功」：正文 0 字但 status=success，
+                    # 调研会把「没渲染」误判成「页面没内容」——留 warning 并
+                    # 指向渲染路径（2026-11 实测 docs.trae.ai 1.87MB → 0 字）。
+                    _log.warning(
+                        "no extractable text for %s (page may be a JS shell); consider --render-js",
+                        page_url,
+                    )
             except Exception as exc:
                 _log.warning("text extraction failed for %s: %s", page_url, exc)
         if ctx.rules is not None and coverage is not None:

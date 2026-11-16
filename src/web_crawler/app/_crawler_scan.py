@@ -127,6 +127,37 @@ def _restore_state(ctx: _CrawlContext) -> None:
     )
 
 
+def _fetch_page_html(ctx: _CrawlContext, page_url: str) -> tuple[bytes, str]:
+    """``--render-js`` 路径：headless Chromium 渲染页面，失败退回静态 HTTP。
+
+    渲染走库级 ``DynamicFetcher``（导航逐跳守卫 / 代理 / SSRF 校验在库层
+    生效）；渲染失败（浏览器崩溃、超时、目标站对 headless 报 4xx 等）不
+    终止扫描，退回 :func:`cr.fetch` 的静态路径，让错误统一走既有分类。
+    域级限速两条路径共用同一个 limiter。
+    """
+    args = ctx.args
+    try:
+        ctx.rate_limiter.wait_if_needed(page_url)
+        data, content_type = cr.render_page(page_url, args.timeout, ctx.headers, control_args=args)
+        ctx.rate_limiter.record_request(page_url)
+        if ctx.max_bytes and len(data) > ctx.max_bytes:
+            raise ValueError(f"file exceeds --max-bytes ({ctx.max_bytes})")
+        return data, content_type
+    except Exception as exc:
+        if isinstance(exc, RuntimeError) and str(exc) == "cancelled by user":
+            raise
+        _log.warning("JS render failed for %s: %s; falling back to HTTP fetch", page_url, exc)
+        return cr.fetch(
+            page_url,
+            args.timeout,
+            ctx.headers,
+            args.retries,
+            ctx.max_bytes,
+            rate_limiter=ctx.rate_limiter,
+            control_args=args,
+        )
+
+
 def _scan_pages(ctx: _CrawlContext) -> bool:
     """逐页扫描：抓取页面、解析资源、按 --crawl-pages 扩展待扫队列。
 
@@ -178,15 +209,18 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
         )
         ctx.seen_pages.add(page_url)
         try:
-            data, content_type = cr.fetch(
-                page_url,
-                args.timeout,
-                ctx.headers,
-                args.retries,
-                ctx.max_bytes,
-                rate_limiter=ctx.rate_limiter,
-                control_args=args,
-            )
+            if getattr(args, "render_js", False):
+                data, content_type = _fetch_page_html(ctx, page_url)
+            else:
+                data, content_type = cr.fetch(
+                    page_url,
+                    args.timeout,
+                    ctx.headers,
+                    args.retries,
+                    ctx.max_bytes,
+                    rate_limiter=ctx.rate_limiter,
+                    control_args=args,
+                )
         except Exception as exc:
             if isinstance(exc, RuntimeError) and str(exc) == "cancelled by user":
                 return True

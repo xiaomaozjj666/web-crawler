@@ -77,7 +77,14 @@ def build_report_context(
     failed_rows = [row for row in rows if row.status.startswith("error")]
     skipped_rows = [row for row in rows if row.status.startswith("skipped")]
     skipped_count = len(skipped_rows)
-    success_rate = round((ok_count + listed_count) * 100 / len(rows), 2) if rows else 100.0
+    if rows:
+        success_rate = round((ok_count + listed_count) * 100 / len(rows), 2)
+    elif page_scan is not None and page_scan.get("failed"):
+        # 没发现任何资源是因为页面本身失败（403/网络错误等）——报 0% 而不是
+        # 假「100%」（2026-11 调研实测：1 页 403 + 0 资源曾显示 success_rate 100.0）
+        success_rate = 0.0
+    else:
+        success_rate = 100.0
     duration = max(0.0, end_time - start_time)
 
     # 按页面资源数量排序，取前 15（携带真实页面标题）

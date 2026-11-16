@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 import threading
 import time
@@ -170,6 +171,36 @@ def _request_headers(url: str, headers: dict[str, str]) -> dict[str, str]:
     return request_headers
 
 
+# --stealth 的 UA 与 TLS 指纹必须成对：curl_cffi 伪装成 Chrome 的 JA3/JA4，
+# 请求头里却还是爬虫自己的 UA，反爬侧一眼识破（2026-11-17 实测：julius.ai
+# 对「chrome131 指纹 + ResourceCrawler UA」返回 403，换成浏览器 UA 即 200）。
+# 仅当用户未显式指定 UA（仍是默认值）时才替换；显式 --user-agent 尊重用户选择。
+def _stealth_user_agent(impersonate: str | None) -> str:
+    """返回与 *impersonate* 指纹预设语义匹配的浏览器 User-Agent。"""
+    preset = (impersonate or "chrome131").strip().lower()
+    match = re.search(r"(\d+)", preset)
+    version = match.group(1) if match else "131"
+    if preset.startswith("firefox"):
+        return (
+            f"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:{version}.0) "
+            f"Gecko/20100101 Firefox/{version}.0"
+        )
+    if preset.startswith("safari"):
+        return (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+            f"(KHTML, like Gecko) Version/{version}.0 Safari/605.1.15"
+        )
+    if preset.startswith("edge"):
+        return (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            f"(KHTML, like Gecko) Chrome/{version}.0.0.0 Safari/537.36 Edg/{version}.0.0.0"
+        )
+    return (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        f"(KHTML, like Gecko) Chrome/{version}.0.0.0 Safari/537.36"
+    )
+
+
 def should_stop(args: argparse.Namespace | None) -> bool:
     callback = getattr(args, "should_stop", None) if args is not None else None
     return bool(callback and callback())
@@ -219,6 +250,9 @@ def fetch(
     impersonate: str | None = getattr(control_args, "impersonate", "chrome131") if stealth else None
     proxy = getattr(control_args, "proxy", None) if control_args else None
     request_headers = _request_headers(url, headers)
+    if stealth and request_headers.get("User-Agent") == DEFAULT_USER_AGENT:
+        # TLS 指纹已伪装成浏览器，UA 不能还停留在爬虫默认值（见 _stealth_user_agent）。
+        request_headers["User-Agent"] = _stealth_user_agent(impersonate)
 
     # 最终响应头暂存（on_headers 回调写入）：content_type 供返回值，
     # Retry-After 供 429 退避使用。
@@ -314,6 +348,105 @@ def fetch(
 
     assert last_error is not None
     raise last_error
+
+
+# ── JS 渲染抓取（--render-js，库级 DynamicFetcher 桥接）──────────────
+# 应用层此前只有静态 HTTP 路径：JS 单页应用渲染不出正文、纯 TLS 伪装也
+# 过不了 Cloudflare 类 bot 管理页（2026-11-17 调研实测 julius.ai）。
+# 库级 DynamicFetcher（Playwright Chromium + 逐跳导航守卫）一直存在，
+# 这里把它桥接进应用层 fetch 管线：页面扫描阶段可选用，资源下载不受影响。
+
+# DynamicFetcher 持有真实浏览器进程，同样不可跨线程并发使用：
+# 每个 worker 线程按 (timeout, proxy, headers) 缓存独立实例。
+_render_local = threading.local()
+
+
+def _import_dynamic_fetcher() -> Any:
+    """延迟导入库级 ``DynamicFetcher``；不可用时抛 ``FetchError``。"""
+    try:
+        from web_crawler import DynamicFetcher  # type: ignore[import-not-found]
+    except ImportError:
+        _src = Path(__file__).resolve().parent.parent / "src"
+        if str(_src) not in sys.path:
+            sys.path.insert(0, str(_src))
+        try:
+            from web_crawler import DynamicFetcher  # type: ignore[import-not-found]
+        except ImportError:
+            raise FetchError(
+                "web_crawler.DynamicFetcher is not importable; "
+                "install the library with the [all] extra"
+            ) from None
+    return DynamicFetcher
+
+
+def _get_render_fetcher(timeout: float, proxy: str | None, headers: dict[str, str]) -> Any:
+    """返回与 (timeout, proxy, headers) 匹配的线程本地 ``DynamicFetcher``。
+
+    UA 处理：headers 里的默认爬虫 UA 会被剥掉（浏览器用自己的真实 Chrome
+    UA）；用户显式指定的 UA 保留透传。
+    """
+    cache: dict[tuple[str, str | None, tuple[tuple[str, str], ...]], Any] | None = getattr(
+        _render_local, "cache", None
+    )
+    if cache is None:
+        cache = {}
+        _render_local.cache = cache
+    key = (
+        str(timeout),
+        proxy,
+        tuple(sorted((k, v) for k, v in headers.items() if k.lower() != "user-agent")),
+    )
+    if key in cache:
+        return cache[key]
+    fetcher_cls = _import_dynamic_fetcher()
+    browser_headers = {k: v for k, v in headers.items() if k.lower() != "user-agent"}
+    cache[key] = fetcher_cls(
+        timeout=float(timeout),
+        proxy=proxy,
+        extra_headers=browser_headers or None,
+        block_images=True,
+        network_idle=True,
+    )
+    return cache[key]
+
+
+def render_page(
+    url: str,
+    timeout: int,
+    headers: dict[str, str],
+    control_args: argparse.Namespace | None = None,
+) -> tuple[bytes, str]:
+    """用 headless Chromium 渲染 ``url``，返回 ``(body, content_type)``。
+
+    与 :func:`fetch` 同源的安全与控制面：SSRF 入口校验、代理透传、
+    4xx 视为失败（FetchError 携带 status，供上层统一分类）。渲染由库级
+    ``DynamicFetcher`` 完成——导航逐跳守卫（预检 + route 拦截 + 落点复核）
+    在其内部生效。
+    """
+    if not is_power_mode():
+        validate_url_host(url, resolve=True)
+    proxy = getattr(control_args, "proxy", None) if control_args else None
+    fetcher = _get_render_fetcher(float(timeout), proxy, headers)
+    resp = fetcher.fetch(url)
+    if resp.status >= 400:
+        exc = FetchError(f"HTTP Error {resp.status}")
+        exc.status = resp.status  # type: ignore[attr-defined]
+        raise exc
+    content_type = resp.headers.get("content-type") or resp.headers.get("Content-Type") or ""
+    return resp.content, str(content_type)
+
+
+def close_render_fetchers() -> None:
+    """关闭当前线程持有的渲染 fetcher（crawl 收尾调用，释放浏览器进程）。"""
+    cache: dict[Any, Any] | None = getattr(_render_local, "cache", None)
+    if not cache:
+        return
+    for fetcher in cache.values():
+        try:
+            fetcher.close()
+        except Exception as exc:  # pragma: no cover - 浏览器已崩溃时 best-effort 清理
+            _log.warning("failed to close render fetcher: %s", exc)
+    cache.clear()
 
 
 # ── 抓取主函数 ───────────────────────────────────────────────────────

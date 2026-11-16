@@ -15,6 +15,7 @@ sitemap.xml 页面发现、m3u8/mpd 播放列表展开。
 
 from __future__ import annotations
 
+import argparse
 import html as html_lib
 import logging
 import re
@@ -30,15 +31,38 @@ from web_crawler.app.crawler_net import looks_like_downloadable, normalize_url
 _log = logging.getLogger("crawler")
 
 
-def make_robots_parser(root_url: str, headers: dict[str, str], timeout: int) -> RobotFileParser:
+def make_robots_parser(
+    root_url: str,
+    headers: dict[str, str],
+    timeout: int,
+    control_args: argparse.Namespace | None = None,
+) -> RobotFileParser:
+    """抓取并解析 robots.txt；返回 ``RobotFileParser``。
+
+    ``control_args`` 透传给 :func:`cr.fetch`：``--stealth`` / ``--proxy`` 对
+    robots.txt 请求同样生效（2026-11 调研实测发现 robots 请求固定走默认
+    UA，站点对它返回 403 时会静默变成「无限制」，合规结论无法复核）。
+    抓取失败不再静默：记 warning 后按「无限制」继续（与历史行为一致），
+    但日志里留下了证据。
+    """
     parsed = urlparse(root_url)
     robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
     robot_parser = RobotFileParser()
     robot_parser.set_url(robots_url)
     try:
-        data, _ = cr.fetch(robots_url, timeout, headers, retries=0, max_bytes=1024 * 1024)
+        data, _ = cr.fetch(
+            robots_url,
+            timeout,
+            headers,
+            retries=0,
+            max_bytes=1024 * 1024,
+            control_args=control_args,
+        )
         robot_parser.parse(data.decode("utf-8", errors="replace").splitlines())
-    except Exception:
+    except Exception as exc:
+        _log.warning(
+            "robots.txt fetch failed for %s: %s; assuming no restrictions", robots_url, exc
+        )
         robot_parser.parse([])
     return robot_parser
 

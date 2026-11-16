@@ -15,6 +15,7 @@ import json
 import logging
 import re
 from pathlib import Path
+from typing import Any
 
 from web_crawler.app._offline import RewriteTable
 from web_crawler.app.crawler_models import ManifestRow
@@ -204,12 +205,175 @@ def write_extracted_data(output_dir: Path, data: list[dict[str, object]]) -> Non
 
 
 def extract_readable_text(html: str | Selector) -> str:
-    """优先提取 article、main 或常见正文容器的可见文本。"""
+    """优先提取 article、main 或常见正文容器的可见文本。
+
+    与单行的 :func:`_visible_text` 不同，本函数保留块级结构：段落/标题/
+    列表项各占一行，行内标签（a / strong / code …）不打断所在段落；同时
+    剥离 script / style / nav / footer 等非正文骨架并去掉连续重复行。
+    供 LLM 或人阅读的正文输入用这个，计数字段仍用 :func:`_visible_text`。
+
+    正文容器不再盲目取第一个 ``<article>``：多个候选（全部 article +
+    main/常见内容容器 + body）按可见文本量取最长者——2026-11 竞品调研
+    实测 julius.ai 产品页第一个 article 只有 111 字，main 有 1416 字，
+    盲取首 article 会把正文截掉 92%。
+    """
     selector = _extraction_selector(html)
-    article = selector.css_first("article")
-    main = selector.css_first(
-        "main, #content, #article, #main-content, #post-content, "
-        ".content, .post-content, .article-content, .entry-content, .main-content"
+
+    candidates: list[Selector] = []
+    candidates.extend(selector.css("article"))
+    candidates.extend(
+        selector.css(
+            "main, #content, #article, #main-content, #post-content, "
+            ".content, .post-content, .article-content, .entry-content, .main-content"
+        )
     )
     body = selector.css_first("body")
-    return _visible_text(article or main or body or selector)
+    if body is not None:
+        candidates.append(body)
+    if not candidates:
+        candidates.append(selector)
+
+    # 候选优先级：article > main/内容容器 > body（candidates 顺序即优先级）。
+    # 在「近峰值」（>= 90% 最大可见文本量）的候选里取优先级最高者：
+    # - julius.ai 产品页：首 article 111 字、main 1416 字 → 取 main（盲取
+    #   首 article 会截掉 92% 正文）；
+    # - 无显式 <body> 的迷你页面：lxml 可能把 <article> 归进 <head>（解析器
+    #   工件），article 与 body 文本量接近时仍优先 article，避免丢正文。
+    volumes = [len(_visible_text(node)) for node in candidates]
+    peak = max(volumes, default=0)
+    threshold = peak * 0.9
+    root = candidates[-1]
+    for node, volume in zip(candidates, volumes, strict=False):
+        if volume >= threshold:
+            root = node
+            break
+    return _render_blocks(root.element)
+
+
+# 正文渲染时整棵剪掉的骨架标签：脚本/样式/表单控件，以及页面级导航、
+# 页眉页脚、侧栏（boilerplate）。这些标签里的文本在模板页逐页重复、
+# 与正文无关——2026-11 竞品调研实测中它们是提取结果的主要噪音源。
+_STRUCTURE_TAGS = frozenset(
+    {
+        "script",
+        "style",
+        "noscript",
+        "template",
+        "svg",
+        "iframe",
+        "form",
+        "button",
+        "select",
+        # 文档头不进正文：候选根落到整个文档（页面没有 article/main/body
+        # 容器）时避免 <title>/<head> 文案混入正文
+        "head",
+        "title",
+        "meta",
+        "link",
+    }
+)
+_FORM_INPUT_TAGS = frozenset({"input", "textarea", "option", "label"})
+_CHROME_TAGS = frozenset({"nav", "header", "footer", "aside"})
+_BLOCK_TAGS = frozenset(
+    {
+        "address",
+        "article",
+        "blockquote",
+        "dd",
+        "details",
+        "div",
+        "dl",
+        "dt",
+        "fieldset",
+        "figcaption",
+        "figure",
+        "footer",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "li",
+        "main",
+        "nav",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "summary",
+        "table",
+        "tbody",
+        "td",
+        "tfoot",
+        "th",
+        "thead",
+        "tr",
+        "ul",
+    }
+)
+
+
+def _render_blocks(element: Any) -> str:
+    """把 DOM 子树渲染成一行一块的正文文本（块级标签换行，行内不打断）。"""
+    lines: list[str] = []
+
+    def emit(value: object) -> None:
+        text = " ".join(str(value or "").split())
+        if text:
+            lines.append(text)
+
+    def has_block_child(node: Any) -> bool:
+        return any(
+            isinstance(child.tag, str) and child.tag.lower() in _BLOCK_TAGS for child in node
+        )
+
+    def leaf_text(node: Any) -> str:
+        """叶子节点整棵子树的文本合并为一行；相邻行内元素之间补空格。
+
+        ``"".join(itertext())`` 会把相邻行内元素（如连续 <a>）的文本无分隔
+        拼在一起（实测 "Related pageSecond link"），按文本节点边界补空格
+        与旧版 :func:`_visible_text` 的行为一致。
+        """
+        parts: list[str] = []
+        if node.text:
+            parts.append(node.text)
+        for child in node:
+            if isinstance(child.tag, str) and child.tag.lower() in (
+                _STRUCTURE_TAGS | _FORM_INPUT_TAGS | _CHROME_TAGS
+            ):
+                if child.tail:
+                    parts.append(child.tail)
+                continue
+            parts.append(leaf_text(child))
+            if child.tail:
+                parts.append(child.tail)
+        return " ".join(part for part in parts if part and part.strip())
+
+    def walk(node: Any) -> None:
+        tag = node.tag if isinstance(node.tag, str) else ""
+        if not tag:
+            return
+        lowered = tag.lower()
+        if lowered in _STRUCTURE_TAGS or lowered in _FORM_INPUT_TAGS or lowered in _CHROME_TAGS:
+            return
+        if has_block_child(node):
+            # 容器节点：块间散落的裸文本单独成行，再逐个下钻子节点。
+            # 行内元素（lxml 自动包 body 后的 <a> 等）也可能是容器直接子节点。
+            emit(node.text)
+            for child in node:
+                walk(child)
+                emit(child.tail)
+            return
+        # 叶子节点（块级或行内）：整棵子树的文本合并为一行
+        emit(leaf_text(node))
+
+    walk(element)
+    # 连续重复行去重：模板页的导航/版权文案会逐区块重复出现
+    result: list[str] = []
+    for line in lines:
+        if line and result and result[-1] == line:
+            continue
+        result.append(line)
+    return "\n".join(result)

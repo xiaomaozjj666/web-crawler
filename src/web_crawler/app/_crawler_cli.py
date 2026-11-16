@@ -139,6 +139,14 @@ Examples:
         "See curl_cffi BrowserType for the full list (chrome120, edge101, firefox135, ...).",
     )
     parser.add_argument(
+        "--render-js",
+        action="store_true",
+        help="Render pages with headless Chromium (library DynamicFetcher) before "
+        "parsing, for JS-heavy single-page sites or bot-managed pages that reject "
+        "plain HTTP. Falls back to plain HTTP when rendering fails. Page scanning "
+        "only; resource downloads stay on the streaming path. Requires [all] extra.",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Resume interrupted downloads using .part files and HTTP Range.",

@@ -115,12 +115,15 @@ from web_crawler.app._crawler_core import (  # noqa: F401
     _get_app_fetcher,
     _import_lib_fetcher,
     _log,
+    _stealth_user_agent,
     attach_log_handler,
+    close_render_fetchers,
     decrypt_aes128,
     detach_log_handler,
     fetch,
     get_segment_key,
     register_segment_key,
+    render_page,
     report_progress,
     should_stop,
     wait_if_paused,
@@ -142,6 +145,9 @@ def crawl(args: argparse.Namespace) -> int:
     try:
         return _crawl(args)
     finally:
+        # --render-js 的渲染 fetcher 持有浏览器进程：无论成功/取消/异常都释放，
+        # 避免长驻会话泄漏（UI 反复起任务时会累积 Chromium 实例）。
+        close_render_fetchers()
         reporter.close()
         if had_callback:
             args.progress_callback = previous_callback
@@ -202,6 +208,12 @@ def _crawl(args: argparse.Namespace) -> int:
         "crawl_pages": getattr(args, "crawl_pages", ""),
         "max_pages": getattr(args, "max_pages", ""),
         "max_bytes": getattr(args, "max_bytes", ""),
+        # 反爬相关开关进报告 config：事后才能区分普通 / stealth / 渲染运行
+        # （2026-11 调研实测：两批 run_report 因缺 stealth 字段无法对照审计）
+        "stealth": getattr(args, "stealth", ""),
+        "impersonate": getattr(args, "impersonate", ""),
+        "render_js": getattr(args, "render_js", ""),
+        "proxy": getattr(args, "proxy", ""),
     }
     try:
         extra_headers = parse_headers(args.header)
@@ -230,7 +242,7 @@ def _crawl(args: argparse.Namespace) -> int:
         max_bytes=args.max_bytes if args.max_bytes > 0 else None,
         block_keywords=parse_block_keywords(args.block_keyword),
         robots=(
-            make_robots_parser(root_url, headers, args.timeout)
+            make_robots_parser(root_url, headers, args.timeout, control_args=args)
             if root_url and args.respect_robots
             else None
         ),

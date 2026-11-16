@@ -203,6 +203,7 @@ def save_config_to_file(args: argparse.Namespace, filepath: str) -> None:
         "proxy": args.proxy,
         "stealth": args.stealth,
         "impersonate": args.impersonate,
+        "render_js": args.render_js,
     }
     rules = load_extraction_rules(args)
     if rules is not None:

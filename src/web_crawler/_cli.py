@@ -115,11 +115,21 @@ def classify_exception(exc: BaseException) -> ErrorInfo:
         "requests",
         "urllib3",
     }:
+        status = getattr(exc, "status", None)
+        if status in (401, 403):
+            # 2026-11 调研实测：403 恰是 --stealth/--render-js 的主场景，
+            # 原提示只让人调 --delay，会把用户引向无效方向。
+            hint = (
+                "HTTP 403/401 多为反爬拦截：可尝试 --stealth（TLS 指纹 + 浏览器 UA）、"
+                "--render-js（无头浏览器渲染）或配置 --proxy；仍失败请确认是否有权访问该站点。"
+            )
+        else:
+            hint = "检查 URL、DNS、网络、代理与证书；遇到限流可提高 --delay 或 --retries 后重试。"
         return ErrorInfo(
             "network",
             "网络错误",
             message,
-            "检查 URL、DNS、网络、代理与证书；遇到限流可提高 --delay 或 --retries 后重试。",
+            hint,
         )
     return ErrorInfo(
         "internal",

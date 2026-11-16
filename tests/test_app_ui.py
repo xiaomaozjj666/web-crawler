@@ -396,6 +396,7 @@ class TestBuildArgs:
             "organize": ["on"],
             "dedup": ["on"],
             "stealth": ["on"],
+            "render_js": ["on"],
         }
         args = build_args(form)
         assert args.url == "https://example.com"
@@ -413,6 +414,7 @@ class TestBuildArgs:
         assert args.organize is True
         assert args.dedup is True
         assert args.stealth is True
+        assert args.render_js is True
         assert "Cookie: name=value" in args.header
         assert args.save_config == ""
         assert args.load_config == ""

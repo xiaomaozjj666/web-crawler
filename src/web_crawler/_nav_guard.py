@@ -47,7 +47,9 @@ Playwright 的 ``page.goto`` 会自动跟随 HTTP 重定向，且跳转发生在
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
+import time
 from collections.abc import Callable, Iterable
 from functools import partial
 from typing import Any, NamedTuple
@@ -55,6 +57,8 @@ from urllib.parse import urljoin, urlsplit
 
 from ._ssrf import validate_url_host
 from .exceptions import UnsafeTargetError
+
+_log = logging.getLogger(__name__)
 
 # 与 ``mcp._ssrf_gate._check_url`` 相同契约：返回错误信息表示拒绝，None 表示放行。
 UrlCheck = Callable[[str], str | None]
@@ -92,6 +96,12 @@ DEFAULT_MAX_REDIRECTS = 5
 
 # 预检单跳超时上限（毫秒）：预检只为拿到 Location，不应拖慢导航。
 PREFLIGHT_TIMEOUT_CAP_MS = 15000
+
+# 预检链整体重试次数与退避：预检 GET 是普通网络请求，超时/连接抖动等瞬时
+# 失败并不代表目标不安全（2026-11 实测 julius.ai 三次渲染一次被拒，均为
+# 预检瞬时失败）。只对「链没走完」重试；blocked 是确定性结论，绝不重试。
+PREFLIGHT_ATTEMPTS = 3
+PREFLIGHT_RETRY_BACKOFF_SECONDS = 0.5
 
 _NO_REQUEST_CONTEXT = "无法获取浏览器请求上下文，无法完成重定向预检"
 
@@ -369,6 +379,7 @@ def resolve_redirect_chain_sync(
     *,
     max_redirects: int = DEFAULT_MAX_REDIRECTS,
     timeout_ms: int = 15000,
+    attempts: int = PREFLIGHT_ATTEMPTS,
 ) -> RedirectProbe:
     """用同步 APIRequestContext 预检 HTTP 重定向链，逐跳调用 ``check_url``。
 
@@ -381,12 +392,38 @@ def resolve_redirect_chain_sync(
     与 GET 的重定向结果可以不同（服务端可对 HEAD 返回 200 / 405 或不同的
     Location），预检看到的链就不是浏览器将要走的链，等于绕过门禁。响应体由
     ``dispose`` 释放，代价是多读一次文档正文，这是为正确性付出的成本。
+
+    瞬时失败重试：整条链没走完（``complete=False`` 且无 blocked 目标）时，
+    以 ``attempts`` 次整体重试（间隔 ``PREFLIGHT_RETRY_BACKOFF_SECONDS``）
+    再失败关闭。重试的是「拿不到安全结论」这一状态，不改变任何判定规则；
+    一旦链上出现被拦目标（blocked）立即返回，不重试。
     """
     # 入口 URL 也必须在发起任何请求前校验：本函数可能被单独调用，
     # 不能假定调用方已经过门禁。
     entry_error = _gate(check_url, url)
     if entry_error:
         return RedirectProbe(url, (url,), (url,), True)
+    probe = RedirectProbe(url, (url,), (), False)
+    for attempt in range(max(1, attempts)):
+        if attempt:
+            time.sleep(PREFLIGHT_RETRY_BACKOFF_SECONDS)
+        probe = _probe_redirect_chain_sync_once(
+            request_context, url, check_url, max_redirects=max_redirects, timeout_ms=timeout_ms
+        )
+        if probe.complete or probe.blocked:
+            return probe
+    return probe
+
+
+def _probe_redirect_chain_sync_once(
+    request_context: Any,
+    url: str,
+    check_url: UrlCheck,
+    *,
+    max_redirects: int = DEFAULT_MAX_REDIRECTS,
+    timeout_ms: int = 15000,
+) -> RedirectProbe:
+    """单次预检链走查（不做入口校验与重试，由 :func:`resolve_redirect_chain_sync` 包裹）。"""
     current = url
     chain: list[str] = [url]
     blocked: list[str] = []
@@ -394,7 +431,11 @@ def resolve_redirect_chain_sync(
         try:
             # GET（非 HEAD）：见本函数文档中的方法选择理由
             response = request_context.get(current, max_redirects=0, timeout=timeout_ms)
-        except Exception:
+        except Exception as exc:
+            # 吞掉的异常必须留痕：fail-closed 拒绝如果查不到原因就无法区分
+            # 「目标危险」与「预检自身抖动」（2026-11 调研实测 julius.ai 偶发
+            # 被拒，根因只有日志能看到）
+            _log.warning("redirect preflight request failed for %s: %r", current, exc)
             return RedirectProbe(current, tuple(chain), tuple(blocked), False)
         try:
             location = _redirect_target(response)
@@ -423,19 +464,46 @@ async def resolve_redirect_chain_async(
     *,
     max_redirects: int = DEFAULT_MAX_REDIRECTS,
     timeout_ms: int = 15000,
+    attempts: int = PREFLIGHT_ATTEMPTS,
 ) -> RedirectProbe:
-    """异步版 :func:`resolve_redirect_chain_sync`（Playwright async API）。"""
+    """异步版 :func:`resolve_redirect_chain_sync`（Playwright async API）。
+
+    瞬时失败重试语义与同步版一致：仅「链没走完且无 blocked 目标」时整体
+    重试 ``attempts`` 次，blocked 立即返回。
+    """
     # 入口 URL 也必须在发起任何请求前校验（见同步版说明）。
     entry_error = await _agate(check_url, url)
     if entry_error:
         return RedirectProbe(url, (url,), (url,), True)
+    probe = RedirectProbe(url, (url,), (), False)
+    for attempt in range(max(1, attempts)):
+        if attempt:
+            await asyncio.sleep(PREFLIGHT_RETRY_BACKOFF_SECONDS)
+        probe = await _probe_redirect_chain_async_once(
+            request_context, url, check_url, max_redirects=max_redirects, timeout_ms=timeout_ms
+        )
+        if probe.complete or probe.blocked:
+            return probe
+    return probe
+
+
+async def _probe_redirect_chain_async_once(
+    request_context: Any,
+    url: str,
+    check_url: UrlCheck,
+    *,
+    max_redirects: int = DEFAULT_MAX_REDIRECTS,
+    timeout_ms: int = 15000,
+) -> RedirectProbe:
+    """单次异步预检链走查（不做入口校验与重试，由 :func:`resolve_redirect_chain_async` 包裹）。"""
     current = url
     chain: list[str] = [url]
     blocked: list[str] = []
     for _ in range(max_redirects + 1):
         try:
             response = await request_context.get(current, max_redirects=0, timeout=timeout_ms)
-        except Exception:
+        except Exception as exc:
+            _log.warning("redirect preflight request failed for %s: %r", current, exc)
             return RedirectProbe(current, tuple(chain), tuple(blocked), False)
         try:
             location = _redirect_target(response)

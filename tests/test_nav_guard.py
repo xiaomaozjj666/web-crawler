@@ -1114,3 +1114,117 @@ def test_guard_registered_last_does_not_bypass_resource_blocker() -> None:
     page.dispatch(bad)
     assert bad.aborted is True
     assert blocked == ["http://169.254.169.254/x"]
+
+
+# ========== 预检瞬时失败重试（2026-11 调研实测：julius.ai 三次渲染一次被误拦）==========
+
+
+class TestPreflightRetry:
+    """预检链「没走完」时整体重试；blocked 是确定性结论，绝不重试。"""
+
+    def test_transient_failure_retried_until_complete(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import web_crawler._nav_guard as nav_guard
+
+        monkeypatch.setattr(nav_guard, "PREFLIGHT_RETRY_BACKOFF_SECONDS", 0)
+
+        class _FlakyReq:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def get(self, url: str, **kwargs: Any) -> _Resp:
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("connection reset")
+                return _Resp(200)
+
+        req = _FlakyReq()
+        probe = resolve_redirect_chain_sync(req, "https://public.example/start", lambda url: None)
+        assert probe.complete is True
+        assert probe.blocked == ()
+        assert req.calls == 2
+
+    def test_blocked_target_is_not_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import web_crawler._nav_guard as nav_guard
+
+        monkeypatch.setattr(nav_guard, "PREFLIGHT_RETRY_BACKOFF_SECONDS", 0)
+
+        def gate(url: str) -> str | None:
+            return "non-public" if "169.254" in url else None
+
+        req = _SyncReq([_Resp(302, {"location": "http://169.254.169.254/meta"})])
+        probe = resolve_redirect_chain_sync(req, "https://public.example/start", gate)
+        assert probe.blocked == ("http://169.254.169.254/meta",)
+        assert probe.complete is True
+        # 只消耗了一次链走查：被拦结论确定，不因重试放大请求
+        assert len(req.calls) == 1
+
+    def test_exhausted_attempts_fail_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import web_crawler._nav_guard as nav_guard
+
+        monkeypatch.setattr(nav_guard, "PREFLIGHT_RETRY_BACKOFF_SECONDS", 0)
+
+        class _BoomReq:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def get(self, url: str, **kwargs: Any) -> _Resp:
+                self.calls += 1
+                raise RuntimeError("connection reset")
+
+        req = _BoomReq()
+        probe = resolve_redirect_chain_sync(
+            req, "https://public.example/start", lambda url: None, attempts=2
+        )
+        assert probe.complete is False
+        assert probe.blocked == ()
+        assert req.calls == 2
+
+    @pytest.mark.asyncio
+    async def test_async_transient_failure_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import web_crawler._nav_guard as nav_guard
+
+        monkeypatch.setattr(nav_guard, "PREFLIGHT_RETRY_BACKOFF_SECONDS", 0)
+
+        class _FlakyAsyncReq:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def get(self, url: str, **kwargs: Any) -> _Resp:
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("connection reset")
+                return _Resp(200)
+
+        req = _FlakyAsyncReq()
+        probe = await resolve_redirect_chain_async(
+            req, "https://public.example/start", lambda url: None
+        )
+        assert probe.complete is True
+        assert req.calls == 2
+
+    @pytest.mark.asyncio
+    async def test_async_blocked_target_is_not_retried(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import web_crawler._nav_guard as nav_guard
+
+        monkeypatch.setattr(nav_guard, "PREFLIGHT_RETRY_BACKOFF_SECONDS", 0)
+
+        def gate(url: str) -> str | None:
+            return "non-public" if "169.254" in url else None
+
+        class _OnceReq:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def get(self, url: str, **kwargs: Any) -> _Resp:
+                self.calls += 1
+                return _Resp(302, {"location": "http://169.254.169.254/meta"})
+
+        req = _OnceReq()
+        probe = await resolve_redirect_chain_async(req, "https://public.example/start", gate)
+        assert probe.blocked == ("http://169.254.169.254/meta",)
+        assert probe.complete is True
+        assert req.calls == 1
