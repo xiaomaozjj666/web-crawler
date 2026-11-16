@@ -23,7 +23,9 @@ from web_crawler.app import _crawler_context as ctx_mod
 from web_crawler.app import _crawler_core as core
 from web_crawler.app import _crawler_post as post
 from web_crawler.app import crawler as cr
+from web_crawler.app._offline import RewriteTable
 from web_crawler.app.crawler_models import PageExtraction
+from web_crawler.app.crawler_net import decode_stylesheet
 from web_crawler.exceptions import FetchError
 
 # ========== 数据类 ==========
@@ -774,6 +776,125 @@ class TestRewriteHtml:
         result = cr.rewrite_html(html, rows, "https://x.com/", tmp_path)
         assert "logo.png" in result
         assert "https://x.com/logo.png" not in result
+
+    def test_inline_css_metadata_and_unavailable_assets(self, tmp_path: Path) -> None:
+        from lxml import html as lxml_html
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        image_path = output_dir / "assets" / "cover 中文.png"
+        image_path.parent.mkdir()
+        image_path.write_bytes(b"image")
+        outside = tmp_path / "unsaved.png"
+        outside.write_bytes(b"outside")
+        page_url = "https://example.com/article/page.html"
+
+        def row(name: str, path: Path | None, media: str, status: str = "ok") -> cr.ManifestRow:
+            return cr.row_for(
+                status,
+                cr.Resource(f"https://example.com/article/{name}", "img[src]", "img", page_url),
+                str(path) if path else "",
+                media,
+                5,
+                {},
+                sha256="same-hash",
+            )
+
+        rows = [
+            row("cover.png", image_path, "image/png"),
+            row("unsaved.png", outside, "image/png"),
+            row("different.jpeg", None, "image/jpeg", "skipped by dedup"),
+        ]
+        html = """<!doctype html><html><head>
+            <base href="https://["><base href="/ignored/">
+            <meta charset="gbk">
+            <meta http-equiv="Content-Type" content="text/html; charset=GBK">
+            <meta name="description" content="cover.png">
+            <meta property="og:image" content="cover.png">
+            <link rel="stylesheet" href="missing.css" integrity="sha256-a" crossorigin="anonymous">
+            <style>/* url(cover.png) */ p::after { content: "url(cover.png)" }
+            p { background: url(cover.png); filter: url(#clip); }</style>
+            </head><body><!-- keep this comment -->
+            <p style="background: url(cover.png)">cover.png</p>
+            <img src="unsaved.png"><img src="different.jpeg">
+            <img src=""><img src="https://[">
+            </body></html>"""
+        doc = lxml_html.fromstring(cr.rewrite_html(html, rows, page_url, output_dir))
+        local_image = "assets/cover%20%E4%B8%AD%E6%96%87.png"
+        assert doc.xpath("//p/@style") == [f'background: url("{local_image}")']
+        sheet = doc.xpath("//style/text()")[0]
+        assert f'background: url("{local_image}")' in sheet
+        assert '/* url(cover.png) */ p::after { content: "url(cover.png)" }' in sheet
+        assert "filter: url(#clip)" in sheet
+        assert doc.xpath("//p/text()") == ["cover.png"]
+        assert [node.text for node in doc.xpath("//comment()")] == [" keep this comment "]
+        assert doc.xpath('//meta[@name="description"]/@content') == ["cover.png"]
+        assert doc.xpath('//meta[@property="og:image"]/@content') == [local_image]
+        assert set(doc.xpath("//meta/@charset")) == {"utf-8"}
+        assert doc.xpath('//meta[@http-equiv="Content-Type"]/@content') == [
+            "text/html; charset=utf-8"
+        ]
+        assert doc.xpath("//img/@src") == [
+            "https://example.com/article/unsaved.png",
+            "https://example.com/article/different.jpeg",
+            "",
+            "https://[",
+        ]
+        assert doc.xpath("//link/@href") == ["https://example.com/article/missing.css"]
+        assert doc.xpath("//link/@integrity") == ["sha256-a"]
+        assert doc.xpath("//link/@crossorigin") == ["anonymous"]
+
+    def test_stylesheet_copy_failure_keeps_original_reference(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        source = tmp_path / "styles.css"
+        css = ".banner { color: red }"
+        source.write_text(css, encoding="utf-8")
+        offline = tmp_path / "offline_pages"
+        offline.mkdir()
+        (offline / "_styles").write_text("occupied", encoding="utf-8")
+        rows = [
+            cr.row_for(
+                "ok",
+                cr.Resource(
+                    "https://example.com/styles.css", "link[href]", "link", "https://example.com/"
+                ),
+                str(source),
+                "text/css",
+                len(css),
+                {},
+            )
+        ]
+        table = RewriteTable(rows, tmp_path)
+        table.rewrite_stylesheets(rows, lambda: False, encoding=None)
+        html = table.apply(
+            '<link rel="stylesheet" href="styles.css">',
+            "https://example.com/",
+            destination=offline / "page.html",
+        )
+        assert 'href="../styles.css"' in html
+        assert source.read_text(encoding="utf-8") == css
+        assert "offline stylesheet rewrite failed" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("data", "content_type", "override", "expected"),
+    [
+        ("封面".encode("gbk"), "text/css; charset=gbk", None, "封面"),
+        ("封面".encode("gbk"), "text/css; charset=utf-8", "gbk", "封面"),
+        ("封面".encode("utf-16"), "text/css", None, "封面"),
+        (
+            b'@charset "unknown-encoding"; .title {}',
+            "text/css",
+            None,
+            '@charset "unknown-encoding"; .title {}',
+        ),
+    ],
+)
+def test_decode_stylesheet(
+    data: bytes, content_type: str, override: str | None, expected: str
+) -> None:
+    assert decode_stylesheet(data, content_type, override) == expected
 
 
 class TestStripPageOverlays:
@@ -4392,6 +4513,7 @@ class TestPostProcessErrorPaths:
             output_dir=str(tmp_path / "out"),
             rewrite_html=flags.get("rewrite_html", False),
             strip_overlays=flags.get("strip_overlays", False),
+            encoding=None,
             video_mode=flags.get("video_mode", False),
             smart_extract=flags.get("smart_extract", False),
             extract_text=flags.get("extract_text", False),
@@ -4416,15 +4538,15 @@ class TestPostProcessErrorPaths:
         return _crawler_post, ctx
 
     @pytest.mark.parametrize(
-        "flags,patch_target,patch_name",
+        "flags,patch_target",
         [
-            ({"rewrite_html": True}, "RewriteTable", "rewrite_html"),
-            ({"rewrite_html": True, "strip_overlays": True}, "strip_page_overlays", "rewrite_html"),
-            ({}, "write_manifests", "manifests"),
-            ({"video_mode": True}, "write_video_manifests", "video_manifests"),
-            ({"smart_extract": True}, "smart_extract", "smart_extract"),
-            ({"extract_text": True}, "extract_readable_text", "extract_text"),
-            ({}, "write_summary", "summary"),
+            ({"rewrite_html": True}, "RewriteTable"),
+            ({"rewrite_html": True, "strip_overlays": True}, "strip_page_overlays"),
+            ({}, "write_manifests"),
+            ({"video_mode": True}, "write_video_manifests"),
+            ({"smart_extract": True}, "smart_extract"),
+            ({"extract_text": True}, "extract_readable_text"),
+            ({}, "write_summary"),
         ],
     )
     def test_stage_failure_does_not_abort(
@@ -4433,13 +4555,11 @@ class TestPostProcessErrorPaths:
         monkeypatch: pytest.MonkeyPatch,
         flags: dict[str, Any],
         patch_target: str,
-        patch_name: str,
     ) -> None:
         """任一后处理阶段抛异常:整体不崩,返回 (0, 0)。"""
         _crawler_post, ctx = self._make_ctx(tmp_path, **flags)
-        monkeypatch.setattr(
-            _crawler_post, patch_target, MagicMock(side_effect=RuntimeError("boom"))
-        )
+        failure = MagicMock(side_effect=RuntimeError("boom"))
+        monkeypatch.setattr(_crawler_post, patch_target, failure)
         video_count, failed_count = _crawler_post._post_process(
             ctx,
             manifest_rows=[],
@@ -4448,4 +4568,4 @@ class TestPostProcessErrorPaths:
             cancelled=False,
         )
         assert (video_count, failed_count) == (0, 0)
-        assert patch_name  # 占位说明,便于按名筛选用例
+        failure.assert_called_once()
