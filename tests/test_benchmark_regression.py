@@ -111,16 +111,22 @@ def test_wrap_attribute_set_matches_init(tmp_path: Path) -> None:
         "_element",
         "_storage",
         "_adaptive_domain",
+        "_ignore_attributes",
     }
     storage = AdaptiveStorage(tmp_path / "guard.sqlite3")
     try:
         for adaptive in (False, True):
             normal = Selector(
-                html, url="https://guard.example/", adaptive=adaptive, storage=storage
+                html,
+                url="https://guard.example/",
+                adaptive=adaptive,
+                storage=storage,
+                ignore_attributes="class",
             )
             wrapped = normal.children[0]  # 触发 _wrap 路径
             assert set(normal.__dict__) == expected_keys  # __init__ 侧契约
             assert set(wrapped.__dict__) == expected_keys  # _wrap 侧契约
+            assert wrapped._ignore_attributes == normal._ignore_attributes == ("class",)
             # wrapped 是正常工作的 Selector（非缺属性残次品）
             assert wrapped.attr("id") == "x"
     finally:

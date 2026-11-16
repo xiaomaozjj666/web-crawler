@@ -277,6 +277,9 @@
     .results-diagnostic { color: var(--danger-text); white-space: pre-wrap; }
     .tool-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0; }
     .rule-editor { width: 100%; min-height: 118px; }
+    #rules-status:empty, #rule-audit-status:empty { display: none; }
+    #rule-audit-results .results-table-wrap { margin: 10px 0; }
+    #rule-audit-fields td:first-child { overflow-wrap: anywhere; }
     .results-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
     table.results-table { width: 100%; border-collapse: collapse; font-size: 13px; }
     .results-table th { padding: 8px; text-align: left; white-space: nowrap; border-bottom: 2px solid var(--border); }
@@ -775,9 +778,9 @@
       }
       return await response.json();
     }
-    async function postJson(path, data) {
+    async function postJson(path, data, signal) {
       var response = await fetch(path, {
-        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data), signal: signal
       });
       var result = await response.json();
       if (!response.ok) throw new Error(result.error || 'HTTP ' + response.status);
@@ -1118,7 +1121,7 @@
       if (e.key !== 'Escape') return;
       if (screenshotModal && screenshotModal.classList.contains('show')) { closeScreenshotModal(); return; }
       var resultsModal = document.getElementById('results-modal');
-      if (resultsModal && resultsModal.style.display === 'block') { closeResults(); }
+      if (resultsModal && resultsModal.classList.contains('show')) { closeResults(); }
     });
 
     async function pollReverse() {
@@ -1677,6 +1680,7 @@
         <div class="results-context">
           <p id="results-summary" class="hint" role="status"></p>
           <p id="results-diagnostic" class="hint results-diagnostic" hidden></p>
+          <p id="results-offline" class="hint" hidden></p>
           <button type="button" class="btn-toolbar" id="reuse-task-config" hidden>载入本次采集配置</button>
           <details id="results-log-details">
             <summary>运行日志</summary>
@@ -1692,7 +1696,7 @@
           <span id="results-source-url"></span>
           <button id="clear-results-source" type="button" class="btn-toolbar">查看全部资源</button>
         </div>
-        <input id="results-search" type="search" placeholder="搜索 URL、路径或类型" aria-label="搜索采集结果" oninput="loadResults(1)">
+        <input id="results-search" type="search" placeholder="搜索 URL、路径或类型" aria-label="搜索采集结果" oninput="resultsPaneTouched = true; loadResults(1)">
         <div class="results-table-wrap">
           <table id="results-table" class="results-table">
             <thead>
@@ -1714,10 +1718,37 @@
         </div>
         <div id="page-pane" class="results-pane" hidden>
           <p id="pages-state" class="hint" role="status"></p>
+            <details id="rules-workbench" class="page-extraction">
+              <summary>字段规则验证</summary>
+              <label for="rules-editor">字段规则 JSON</label>
+              <textarea class="rule-editor" id="rules-editor" spellcheck="false"></textarea>
+              <div class="tool-actions">
+                <button type="button" id="import-rules" class="btn-toolbar">加载规则文件</button>
+                <input type="file" id="rules-import-file" accept=".json,application/json" hidden>
+                <button type="button" id="validate-rules" class="btn-primary">验证当前页面</button>
+                <button type="button" id="audit-rules" class="btn-secondary" disabled>验证本次全部样本</button>
+                <button type="button" id="stop-rule-audit" class="btn-toolbar" hidden>停止批量验证</button>
+                <button type="button" id="export-rules" class="btn-toolbar" disabled>导出规则</button>
+                <button type="button" id="use-rules" class="btn-toolbar" disabled>用于下一次采集</button>
+              </div>
+              <p id="rules-status" class="hint" role="status"></p>
+              <pre id="rules-result" tabindex="0" aria-label="规则验证结果" hidden></pre>
+              <p id="rule-audit-status" class="hint" role="status"></p>
+              <div id="rule-audit-results" hidden>
+                <button type="button" id="export-rule-audit" class="btn-toolbar">导出覆盖报告</button>
+                <div class="results-table-wrap" tabindex="0" aria-label="字段覆盖统计">
+                  <table class="results-table" style="min-width:0">
+                    <thead><tr><th scope="col">字段</th><th scope="col">要求</th><th scope="col">命中页数</th><th scope="col">未命中页数</th></tr></thead>
+                    <tbody id="rule-audit-fields"></tbody>
+                  </table>
+                </div>
+                <div id="rule-audit-examples" class="page-options"></div>
+              </div>
+            </details>
           <div id="page-options" class="page-options"></div>
           <div id="page-pagination" class="pager"></div>
           <article id="page-extraction" class="page-extraction" hidden>
-            <h4 id="extraction-title"></h4>
+            <h4 id="extraction-title" tabindex="-1"></h4>
             <p id="extraction-url" class="hint"></p>
             <button type="button" id="extraction-resources" class="btn-secondary">查看该页资源</button>
             <details id="extraction-text-details" open>
@@ -1732,20 +1763,6 @@
               <summary>字段规则结果</summary>
               <pre id="extraction-rule-output" tabindex="0" aria-label="字段规则结果内容"></pre>
             </details>
-            <details id="rules-workbench">
-              <summary>在此页验证字段规则</summary>
-              <label for="rules-editor">字段规则 JSON</label>
-              <textarea class="rule-editor" id="rules-editor" spellcheck="false"></textarea>
-              <div class="tool-actions">
-                <button type="button" id="import-rules" class="btn-toolbar">加载规则文件</button>
-                <input type="file" id="rules-import-file" accept=".json,application/json" hidden>
-                <button type="button" id="validate-rules" class="btn-primary">验证当前页面</button>
-                <button type="button" id="export-rules" class="btn-toolbar" disabled>导出规则</button>
-                <button type="button" id="use-rules" class="btn-toolbar" disabled>用于下一次采集</button>
-              </div>
-              <p id="rules-status" class="hint" role="status"></p>
-              <pre id="rules-result" tabindex="0" aria-label="规则验证结果" hidden></pre>
-            </details>
           </article>
         </div>
       </div>
@@ -1755,6 +1772,7 @@
     var historyPage = 1;
     var resultsTaskId = null;
     var resultsPage = 1;
+    var resultsPaneTouched = false;
     var historyVersion = 0;
     var resultsVersion = 0;
     var detailsVersion = 0;
@@ -1765,6 +1783,10 @@
     var sampleAvailable = false;
     var ruleRequestVersion = 0;
     var verifiedRules = null;
+    var auditedRules = null;
+    var taskHasSamples = false;
+    var auditController = null;
+    var auditReport = null;
     var rulesEditor = document.getElementById('rules-editor');
     var rulesFeedback = document.getElementById('rules-status');
     var rulesOutput = document.getElementById('rules-result');
@@ -1772,6 +1794,10 @@
     var validateRules = document.getElementById('validate-rules');
     var exportRules = document.getElementById('export-rules');
     var useRules = document.getElementById('use-rules');
+    var auditRules = document.getElementById('audit-rules');
+    var auditStop = document.getElementById('stop-rule-audit');
+    var auditFeedback = document.getElementById('rule-audit-status');
+    var auditResults = document.getElementById('rule-audit-results');
 
     function fmtSize(bytes) {
       if (bytes < 1024) return bytes + ' B';
@@ -1948,16 +1974,30 @@
     }
 
     var lastResultsTrigger = null;
+    function updateRuleActions() {
+      exportRules.disabled = useRules.disabled = !(verifiedRules || auditedRules);
+      auditRules.disabled = Boolean(auditController) || !(taskHasSamples || sampleAvailable);
+      auditStop.hidden = !auditController;
+    }
+    function clearAudit() {
+      if (auditController) auditController.abort();
+      auditController = null;
+      auditReport = null;
+      auditedRules = null;
+      auditResults.hidden = true;
+      auditFeedback.textContent = '';
+      updateRuleActions();
+    }
     function resetRulePreview() {
       ruleRequestVersion++;
       verifiedRules = null;
       rulesOutput.hidden = true;
       validateRules.disabled = !sampleAvailable;
-      exportRules.disabled = true;
-      useRules.disabled = true;
-      rulesFeedback.textContent = sampleAvailable ? '' : '没有保存此页的样本。可在采集表单开启「保留页面样本用于验证」。';
+      updateRuleActions();
+      rulesFeedback.textContent = sampleAvailable ? '' : (selectedPageUrl ?
+        '此页没有验证样本。' : '选择一个页面后可验证单页。');
     }
-    rulesEditor.oninput = resetRulePreview;
+    rulesEditor.oninput = function() { clearAudit(); resetRulePreview(); };
     document.getElementById('import-rules').onclick = function() { rulesFile.click(); };
     rulesFile.onchange = async function() {
       if (!this.files.length) return;
@@ -1968,6 +2008,7 @@
         var data = await localJson(file, 131072);
         if (version !== ruleRequestVersion) return;
         rulesEditor.value = JSON.stringify(data, null, 2);
+        clearAudit();
         resetRulePreview();
       } catch(e) {
         if (version === ruleRequestVersion) rulesFeedback.textContent = '规则文件读取失败：' + e.message;
@@ -1988,23 +2029,116 @@
         rulesFeedback.textContent = missing.length ? '缺少必填字段：' + missing.join('、') : '当前样本验证通过';
         rulesOutput.textContent = JSON.stringify(response.result, null, 2);
         rulesOutput.hidden = false;
-        exportRules.disabled = false;
-        useRules.disabled = false;
+        updateRuleActions();
       } catch(e) {
         if (version === ruleRequestVersion) rulesFeedback.textContent = '验证失败：' + e.message;
       } finally {
         if (version === ruleRequestVersion) validateRules.disabled = !sampleAvailable;
       }
     };
-    exportRules.onclick = function() { if (verifiedRules) downloadJson('field-rules.json', verifiedRules); };
+    exportRules.onclick = function() {
+      var rules = verifiedRules || auditedRules;
+      if (rules) downloadJson('field-rules.json', rules);
+    };
     useRules.onclick = function() {
-      if (!verifiedRules) return;
-      crawlRules.value = JSON.stringify(verifiedRules, null, 2);
+      var rules = verifiedRules || auditedRules;
+      if (!rules) return;
+      crawlRules.value = JSON.stringify(rules, null, 2);
       closeResults();
       goToCrawlerTab();
       document.getElementById('crawler-rule-settings').open = true;
       crawlRules.focus();
       configFeedback.textContent = '字段规则已填入采集表单';
+    };
+    function mergeRuleCoverage(total, batch) {
+      if (!total) return batch;
+      ['pages_checked', 'pages_extracted', 'pages_missing_required', 'pages_error'].forEach(function(name) {
+        total[name] += batch[name];
+      });
+      batch.fields.forEach(function(field, index) {
+        total.fields[index].matched += field.matched;
+        total.fields[index].missing += field.missing;
+      });
+      total.examples = total.examples.concat(batch.examples).slice(0, 30);
+      return total;
+    }
+    function renderRuleCoverage(report) {
+      var fields = document.getElementById('rule-audit-fields');
+      var examples = document.getElementById('rule-audit-examples');
+      fields.replaceChildren();
+      examples.replaceChildren();
+      report.fields.forEach(function(field) {
+        var row = fields.insertRow();
+        [field.name, field.required ? '必填' : '可选', field.matched, field.missing].forEach(function(value) {
+          row.insertCell().textContent = value;
+        });
+        if (field.required && field.missing) row.lastElementChild.className = 'results-diagnostic';
+      });
+      if (report.examples.length) {
+        var label = document.createElement('p');
+        label.className = 'hint';
+        label.textContent = '问题样本（最多显示 30 条）';
+        examples.appendChild(label);
+      }
+      report.examples.forEach(function(example) {
+        var button = document.createElement('button');
+        var description = document.createElement('small');
+        button.type = 'button';
+        button.textContent = example.page_url;
+        description.className = 'hint';
+        description.textContent = example.error || '缺少 ' + example.missing_required.join('、');
+        button.append(document.createElement('br'), description);
+        button.onclick = function() { loadExtraction(example.page_url, true); };
+        examples.appendChild(button);
+      });
+      auditResults.hidden = false;
+    }
+    auditStop.onclick = function() { if (auditController) auditController.abort(); };
+    auditRules.onclick = async function() {
+      clearAudit();
+      var controller = new AbortController();
+      auditController = controller;
+      updateRuleActions();
+      var after = '';
+      var total = null;
+      var expected = null;
+      auditFeedback.textContent = '正在验证任务样本…';
+      try {
+        var rules = JSON.parse(rulesEditor.value);
+        var url = '/jobs/' + encodeURIComponent(resultsTaskId) + '/audit-rules';
+        do {
+          var response = await postJson(url + '?after=' + encodeURIComponent(after), rules, controller.signal);
+          if (auditController !== controller) return;
+          if (response.total_samples !== null) expected = response.total_samples;
+          total = mergeRuleCoverage(total, response.coverage);
+          after = response.next_after;
+          auditFeedback.textContent = '已检查 ' + total.pages_checked + ' / ' + expected + ' 页…';
+        } while (after);
+        if (total.pages_checked !== expected) throw new Error('采集样本已发生变化，请重新打开任务后重试');
+        if (!total.pages_checked) {
+          auditFeedback.textContent = '此任务没有保留验证样本。';
+          return;
+        }
+        auditReport = total;
+        auditedRules = response.rules;
+        auditFeedback.textContent = '检查 ' + total.pages_checked + ' 页 · 缺少必填字段 ' +
+          total.pages_missing_required + ' 页 · 未完成提取 ' + total.pages_error + ' 页';
+        renderRuleCoverage(total);
+      } catch(e) {
+        if (auditController === controller) {
+          var count = total ? total.pages_checked : 0;
+          auditFeedback.textContent = e.name === 'AbortError' ? '已停止，已检查 ' + count + ' 页' :
+            '验证中断（已检查 ' + count + ' 页）：' + e.message;
+        }
+      } finally {
+        if (auditController === controller) {
+          auditController = null;
+          updateRuleActions();
+        }
+      }
+    };
+    document.getElementById('export-rule-audit').onclick = function() {
+      if (auditReport) downloadJson('rule-coverage.json', auditReport);
     };
     function showResultsPane(pane) {
       var resources = pane === 'resources';
@@ -2054,7 +2188,7 @@
       }
     }
 
-    async function loadExtraction(url) {
+    async function loadExtraction(url, focusTitle) {
       var version = ++extractionVersion;
       sampleAvailable = false;
       resetRulePreview();
@@ -2085,17 +2219,23 @@
         resetRulePreview();
         feedback.textContent = '';
         panel.hidden = false;
+        if (focusTitle) document.getElementById('extraction-title').focus();
       } catch(e) {
         if (version === extractionVersion) feedback.textContent = '页面内容读取失败：' + e.message;
       }
     }
 
-    document.getElementById('show-resources').onclick = function() { showResultsPane('resources'); };
+    document.getElementById('show-resources').onclick = function() {
+      resultsPaneTouched = true;
+      showResultsPane('resources');
+    };
     document.getElementById('show-pages').onclick = function() {
+      resultsPaneTouched = true;
       showResultsPane('pages');
       loadPageOptions(1);
     };
     document.getElementById('extraction-resources').onclick = function() {
+      resultsPaneTouched = true;
       setResultsSource(selectedPageUrl);
       document.getElementById('results-search').value = '';
       showResultsPane('resources');
@@ -2108,13 +2248,38 @@
       loadResults(1);
     };
 
+    function taskIdFromLocation() {
+      var id = new URLSearchParams(location.hash.slice(1)).get('task');
+      return id && /^[a-zA-Z0-9_-]{1,128}$/.test(id) ? id : null;
+    }
+
+    function syncResultsLocation() {
+      var taskId = taskIdFromLocation();
+      if (!taskId) {
+        closeResults(true);
+      } else if (taskId !== resultsTaskId) {
+        var tab = document.getElementById('tabbtn-history');
+        if (!tab.classList.contains('active')) activateTab(tab);
+        tab.focus();
+        showResults(taskId);
+      }
+    }
+
     function showResults(taskId, url) {
+      if (taskId !== taskIdFromLocation()) {
+        history.pushState(null, '', '#task=' + encodeURIComponent(taskId));
+      }
       resultsTaskId = taskId;
+      pagesVersion++;
+      extractionVersion++;
       resultsPage = 1;
+      resultsPaneTouched = false;
       lastResultsTrigger = document.activeElement;
       document.getElementById('results-search').value = '';
       selectedPageUrl = '';
       sampleAvailable = false;
+      taskHasSamples = false;
+      clearAudit();
       rulesEditor.value = crawlRules.value || JSON.stringify({version: 1, fields: {title: {css: 'title', required: true}}}, null, 2);
       document.getElementById('rules-workbench').open = false;
       resetRulePreview();
@@ -2126,24 +2291,40 @@
       document.getElementById('results-title').textContent = '采集详情 · ' + (url || taskId);
       var summary = document.getElementById('results-summary');
       var diagnostic = document.getElementById('results-diagnostic');
+      var offline = document.getElementById('results-offline');
       var reuseConfig = document.getElementById('reuse-task-config');
       var logDetails = document.getElementById('results-log-details');
       summary.textContent = '正在读取任务记录…';
       diagnostic.hidden = true;
+      offline.hidden = true;
       reuseConfig.hidden = true;
       logDetails.hidden = true;
       logDetails.open = false;
       var version = ++detailsVersion;
       fetch('/jobs/' + encodeURIComponent(taskId))
         .then(function(r) {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
+          if (!r.ok) throw new Error(r.status === 404 ? '任务记录已不存在' : 'HTTP ' + r.status);
           return r.json();
         })
         .then(function(task) {
           if (version !== detailsVersion) return;
+          document.getElementById('results-title').textContent = '采集详情 · ' + (task.url || url || taskId);
           summary.textContent = formatStatus(task) +
             (task.output_dir ? ' · 输出目录：' + task.output_dir : '');
           var run = task.summary || {};
+          if (run.offline_pages && run.offline_pages.count && run.offline_pages.index) {
+            offline.textContent = '离线页面（' + run.offline_pages.count + ' 页） · 在输出目录打开 ' + run.offline_pages.index;
+            offline.hidden = false;
+          }
+          taskHasSamples = Boolean(task.page_sample_count);
+          updateRuleActions();
+          if (!taskHasSamples && !auditController && !auditReport) {
+            auditFeedback.textContent = '此任务未保留整批样本。采集时可开启「保留页面样本用于验证」。';
+          }
+          if (!resultsPaneTouched && !task.processed_resources && (run.extracted_pages || taskHasSamples)) {
+            showResultsPane('pages');
+            loadPageOptions(1);
+          }
           var scan = run.page_scan || {};
           var message = scan.first_error || task.error_message || '';
           if (run.extraction_save_failures) {
@@ -2245,13 +2426,19 @@
         });
     }
 
-    function closeResults() {
+    function closeResults(fromLocation) {
+      var modal = document.getElementById('results-modal');
+      if (!modal.classList.contains('show')) return;
+      if (!fromLocation && taskIdFromLocation()) {
+        history.replaceState(null, '', location.pathname + location.search);
+      }
+      resultsTaskId = null;
       detailsVersion++;
       resultsVersion++;
       pagesVersion++;
       extractionVersion++;
       ruleRequestVersion++;
-      var modal = document.getElementById('results-modal');
+      clearAudit();
       modal.classList.remove('show');
       modal.setAttribute('aria-hidden', 'true');
       document.body.style.overflow = '';
@@ -2286,6 +2473,9 @@
       if (e.key === 'Escape') { closeResults(); return; }
       trapResultsFocus(modal, e);
     });
+    window.addEventListener('popstate', syncResultsLocation);
+    window.addEventListener('hashchange', syncResultsLocation);
+    syncResultsLocation();
 
     fetch('/status?active=1')
       .then(function(response) { return response.ok ? response.json() : null; })

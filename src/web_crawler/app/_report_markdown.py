@@ -32,6 +32,7 @@ def write_summary(
     config: dict[str, object] | None = None,
     page_scan: PageScanSummary | None = None,
     rule_results: dict[str, int] | None = None,
+    offline_pages: int = 0,
 ) -> None:
     ctx = build_report_context(
         rows,
@@ -41,6 +42,7 @@ def write_summary(
         config=config,
         page_scan=page_scan,
         rule_results=rule_results,
+        offline_pages=offline_pages,
     )
     resources = ctx["resources"]
     assert isinstance(resources, dict)
@@ -88,6 +90,8 @@ def write_summary(
             f"  字段规则处理/缺必填/错误：{rule_results['pages']}/"
             f"{rule_results['pages_missing_required']}/{rule_results['errors']}"
         )
+    if offline_pages:
+        lines.append(f"  离线页面入口  : offline_pages/index.html（{offline_pages} 页）")
     by_status = ctx.get("by_status", {})
     assert isinstance(by_status, dict)
     for k, v in by_status.items():
@@ -150,6 +154,7 @@ def write_run_report(
     config: dict[str, object] | None = None,
     page_scan: PageScanSummary | None = None,
     rule_results: dict[str, int] | None = None,
+    offline_pages: int = 0,
 ) -> None:
     ctx = build_report_context(
         rows,
@@ -159,6 +164,7 @@ def write_run_report(
         config=config,
         page_scan=page_scan,
         rule_results=rule_results,
+        offline_pages=offline_pages,
     )
     ctx["recommendations"] = build_recommendations(ctx)
 
@@ -188,6 +194,9 @@ def _write_markdown_report(path: Path, ctx: dict[str, object]) -> None:
     lines.append(f"- **总耗时**: {ctx.get('duration_human', '未知')}")
     lines.append(f"- **结果** {CRAWL_STATUS_TITLES.get(str(ctx.get('status')), '爬取结束')}")
     lines.append(f"- **扫描页面数**: {ctx.get('pages_scanned', 0)}")
+    offline = ctx.get("offline_pages")
+    if isinstance(offline, dict):
+        lines.append(f"- [打开离线页面目录]({offline['index']})（{offline['count']} 页）")
     rules = ctx.get("rule_results")
     if isinstance(rules, dict):
         lines.append(

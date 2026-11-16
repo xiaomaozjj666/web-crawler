@@ -635,9 +635,37 @@ def get_page_sample(task_id: str, page_url: str) -> str | None:
     )
     if row is None or row["sample"] is None:
         return None
+    return decode_page_sample(row["sample"])
+
+
+def page_samples_after(task_id: str, after: str, limit: int) -> list[tuple[str, bytes]]:
+    return [
+        (row["page_url"], row["sample"])
+        for row in _get_conn().execute(
+            """SELECT page_url, sample FROM page_extractions
+               WHERE task_id = ? AND page_url > ? AND sample IS NOT NULL
+               ORDER BY page_url LIMIT ?""",
+            (task_id, after, limit),
+        )
+    ]
+
+
+def count_page_samples(task_id: str) -> int:
+    row = (
+        _get_conn()
+        .execute(
+            "SELECT COUNT(*) FROM page_extractions WHERE task_id = ? AND sample IS NOT NULL",
+            (task_id,),
+        )
+        .fetchone()
+    )
+    return int(row[0])
+
+
+def decode_page_sample(sample: bytes) -> str:
     decoder = zlib.decompressobj()
     try:
-        html = decoder.decompress(row["sample"], MAX_PAGE_SAMPLE_BYTES + 1)
+        html = decoder.decompress(sample, MAX_PAGE_SAMPLE_BYTES + 1)
         if len(html) <= MAX_PAGE_SAMPLE_BYTES and decoder.eof:
             return html.decode("utf-8")
     except (zlib.error, UnicodeError):

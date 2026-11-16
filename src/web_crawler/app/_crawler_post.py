@@ -20,12 +20,13 @@ import argparse
 import json
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import TextIO
 
 from web_crawler.app import _crawler_context as ctx_mod
 from web_crawler.app import _crawler_core as cr
 from web_crawler.app._crawler_context import _CrawlContext
+from web_crawler.app._offline import OFFLINE_INDEX, write_offline_index
 from web_crawler.app._report_extract import _extraction_selector
 from web_crawler.app.crawler_models import ManifestRow, PageExtraction, Resource
 from web_crawler.app.crawler_report import (
@@ -42,6 +43,7 @@ from web_crawler.app.crawler_report import (
     write_summary,
     write_video_manifests,
 )
+from web_crawler.exceptions import ConfigError
 
 # 与 app.crawler 共用同一个 logger：UI 通过 attach_log_handler 挂到
 # "crawler" logger 的 handler 对所有模块日志生效，行为与拆分前一致。
@@ -72,7 +74,9 @@ def _close_jsonl(ctx: _CrawlContext) -> None:
             _log.warning("failed to finalize JSONL manifest: %s", _jsonl_err)
 
 
-def _iter_page_html(ctx: _CrawlContext) -> Iterator[tuple[str, str]]:
+def _iter_page_html(
+    ctx: _CrawlContext, on_error: Callable[[str, Exception], None] | None = None
+) -> Iterator[tuple[str, str]]:
     """逐页从磁盘重读扫描阶段落盘的 HTML（page_url, html）。
 
     页面 HTML 不再全量驻留内存（万页 × 数百 KB 会把堆撑爆），此处按需
@@ -85,6 +89,8 @@ def _iter_page_html(ctx: _CrawlContext) -> Iterator[tuple[str, str]]:
             yield page_url, page_path.read_text(encoding=encoding, errors="replace")
         except (OSError, LookupError) as exc:
             _log.warning("failed to re-read saved page %s: %s", page_url, exc)
+            if on_error is not None:
+                on_error(page_url, exc)
 
 
 def _extract_pages(ctx: _CrawlContext) -> None:
@@ -101,7 +107,7 @@ def _extract_pages(ctx: _CrawlContext) -> None:
         try:
             feed = (ctx.output_dir / "rule_items.jsonl").open("w", encoding="utf-8", newline="\n")
         except OSError as exc:
-            ctx.rule_errors += 1
+            ctx.rule_write_errors += 1
             _log.warning("could not open field result file: %s", exc)
     try:
         _extract_page_contents(ctx, feed)
@@ -110,8 +116,14 @@ def _extract_pages(ctx: _CrawlContext) -> None:
             try:
                 feed.close()
             except OSError as exc:
-                ctx.rule_errors += 1
+                ctx.rule_write_errors += 1
                 _log.warning("could not finish field result file: %s", exc)
+    if ctx.rule_coverage is not None:
+        try:
+            ctx.rule_coverage.write(ctx.output_dir / "rule_report.json")
+        except OSError as exc:
+            ctx.rule_write_errors += 1
+            _log.warning("could not write field coverage report: %s", exc)
 
 
 def _extract_page_contents(ctx: _CrawlContext, feed: TextIO | None) -> None:
@@ -129,7 +141,8 @@ def _extract_page_contents(ctx: _CrawlContext, feed: TextIO | None) -> None:
             _log.warning("could not create extracted text directory: %s", exc)
 
     text_count = 0
-    for page_url, html in _iter_page_html(ctx):
+    coverage = ctx.rule_coverage
+    for page_url, html in _iter_page_html(ctx, coverage.add_error if coverage else None):
         if _post_pause_check(args):
             break
         title = ctx.page_titles.get(page_url, "")
@@ -158,20 +171,21 @@ def _extract_page_contents(ctx: _CrawlContext, feed: TextIO | None) -> None:
                     text_count += 1
             except Exception as exc:
                 _log.warning("text extraction failed for %s: %s", page_url, exc)
-        if ctx.rules is not None:
+        if ctx.rules is not None and coverage is not None:
             try:
                 rule_result = ctx.rules.extract(selector, page_url=page_url)
-                ctx.rule_pages += 1
-                ctx.rule_pages_missing += bool(rule_result["missing_required"])
+            except ConfigError as exc:
+                coverage.add_error(page_url, exc)
+                _log.warning("field extraction failed for %s: %s", page_url, exc)
+            else:
+                coverage.add_result(rule_result)
                 if feed is not None:
                     try:
                         feed.write(json.dumps(rule_result, ensure_ascii=False) + "\n")
-                    except OSError:
+                    except OSError as exc:
                         feed = None
-                        raise
-            except Exception as exc:
-                ctx.rule_errors += 1
-                _log.warning("field extraction failed for %s: %s", page_url, exc)
+                        ctx.rule_write_errors += 1
+                        _log.warning("could not write field result file: %s", exc)
         if on_extraction is not None and (text or data is not None or rule_result is not None):
             on_extraction(PageExtraction(page_url, title, text, data, rule_result))
 
@@ -208,21 +222,37 @@ def _post_process(
     # 每个后处理阶段独立 try/except：单步失败仅记 warning，保证清单与报告尽量生成
     if args.rewrite_html and not _post_pause_check(args):
         try:
-            # URL→本地路径替换表整次爬取只构建一次（每行一次 Path.resolve 的
-            # 文件系统调用只发生在这里），页面 HTML 逐页从磁盘重读
             table = RewriteTable(manifest_rows, output_dir)
             rewritten_paths: set[str] = set()
-            for page_url, html in _iter_page_html(ctx):
-                rewritten = table.apply(html, page_url)
-                if getattr(args, "strip_overlays", False):
-                    rewritten = strip_page_overlays(rewritten)
-                rewritten_path = ctx_mod.reserve_page_path(
-                    ctx.page_artifact_path(page_url, "offline_pages").with_suffix(".html"),
-                    page_url,
+            pages = {
+                url: ctx_mod.reserve_page_path(
+                    ctx.page_artifact_path(url, "offline_pages").with_suffix(".html"),
+                    url,
                     rewritten_paths,
                 )
-                rewritten_path.parent.mkdir(parents=True, exist_ok=True)
-                rewritten_path.write_text(rewritten, encoding="utf-8")
+                for url in ctx.page_files
+            }
+            table.set_pages(pages)
+            table.rewrite_stylesheets(
+                manifest_rows, lambda: _post_pause_check(args), encoding=args.encoding
+            )
+            written = {}
+            for page_url, html in _iter_page_html(ctx):
+                if _post_pause_check(args):
+                    break
+                path = pages[page_url]
+                try:
+                    rewritten = table.apply(html, page_url, destination=path)
+                    if getattr(args, "strip_overlays", False):
+                        rewritten = strip_page_overlays(rewritten)
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(rewritten, encoding="utf-8")
+                    written[page_url] = path
+                except Exception as exc:
+                    _log.warning("offline HTML rewrite failed for %s: %s", page_url, exc)
+            if written:
+                write_offline_index(output_dir, written, ctx.page_titles)
+                ctx.offline_page_count = len(written)
         except Exception as exc:
             _log.warning("offline HTML rewrite failed: %s", exc)
 
@@ -255,6 +285,7 @@ def _post_process(
                 config=report_config,
                 page_scan=ctx.page_scan,
                 rule_results=ctx.rule_summary(),
+                offline_pages=ctx.offline_page_count,
             )
             write_run_report(
                 output_dir,
@@ -265,6 +296,7 @@ def _post_process(
                 config=report_config,
                 page_scan=ctx.page_scan,
                 rule_results=ctx.rule_summary(),
+                offline_pages=ctx.offline_page_count,
             )
         except Exception as exc:
             _log.warning("failed to write run report: %s", exc)
@@ -317,5 +349,7 @@ def _log_crawl_summary(
         _log.info("Run report (JSON):   %s", output_dir / "run_report.json")
         _log.info("Run report (MD):     %s", output_dir / "run_report.md")
         _log.info("Run report (HTML):   %s", output_dir / "run_report.html")
+        if ctx.offline_page_count:
+            _log.info("Offline page index:  %s", output_dir / OFFLINE_INDEX)
         if args.video_mode:
             _log.info("Video resources:     %d", video_count)

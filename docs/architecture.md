@@ -181,6 +181,8 @@ flowchart LR
 
 **`parser/rules.py`** 定义版本化的 CSS/XPath 字段规则。控制台用任务中保留的 HTML 验证规则，资源采集器在提取阶段把同一结果写入 `rule_items.jsonl`，`web-crawler-startproject --rules` 生成的 Spider 将同一结构交给 feed 管道。每条结果用 `page_url` 记录来源。
 
+控制台、采集器和生成的 Spider 共用字段覆盖统计。控制台按页面 URL 分批读取任务样本，展示进度并支持停止。覆盖报告区分已提取页面和错误页面，字段命中数以已提取页面为口径。
+
 ```mermaid
 flowchart LR
     Page[任务页面样本] --> Verify[验证字段规则]

@@ -2782,9 +2782,11 @@ class TestCrawlCrawlPages:
             for path in (tmp_path / "extracted_text").rglob("*.txt")
         }
         assert contents == {"Upper body", "Lower body"}
+        offline_dir = tmp_path / "offline_pages"
         offline = [
             path.read_text(encoding="utf-8")
-            for path in (tmp_path / "offline_pages").rglob("*.html")
+            for path in offline_dir.rglob("*.html")
+            if path != offline_dir / "index.html"
         ]
         assert len(offline) == 2
         assert sum("Upper body" in page for page in offline) == 1
@@ -2929,33 +2931,124 @@ class TestCrawlCssUrls:
 
 class TestCrawlRewriteHtml:
     def test_rewrite_html(self, tmp_path: Path) -> None:
-        """--rewrite-html 生成离线 HTML。"""
-        html = b'<html><body><img src="https://example.com/logo.png"></body></html>'
-        img_data = b"PNG_DATA"
+        """报告、同站页面、样式表及去重资源都可从本地文件访问。"""
+        from urllib.parse import unquote, urlsplit
+
+        from lxml import html as lxml_html
+
+        source = "https://example.com/section/start.html"
+        css = (
+            '@charset "GBK"; @import "reset.css"; .cover { background: url(/img/logo.png) }'
+            ' .cover::after { content: "封面" }'
+        ).encode("gbk")
+        outputs = {
+            "/section/start.html": (
+                (
+                    b'<!doctype html><head><base href="../"><title>Start &amp; more</title>'
+                    b'<link rel="stylesheet" href="css/main.css" integrity="sha256-placeholder" crossorigin="anonymous">'
+                    b'<link rel="stylesheet" href="css/alternate/main.css" media="print"></head><body>'
+                    b'<p>img/logo.png</p><img src="img/logo.png">'
+                    b'<img src="img/alias.png"><img srcset="data:image/png,abcd 1x, img/logo.png 2x">'
+                    b'<a href="other/more.html#anchor">More</a><a href="#same">Same</a>'
+                    b'<a href="contact">Remote</a><a download href="img/logo.png">Download</a></body>'
+                ),
+                "text/html",
+            ),
+            "/other/more.html": (
+                (
+                    b'<title>More</title><base href=""><base href="../">'
+                    b'<p id="anchor">Other page</p><a href="#anchor">Local</a>'
+                ),
+                "text/html",
+            ),
+            "/css/main.css": (css, "text/css"),
+            "/css/reset.css": (b".cover { color: rgb(10, 20, 30) }", "text/css"),
+            "/css/alternate/main.css": (css, "text/css"),
+            "/css/alternate/reset.css": (b".cover { color: rgb(40, 50, 60) }", "text/css"),
+            "/img/logo.png": (b"PNG_DATA", "image/png"),
+            "/img/alias.png": (b"PNG_DATA", "image/png"),
+        }
 
         def mock_fetch(url: str, *args: Any, **kwargs: Any) -> tuple[bytes, str]:
-            if "logo.png" in url:
-                return (img_data, "image/png")
-            return (html, "text/html")
+            body, content_type = outputs[urlsplit(url).path]
+            resume_path = kwargs.get("resume_path")
+            if resume_path is not None:
+                resume_path.write_bytes(body)
+                return b"", content_type
+            return body, content_type
 
         with patch.object(core, "fetch", side_effect=mock_fetch):
             args = cr.build_parser().parse_args(
                 [
                     "--url",
-                    "https://example.com",
+                    source,
                     "--out",
                     str(tmp_path),
                     "--rewrite-html",
+                    "--crawl-pages",
+                    "--max-pages",
+                    "2",
+                    "--include-css-urls",
+                    "--dedup",
+                    "--resume",
                     "--workers",
                     "1",
                 ]
             )
-            exit_code = cr.crawl(args)
-        assert exit_code == 0
-        # offline_pages 目录存在
-        assert (tmp_path / "offline_pages").exists() or any(
-            p.parent.name == "offline_pages" for p in tmp_path.rglob("*.html")
+            result = Mock()
+            args.result_callback = result
+            assert cr.crawl(args) == 0
+
+        def read_document(path: Path) -> Any:
+            return lxml_html.fromstring(path.read_text(encoding="utf-8"))
+
+        def local_path(document: Path, reference: str) -> Path:
+            parts = urlsplit(reference)
+            assert not parts.scheme and not parts.netloc
+            path = (document.parent / unquote(parts.path)).resolve()
+            assert path.is_relative_to(tmp_path) and path.is_file()
+            return path
+
+        report = tmp_path / "run_report.html"
+        index = local_path(
+            report, read_document(report).xpath('//a[contains(@href,"offline_pages")]/@href')[0]
         )
+        page_count = {"count": 2, "index": index.relative_to(tmp_path).as_posix()}
+        assert result.call_args.args[0].summary["offline_pages"] == page_count
+        assert (
+            json.loads((tmp_path / "run_report.json").read_text(encoding="utf-8"))["offline_pages"]
+            == page_count
+        )
+        links = read_document(index).xpath("//main//a")
+        assert [link.text for link in links] == ["Start & more", "More"]
+        page, more = [local_path(index, link.get("href")) for link in links]
+        document = read_document(page)
+        assert document.xpath("//p/text()") == ["img/logo.png"]
+        assert not document.xpath("//base/@href")
+        assert document.xpath("//meta[@charset]/@charset") == ["utf-8"]
+        image, alias = document.xpath("//img/@src")
+        assert local_path(page, image).read_bytes() == b"PNG_DATA"
+        assert alias == image
+        assert document.xpath("//img/@srcset") == [f"data:image/png,abcd 1x, {image} 2x"]
+        captured, anchor, remote, download = document.xpath("//a/@href")
+        assert local_path(page, captured) == more and captured.endswith("#anchor")
+        assert (anchor, remote) == ("https://example.com/#same", "https://example.com/contact")
+        assert local_path(page, download) == local_path(page, image)
+        assert read_document(more).xpath('//*[@id="anchor"]/text()') == ["Other page"]
+        assert read_document(more).xpath("//a/@href") == ["#anchor"]
+        assert not document.xpath("//link[@integrity or @crossorigin]")
+        stylesheet, alternate = [local_path(page, href) for href in document.xpath("//link/@href")]
+        content = stylesheet.read_text(encoding="utf-8")
+        imported = content.split('@import "')[1].split('"')[0]
+        imported_image = content.split('url("')[1].split('"')[0]
+        assert "rgb(10, 20, 30)" in local_path(stylesheet, imported).read_text(encoding="utf-8")
+        assert local_path(stylesheet, imported_image) == local_path(page, image)
+        assert 'content: "封面"' in content
+        alternate_import = alternate.read_text(encoding="utf-8").split('@import "')[1].split('"')[0]
+        assert "rgb(40, 50, 60)" in local_path(alternate, alternate_import).read_text(
+            encoding="utf-8"
+        )
+        assert any(path.read_bytes() == css for path in tmp_path.rglob("main.css"))
 
     def test_rewrite_html_with_strip_overlays(self, tmp_path: Path) -> None:
         """--rewrite-html + --strip-overlays 去除 overlay。"""

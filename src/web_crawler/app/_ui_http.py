@@ -13,6 +13,7 @@ import logging
 import re
 import threading
 import uuid
+from contextlib import suppress
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, cast
@@ -53,6 +54,7 @@ from ._ui_state import (
 )
 
 _log = logging.getLogger(__name__)
+_PAGE_AUDIT_BATCH_SIZE = 16
 
 # Host 头主机部分的合法形式：括号 IPv6 字面量（[::1] / [fe80::1%12]）
 # 或常规 reg-name / IPv4（字母数字点横线）。含 / \ ? # @ : 等保留字符的
@@ -383,7 +385,7 @@ class Handler(BaseHTTPRequestHandler):
             if not task:
                 self.respond(404, b'{"error":"task not found"}', "application/json; charset=utf-8")
                 return
-            self.respond_json(task)
+            self.respond_json({**task, "page_sample_count": database.count_page_samples(task_id)})
             return
         self.send_error(404)
 
@@ -428,6 +430,46 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond_json({"error": str(exc)}, status=400)
                 return
             self.respond_json({"rules": rules.to_dict(), "result": result})
+            return
+        audit_route = re.fullmatch(r"/jobs/([^/]+)/audit-rules", path)
+        if audit_route is not None:
+            try:
+                rules = ExtractionRules.from_dict(self.read_json_body(MAX_RULES_BYTES))
+            except ValueError as exc:
+                self.respond_json({"error": str(exc)}, status=400)
+                return
+            task_id = audit_route[1]
+            job = JOBS.get(task_id)
+            if job is not None and job.is_active():
+                self.respond_json({"error": "采集结束后可验证整批样本"}, status=409)
+                return
+            after = query.get("after", [""])[0]
+            sample_count = database.count_page_samples(task_id) if not after else None
+            samples = database.page_samples_after(task_id, after, _PAGE_AUDIT_BATCH_SIZE + 1)
+            audit = rules.coverage()
+            for page_url, compressed in samples[:_PAGE_AUDIT_BATCH_SIZE]:
+                try:
+                    result = rules.extract(
+                        database.decode_page_sample(compressed), page_url=page_url
+                    )
+                except ValueError as exc:
+                    audit.add_error(page_url, exc)
+                else:
+                    audit.add_result(result)
+            next_after = (
+                samples[_PAGE_AUDIT_BATCH_SIZE - 1][0]
+                if len(samples) > _PAGE_AUDIT_BATCH_SIZE
+                else None
+            )
+            with suppress(ConnectionError):  # 用户可以在浏览器中取消当前批次。
+                self.respond_json(
+                    {
+                        "rules": rules.to_dict(),
+                        "coverage": audit.report(),
+                        "next_after": next_after,
+                        "total_samples": sample_count,
+                    }
+                )
             return
         if path == "/run":
             form = self.read_form(keep_blank_values=True)

@@ -11,7 +11,7 @@ from web_crawler.app import _crawler_core as core
 from web_crawler.app import crawler, startproject
 from web_crawler.exceptions import ConfigError
 from web_crawler.parser import ExtractionRules
-from web_crawler.parser.rules import MAX_RULES_BYTES, parse_html
+from web_crawler.parser.rules import MAX_RULES_BYTES, RuleCoverage, parse_html
 from web_crawler.response import Response
 
 URL = "https://example.com/article"
@@ -111,6 +111,15 @@ def test_cli_sample_and_batch_use_the_same_rules(
     assert report["rule_results"] == summary["rule_results"]
     assert report["status"] == "partial"
     assert json.loads((batch / "rule_items.jsonl").read_text(encoding="utf-8")) == RESULT
+    coverage = json.loads((batch / "rule_report.json").read_text(encoding="utf-8"))
+    assert coverage["pages_checked"] == coverage["pages_missing_required"] == 1
+    assert coverage["fields"][-1] == {
+        "name": "subtitle",
+        "required": True,
+        "matched": 0,
+        "missing": 1,
+    }
+    assert coverage["examples"][0]["page_url"] == URL
 
 
 def test_generated_spider_consumes_the_exported_rules(
@@ -132,6 +141,69 @@ def test_generated_spider_consumes_the_exported_rules(
     spider.respect_robots = False
     assert spider.run() == [RESULT]
     assert json.loads(feed.read_text(encoding="utf-8")) == RESULT
+    coverage = spider.coverage.report()
+    assert coverage["pages_checked"] == 1
+    assert coverage["pages_missing_required"] == 1
+    assert coverage["examples"][0]["missing_required"] == RESULT["missing_required"]
+
+
+def test_generated_spider_continues_after_one_rule_evaluation_error(tmp_path: Path) -> None:
+    rules = ExtractionRules.from_dict(
+        {"version": 1, "fields": {"detail": {"xpath": "//span[$flag]"}}}
+    )
+    project = startproject.create_project("coverage_demo", tmp_path, rules=rules)
+    spider_class = runpy.run_path(str(project / "main.py"))["FieldSpider"]
+    urls = [f"{URL}/broken", f"{URL}/ok"]
+
+    class FixtureFetcher:
+        def get(self, url: str, **kwargs: object) -> Response:
+            html = b"<span>Field</span>" if url.endswith("/broken") else b"<main>No span</main>"
+            return Response(url, 200, html)
+
+    spider = spider_class(urls, rules, fetcher=FixtureFetcher())
+    spider.respect_robots = False
+    assert [item["page_url"] for item in spider.run()] == [urls[1]]
+    report = spider.coverage.report()
+    assert report["pages_checked"] == len(urls)
+    assert report["pages_error"] == 1
+    assert report["examples"][0]["page_url"] == urls[0]
+
+
+def test_failed_coverage_report_replace_preserves_previous_file(tmp_path: Path) -> None:
+    coverage = ExtractionRules.from_dict(RULES).coverage()
+    path = tmp_path / "coverage.json"
+    coverage.write(path)
+    original = path.read_bytes()
+    coverage.add_result(ExtractionRules.from_dict(RULES).extract(HTML, page_url=URL))
+    with patch.object(Path, "replace", side_effect=OSError("fixture")), pytest.raises(OSError):
+        coverage.write(path)
+    assert path.read_bytes() == original
+    assert list(tmp_path.iterdir()) == [path]
+
+
+@pytest.mark.parametrize("failure", ["result_path_is_directory", "report_write"])
+def test_crawl_exposes_output_failures_in_rule_summary(
+    tmp_path: Path, rule_file: Path, capsys: pytest.CaptureFixture[str], failure: str
+) -> None:
+    args = crawler.build_parser().parse_args(
+        ["--url", URL, "--out", str(tmp_path), "--rules", str(rule_file), "--json"]
+    )
+    if failure == "result_path_is_directory":
+        (tmp_path / "rule_items.jsonl").mkdir()
+        with patch.object(core, "fetch", return_value=(HTML.encode(), "text/html; charset=utf-8")):
+            assert crawler.crawl(args) == 0
+        report = json.loads((tmp_path / "rule_report.json").read_text(encoding="utf-8"))
+        assert report["pages_extracted"] == 1
+    else:
+        with (
+            patch.object(core, "fetch", return_value=(HTML.encode(), "text/html; charset=utf-8")),
+            patch.object(RuleCoverage, "write", side_effect=OSError("fixture write failure")),
+        ):
+            assert crawler.crawl(args) == 0
+        assert json.loads((tmp_path / "rule_items.jsonl").read_text(encoding="utf-8")) == RESULT
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["status"] == "partial"
+    assert summary["rule_results"]["errors"] == 1
 
 
 def test_config_can_embed_rules_and_cli_can_override_with_default_value(

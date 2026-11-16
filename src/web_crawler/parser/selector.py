@@ -21,7 +21,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterable, Iterator
 from functools import lru_cache
 from typing import Any, Pattern  # noqa: UP035
 from urllib.parse import urlparse
@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 from lxml import etree
 from lxml import html as lxml_html
 
-from .._types import Attrs, ResultList, TextHandler
+from .._types import Attrs, ResultList, Selectors, TextHandler
 from ..exceptions import InvalidStateError
 from .adaptive import (
     AdaptiveStorage,
@@ -99,12 +99,18 @@ class Adaptors:
         self,
         domain: str,
         storage: AdaptiveStorage | None = None,
+        ignore_attributes: Iterable[str] | str | None = None,
     ) -> None:
         self.domain = domain
         self.storage = storage or _get_default_storage()
+        self._ignore_attributes = tuple(
+            (ignore_attributes,)
+            if isinstance(ignore_attributes, str)
+            else (ignore_attributes or ())
+        )
 
     def save(self, identifier: str, element: etree._Element, url: str = "") -> str:
-        fingerprint = compute_fingerprint(element)
+        fingerprint = compute_fingerprint(element, self._ignore_attributes)
         self.storage.save(
             domain=self.domain,
             identifier=identifier,
@@ -131,7 +137,12 @@ class Adaptors:
             candidates = [c for c in candidates if isinstance(c.tag, str) and c.tag == tag]
             if not candidates:
                 return None, 0.0
-        return best_match(candidates, record["fingerprint"], threshold)
+        return best_match(
+            candidates,
+            record["fingerprint"],
+            threshold,
+            ignore_attributes=self._ignore_attributes,
+        )
 
     def find_similar(
         self,
@@ -139,13 +150,23 @@ class Adaptors:
         candidates: list[etree._Element],
         threshold: float = 0.5,
         limit: int = 10,
+        ignore_attributes: Iterable[str] | str | None = None,
     ) -> list[tuple[etree._Element, float]]:
-        ref_fp = compute_fingerprint(reference)
+        ignored = (
+            self._ignore_attributes
+            if ignore_attributes is None
+            else (
+                (ignore_attributes,)
+                if isinstance(ignore_attributes, str)
+                else tuple(ignore_attributes)
+            )
+        )
+        ref_fp = compute_fingerprint(reference, ignored)
         scored: list[tuple[etree._Element, float]] = []
         for cand in candidates:
             if cand is reference:
                 continue
-            score = similarity_score(ref_fp, compute_fingerprint(cand))
+            score = similarity_score(ref_fp, compute_fingerprint(cand, ignored))
             if score >= threshold:
                 scored.append((cand, score))
         scored.sort(key=lambda item: item[1], reverse=True)
@@ -164,11 +185,19 @@ class Selector:
         adaptive_domain: str | None = None,
         storage: AdaptiveStorage | None = None,
         parser: str = "html",
+        ignore_attributes: Iterable[str] | str | None = None,
     ) -> None:
         self.url = url
         self.adaptive = adaptive
         self._domain = adaptive_domain or _domain_from_url(url)
-        self._adaptors = Adaptors(self._domain, storage) if adaptive else None
+        self._ignore_attributes = tuple(
+            (ignore_attributes,)
+            if isinstance(ignore_attributes, str)
+            else (ignore_attributes or ())
+        )
+        self._adaptors = (
+            Adaptors(self._domain, storage, self._ignore_attributes) if adaptive else None
+        )
         self._element = self._parse(page_source, parser)
         self._storage = storage
         # 保留 adaptive_domain 以便 _wrap 构造子 Selector 时保持同一域名
@@ -254,6 +283,65 @@ class Selector:
             node = node.getparent()
         chain.reverse()
         return ResultList([self._wrap(c) for c in chain])
+
+    @property
+    def next_sibling(self) -> Selector | None:
+        """``next`` 的 Scrapling/BeautifulSoup 风格别名。"""
+        return self.next
+
+    @property
+    def previous_sibling(self) -> Selector | None:
+        """``previous`` 的 Scrapling/BeautifulSoup 风格别名。"""
+        return self.previous
+
+    def iterancestors(self) -> Iterator[Selector]:
+        """由近及远产出祖先元素，不含自身。"""
+        node = self._element.getparent()
+        while node is not None and isinstance(node.tag, str):
+            yield self._wrap(node)
+            node = node.getparent()
+
+    @property
+    def ancestors(self) -> ResultList[Selector]:
+        """由近及远的祖先元素列表，不含自身。"""
+        return ResultList(self.iterancestors())
+
+    def find_ancestor(self, predicate: Callable[[Selector], bool]) -> Selector | None:
+        """返回首个满足谓词的祖先，没有时为 ``None``。"""
+        return self.ancestors.search(predicate)
+
+    def has_class(self, name: str) -> bool:
+        """元素的 class 属性是否包含指定 token。"""
+        return name in (self.attr("class") or "").split()
+
+    def _document_elements(self) -> Iterator[etree._Element]:
+        root = self._element.getroottree().getroot()
+        for node in root.iter():
+            if isinstance(node.tag, str):
+                yield node
+
+    @property
+    def above_elements(self) -> ResultList[Selector]:
+        """文档顺序中位于本元素之前的元素，不含自身。"""
+        out: ResultList[Selector] = ResultList()
+        for node in self._document_elements():
+            if node is self._element:
+                break
+            out.append(self._wrap(node))
+        return out
+
+    @property
+    def below_elements(self) -> ResultList[Selector]:
+        """文档顺序中位于本元素之后的元素，不含自身。"""
+        out: ResultList[Selector] = ResultList()
+        seen = False
+        for node in self._document_elements():
+            if node is self._element:
+                seen = True
+                continue
+            if seen:
+                out.append(self._wrap(node))
+        return out
 
     # -- CSS / XPath ---------------------------------------------------------
     def css(
@@ -449,21 +537,35 @@ class Selector:
         *,
         threshold: float = 0.5,
         limit: int = 10,
+        ignore_attributes: Iterable[str] | str | None = None,
     ) -> ResultList[Selector]:
         """查找与 ``reference`` 结构相似的元素。"""
         ref_el = reference.element if isinstance(reference, Selector) else reference
+        ignored = (
+            self._ignore_attributes
+            if ignore_attributes is None
+            else (
+                (ignore_attributes,)
+                if isinstance(ignore_attributes, str)
+                else tuple(ignore_attributes)
+            )
+        )
         if self._adaptors:
             scored = self._adaptors.find_similar(
-                ref_el, list(self._element.iter()), threshold, limit
+                ref_el,
+                list(self._element.iter()),
+                threshold,
+                limit,
+                ignore_attributes=ignored,
             )
         else:
             # 自适应模式关闭时的无状态兜底。
-            ref_fp = compute_fingerprint(ref_el)
+            ref_fp = compute_fingerprint(ref_el, ignored)
             scored = []
             for cand in self._element.iter():
                 if cand is ref_el or not isinstance(cand.tag, str):
                     continue
-                score = similarity_score(ref_fp, compute_fingerprint(cand))
+                score = similarity_score(ref_fp, compute_fingerprint(cand, ignored))
                 if score >= threshold:
                     scored.append((cand, score))
             scored.sort(key=lambda item: item[1], reverse=True)
@@ -586,12 +688,17 @@ class Selector:
             if not stored_fp:
                 return ResultList()
         elif isinstance(element, Selector):
-            stored_fp = compute_fingerprint(element.element)
+            stored_fp = compute_fingerprint(element.element, self._ignore_attributes)
         else:
-            stored_fp = compute_fingerprint(element)
+            stored_fp = compute_fingerprint(element, self._ignore_attributes)
 
         candidates = [el for el in self._element.iter() if isinstance(el.tag, str)]
-        matched, _score = best_match(candidates, stored_fp, threshold)
+        matched, _score = best_match(
+            candidates,
+            stored_fp,
+            threshold,
+            ignore_attributes=self._ignore_attributes,
+        )
         if matched is None:
             return ResultList()
         return ResultList([self._wrap(matched)])
@@ -621,6 +728,7 @@ class Selector:
         d["_element"] = element
         d["_storage"] = self._storage
         d["_adaptive_domain"] = self._adaptive_domain
+        d["_ignore_attributes"] = self._ignore_attributes
         return sel
 
     def _adaptive_lookup(self, identifier: str, threshold: float) -> etree._Element | None:
@@ -643,7 +751,7 @@ class Selector:
         return self._element is not None
 
 
-__all__ = ["Adaptors", "Selector"]
-
 # Scrapling 向后兼容别名：Adaptor 指向主选择器类 Selector
 Adaptor = Selector
+
+__all__ = ["Adaptor", "Adaptors", "Selector", "Selectors"]

@@ -1740,6 +1740,58 @@ class TestReadJsonBodyEmpty:
 class TestJobsHistoryApi:
     """/jobs 系列任务历史 API 集成测试，使用临时 SQLite 数据库隔离。"""
 
+    def test_rule_audit_checks_valid_rules_and_waits_for_completed_task(
+        self, http_server: str
+    ) -> None:
+        url = "https://example.com"
+        ui.database.create_task("waiting", url, {}, ".")
+        ui.JOBS["waiting"] = _make_job_state(id="waiting")
+        path = "/jobs/waiting/audit-rules"
+        rules = {"version": 1, "fields": {"title": {"css": "title"}}}
+        with httpx.Client(base_url=http_server) as client:
+            assert client.post(path, json={"version": 7, "fields": {}}).status_code == 400
+            assert client.post(path, json=rules).status_code == 409
+            ui.JOBS["waiting"].status = "done"
+            report = client.post(path, json=rules).json()
+        assert report["total_samples"] == report["coverage"]["pages_checked"] == 0
+        assert report["next_after"] is None
+
+    def test_rule_coverage_audits_every_retained_page_once(self, http_server: str) -> None:
+        url = "https://example.com"
+        database = ui.database
+        database.create_task("audit", url, {}, ".")
+        database.create_task("unrelated", url, {}, ".")
+        rules = {"version": 1, "fields": {"title": {"css": "title", "required": True}}}
+        originals = [f"{url}/{index:02}" for index in range(19)]
+        for index, page_url in enumerate(originals):
+            body = b"<title>Example</title>" if index % 2 else b"<main>No title</main>"
+            database.save_page_sample("audit", page_url, "", zlib.compress(body))
+        database.save_page_sample("audit", url + "/broken", "", b"damaged sample")
+        database.save_page_sample(
+            "unrelated", url + "/elsewhere", "", zlib.compress(b"<title>Other</title>")
+        )
+        database.update_task_status("audit", "done")
+
+        with httpx.Client(base_url=http_server) as client:
+            path = "/jobs/audit/audit-rules"
+            task = client.get("/jobs/audit").json()
+            assert task["summary"] == {}
+            assert task["page_sample_count"] == len(originals) + 1
+            first = client.post(path, json=rules).json()
+            second = client.post(path, params={"after": first["next_after"]}, json=rules).json()
+        reports = [first["coverage"], second["coverage"]]
+        assert first["total_samples"] == len(originals) + 1
+        assert second["next_after"] is None
+        assert reports[0]["rule_sha256"] == reports[1]["rule_sha256"]
+        expected_missing = set(originals[::2])
+        assert sum(report["pages_checked"] for report in reports) == len(originals) + 1
+        assert sum(report["pages_error"] for report in reports) == 1
+        assert sum(report["fields"][0]["missing"] for report in reports) == len(expected_missing)
+        assert sum(report["fields"][0]["matched"] for report in reports) == len(originals[1::2])
+        issues = [item for report in reports for item in report["examples"]]
+        assert {item["page_url"] for item in issues if not item["error"]} == expected_missing
+        assert [item["page_url"] for item in issues if item["error"]] == [url + "/broken"]
+
     def test_portable_config_roundtrip_excludes_local_and_auth_data(self, http_server: str) -> None:
         rules = {"version": 1, "fields": {"title": {"css": "title", "required": True}}}
         with httpx.Client(base_url=http_server) as client:

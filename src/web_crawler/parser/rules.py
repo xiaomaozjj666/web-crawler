@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from hashlib import sha256
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING, TypedDict
 
 from cssselect import SelectorError
@@ -25,6 +27,94 @@ class FieldResult(TypedDict):
     page_url: str
     item: dict[str, str | list[str] | None]
     missing_required: list[str]
+
+
+class FieldCoverage(TypedDict):
+    name: str
+    required: bool
+    matched: int
+    missing: int
+
+
+class CoverageIssue(TypedDict):
+    page_url: str
+    missing_required: list[str]
+    error: str
+
+
+class CoverageReport(TypedDict):
+    version: int
+    rule_sha256: str
+    pages_checked: int
+    pages_extracted: int
+    pages_missing_required: int
+    pages_error: int
+    fields: list[FieldCoverage]
+    examples: list[CoverageIssue]
+
+
+class RuleCoverage:
+    """Track field coverage without retaining page HTML or extracted items."""
+
+    def __init__(self, fields: tuple[tuple[str, bool], ...], rule_sha256: str) -> None:
+        self._rule_sha256 = rule_sha256
+        self._fields: list[FieldCoverage] = [
+            {"name": name, "required": required, "matched": 0, "missing": 0}
+            for name, required in fields
+        ]
+        self._extracted = 0
+        self._missing = 0
+        self._errors = 0
+        self._examples: list[CoverageIssue] = []
+
+    def add_result(self, result: FieldResult) -> None:
+        self._extracted += 1
+        for counts in self._fields:
+            counts["matched" if result["item"][counts["name"]] else "missing"] += 1
+        if result["missing_required"]:
+            self._missing += 1
+            self._add_example(result["page_url"], result["missing_required"], "")
+
+    def add_error(self, page_url: str, exc: Exception) -> None:
+        self._errors += 1
+        self._add_example(page_url, [], str(exc) or type(exc).__name__)
+
+    def _add_example(self, page_url: str, missing: list[str], error: str) -> None:
+        if len(self._examples) < 30:
+            self._examples.append(
+                {"page_url": page_url, "missing_required": missing.copy(), "error": error[:1000]}
+            )
+
+    def report(self) -> CoverageReport:
+        return {
+            "version": 1,
+            "rule_sha256": self._rule_sha256,
+            "pages_checked": self._extracted + self._errors,
+            "pages_extracted": self._extracted,
+            "pages_missing_required": self._missing,
+            "pages_error": self._errors,
+            "fields": [field.copy() for field in self._fields],
+            "examples": [
+                {**example, "missing_required": example["missing_required"].copy()}
+                for example in self._examples
+            ],
+        }
+
+    def write(self, path: str | Path) -> None:
+        output = Path(path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with NamedTemporaryFile(
+                mode="w", dir=output.parent, encoding="utf-8", suffix=".json.tmp", delete=False
+            ) as stream:
+                temporary = Path(stream.name)
+                json.dump(self.report(), stream, ensure_ascii=False, indent=2)
+                stream.write("\n")
+            temporary.replace(output)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True)
@@ -66,6 +156,15 @@ class ExtractionRules:
 
     def __init__(self, fields: tuple[_Field, ...]) -> None:
         self._fields = fields
+
+    def coverage(self) -> RuleCoverage:
+        encoded = json.dumps(
+            self.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        return RuleCoverage(
+            tuple((field.name, field.required) for field in self._fields),
+            sha256(encoded.encode("utf-8")).hexdigest(),
+        )
 
     @classmethod
     def from_json(cls, text: str) -> ExtractionRules:

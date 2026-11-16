@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -29,6 +30,15 @@ _WEIGHTS: dict[str, float] = {
 }
 
 _TEXT_RE = re.compile(r"\s+")
+
+
+def _ignored_attributes(values: Iterable[str] | str | None) -> frozenset[str]:
+    """把单个属性名或可迭代集合归一为属性忽略集合。"""
+    if values is None:
+        return frozenset()
+    if isinstance(values, str):
+        return frozenset((values,))
+    return frozenset(values)
 
 
 def _normalize_text(value: str | None) -> str:
@@ -54,9 +64,17 @@ def _path_signature(element: etree._Element) -> str:
     return ">".join(parts)
 
 
-def compute_fingerprint(element: etree._Element) -> str:
-    """为 ``element`` 计算可 JSON 序列化的结构指纹。"""
-    attribs = {k: v for k, v in element.attrib.items()}
+def compute_fingerprint(
+    element: etree._Element,
+    ignore_attributes: Iterable[str] | str | None = None,
+) -> str:
+    """为 ``element`` 计算可 JSON 序列化的结构指纹。
+
+    ``ignore_attributes`` 中的属性名不参与 ``attrs`` 与 ``class_tokens``。
+    默认不忽略任何属性，保持既有指纹格式与评分结果不变。
+    """
+    ignored = _ignored_attributes(ignore_attributes)
+    attribs = {k: v for k, v in element.attrib.items() if k not in ignored}
     class_attr = attribs.get("class", "")
     text_sample = _normalize_text("".join(element.itertext()))
     child_tags = [c.tag for c in element if isinstance(c.tag, str)]
@@ -130,12 +148,13 @@ def best_match(
     candidates: list[etree._Element],
     stored_fp: str,
     threshold: float = 0.5,
+    ignore_attributes: Iterable[str] | str | None = None,
 ) -> tuple[etree._Element | None, float]:
     """从 ``candidates`` 中返回 ``(最佳元素, 得分)``，无匹配时 ``(None, 0)``。"""
     best: etree._Element | None = None
     best_score = 0.0
     for cand in candidates:
-        score = similarity_score(compute_fingerprint(cand), stored_fp)
+        score = similarity_score(compute_fingerprint(cand, ignore_attributes), stored_fp)
         if score > best_score:
             best_score = score
             best = cand

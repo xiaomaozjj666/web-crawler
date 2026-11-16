@@ -67,8 +67,18 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "Adaptors": ("web_crawler.parser.selector", "Adaptors"),
     "Adaptor": ("web_crawler.parser.selector", "Selector"),
     "AdaptiveStorage": ("web_crawler.parser.adaptive", "AdaptiveStorage"),
+    "Attrs": ("web_crawler._types", "Attrs"),
+    "ResultList": ("web_crawler._types", "ResultList"),
+    "Selectors": ("web_crawler._types", "Selectors"),
+    "TextHandler": ("web_crawler._types", "TextHandler"),
+    "TextHandlers": ("web_crawler._types", "TextHandlers"),
+    "best_match": ("web_crawler.parser.adaptive", "best_match"),
     "compute_fingerprint": ("web_crawler.parser.adaptive", "compute_fingerprint"),
     "similarity_score": ("web_crawler.parser.adaptive", "similarity_score"),
+    # parser / 规则提取
+    "CoverageReport": ("web_crawler.parser.rules", "CoverageReport"),
+    "ExtractionRules": ("web_crawler.parser.rules", "ExtractionRules"),
+    "RuleCoverage": ("web_crawler.parser.rules", "RuleCoverage"),
     # parser / 链接提取
     "Link": ("web_crawler.parser.links", "Link"),
     "LinkExtractor": ("web_crawler.parser.links", "LinkExtractor"),
@@ -142,6 +152,7 @@ __all__ = [
     "Adaptor",
     "Adaptors",
     "AsyncFetcher",
+    "Attrs",
     "AutoThrottle",
     # fetcher 系列
     "BaseFetcher",
@@ -150,6 +161,7 @@ __all__ = [
     "CaptchaManager",
     "CaptchaType",
     "ConfigError",
+    "CoverageReport",
     "CrawlSpider",
     "DeepSeekProvider",
     "DownloaderMiddleware",
@@ -157,6 +169,7 @@ __all__ = [
     "DupeFilter",
     "DynamicFetcher",
     "ExtractionResult",
+    "ExtractionRules",
     "FeedExportPipeline",
     "FetchError",
     "Fetcher",
@@ -180,21 +193,26 @@ __all__ = [
     "Request",
     # 响应对象
     "Response",
+    "ResultList",
     "ReverseAgent",
     "ReverseAgentConfig",
     # MCP 服务器
     "ReverseMCPServer",
     "RobotsPolicy",
     "Rule",
+    "RuleCoverage",
     "ScrapeResult",
     # parser / 自适应
     "Selector",
+    "Selectors",
     "SessionPool",
     "SitemapSpider",
     "Spider",
     "SpiderError",
     "SpiderStats",
     "StealthyFetcher",
+    "TextHandler",
+    "TextHandlers",
     "UnsafeTargetError",
     # spider / item 校验管道
     "ValidationPipeline",
@@ -203,6 +221,7 @@ __all__ = [
     "WebCrawlerError",
     "__version__",
     "available_providers",
+    "best_match",
     "compute_fingerprint",
     "detect_block",
     "generate_combined_script",
@@ -237,6 +256,7 @@ def __dir__() -> list[str]:
 
 # 供类型检查器解析真实符号，让 IDE/mypy 看到完整签名。
 if TYPE_CHECKING:
+    from ._types import Attrs, ResultList, Selectors, TextHandler, TextHandlers
     from .ai.agent import AIScrapeAgent, RobotsPolicy, ScrapeResult
     from .ai.extractor import AIExtractor, ExtractionResult
     from .ai.image_captcha import ImageCaptchaSolver
@@ -266,8 +286,14 @@ if TYPE_CHECKING:
     from .fetchers.proxy import ProxyPool
     from .fetchers.session import SessionPool
     from .fetchers.stealthy import StealthyFetcher
-    from .parser.adaptive import AdaptiveStorage, compute_fingerprint, similarity_score
+    from .parser.adaptive import (
+        AdaptiveStorage,
+        best_match,
+        compute_fingerprint,
+        similarity_score,
+    )
     from .parser.links import Link, LinkExtractor
+    from .parser.rules import CoverageReport, ExtractionRules, RuleCoverage
     from .parser.selector import Adaptors, Selector
     from .parser.visual import VisualExtractor
     from .response import Response

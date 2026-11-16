@@ -90,6 +90,12 @@ def _write_html_report(path: Path, ctx: dict[str, object]) -> None:
         else ""
     )
     status = CRAWL_STATUS_TITLES.get(str(ctx.get("status")), "爬取结束")
+    offline = ctx.get("offline_pages")
+    offline_link = (
+        f'<p><a href="{esc(offline["index"])}">打开离线页面目录</a> · {esc(offline["count"])} 页</p>'
+        if isinstance(offline, dict)
+        else ""
+    )
     # 概览卡片
     cards = [
         (
@@ -322,7 +328,7 @@ def _write_html_report(path: Path, ctx: dict[str, object]) -> None:
         "<header><h1>网页资源采集报告</h1>"
         f"<div class='meta'>{esc(status)}　·　生成时间：{esc(ctx.get('generated_at', ''))}　·　"
         f"耗时：{esc(ctx.get('duration_human', '未知'))}　·　"
-        f"扫描页面：{esc(ctx.get('pages_scanned', 0))}</div></header>"
+        f"扫描页面：{esc(ctx.get('pages_scanned', 0))}</div>{offline_link}</header>"
         "<div class='cards'>"
         + "".join(card_html)
         + "</div>"

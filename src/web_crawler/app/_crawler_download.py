@@ -34,6 +34,7 @@ from web_crawler.app._crawler_discovery import discover_playlist_resources
 from web_crawler.app.crawler_models import ManifestRow, Resource
 from web_crawler.app.crawler_net import (
     category_for,
+    decode_stylesheet,
     decode_text,
     discover_css_resources,
     is_blocked_url,
@@ -107,65 +108,58 @@ def _process_resource(ctx: _CrawlContext, resource: Resource) -> ManifestRow | N
         initial_prefix = output_prefix_for_resource(args, resource, "", ctx.page_titles)
         target = output_path_for_url(resource.url, ctx.output_dir, "", prefix=initial_prefix)
         target.parent.mkdir(parents=True, exist_ok=True)
-        # 需要完整内容（去重/解密/CSS 解析/播放清单展开）时走内存路径;
-        # 否则流式写入 .part 临时文件,避免大文件整包驻留内存（fetch 返回 b""）
+        # fetch 的流式路径只返回响应类型。断点续传后如需检查内容，读回完整文件。
         needs_content = (
             bool(ctx.dedup)
             or (getattr(args, "decrypt", False) and cr.HAS_AES)
             or bool(args.include_css_urls)
             or bool(args.expand_playlists)
         )
-        stream_to_disk = not getattr(args, "resume", False) and not needs_content
+        stream_to_disk = getattr(args, "resume", False) or not needs_content
         data, content_type = cr.fetch(
             resource.url,
             args.timeout,
             ctx.headers,
             args.retries,
             ctx.max_bytes,
-            resume_path=target if (getattr(args, "resume", False) or stream_to_disk) else None,
+            resume_path=target if stream_to_disk else None,
             rate_limiter=ctx.rate_limiter,
             control_args=args,
         )
-        byte_count = target.stat().st_size if (stream_to_disk and target.exists()) else len(data)
+        if stream_to_disk and target.is_file():
+            if needs_content:
+                data = target.read_bytes()
+            byte_count = target.stat().st_size
+        else:
+            byte_count = len(data)
 
         # 内容去重
-        sha256 = ""
-        if ctx.dedup:
-            is_dup, sha256 = ctx.dedup.is_duplicate(data, resource.url)
-            if is_dup:
-                return row_for(
-                    "skipped by dedup",
-                    resource,
-                    "",
-                    content_type,
-                    len(data),
-                    ctx.page_titles,
-                    sha256=sha256,
-                )
+        is_dup, sha256 = ctx.dedup.is_duplicate(data, resource.url) if ctx.dedup else (False, "")
 
-        final_prefix = output_prefix_for_resource(args, resource, content_type, ctx.page_titles)
-        final_target = output_path_for_url(
-            resource.url, ctx.output_dir, content_type, prefix=final_prefix
-        )
-        if final_target != target and target.exists():  # pragma: no cover - 仅 resume 场景触发
-            final_target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(target), str(final_target))
-            target = final_target
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if not getattr(args, "resume", False) and not stream_to_disk:
-            write_data = data
-            if (
-                getattr(args, "decrypt", False) and cr.HAS_AES
-            ):  # pragma: no cover - pycryptodome 未安装时不可达
-                key_info = cr.get_segment_key(resource.url)
-                if key_info:
-                    try:
-                        write_data = cr.decrypt_aes128(data, key_info[0], key_info[1])
-                        _log.info("decrypted segment: %s", resource.url)
-                    except Exception as exc:
-                        _log.warning("decryption failed for %s: %s", resource.url, exc)
-                        raise ValueError(f"decryption failed, skipped: {resource.url}") from exc
-            target.write_bytes(write_data)
+        if not is_dup:
+            final_prefix = output_prefix_for_resource(args, resource, content_type, ctx.page_titles)
+            final_target = output_path_for_url(
+                resource.url, ctx.output_dir, content_type, prefix=final_prefix
+            )
+            if final_target != target and target.exists():  # pragma: no cover - 仅 resume 场景触发
+                final_target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(target), str(final_target))
+                target = final_target
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not stream_to_disk:
+                write_data = data
+                if (
+                    getattr(args, "decrypt", False) and cr.HAS_AES
+                ):  # pragma: no cover - pycryptodome 未安装时不可达
+                    key_info = cr.get_segment_key(resource.url)
+                    if key_info:
+                        try:
+                            write_data = cr.decrypt_aes128(data, key_info[0], key_info[1])
+                            _log.info("decrypted segment: %s", resource.url)
+                        except Exception as exc:
+                            _log.warning("decryption failed for %s: %s", resource.url, exc)
+                            raise ValueError(f"decryption failed, skipped: {resource.url}") from exc
+                target.write_bytes(write_data)
 
         status = "ok"
         local_discoveries: list[Resource] = []
@@ -174,7 +168,7 @@ def _process_resource(ctx: _CrawlContext, resource: Resource) -> ManifestRow | N
         if args.include_css_urls and (
             "text/css" in content_type or resource.url.lower().endswith(".css")
         ):
-            css_text = decode_text(data, content_type, args.encoding)
+            css_text = decode_stylesheet(data, content_type, args.encoding)
             for extra in discover_css_resources(css_text, resource.url, resource.page_url):
                 if args.same_domain and not same_domain(
                     extra.url, args.url
@@ -188,7 +182,8 @@ def _process_resource(ctx: _CrawlContext, resource: Resource) -> ManifestRow | N
 
         # 播放列表展开
         if (
-            args.expand_playlists
+            not is_dup
+            and args.expand_playlists
             and category_for(resource.url, content_type, resource.kind, resource.found_in)
             == "playlist"
         ):
@@ -233,7 +228,13 @@ def _process_resource(ctx: _CrawlContext, resource: Resource) -> ManifestRow | N
                         ctx.queue.append(extra)
 
         manifest_row = row_for(
-            status, resource, str(target), content_type, byte_count, ctx.page_titles, sha256=sha256
+            "skipped by dedup" if is_dup else status,
+            resource,
+            "" if is_dup else str(target),
+            content_type,
+            byte_count,
+            ctx.page_titles,
+            sha256=sha256,
         )
 
     except Exception as exc:

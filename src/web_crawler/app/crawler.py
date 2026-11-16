@@ -95,6 +95,7 @@ from web_crawler.app._crawler_scan import (
     _scan_pages,
     _seed_page_queue,
 )
+from web_crawler.app._offline import OFFLINE_INDEX
 from web_crawler.app.crawler_models import ManifestRow, Resource, ResourceCrawlResult
 from web_crawler.app.crawler_net import *
 from web_crawler.app.crawler_report import *
@@ -167,6 +168,8 @@ def _emit_summary(
         page_scan=ctx.page_scan,
         rule_results=ctx.rule_summary(),
     )
+    if ctx.offline_page_count:
+        summary["offline_pages"] = {"count": ctx.offline_page_count, "index": OFFLINE_INDEX}
     on_result = getattr(args, "result_callback", None)
     if on_result is not None:
         on_result(ResourceCrawlResult(summary, rows, ctx.all_resources, ctx.resource_dependencies))
@@ -234,6 +237,7 @@ def _crawl(args: argparse.Namespace) -> int:
         rate_limiter=DomainRateLimiter(default_delay=max(0.0, args.delay)),
         dedup=ContentDedup() if args.dedup else None,
         rules=rules,
+        rule_coverage=rules.coverage() if rules is not None else None,
     )
 
     # ── 页面发现与扫描 ──

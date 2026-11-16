@@ -6,12 +6,16 @@
 
 from __future__ import annotations
 
+import html
 import json
+import re as _re
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
+from re import Pattern as _Pattern
 from typing import Any, Generic, TypeVar, cast
 
 T = TypeVar("T")
+U = TypeVar("U")
 
 
 class TextHandler(str):
@@ -34,6 +38,41 @@ class TextHandler(str):
 
     def ends_with(self, suffix: str) -> bool:
         return str(self).endswith(suffix)
+
+    def re(
+        self,
+        regex: str | _Pattern[str],
+        *,
+        replace_entities: bool = True,
+        clean_match: bool = False,
+        case_sensitive: bool = True,
+    ) -> ResultList[TextHandler]:
+        """返回当前文本的全部正则匹配，内置捕获组展平与实体解码。"""
+        return _regex_matches(
+            str(self),
+            regex,
+            replace_entities=replace_entities,
+            clean_match=clean_match,
+            case_sensitive=case_sensitive,
+        )
+
+    def re_first(
+        self,
+        regex: str | _Pattern[str],
+        default: Any = None,
+        *,
+        replace_entities: bool = True,
+        clean_match: bool = False,
+        case_sensitive: bool = True,
+    ) -> Any:
+        """返回当前文本的首个正则匹配，无匹配时返回 ``default``。"""
+        matches = self.re(
+            regex,
+            replace_entities=replace_entities,
+            clean_match=clean_match,
+            case_sensitive=case_sensitive,
+        )
+        return matches[0] if matches else default
 
 
 class Attrs(dict):
@@ -148,6 +187,67 @@ class ResultList(list, Generic[T]):
                 out.extend(method(selector, **kwargs))
         return out
 
+    def re(
+        self,
+        regex: str | _Pattern[str],
+        *,
+        replace_entities: bool = True,
+        clean_match: bool = False,
+        case_sensitive: bool = True,
+    ) -> ResultList[TextHandler]:
+        """对每个元素的文本应用正则并展平全部匹配。"""
+        out: ResultList[TextHandler] = ResultList()
+        for item in self:
+            text = item if isinstance(item, str) else getattr(item, "text", None)
+            out.extend(
+                _regex_matches(
+                    str(text) if text is not None else str(item),
+                    regex,
+                    replace_entities=replace_entities,
+                    clean_match=clean_match,
+                    case_sensitive=case_sensitive,
+                )
+            )
+        return out
+
+    def re_first(
+        self,
+        regex: str | _Pattern[str],
+        default: Any = None,
+        *,
+        replace_entities: bool = True,
+        clean_match: bool = False,
+        case_sensitive: bool = True,
+    ) -> Any:
+        """返回首个命中的正则匹配，无匹配时返回 ``default``。"""
+        for item in self:
+            text = item if isinstance(item, str) else getattr(item, "text", None)
+            matches = _regex_matches(
+                str(text) if text is not None else str(item),
+                regex,
+                replace_entities=replace_entities,
+                clean_match=clean_match,
+                case_sensitive=case_sensitive,
+            )
+            if matches:
+                return matches[0]
+        return default
+
+    def filter(self, predicate: Callable[[T], bool]) -> ResultList[T]:
+        """按谓词筛选元素，结果仍为 ``ResultList``。"""
+        return ResultList(item for item in self if predicate(item))
+
+    def search(self, predicate: Callable[[T], bool], default: Any = None) -> Any:
+        """返回首个满足谓词的元素，无命中时返回 ``default``。"""
+        for item in self:
+            if predicate(item):
+                return item
+        return default
+
+    def map(self, func: Callable[[T], U]) -> ResultList[U]:
+        """对每个元素应用函数，返回新的 ``ResultList``。"""
+        return ResultList(func(item) for item in self)
+
     @property
     def length(self) -> int:
         """``len(self)`` 的 Scrapling 风格别名。"""
@@ -193,6 +293,37 @@ class ResultList(list, Generic[T]):
         return list.__getitem__(self, index)
 
 
+def _regex_matches(
+    text: str,
+    regex: str | _Pattern[str],
+    *,
+    replace_entities: bool,
+    clean_match: bool,
+    case_sensitive: bool,
+) -> ResultList[TextHandler]:
+    """正则提取的内部实现：统一捕获组展平、空白归一与实体解码。"""
+    pattern = (
+        _re.compile(regex, 0 if case_sensitive else _re.IGNORECASE)
+        if isinstance(regex, str)
+        else regex
+    )
+    normalized = " ".join(text.split()) if clean_match else text
+    out: ResultList[TextHandler] = ResultList()
+    for match in pattern.finditer(normalized):
+        values = match.groups() or (match.group(0),)
+        for value in values:
+            if value is None:
+                continue
+            if replace_entities:
+                value = html.unescape(value)
+            out.append(TextHandler(value))
+    return out
+
+
+Selectors = ResultList
+TextHandlers = ResultList
+
+
 def ensure_list(value: Iterable[T] | T | None) -> list[T]:
     """把单个值包成列表；可迭代对象原样转列表；``None`` -> ``[]``。"""
     if value is None:
@@ -216,9 +347,10 @@ def iter_chunks(seq: list[T], size: int) -> Iterator[list[T]]:
 
 __all__ = [
     "Attrs",
-    "Callable",
     "ResultList",
+    "Selectors",
     "TextHandler",
+    "TextHandlers",
     "ensure_list",
     "iter_chunks",
 ]

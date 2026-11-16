@@ -32,7 +32,7 @@ from web_crawler._cli import PageScanSummary
 from web_crawler.app.crawler_models import Resource
 from web_crawler.app.crawler_net import ContentDedup, DomainRateLimiter
 from web_crawler.exceptions import ConfigError
-from web_crawler.parser.rules import ExtractionRules
+from web_crawler.parser.rules import ExtractionRules, RuleCoverage
 
 # 与 app.crawler 共用同一个 logger：UI 通过 attach_log_handler 挂到
 # "crawler" logger 的 handler 对所有模块日志生效，行为与拆分前一致。
@@ -103,18 +103,19 @@ class _CrawlContext:
     manifest_lock: threading.Lock = field(default_factory=threading.Lock)
     jsonl_file: Any = None
     result_committed: bool = False
+    offline_page_count: int = 0
     rules: ExtractionRules | None = None
-    rule_pages: int = 0
-    rule_pages_missing: int = 0
-    rule_errors: int = 0
+    rule_coverage: RuleCoverage | None = None
+    rule_write_errors: int = 0
 
     def rule_summary(self) -> dict[str, int] | None:
-        if self.rules is None:
+        if self.rule_coverage is None:
             return None
+        coverage = self.rule_coverage.report()
         return {
-            "pages": self.rule_pages,
-            "pages_missing_required": self.rule_pages_missing,
-            "errors": self.rule_errors,
+            "pages": coverage["pages_extracted"],
+            "pages_missing_required": coverage["pages_missing_required"],
+            "errors": coverage["pages_error"] + self.rule_write_errors,
         }
 
     def enqueue_page(self, url: str) -> None:

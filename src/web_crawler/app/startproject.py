@@ -167,9 +167,11 @@ _FIELD_SPIDER_TEMPLATE = '''\
 """使用已验证的字段规则采集一组页面。"""
 
 import argparse
+import logging
 from pathlib import Path
 
 from web_crawler import Fetcher, Spider
+from web_crawler.exceptions import ConfigError
 from web_crawler.parser.rules import ExtractionRules
 
 
@@ -181,9 +183,17 @@ class FieldSpider(Spider):
         super().__init__(**kwargs)
         self.start_urls = urls
         self.field_rules = rules
+        self.coverage = rules.coverage()
 
     def parse(self, response):
-        yield self.field_rules.extract_response(response)
+        try:
+            result = self.field_rules.extract_response(response)
+        except ConfigError as exc:
+            self.coverage.add_error(response.url, exc)
+            logging.getLogger(__name__).warning("字段提取失败：%s · %s", response.url, exc)
+            return
+        self.coverage.add_result(result)
+        yield result
 
 
 def main():
@@ -193,8 +203,12 @@ def main():
     args = parser.parse_args()
     rules = ExtractionRules.from_file(Path(__file__).with_name("field-rules.json"))
     with Fetcher() as fetcher:
-        items = FieldSpider(args.urls, rules, fetcher=fetcher, feed_output=args.output).run()
+        spider = FieldSpider(args.urls, rules, fetcher=fetcher, feed_output=args.output)
+        items = spider.run()
+    report = Path(args.output).with_suffix(".rule-report.json")
+    spider.coverage.write(report)
     print(f"提取了 {len(items)} 个页面，输出 {args.output}")
+    print(f"字段覆盖报告 {report}")
 
 
 if __name__ == "__main__":

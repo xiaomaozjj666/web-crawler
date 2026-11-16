@@ -263,10 +263,19 @@ class SafeRedirectHandler(HTTPRedirectHandler):
 # ── 页面 HTML 解析器 ─────────────────────────────────────────────
 
 
+def _resolve_html_base(page_url: str, href: str) -> str:
+    try:
+        base = urljoin(page_url, href.strip())
+        return base if urlparse(base).scheme in {"http", "https"} else page_url
+    except ValueError:
+        return page_url
+
+
 class PageParser(HTMLParser):
     def __init__(self, page_url: str) -> None:
         super().__init__()
         self.page_url = page_url
+        self._base_url: str | None = None
         self.resources: list[Resource] = []
         self.page_links: list[str] = []
 
@@ -274,8 +283,12 @@ class PageParser(HTMLParser):
         tag = tag.lower()
         attr_map = {name.lower(): value for name, value in attrs if value}
 
-        if tag == "base" and attr_map.get("href"):
-            self.page_url = urljoin(self.page_url, attr_map["href"])
+        if tag == "base":
+            if self._base_url is None:
+                for name, value in attrs:
+                    if name == "href":
+                        self._base_url = _resolve_html_base(self.page_url, value or "")
+                        break
             return
 
         for attr in HTML_RESOURCE_ATTRS.get(tag, ()):
@@ -295,7 +308,7 @@ class PageParser(HTMLParser):
         for attr in PAGE_LINK_ATTRS.get(tag, ()):
             value = attr_map.get(attr)
             if value:
-                page_link = normalize_url(urljoin(self.page_url, value))
+                page_link = normalize_url(urljoin(self._base_url or self.page_url, value))
                 if page_link:
                     self.page_links.append(page_link)
 
@@ -312,7 +325,7 @@ class PageParser(HTMLParser):
     def _add_resource(self, value: str, found_in: str, kind: str) -> None:
         if not looks_like_downloadable(value):
             return
-        absolute = normalize_url(urljoin(self.page_url, value))
+        absolute = normalize_url(urljoin(self._base_url or self.page_url, value))
         if absolute:
             self.resources.append(Resource(absolute, found_in, kind, self.page_url))
 
@@ -330,11 +343,27 @@ def parse_headers(values: list[str]) -> dict[str, str]:
     return headers
 
 
+def _srcset_url_spans(value: str) -> Iterable[tuple[int, int]]:
+    """Yield source URL positions without splitting their embedded commas."""
+    whitespace = " \t\n\r\f"
+    cursor = 0
+    while cursor < len(value):
+        while cursor < len(value) and value[cursor] in whitespace + ",":
+            cursor += 1
+        start = cursor
+        while cursor < len(value) and value[cursor] not in whitespace:
+            cursor += 1
+        end = start + len(value[start:cursor].rstrip(","))
+        if end > start:
+            yield start, end
+        if end == cursor:
+            separator = value.find(",", cursor)
+            cursor = len(value) if separator < 0 else separator + 1
+
+
 def parse_srcset(value: str) -> Iterable[str]:
-    for part in value.split(","):
-        candidate = part.strip().split()
-        if candidate:
-            yield candidate[0]
+    for start, end in _srcset_url_spans(value):
+        yield value[start:end]
 
 
 def normalize_url(url: str) -> str:
@@ -509,6 +538,20 @@ def decode_text(data: bytes, content_type: str, fallback: str | None) -> str:
     if not encoding and "charset=" in content_type.lower():
         encoding = content_type.lower().split("charset=", 1)[1].split(";", 1)[0].strip()
     return data.decode(encoding or "utf-8", errors="replace")
+
+
+def decode_stylesheet(data: bytes, content_type: str, encoding: str | None) -> str:
+    if encoding or "charset=" in content_type.lower():
+        return decode_text(data, content_type, encoding).lstrip("\ufeff")
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16", errors="replace")
+    declaration = re.match(rb'@charset "([a-zA-Z0-9._-]+)";', data)
+    if declaration:
+        try:
+            return data.decode(declaration[1].decode("ascii"), errors="replace")
+        except LookupError:
+            pass
+    return data.decode("utf-8-sig", errors="replace")
 
 
 def extract_title(html_text: str) -> str:
