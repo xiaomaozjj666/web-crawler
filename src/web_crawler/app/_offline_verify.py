@@ -1,4 +1,13 @@
-"""Check the static references reachable from an exported offline index."""
+"""Check the static references reachable from an exported offline index.
+
+Scope: HTML/CSS 静态引用、meta 资源（og:image 等）、link 预取、iframe/srcdoc、
+SVG 引用与 meta refresh。**不覆盖**表单提交、脚本发起的请求、动态渲染后的
+视觉结果——这些只能靠浏览器实测。
+
+分类口径：`missing`（本地目标不存在）、`outside`（明确越出归档根，如盘符 /
+`file:` / 含冒号路径）、`unverified`（目录引用、站点根路径、非 UTF-8、超限或
+解析失败等无法静态确证的情况）、`remote`（指向原站的 HTTP(S) 资源）。
+"""
 
 from __future__ import annotations
 
@@ -14,7 +23,13 @@ from tinycss2 import parse_component_value_list, parse_stylesheet, parse_stylesh
 
 from web_crawler._nav_guard import _REFRESH_UNPARSEABLE, _refresh_target
 from web_crawler.app._offline import OFFLINE_INDEX
-from web_crawler.app.crawler_net import HTML_RESOURCE_ATTRS, PAGE_LINK_ATTRS, _srcset_url_spans
+from web_crawler.app.crawler_net import (
+    HTML_RESOURCE_ATTRS,
+    META_URL_NAMES,
+    PAGE_LINK_ATTRS,
+    RESOURCE_LINK_RELS,
+    _srcset_url_spans,
+)
 from web_crawler.parser.rules import parse_html
 
 _DOCUMENT_BYTES = 8 * 1024 * 1024
@@ -35,15 +50,9 @@ _SVG_URL_ATTRIBUTES = {
     "mask",
     "stroke",
 }
-_RESOURCE_RELS = {
-    "stylesheet",
-    "preload",
-    "modulepreload",
-    "icon",
-    "mask-icon",
-    "manifest",
-    "apple-touch-icon",
-}
+# 与采集侧共用同一份 rel 集合；去掉只指向源站、不产生本地文件的提示项。
+_SKIPPED_LINK_RELS = {"dns-prefetch", "preconnect", "pingback", "search"}
+_RESOURCE_RELS = RESOURCE_LINK_RELS - _SKIPPED_LINK_RELS
 
 _Purpose = Literal["asset", "navigation", "html", "css"]
 _Issue = Literal["missing", "outside", "unverified"]
@@ -68,18 +77,18 @@ class OfflineCheck(TypedDict):
 
 
 def unavailable_offline_check(*, index_written: bool = False) -> OfflineCheck:
-    kind: _Issue = "unverified" if index_written else "missing"
     detail = "离线索引已生成，静态验收未完成" if index_written else "本次任务未生成离线索引"
+    # 「没验」不是「有缺失」：不能伪造 missing=1 让报告显示「静态引用有缺失」。
     return {
         "schema_version": 1,
-        "status": "limited" if index_written else "failed",
+        "status": "limited",
         "documents_checked": 0,
         "local_references": 0,
         "remote_resources": 0,
-        "missing": int(not index_written),
+        "missing": 0,
         "outside": 0,
-        "unverified": int(index_written),
-        "examples": [{"kind": kind, "source": OFFLINE_INDEX, "detail": detail}],
+        "unverified": 1,
+        "examples": [{"kind": "unverified", "source": OFFLINE_INDEX, "detail": detail}],
     }
 
 
@@ -135,11 +144,23 @@ def _html_references(text: str) -> Iterator[tuple[str, _Purpose]]:
                 element.get("href") or element.get("xlink:href", ""),
                 "html" if tag == "use" else "asset",
             )
-        elif tag == "meta" and element.get("http-equiv", "").strip().lower() == "refresh":
-            destination = _refresh_target({"refresh": element.get("content", "")})
-            if destination.startswith(_REFRESH_UNPARSEABLE):
-                raise ValueError("unsupported automatic navigation")
-            yield destination, "html"
+        elif tag == "meta":
+            if element.get("http-equiv", "").strip().lower() == "refresh":
+                destination = _refresh_target({"refresh": element.get("content", "")})
+                if destination.startswith(_REFRESH_UNPARSEABLE):
+                    raise ValueError("unsupported automatic navigation")
+                yield destination, "html"
+                continue
+            # 写侧会把 og:image / twitter:image 等 meta content 改写成本地相对
+            # 路径；验收侧必须按同一口径检查，否则删掉本地图片也会判 passed。
+            key = (
+                (element.get("property") or element.get("name") or element.get("itemprop") or "")
+                .strip()
+                .lower()
+            )
+            content = element.get("content", "")
+            if key in META_URL_NAMES and content:
+                yield content, "asset"
         elif tag != "meta" and (tag != "link" or rel & _RESOURCE_RELS):
             for name in HTML_RESOURCE_ATTRS.get(tag, ()):
                 value = element.get(name, "")
@@ -232,7 +253,11 @@ def verify_offline(
                 issue("unverified", source, "超过静态检查的读取上限")
                 continue
             if document_kind == "html":
-                found = _html_references(data.decode("utf-8-sig"))
+                try:
+                    found = _html_references(data.decode("utf-8-sig"))
+                except UnicodeDecodeError:
+                    issue("unverified", source, "文档不是 UTF-8 编码，未检查引用")
+                    continue
             else:
                 rules, _encoding = parse_stylesheet_bytes(data, skip_comments=True)
                 found = _css_references(rules)
@@ -260,11 +285,17 @@ def verify_offline(
                     continue
                 if parts.scheme and parts.scheme != "file":
                     continue
-                path = unquote(parts.path)
+                # 浏览器把 URL 里的反斜杠归一成斜杠；这里保持一致，再交给
+                # normpath + contained 处理 ../ 逃逸。
+                path = unquote(parts.path).replace("\\", "/")
                 if not path and not parts.scheme:
                     continue
-                if parts.scheme or path.startswith("/") or any(char in path for char in "\\:\0"):
+                if parts.scheme == "file" or ":" in path or "\0" in path:
                     issue("outside", source, "引用使用了离线目录外的文件位置")
+                    continue
+                if path.startswith("/"):
+                    # 站点根路径无法在归档内静态定位，但不是「越出目录」的硬错误。
+                    issue("unverified", source, "引用使用站点根路径，离线无法定位")
                     continue
                 target = Path(os.path.normpath(source.parent / path))
                 if not contained(target, source):
@@ -274,6 +305,9 @@ def verify_offline(
                 index_has_page |= (
                     purpose == "navigation" and suffix in _PAGE_SUFFIXES and target != index
                 )
+                if target.is_dir():
+                    issue("unverified", source, "引用指向目录，未检查其入口文件")
+                    continue
                 if not target.is_file():
                     issue("missing", source, target.relative_to(root).as_posix())
                     continue

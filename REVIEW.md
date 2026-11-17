@@ -26,6 +26,7 @@
 - `src/web_crawler/app/_ui_http.py`
 - `src/web_crawler/spider/spider.py`
 - `src/web_crawler/_nav_guard.py`、`src/web_crawler/app/_crawler_core.py`（render 桥接）
+- `src/web_crawler/app/_offline_verify.py`（离线归档静态验收：meta/link rel/目录与根路径分类、路径包含校验、未验≠缺失语义）
 
 ## 可以跳过
 

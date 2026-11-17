@@ -297,3 +297,91 @@ def test_cli_rejects_combining_check_with_network_crawl(
         crawler.main()
     assert result.value.code == 2
     assert "standalone check" in capsys.readouterr().err
+
+
+def _package(tmp_path: Path, page_html: str, *, index_extra: str = "") -> Path:
+    root = tmp_path / "pkg"
+    _write(root, OFFLINE_INDEX, f'<main><a href="site/page.html">Page</a>{index_extra}</main>')
+    _write(root, "offline_pages/site/page.html", page_html)
+    return root
+
+
+def test_meta_url_content_is_verified(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        '<meta property="og:image" content="../assets/og.jpg">',
+    )
+    (root / "offline_pages/assets").mkdir(parents=True, exist_ok=True)
+    (root / "offline_pages/assets/og.jpg").write_bytes(b"img")
+    assert verify_offline(root)["status"] == "passed"
+
+    (root / "offline_pages/assets/og.jpg").unlink()
+    missing = verify_offline(root)
+    assert missing["status"] == "failed"
+    assert missing["missing"] == 1
+    assert missing["examples"][0]["detail"] == "offline_pages/assets/og.jpg"
+
+
+def test_meta_remote_content_counts_as_remote(tmp_path: Path) -> None:
+    root = _package(
+        tmp_path,
+        '<meta name="twitter:image" content="https://cdn.example/x.jpg">',
+    )
+    check = verify_offline(root)
+    assert check["status"] == "limited"
+    assert check["remote_resources"] == 1
+
+
+@pytest.mark.parametrize("rel", ["prefetch", "prerender", "apple-touch-icon-precomposed"])
+def test_link_rels_match_collection_side(tmp_path: Path, rel: str) -> None:
+    root = _package(tmp_path, f'<link rel="{rel}" href="../missing-{rel}.bin">')
+    check = verify_offline(root)
+    assert check["status"] == "failed"
+    assert check["missing"] == 1
+
+
+def test_directory_reference_is_unverified_not_failed(tmp_path: Path) -> None:
+    root = _package(tmp_path, '<a href="./">Folder</a>')
+    check = verify_offline(root)
+    assert check["status"] == "limited"
+    assert check["unverified"] == 1
+    assert check["missing"] == 0
+    assert "目录" in check["examples"][0]["detail"]
+
+
+def test_backslash_reference_is_normalized(tmp_path: Path) -> None:
+    root = _package(tmp_path, '<img src="images\\logo.png">')
+    (root / "offline_pages/site/images").mkdir(parents=True)
+    (root / "offline_pages/site/images/logo.png").write_bytes(b"png")
+    assert verify_offline(root)["status"] == "passed"
+
+    (root / "offline_pages/site/images/logo.png").unlink()
+    check = verify_offline(root)
+    assert check["status"] == "failed"
+    assert check["missing"] == 1
+
+
+def test_root_relative_reference_is_unverified_not_outside(tmp_path: Path) -> None:
+    root = _package(tmp_path, '<img src="/assets/logo.png">')
+    check = verify_offline(root)
+    assert check["status"] == "limited"
+    assert check["outside"] == 0
+    assert check["unverified"] == 1
+
+
+def test_non_utf8_html_is_reported_as_encoding_issue(tmp_path: Path) -> None:
+    root = _package(tmp_path, "")
+    (root / "offline_pages/site/page.html").write_bytes("<html>中文页面</html>".encode("gbk"))
+    check = verify_offline(root)
+    assert check["status"] == "limited"
+    assert any("UTF-8" in item["detail"] for item in check["examples"])
+
+
+@pytest.mark.parametrize("index_written", [False, True])
+def test_unavailable_check_does_not_fake_missing(index_written: bool) -> None:
+    check = _offline_verify.unavailable_offline_check(index_written=index_written)
+    assert check["status"] == "limited"
+    assert check["missing"] == 0
+    assert check["outside"] == 0
+    assert check["unverified"] == 1
+    assert check["examples"][0]["kind"] == "unverified"

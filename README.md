@@ -83,7 +83,7 @@ python main.py https://example.com/ --output items.jsonl
 
 采集时勾选「离线重写 HTML」，或在 CLI 中使用 `--rewrite-html`。采集完成后，任务详情会显示离线页面数量和目录；可从输出目录里的 `run_report.html` 进入页面索引，也可直接打开 `offline_pages/index.html`。移动结果时保留整个输出目录，已下载的资源和页间链接使用相对路径。未下载的 HTTP(S) 资源仍指向原站。
 
-离线验收从页面索引检查可达的 HTML、CSS 和资源引用。任务详情与运行报告列出缺失文件、越界路径、外部资源和未检查项。归档移到新位置后，可用 `web-crawler --verify-offline ./crawler_output --json` 重新验收。命令读取归档文件，遇到网页 URL 仅做记录。静态检查通过时退出码为 `0`，发现缺失或只能部分验证时为 `1`。动态脚本执行后的请求和视觉效果需要单独做浏览器实测。
+离线验收从页面索引检查可达的 HTML、CSS 和资源引用（含 `og:image` / `twitter:image` 等 meta 资源与 `prefetch` / `prerender` 等 link 预取）。任务详情与 `run_report.json` / `summary.txt` / `run_report.md` 给出缺失、越界、外部资源和未检查项的计数，`run_report.html` 额外列出最多 20 条示例。归档移到新位置后，可用 `web-crawler --verify-offline ./crawler_output --json` 重新验收。命令读取归档文件，遇到网页 URL 仅做记录。静态检查通过时退出码为 `0`；发现缺失/越界，或只能部分验证（含外部资源、目录引用、站点根路径等）时为 `1`。表单提交、脚本发起的请求与视觉效果不在静态验收范围，需要单独做浏览器实测。
 
 ## 功能特性
 

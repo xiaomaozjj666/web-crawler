@@ -8,7 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **应用层 CLI 新增 `--render-js`（无头浏览器渲染路径）**：页面扫描走库级
+- **离线归档静态验收（`--verify-offline`）**：从 `offline_pages/index.html`
+  出发，检查可达的 HTML / CSS / meta 资源（`og:image`、`twitter:image` 等）/
+  link 预取（`prefetch`、`prerender`、`apple-touch-icon-precomposed`）/ iframe
+  srcdoc / SVG / meta refresh；区分 `missing`（目标不存在）、`outside`（盘符、
+  `file:` 等明确越界）、`unverified`（目录引用、站点根路径、非 UTF-8、超限）
+  与 `remote`（仍指向原站）。路径经 `unquote` + `normpath` + `resolve` 双重
+  包含校验，阻止 `..`、`%2e%2e`、反斜杠、symlink 逃逸。采集后自动执行并写入
+  `run_report.json/md/html`、`summary.txt` 与任务详情；也可对已移动的归档单独
+  复验（`--verify-offline ./crawler_output --json`）。「未生成索引」记为
+  `limited`/`unverified`，不再伪造成「缺失 1 项」。
+- - **应用层 CLI 新增 `--render-js`（无头浏览器渲染路径）**：页面扫描走库级
   `DynamicFetcher`（Playwright Chromium + 导航逐跳守卫）渲染完成后再解析，
   适配 JS 单页站与拒绝纯 HTTP 的站点；渲染失败自动退回普通 HTTP 抓取并记
   warning，页面扫描独享此路径、资源下载仍走流式管线。渲染 fetcher 按线程

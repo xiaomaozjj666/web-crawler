@@ -101,10 +101,11 @@ def _write_html_report(path: Path, ctx: dict[str, object]) -> None:
     check = ctx.get("offline_check")
     if isinstance(check, dict):
         offline_link += f'<p class="meta">生成时离线验收 · {esc(format_offline_check(check))}</p>'
-        if check["examples"]:
+        items = check.get("examples") or []
+        if items:
             examples = "".join(
                 f"<li><code>{esc(item['source'])}</code> · {esc(item['detail'])}</li>"
-                for item in check["examples"]
+                for item in items
             )
             offline_link += f'<details class="offline-check"><summary>查看引用问题</summary><ul>{examples}</ul></details>'
     # 概览卡片
