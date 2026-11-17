@@ -51,7 +51,7 @@ flowchart TB
 
 控制台顶部显示网页采集、验证码识别和 JS 逆向的运行状态。网页采集勾选「智能数据提取」或「正文提取」后，可在任务详情的「页面提取」查看内容，并从页面筛选其来源资源。每次任务保存自己的提取结果，复用输出目录后仍可查阅旧任务。磁盘上的正文按主机和页面路径保存到 `extracted_text/`，避免不同页面的同名文件互相覆盖。
 
-正文提取保留块级结构（段落/标题/列表项各占一行），并剥离 script/style/nav/footer 等页面骨架与连续重复行——直接可作为 LLM 或人工阅读的分析输入，不再是被压成一整行、混着导航噪音的字符串。
+正文提取保留块级结构（段落/标题/列表项各占一行），并剥离 script/style/nav/footer 等页面骨架与连续重复行——直接可作为 LLM 或人工阅读的分析输入，不再是被压成一整行、混着导航噪音的字符串。可见文本几乎为空的 SSR 页面会自动回退到内嵌 JSON 状态块（`<script type="application/json">` 与 `window.__INITIAL_STATE__ = {...}` 两类形态，覆盖 Next.js / Nuxt / React Router / 字节系 `__MODERN_SERVER_DATA__`），2026-11 实测 docs.trae.ai 从 0 字恢复到 1 万字符。
 
 ### 从页面样本到批量提取
 
@@ -383,8 +383,11 @@ web-crawler --url https://example.com --out ./out --json
   并记 warning，页面扫描独享此路径，资源下载仍走流式管线。需 `pip install ".[all]"`。
   2026-11 实测：help.openai.com 对纯 HTTP 与 `--stealth` 均 403，`--render-js` 一次通过。
 - `--respect-robots` 的 robots.txt 请求同样吃到 `--stealth` / `--proxy`；robots 抓取失败
-  会记 warning 后按「无限制」继续（不再静默）。`run_report.json` 的 `config` 块新增
-  `stealth` / `impersonate` / `render_js` / `proxy` 字段，事后可审计每一批抓取的反爬姿势。
+  **或返回的不是 robots 文件**（SPA 站把 `/robots.txt` 回落到首页 HTML）都会记 warning
+  后按「无限制」继续（不再静默）。`--sitemap` 同样会校验响应：`/sitemap.xml` 回落到
+  HTML 时告警「non-XML content」，避免把「0 发现」当成站点没有 sitemap。
+  `run_report.json` 的 `config` 块新增 `stealth` / `impersonate` / `render_js` / `proxy`
+  字段，事后可审计每一批抓取的反爬姿势。
 - HTTP 403/401 的错误提示现在会直接指向 `--stealth` / `--render-js`，而不是笼统的
   「检查网络」。诚实边界：行为级反爬（如 tableau.com 的 JS 挑战）对无头浏览器仍然 403，
   此时请勿绕过——换有授权的入口或人工获取。

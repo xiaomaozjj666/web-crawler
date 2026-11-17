@@ -247,7 +247,122 @@ def extract_readable_text(html: str | Selector) -> str:
         if volume >= threshold:
             root = node
             break
-    return _render_blocks(root.element)
+    visible = _render_blocks(root.element)
+    if len(visible) >= _EMBEDDED_MIN_VISIBLE:
+        return visible
+    # 可见文本极少（JS 壳/SSR 数据页）：正文可能在 <script type="application/
+    # json"> 状态块里（Next.js __NEXT_DATA__、Nuxt __NUXT__、字节系
+    # __MODERN_SERVER_DATA__ 等）。2026-11 实测 docs.trae.ai 页面 542KB
+    # 可见文本 0 字，正文全在 __MODERN_SERVER_DATA__ 里。
+    embedded = _embedded_json_text(selector)
+    if len(embedded) >= 80 and len(embedded) > len(visible) + 40:
+        return embedded
+    return visible
+
+
+# 可见文本低于该长度时尝试从内嵌 JSON 状态块兜底提取正文
+_EMBEDDED_MIN_VISIBLE = 200
+# 单个 script 状态块的读取上限（超长直接跳过，避免解析巨型 blob 拖慢后处理）
+_MAX_EMBEDDED_SCRIPT_CHARS = 4 * 1024 * 1024
+# 单条候选文本长度区间：太短是配置/标签，太长是代码块或序列化数据
+_MIN_EMBEDDED_TEXT = 20
+_MAX_EMBEDDED_TEXT = 20000
+# 内嵌文本总量上限（防止超长状态块把正文文件撑爆）
+_MAX_EMBEDDED_TOTAL = 200 * 1024
+
+
+def _looks_like_prose(value: str) -> bool:
+    """判断 JSON 字符串值像不像正文（而非 URL / 代码 / 配置值）。"""
+    lowered = value.lower()
+    if lowered.startswith(("http://", "https://", "data:", "/", "./")):
+        return False
+    if any(marker in value for marker in ("{", "}", "function ", "=>", "<div", "var ")):
+        return False
+    if len(value.split()) < 4 and not any("\u4e00" <= ch <= "\u9fff" for ch in value):
+        return False
+    meaningful = sum(
+        1
+        for ch in value
+        if ch.isalnum() or "\u4e00" <= ch <= "\u9fff" or ch in " ，。！？、；：,.!?;:'\"（）()"
+    )
+    return meaningful >= len(value) * 0.7
+
+
+def _collect_prose(node: object, out: list[str], seen: set[str], depth: int = 0) -> None:
+    """递归收集 JSON 树中的正文候选字符串（保持文档顺序，跳过去重）。"""
+    if depth > 12:
+        return
+    if isinstance(node, str):
+        value = node.strip()
+        if not (_MIN_EMBEDDED_TEXT <= len(value) <= _MAX_EMBEDDED_TEXT):
+            return
+        # 双重编码的 JSON 再解析一层（SSR 状态里常见）
+        if value.startswith(("{", "[")):
+            try:
+                _collect_prose(json.loads(value), out, seen, depth + 1)
+            except (json.JSONDecodeError, ValueError):
+                pass
+            return
+        if value not in seen and _looks_like_prose(value):
+            seen.add(value)
+            out.append(value)
+        return
+    if isinstance(node, dict):
+        for value in node.values():
+            _collect_prose(value, out, seen, depth + 1)
+    elif isinstance(node, list):
+        for value in node:
+            _collect_prose(value, out, seen, depth + 1)
+
+
+def _embedded_json_text(selector: Selector) -> str:
+    """从内嵌 JSON 状态块提取正文候选文本。
+
+    覆盖两类常见形态：``<script type="application/json">``（Next.js
+    ``__NEXT_DATA__``、Nuxt ``__NUXT__``、``__MODERN_SERVER_DATA__``）与
+    ``window.__INITIAL_STATE__ = {...}`` 这类 JS 赋值（React Router
+    ``window._ROUTER_DATA``）。后者是 2026-11 实测 docs.trae.ai 的真实载体。
+    """
+    collected: list[str] = []
+    seen: set[str] = set()
+    for script in selector.css("script"):
+        element = script.element
+        if element.get("src"):
+            continue
+        raw = element.text or ""
+        if not raw or len(raw) > _MAX_EMBEDDED_SCRIPT_CHARS:
+            continue
+        payload = _parse_state_blob(raw, (element.get("type") or "").lower())
+        if payload is None:
+            continue
+        _collect_prose(payload, collected, seen)
+        if sum(len(item) for item in collected) >= _MAX_EMBEDDED_TOTAL:
+            break
+    text = "\n".join(collected)
+    return text[:_MAX_EMBEDDED_TOTAL]
+
+
+# window.__INITIAL_STATE__ = {...} / window._ROUTER_DATA = {...}; 这类赋值
+_STATE_ASSIGNMENT_RE = re.compile(
+    r"^\s*(?:window\.|globalThis\.)?[\w.$]+\s*=\s*(\{.*\}|\[.*\])\s*;?\s*$", re.DOTALL
+)
+
+
+def _parse_state_blob(raw: str, kind: str) -> object | None:
+    """把 script 内容解析成 JSON 对象；不是状态块时返回 None。"""
+    stripped = raw.lstrip()
+    if "json" in kind or stripped.startswith(("{", "[")):
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    match = _STATE_ASSIGNMENT_RE.match(raw)
+    if match is None:
+        return None
+    try:
+        return json.loads(match.group(1))
+    except (json.JSONDecodeError, ValueError):
+        return None
 
 
 # 正文渲染时整棵剪掉的骨架标签：脚本/样式/表单控件，以及页面级导航、

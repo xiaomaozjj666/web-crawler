@@ -292,6 +292,15 @@ def build_recommendations(ctx: dict[str, object]) -> list[dict[str, str]]:
             "失败比例较高，建议结合上面的分类建议逐项排查；查看 failed_resources.csv 可获取每条失败的诊断信息。",
         )
 
+    # 仅列出模式：total>0 但没有任何下载，"状态正常"容易被误读为下载全成功
+    listed_only = int(resources.get("listed_only", 0))
+    if total and listed_only == total:
+        add(
+            "信息",
+            "本次仅生成资源清单（--list-only）",
+            "未下载任何资源；确认这是预期行为。需要落盘时去掉 --list-only。",
+        )
+
     # 正常
     if not recs:
         add(

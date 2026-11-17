@@ -58,7 +58,18 @@ def make_robots_parser(
             max_bytes=1024 * 1024,
             control_args=control_args,
         )
-        robot_parser.parse(data.decode("utf-8", errors="replace").splitlines())
+        text = data.decode("utf-8", errors="replace")
+        if "user-agent" not in text.lower():
+            # 常见于 SPA 站把 /robots.txt 回落到首页 HTML：不是 robots 文件，
+            # 不能按「无限制」静默处理（2026-11 实测 docs.trae.ai 返回超 1MB
+            # 的 HTML 回落页，此前只报 max-bytes，看不出真实原因）。
+            _log.warning(
+                "robots.txt at %s does not look like a robots file; assuming no restrictions",
+                robots_url,
+            )
+            robot_parser.parse([])
+            return robot_parser
+        robot_parser.parse(text.splitlines())
     except Exception as exc:
         _log.warning(
             "robots.txt fetch failed for %s: %s; assuming no restrictions", robots_url, exc
@@ -185,7 +196,17 @@ def discover_sitemap_urls(sitemap_url: str, headers: dict[str, str], timeout: in
                         if normalized:
                             urls.append(normalized)
                 except Exception as exc:
-                    _log.warning("failed to fetch nested sitemap %s: %s", nested, exc)
+                    _log.warning("failed to fetch sitemap %s: %s", nested, exc)
+        if not urls and not any(
+            tag in text.lower() for tag in ("<urlset", "<sitemapindex", "<sitemap>")
+        ):
+            # SPA 站常把 /sitemap.xml 回落到首页 HTML：没有 sitemap 命名空间
+            # 就意味着 --sitemap 实际无效，必须告警（此前静默 0 发现）
+            _log.warning(
+                "sitemap %s returned non-XML content (likely an SPA fallback page); "
+                "no URLs discovered",
+                sitemap_url,
+            )
         _log.info("discovered %d URLs from sitemap", len(urls))
     except Exception as exc:
         _log.warning("failed to fetch sitemap %s: %s", sitemap_url, exc)

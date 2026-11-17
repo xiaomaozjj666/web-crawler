@@ -36,6 +36,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warning 留痕（fail-closed 拒绝此前查不到原因，无法区分危险目标与抖动）。
 - **JS 壳页面正文为空不再静默**：`--extract-text` 抽出 0 字时记 warning
   并提示 `--render-js`（docs.trae.ai 1.87MB 页面此前 0 字仍 status=success）。
+- **内嵌 JSON 状态块正文兜底**：可见文本极少（<200 字）时自动从
+  `<script type="application/json">`（Next.js `__NEXT_DATA__` / Nuxt
+  `__NUXT__` / `__MODERN_SERVER_DATA__`）与 `window.__INITIAL_STATE__ = {...}`
+  这类 JS 赋值（React Router `_ROUTER_DATA`）中递归提取正文候选，过滤
+  URL/代码/配置值并去重。实测 docs.trae.ai/solo 从 0 字恢复到 10,267 字；
+  可见文本充足时仍以 DOM 正文为准。
+- **robots / sitemap 回落校验**：`/robots.txt` 返回非 robots 内容（SPA
+  首页回落）时告警「does not look like a robots file」；`/sitemap.xml`
+  返回非 XML 时告警「non-XML content」——此前两者都表现为「静默 0 发现」
+  或只剩 max-bytes 类误导信息。
 
 ### Changed
 
@@ -45,6 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--render-js` / `--proxy`，不再笼统「检查 URL、DNS、网络」。
 - **成功率不再假 100%**：页面失败导致 0 资源时 `success_rate_percent` 报
   0%（此前显示 100.0）。
+- **仅列出模式有明确建议**：`--list-only` 且全部资源只登记不下载时，建议区
+  给出「本次仅生成资源清单」而不是「本次运行状态正常」，避免把 0 下载
+  误读为失败或误读为下载全成功。
 - **`run_report.json` 的 `config` 块新增 `stealth` / `impersonate` /
   `render_js` / `proxy`**：事后可审计每一批抓取的反爬姿势（此前两批
   run_report 因缺 stealth 字段无法对照区分普通/隐身运行）。

@@ -4993,3 +4993,122 @@ class TestReadableTextCandidateSelection:
         # 无块级子节点的容器按段落语义整行合并（保句子完整性优先于逐链接分行）
         assert "Related page" in result
         assert "Second link" in result
+
+
+# ========== 内嵌 JSON 状态块正文兜底（2026-11 调研实测驱动）==========
+
+
+class TestEmbeddedStateJson:
+    """可见文本为空的 SSR 页面，正文在 script 状态块里。"""
+
+    def _row(self, status: str, url: str = "https://x.com/a.png") -> Any:
+        return cr.ManifestRow(
+            status=status,
+            url=url,
+            saved_path="",
+            content_type="image/png",
+            bytes=100,
+            category="image",
+            found_in="img[src]",
+            kind="image",
+            page_url="https://x.com/",
+            page_title="Page",
+            diagnostic="",
+        )
+
+    def test_application_json_state_block(self) -> None:
+        payload = (
+            '{"page":{"title":"Modern docs","content":'
+            '"This is a long paragraph of real documentation content that should be extracted '
+            'from the embedded state blob without any visible text."}}'
+        )
+        html = (
+            "<html><body><div id='app'></div>"
+            f'<script type="application/json" id="__MODERN_SERVER_DATA__">{payload}</script>'
+            "</body></html>"
+        )
+        result = cr.extract_readable_text(html)
+        assert "long paragraph of real documentation" in result
+
+    def test_window_assignment_state_block(self) -> None:
+        html = (
+            "<html><body><div id='app'></div><script>"
+            "window._ROUTER_DATA = " + '{"loaderData":{"page":{"body":'
+            '"Another long paragraph served by React Router state that must be recovered '
+            'when the visible DOM is just an empty shell."}}};'
+            "</script></body></html>"
+        )
+        result = cr.extract_readable_text(html)
+        assert "React Router state" in result
+
+    def test_short_config_strings_filtered(self) -> None:
+        payload = '{"router":{"baseUrl":"/","params":{}},"x":"ok"}'
+        html = f'<html><body><script type="application/json">{payload}</script></body></html>'
+        assert cr.extract_readable_text(html) == ""
+
+    def test_visible_content_wins_when_long_enough(self) -> None:
+        visible = "<p>" + ("Visible paragraph text. " * 20) + "</p>"
+        payload = (
+            '{"content":"Embedded content that is long enough to pass the prose filter for sure."}'
+        )
+        html = (
+            f"<html><body><main>{visible}</main>"
+            f'<script type="application/json">{payload}</script></body></html>'
+        )
+        result = cr.extract_readable_text(html)
+        assert "Visible paragraph text" in result
+        assert "Embedded content" not in result
+
+
+class TestSitemapFallbackWarning:
+    def test_spa_fallback_page_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+        """sitemap.xml 回落到 SPA 首页 HTML 时要告警，不能静默 0 发现。"""
+        import logging as _logging
+
+        html = b"<html><body><div id='app'></div></body></html>"
+        with (
+            caplog.at_level(_logging.WARNING, logger="crawler"),
+            patch.object(core, "fetch", return_value=(html, "text/html")),
+        ):
+            urls = cr.discover_sitemap_urls("https://example.com/sitemap.xml", {}, 10)
+        assert urls == []
+        assert any("non-XML content" in record.message for record in caplog.records)
+
+
+class TestListOnlyRecommendation:
+    def test_all_listed_only_gets_explicit_note(self) -> None:
+        row = cr.ManifestRow(
+            status="listed only",
+            url="https://x.com/a.png",
+            saved_path="",
+            content_type="image/png",
+            bytes=0,
+            category="image",
+            found_in="img[src]",
+            kind="image",
+            page_url="https://x.com/",
+            page_title="Page",
+            diagnostic="",
+        )
+        ctx = cr.build_report_context([row], 1, 0.0, 1.0)
+        recs = cr.build_recommendations(ctx)
+        titles = [rec["title"] for rec in recs]
+        assert any("仅生成资源清单" in title for title in titles)
+        assert "本次运行状态正常" not in titles
+
+
+class TestRobotsContentValidation:
+    def test_spa_fallback_robots_warns_and_allows(self, caplog: pytest.LogCaptureFixture) -> None:
+        """robots.txt 回落到 HTML 时告警（不是把 HTML 当 robots 解析）。"""
+        import logging as _logging
+
+        html = b"<!doctype html><html><body><div id='app'></div></body></html>"
+        with (
+            caplog.at_level(_logging.WARNING, logger="crawler"),
+            patch.object(core, "fetch", return_value=(html, "text/html")),
+        ):
+            parser = cr.make_robots_parser("https://example.com", {}, 10)
+        assert parser.can_fetch("*", "https://example.com/anything") is True
+        assert any(
+            "does not look like a robots file" in record.message for record in caplog.records
+        )
