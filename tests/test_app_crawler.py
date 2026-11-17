@@ -5148,3 +5148,35 @@ class TestQuillDeltaExtraction:
         html = f'<html><body><script type="application/json">{payload}</script></body></html>'
         result = cr.extract_readable_text(html)
         assert "Deep nested documentation paragraph" in result
+
+
+class TestPageLinkSchemeFilter:
+    def test_mailto_tel_javascript_links_skipped_without_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """mailto/tel/javascript 链接不进入页面队列，也不刷告警。"""
+        import logging as _logging
+
+        parser = cr.PageParser("https://example.com/page")
+        with caplog.at_level(_logging.WARNING, logger="crawler"):
+            parser.feed(
+                "<html><body>"
+                "<a href='mailto:team@example.com'>mail</a>"
+                "<a href='tel:+123'>tel</a>"
+                "<a href='javascript:void(0)'>js</a>"
+                "<a href='/next'>next</a>"
+                "<a href='https://other.example.com/x'>external</a>"
+                "</body></html>"
+            )
+        assert parser.page_links == ["https://example.com/next", "https://other.example.com/x"]
+        assert not [r for r in caplog.records if "URL rejected" in r.message]
+
+    def test_normalize_url_warning_is_not_seed_specific(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import logging as _logging
+
+        with caplog.at_level(_logging.WARNING, logger="crawler"):
+            assert cr.normalize_url("mailto:a@b.c") == ""
+        messages = [r.message for r in caplog.records if "URL rejected" in r.message]
+        assert messages and all("seed" not in message for message in messages)

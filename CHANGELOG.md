@@ -63,6 +63,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **仅列出模式有明确建议**：`--list-only` 且全部资源只登记不下载时，建议区
   给出「本次仅生成资源清单」而不是「本次运行状态正常」，避免把 0 下载
   误读为失败或误读为下载全成功。
+- **mailto/tel/javascript 链接不再刷告警**：页面链接与资源提取在进入
+  `normalize_url` 前按 scheme 过滤；`normalize_url` 的拒绝日志从
+  「seed URL rejected」改为通用「URL rejected」（它同时服务种子/页面链接/
+  资源三类输入）。实测文档页的 mailto 链接此前会逐条刷 warning。
 - **`run_report.json` 的 `config` 块新增 `stealth` / `impersonate` /
   `render_js` / `proxy`**：事后可审计每一批抓取的反爬姿势（此前两批
   run_report 因缺 stealth 字段无法对照区分普通/隐身运行）。

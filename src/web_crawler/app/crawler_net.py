@@ -307,7 +307,7 @@ class PageParser(HTMLParser):
 
         for attr in PAGE_LINK_ATTRS.get(tag, ()):
             value = attr_map.get(attr)
-            if value:
+            if value and _is_http_url(value):
                 page_link = normalize_url(urljoin(self._base_url or self.page_url, value))
                 if page_link:
                     self.page_links.append(page_link)
@@ -323,7 +323,7 @@ class PageParser(HTMLParser):
         return key.lower() in META_URL_NAMES and looks_like_url(content)
 
     def _add_resource(self, value: str, found_in: str, kind: str) -> None:
-        if not looks_like_downloadable(value):
+        if not looks_like_downloadable(value) or not _is_http_url(value):
             return
         absolute = normalize_url(urljoin(self._base_url or self.page_url, value))
         if absolute:
@@ -375,7 +375,10 @@ def normalize_url(url: str) -> str:
     url, _fragment = urldefrag(url.strip())
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
-        _log.warning("seed URL rejected: scheme %r is not allowed (only http/https)", parsed.scheme)
+        # 该函数同时服务种子 URL、页面链接与资源 URL：mailto/tel/javascript
+        # 等链接应在入口处被过滤，走到这里说明是意外输入（告警留痕但不再
+        # 谎称「seed」——2026-11 实测 julius.ai 文档页的 mailto 链接刷屏）。
+        _log.warning("URL rejected: scheme %r is not allowed (only http/https)", parsed.scheme)
         return ""
     # 防止 SSRF：检查是否为内网/回环地址
     if not _is_safe_hostname(parsed.hostname):
@@ -409,6 +412,16 @@ def looks_like_url(value: str) -> bool:
 def looks_like_downloadable(value: str) -> bool:
     value = value.strip()
     return not (not value or value.startswith(("data:", "javascript:", "mailto:", "tel:", "#")))
+
+
+def _is_http_url(value: str) -> bool:
+    """页面链接只收 http(s) 或相对路径；mailto/tel/javascript 直接跳过。
+
+    2026-11 实测：文档页普遍带 mailto 链接，若不前置过滤，每一条都会走进
+    :func:`normalize_url` 并打 warning，把真正的错误淹没在噪音里。
+    """
+    scheme = urlparse(value.strip()).scheme.lower()
+    return scheme in ("", "http", "https")
 
 
 def looks_like_resource_url(url: str) -> bool:
