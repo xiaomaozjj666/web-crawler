@@ -5112,3 +5112,39 @@ class TestRobotsContentValidation:
         assert any(
             "does not look like a robots file" in record.message for record in caplog.records
         )
+
+
+class TestQuillDeltaExtraction:
+    """Quill 富文本 delta：短片段 + 深层嵌套（Trae 文档实测形态）。"""
+
+    def test_ops_delta_joins_short_inserts(self) -> None:
+        html = (
+            "<html><body><div id='app'></div>"
+            '<script type="application/json">'
+            '{"ops":[{"insert":"Skills are defined through the "},'
+            '{"insert":"SKILL.md"},{"insert":" file.\\n"},'
+            '{"insert":"Each skill encapsulates instructions and scripts.\\n"}]}'
+            "</script></body></html>"
+        )
+        result = cr.extract_readable_text(html)
+        assert "SKILL.md" in result
+        assert "Each skill encapsulates" in result
+
+    def test_bare_ops_array(self) -> None:
+        payload = (
+            '[{"insert":"First line of the document body.\\n"},'
+            '{"insert":"Second line with "},{"insert":"inline"},{"insert":" code.\\n"}]'
+        )
+        html = "<html><body><script>window.__STATE__ = " + payload + ";</script></body></html>"
+        result = cr.extract_readable_text(html)
+        assert "First line of the document body" in result
+        assert "Second line with inline code" in result
+
+    def test_deep_state_tree_not_truncated(self) -> None:
+        node: object = "Deep nested documentation paragraph that must survive recursion limits."
+        for _ in range(18):
+            node = {"children": node}
+        payload = __import__("json").dumps({"loaderData": node})
+        html = f'<html><body><script type="application/json">{payload}</script></body></html>'
+        result = cr.extract_readable_text(html)
+        assert "Deep nested documentation paragraph" in result

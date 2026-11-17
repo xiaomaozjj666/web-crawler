@@ -46,6 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   首页回落）时告警「does not look like a robots file」；`/sitemap.xml`
   返回非 XML 时告警「non-XML content」——此前两者都表现为「静默 0 发现」
   或只剩 max-bytes 类误导信息。
+- **Quill delta 富文本解析**：内嵌状态块里的 `{"ops":[{"insert":...}]}`
+  与裸 ops 数组按 delta 语义还原成正文行；短 insert 片段（如 `SKILL.md`
+  这类行内代码）不再被长度下限吞掉。SSR 状态树递归深度上限从 12 提到 24
+  （Trae 正文在 15+ 层嵌套之下）。实测 docs.trae.ai/solo 由 0 字恢复到
+  1.8 万字符、/solo/skills 恢复到 2.5 万字符。
 
 ### Changed
 

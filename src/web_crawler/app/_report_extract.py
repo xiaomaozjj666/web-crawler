@@ -255,7 +255,7 @@ def extract_readable_text(html: str | Selector) -> str:
     # __MODERN_SERVER_DATA__ 等）。2026-11 实测 docs.trae.ai 页面 542KB
     # 可见文本 0 字，正文全在 __MODERN_SERVER_DATA__ 里。
     embedded = _embedded_json_text(selector)
-    if len(embedded) >= 80 and len(embedded) > len(visible) + 40:
+    if len(embedded) >= 40 and len(embedded) > len(visible) + 20:
         return embedded
     return visible
 
@@ -289,8 +289,13 @@ def _looks_like_prose(value: str) -> bool:
 
 
 def _collect_prose(node: object, out: list[str], seen: set[str], depth: int = 0) -> None:
-    """递归收集 JSON 树中的正文候选字符串（保持文档顺序，跳过去重）。"""
-    if depth > 12:
+    """递归收集 JSON 树中的正文候选字符串（保持文档顺序，跳过去重）。
+
+    SSR 状态树常见 15+ 层嵌套（Trae 的正文在 loaderData/layout/docDetail/
+    content/children…/props/value/t[0] 之下），深度上限取 24；再深的值
+    多为配置/埋点，放弃收集。
+    """
+    if depth > 24:
         return
     if isinstance(node, str):
         value = node.strip()
@@ -308,11 +313,40 @@ def _collect_prose(node: object, out: list[str], seen: set[str], depth: int = 0)
             out.append(value)
         return
     if isinstance(node, dict):
+        _collect_delta_text(node, out, seen)
         for value in node.values():
             _collect_prose(value, out, seen, depth + 1)
     elif isinstance(node, list):
+        # 裸 ops 数组（Quill delta 直接序列化成列表，外层没有 {"ops": ...}）
+        if node and all(isinstance(item, dict) and "insert" in item for item in node):
+            _collect_delta_text({"ops": node}, out, seen)
         for value in node:
             _collect_prose(value, out, seen, depth + 1)
+
+
+def _collect_delta_text(node: dict, out: list[str], seen: set[str]) -> None:
+    """Quill delta（``{"ops":[{"insert":"..."}]}``）按顺序拼接成正文行。
+
+    富文本编辑器（Trae 文档等）把正文拆成大量短 insert 片段，单条远低于
+    ``_MIN_EMBEDDED_TEXT``，走普通字符串过滤会被整体丢弃。delta 的
+    ``insert`` 本身带 ``\\n`` 分段，按行还原即可。
+    """
+    ops = node.get("ops")
+    if not isinstance(ops, list):
+        return
+    parts = [
+        str(op.get("insert"))
+        for op in ops
+        if isinstance(op, dict) and isinstance(op.get("insert"), str)
+    ]
+    text = "".join(parts)
+    if len(text) < _MIN_EMBEDDED_TEXT:
+        return
+    for line in text.splitlines():
+        value = " ".join(line.split())
+        if len(value) >= 2 and value not in seen:
+            seen.add(value)
+            out.append(value)
 
 
 def _embedded_json_text(selector: Selector) -> str:
