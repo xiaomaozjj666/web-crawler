@@ -96,6 +96,7 @@ from web_crawler.app._crawler_scan import (
     _seed_page_queue,
 )
 from web_crawler.app._offline import OFFLINE_INDEX
+from web_crawler.app._offline_verify import format_offline_check, verify_offline
 from web_crawler.app.crawler_models import ManifestRow, Resource, ResourceCrawlResult
 from web_crawler.app.crawler_net import *
 from web_crawler.app.crawler_report import *
@@ -176,6 +177,8 @@ def _emit_summary(
     )
     if ctx.offline_page_count:
         summary["offline_pages"] = {"count": ctx.offline_page_count, "index": OFFLINE_INDEX}
+    if ctx.offline_check is not None:
+        summary["offline_check"] = ctx.offline_check
     on_result = getattr(args, "result_callback", None)
     if on_result is not None:
         on_result(ResourceCrawlResult(summary, rows, ctx.all_resources, ctx.resource_dependencies))
@@ -310,6 +313,22 @@ def main() -> None:
     args = parser.parse_args()
     configure_logging(args)
 
+    if args.verify_offline:
+        if any((args.url, args.load_config, args.save_config, args.sample, args.rules)):
+            parser.error("--verify-offline is a standalone check")
+        try:
+            check = verify_offline(Path(args.verify_offline))
+        except (OSError, RuntimeError, ValueError) as exc:
+            emit_error(exc, args, context="--verify-offline")
+            raise SystemExit(2) from exc
+        if output_mode(args) == "json":
+            emit_json(check)
+        else:
+            print(format_offline_check(check))
+            for example in check["examples"]:
+                print(f"  {example['source']} · {example['detail']}")
+        raise SystemExit(0 if check["status"] == "passed" else 1)
+
     # 配置保存/加载
     if args.load_config:
         if not Path(args.load_config).is_file():
@@ -327,7 +346,7 @@ def main() -> None:
         # 显式参数即使恰好等于默认值，也要覆盖文件中的配置。
         defaults = vars(args).copy()
         allowed = defaults.keys() | {"field_rules"}
-        allowed -= {"load_config", "save_config", "rules", "sample"}
+        allowed -= {"load_config", "save_config", "rules", "sample", "verify_offline"}
         defaults.update({key: value for key, value in config.items() if key in allowed})
         parser.set_defaults(**dict.fromkeys(vars(args)))
         defaults.update(

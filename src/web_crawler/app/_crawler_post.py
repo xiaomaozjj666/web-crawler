@@ -27,6 +27,7 @@ from web_crawler.app import _crawler_context as ctx_mod
 from web_crawler.app import _crawler_core as cr
 from web_crawler.app._crawler_context import _CrawlContext
 from web_crawler.app._offline import OFFLINE_INDEX, write_offline_index
+from web_crawler.app._offline_verify import unavailable_offline_check, verify_offline
 from web_crawler.app._report_extract import _extraction_selector
 from web_crawler.app.crawler_models import ManifestRow, PageExtraction, Resource
 from web_crawler.app.crawler_report import (
@@ -229,6 +230,7 @@ def _post_process(
 
     # 每个后处理阶段独立 try/except：单步失败仅记 warning，保证清单与报告尽量生成
     if args.rewrite_html and not _post_pause_check(args):
+        ctx.offline_check = unavailable_offline_check()
         try:
             table = RewriteTable(manifest_rows, output_dir)
             rewritten_paths: set[str] = set()
@@ -264,6 +266,15 @@ def _post_process(
         except Exception as exc:
             _log.warning("offline HTML rewrite failed: %s", exc)
 
+        if ctx.offline_page_count:
+            ctx.offline_check = unavailable_offline_check(index_written=True)
+            try:
+                ctx.offline_check = verify_offline(
+                    output_dir, should_stop=lambda: _post_pause_check(args)
+                )
+            except Exception as exc:
+                _log.warning("offline verification failed: %s", exc)
+
     try:
         write_manifests(output_dir, manifest_rows)
     except Exception as exc:
@@ -294,6 +305,7 @@ def _post_process(
                 page_scan=ctx.page_scan,
                 rule_results=ctx.rule_summary(),
                 offline_pages=ctx.offline_page_count,
+                offline_check=ctx.offline_check,
             )
             write_run_report(
                 output_dir,
@@ -305,6 +317,7 @@ def _post_process(
                 page_scan=ctx.page_scan,
                 rule_results=ctx.rule_summary(),
                 offline_pages=ctx.offline_page_count,
+                offline_check=ctx.offline_check,
             )
         except Exception as exc:
             _log.warning("failed to write run report: %s", exc)

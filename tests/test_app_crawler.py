@@ -3135,7 +3135,13 @@ class TestCrawlRewriteHtml:
             report, read_document(report).xpath('//a[contains(@href,"offline_pages")]/@href')[0]
         )
         page_count = {"count": 2, "index": index.relative_to(tmp_path).as_posix()}
-        assert result.call_args.args[0].summary["offline_pages"] == page_count
+        summary = result.call_args.args[0].summary
+        assert summary["offline_pages"] == page_count
+        check = summary["offline_check"]
+        assert check["status"] == "passed"
+        report_json = json.loads((tmp_path / "run_report.json").read_text(encoding="utf-8"))
+        assert report_json["offline_check"] == check
+        assert "静态引用通过" in report.read_text(encoding="utf-8")
         assert (
             json.loads((tmp_path / "run_report.json").read_text(encoding="utf-8"))["offline_pages"]
             == page_count
@@ -4536,6 +4542,20 @@ class TestPostProcessErrorPaths:
         ctx.page_files["https://example.com/"] = (page_file, "utf-8")
         ctx.seen_pages.add("https://example.com/")
         return _crawler_post, ctx
+
+    def test_verification_failure_distinguishes_existing_index(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        module, ctx = self._make_ctx(tmp_path, rewrite_html=True)
+        with patch.object(module, "verify_offline", side_effect=OSError("filesystem error")):
+            module._post_process(ctx, [], time.time(), {}, cancelled=False)
+        report = json.loads((ctx.output_dir / "run_report.json").read_text(encoding="utf-8"))
+        assert (ctx.output_dir / report["offline_pages"]["index"]).is_file()
+        assert report["offline_check"]["status"] == "limited"
+        assert report["offline_check"]["missing"] == 0
+        assert report["offline_check"]["unverified"] == 1
+        assert "offline verification failed" in caplog.text
+        assert "offline HTML rewrite failed" not in caplog.text
 
     @pytest.mark.parametrize(
         "flags,patch_target",

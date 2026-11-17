@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 
 from web_crawler._cli import CRAWL_STATUS_TITLES, PageScanSummary
+from web_crawler.app._offline_verify import OfflineCheck, format_offline_check
 from web_crawler.app._report_context import build_recommendations, build_report_context
 from web_crawler.app._report_html import _write_html_report
 from web_crawler.app._report_manifests import _ERROR_LABELS
@@ -33,6 +34,7 @@ def write_summary(
     page_scan: PageScanSummary | None = None,
     rule_results: dict[str, int] | None = None,
     offline_pages: int = 0,
+    offline_check: OfflineCheck | None = None,
 ) -> None:
     ctx = build_report_context(
         rows,
@@ -43,6 +45,7 @@ def write_summary(
         page_scan=page_scan,
         rule_results=rule_results,
         offline_pages=offline_pages,
+        offline_check=offline_check,
     )
     resources = ctx["resources"]
     assert isinstance(resources, dict)
@@ -92,6 +95,8 @@ def write_summary(
         )
     if offline_pages:
         lines.append(f"  离线页面入口  : offline_pages/index.html（{offline_pages} 页）")
+    if offline_check is not None:
+        lines.append(f"  {format_offline_check(offline_check)}")
     by_status = ctx.get("by_status", {})
     assert isinstance(by_status, dict)
     for k, v in by_status.items():
@@ -155,6 +160,7 @@ def write_run_report(
     page_scan: PageScanSummary | None = None,
     rule_results: dict[str, int] | None = None,
     offline_pages: int = 0,
+    offline_check: OfflineCheck | None = None,
 ) -> None:
     ctx = build_report_context(
         rows,
@@ -165,6 +171,7 @@ def write_run_report(
         page_scan=page_scan,
         rule_results=rule_results,
         offline_pages=offline_pages,
+        offline_check=offline_check,
     )
     ctx["recommendations"] = build_recommendations(ctx)
 
@@ -197,6 +204,9 @@ def _write_markdown_report(path: Path, ctx: dict[str, object]) -> None:
     offline = ctx.get("offline_pages")
     if isinstance(offline, dict):
         lines.append(f"- [打开离线页面目录]({offline['index']})（{offline['count']} 页）")
+    offline_check = ctx.get("offline_check")
+    if isinstance(offline_check, dict):
+        lines.append(f"- **生成时离线验收** {format_offline_check(offline_check)}")
     rules = ctx.get("rule_results")
     if isinstance(rules, dict):
         lines.append(

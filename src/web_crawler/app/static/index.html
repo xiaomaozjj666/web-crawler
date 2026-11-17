@@ -1683,6 +1683,7 @@
           <p id="results-summary" class="hint" role="status"></p>
           <p id="results-diagnostic" class="hint results-diagnostic" hidden></p>
           <p id="results-offline" class="hint" hidden></p>
+          <p id="results-offline-check" class="hint" hidden></p>
           <button type="button" class="btn-toolbar" id="reuse-task-config" hidden>载入本次采集配置</button>
           <details id="results-log-details">
             <summary>运行日志</summary>
@@ -2294,11 +2295,13 @@
       var summary = document.getElementById('results-summary');
       var diagnostic = document.getElementById('results-diagnostic');
       var offline = document.getElementById('results-offline');
+      var offlineCheck = document.getElementById('results-offline-check');
       var reuseConfig = document.getElementById('reuse-task-config');
       var logDetails = document.getElementById('results-log-details');
       summary.textContent = '正在读取任务记录…';
       diagnostic.hidden = true;
       offline.hidden = true;
+      offlineCheck.hidden = true;
       reuseConfig.hidden = true;
       logDetails.hidden = true;
       logDetails.open = false;
@@ -2317,6 +2320,14 @@
           if (run.offline_pages && run.offline_pages.count && run.offline_pages.index) {
             offline.textContent = '离线页面（' + run.offline_pages.count + ' 页） · 在输出目录打开 ' + run.offline_pages.index;
             offline.hidden = false;
+          }
+          if (run.offline_check) {
+            var check = run.offline_check;
+            var readiness = {passed: '静态引用通过', failed: '静态引用有缺失或越界', limited: '静态引用部分可验证'};
+            offlineCheck.textContent = '生成时离线验收 · ' + (readiness[check.status] || '静态引用未验证') + ' · 检查 ' + check.documents_checked + ' 份文档' +
+              ' · 缺失 ' + check.missing + ' 项 · 越界 ' + check.outside + ' 项 · 外部资源 ' + check.remote_resources + ' 项' +
+              ' · 未检查或无法解析 ' + check.unverified + ' 项';
+            offlineCheck.hidden = false;
           }
           taskHasSamples = Boolean(task.page_sample_count);
           updateRuleActions();

@@ -14,6 +14,7 @@ import html as html_lib
 from pathlib import Path
 
 from web_crawler._cli import CRAWL_STATUS_TITLES
+from web_crawler.app._offline_verify import format_offline_check
 from web_crawler.app._report_manifests import _ERROR_LABELS
 from web_crawler.app.crawler_models import ManifestRow, Resource
 from web_crawler.app.crawler_net import category_for
@@ -27,6 +28,7 @@ body { margin: 0; background: #f4f5f7; color: #1f2937;
 header { margin-bottom: 28px; }
 header h1 { font-size: 26px; margin: 0 0 6px; }
 header .meta { color: #6b7280; font-size: 14px; }
+header .offline-check { overflow-wrap: anywhere; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; margin: 20px 0 28px; }
 .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px 18px; }
 .card .label { font-size: 13px; color: #6b7280; margin-bottom: 4px; }
@@ -96,6 +98,15 @@ def _write_html_report(path: Path, ctx: dict[str, object]) -> None:
         if isinstance(offline, dict)
         else ""
     )
+    check = ctx.get("offline_check")
+    if isinstance(check, dict):
+        offline_link += f'<p class="meta">生成时离线验收 · {esc(format_offline_check(check))}</p>'
+        if check["examples"]:
+            examples = "".join(
+                f"<li><code>{esc(item['source'])}</code> · {esc(item['detail'])}</li>"
+                for item in check["examples"]
+            )
+            offline_link += f'<details class="offline-check"><summary>查看引用问题</summary><ul>{examples}</ul></details>'
     # 概览卡片
     cards = [
         (

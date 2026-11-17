@@ -29,6 +29,7 @@ from typing import Any
 from urllib.robotparser import RobotFileParser
 
 from web_crawler._cli import PageScanSummary
+from web_crawler.app._offline_verify import OfflineCheck
 from web_crawler.app.crawler_models import Resource
 from web_crawler.app.crawler_net import ContentDedup, DomainRateLimiter
 from web_crawler.exceptions import ConfigError
@@ -104,6 +105,7 @@ class _CrawlContext:
     jsonl_file: Any = None
     result_committed: bool = False
     offline_page_count: int = 0
+    offline_check: OfflineCheck | None = None
     rules: ExtractionRules | None = None
     rule_coverage: RuleCoverage | None = None
     rule_write_errors: int = 0

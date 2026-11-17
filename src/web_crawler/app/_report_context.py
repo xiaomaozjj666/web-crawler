@@ -13,6 +13,7 @@ import time
 
 from web_crawler._cli import PageScanSummary, crawl_status
 from web_crawler.app._offline import OFFLINE_INDEX
+from web_crawler.app._offline_verify import OfflineCheck
 from web_crawler.app._report_manifests import _format_bytes, classify_error, format_duration
 from web_crawler.app.crawler_models import ManifestRow
 
@@ -36,6 +37,7 @@ def build_report_context(
     page_scan: PageScanSummary | None = None,
     rule_results: dict[str, int] | None = None,
     offline_pages: int = 0,
+    offline_check: OfflineCheck | None = None,
 ) -> dict[str, object]:
     """从抓取结果构建一份完整的报告上下文字典，供 JSON / Markdown / HTML 共用。"""
     status_counts: dict[str, int] = {}
@@ -136,6 +138,7 @@ def build_report_context(
             pages_scanned, page_scan, len(failed_rows), rule_results=rule_results
         ),
         "page_scan": page_scan or {"failed": 0, "skipped": 0, "first_error": ""},
+        **({"offline_check": offline_check} if offline_check is not None else {}),
         **({"rule_results": rule_results} if rule_results is not None else {}),
         **(
             {"offline_pages": {"count": offline_pages, "index": OFFLINE_INDEX}}

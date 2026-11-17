@@ -28,6 +28,7 @@ Examples:
   %(prog)s --url https://example.com --sitemap --same-domain --max-pages 50
   %(prog)s --load-config my_project.json
   %(prog)s --url https://example.com --save-config my_project.json
+  %(prog)s --verify-offline ./crawler_output --json
         """,
     )
     parser.add_argument(
@@ -38,6 +39,11 @@ Examples:
         help="Show version and exit.",
     )
     parser.add_argument("--url", help="Start page URL.")
+    parser.add_argument(
+        "--verify-offline",
+        metavar="DIRECTORY",
+        help="Check static references in an exported offline package.",
+    )
     parser.add_argument(
         "--out", default=os.path.join(os.getcwd(), "crawler_output"), help="Output directory."
     )

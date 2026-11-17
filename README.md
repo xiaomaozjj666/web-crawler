@@ -83,6 +83,8 @@ python main.py https://example.com/ --output items.jsonl
 
 采集时勾选「离线重写 HTML」，或在 CLI 中使用 `--rewrite-html`。采集完成后，任务详情会显示离线页面数量和目录；可从输出目录里的 `run_report.html` 进入页面索引，也可直接打开 `offline_pages/index.html`。移动结果时保留整个输出目录，已下载的资源和页间链接使用相对路径。未下载的 HTTP(S) 资源仍指向原站。
 
+离线验收从页面索引检查可达的 HTML、CSS 和资源引用。任务详情与运行报告列出缺失文件、越界路径、外部资源和未检查项。归档移到新位置后，可用 `web-crawler --verify-offline ./crawler_output --json` 重新验收。命令读取归档文件，遇到网页 URL 仅做记录。静态检查通过时退出码为 `0`，发现缺失或只能部分验证时为 `1`。动态脚本执行后的请求和视觉效果需要单独做浏览器实测。
+
 ## 功能特性
 
 - **自适应解析器** — `Selector` 基于 `lxml`，支持元素指纹计算与结构相似度重定位：站点改版导致选择器失效时，已保存的指纹会自动在新页面中重新找到对应元素（Scrapling 的标志性能力）。公开 `save` / `retrieve` / `relocate` API 便于显式管理指纹；内置 `find_by_regex`、`re` / `re_first`、`get_all_text`、`prettify`、完整 DOM 遍历（`parent` / `children` / `siblings` / `next` / `previous` / `path`），以及 `ResultList` 批量辅助方法（`css` / `xpath` / `get` / `getall` / `.first` / `.last`）。支持 Scrapling 风格 `::attr(name)` 伪元素直接取属性。
