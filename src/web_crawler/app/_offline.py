@@ -14,6 +14,7 @@ from urllib.parse import quote, urldefrag, urljoin, urlsplit
 
 from lxml import etree
 
+from web_crawler.app._fsutil import atomic_write_text
 from web_crawler.app.crawler_models import ManifestRow
 from web_crawler.app.crawler_net import (
     HTML_RESOURCE_ATTRS,
@@ -228,11 +229,11 @@ def write_offline_index(
         f"{escape(titles.get(url) or url)}</a></li>\n"
         for url, path in pages.items()
     )
-    (output_dir / OFFLINE_INDEX).write_text(
+    atomic_write_text(
+        output_dir / OFFLINE_INDEX,
         '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         "<title>离线页面</title><style>body{font:1rem system-ui;max-width:64rem;"
         "margin:2rem auto;padding:0 1rem}li{margin:.6rem 0;overflow-wrap:anywhere}</style></head>"
         f"<body><main><h1>离线页面</h1><ul>{entries}</ul></main></body></html>",
-        encoding="utf-8",
     )

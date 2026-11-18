@@ -15,6 +15,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+from web_crawler.app._fsutil import atomic_write_text
 from web_crawler.app.crawler_models import ManifestRow
 from web_crawler.app.crawler_net import is_video_resource
 
@@ -45,9 +46,9 @@ def _write_manifest_pair(output_dir: Path, rows: list[ManifestRow], prefix: str)
         for row in rows:
             writer.writerow(asdict(row))
     json_path = output_dir / f"{prefix}.json"
-    json_path.write_text(
+    atomic_write_text(
+        json_path,
         json.dumps([asdict(row) for row in rows], ensure_ascii=False, indent=2),
-        encoding="utf-8",
     )
     return len(rows)
 
@@ -110,6 +111,11 @@ _ERROR_CLASSES: list[tuple[str, tuple[str, ...]]] = [
     ("robots", ("robots.txt", "robots")),
     ("dedup", ("dedup",)),
     ("encrypted", ("encrypted playlist",)),
+    # 安全门禁（导航 SSRF 守卫）与 TLS 证书错误各有明确的处置路径，
+    # 不能混进 other_error：2026-11 实测两类失败都被归为「其它错误」，
+    # 报告无法提示用户「这是门禁拦截/证书问题」。
+    ("guard", ("navigation blocked", "unsafetarget", "[安全拦截]", "private address", "non-public", "ssrf")),
+    ("tls", ("certificate", "ssl", "tls")),
     ("network", ("urlerror", "connection", "dns", "refused", "reset", "unreachable", "socket")),
     ("cancelled", ("cancelled", "canceled")),
 ]
@@ -123,6 +129,8 @@ _ERROR_LABELS: dict[str, str] = {
     "robots": "被 robots.txt 拦截",
     "dedup": "内容去重跳过",
     "encrypted": "加密播放清单",
+    "guard": "安全门禁拦截（内网/私网目标）",
+    "tls": "TLS/证书错误",
     "network": "网络/连接错误",
     "cancelled": "用户取消",
     "other_error": "其它错误",

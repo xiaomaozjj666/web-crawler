@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 
 from web_crawler._cli import CRAWL_STATUS_TITLES, PageScanSummary
+from web_crawler.app._fsutil import atomic_write_text
 from web_crawler.app._offline_verify import OfflineCheck, format_offline_check
 from web_crawler.app._report_context import build_recommendations, build_report_context
 from web_crawler.app._report_html import _write_html_report
@@ -146,7 +147,7 @@ def write_summary(
     lines.append("═" * 60)
     lines.append("  详细报告: run_report.json / run_report.md / run_report.html")
     lines.append("═" * 60)
-    (output_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_text(output_dir / "summary.txt", "\n".join(lines) + "\n")
 
 
 def write_run_report(
@@ -175,10 +176,10 @@ def write_run_report(
     )
     ctx["recommendations"] = build_recommendations(ctx)
 
-    # ── JSON 报告 ──
-    (output_dir / "run_report.json").write_text(
+    # ── JSON 报告（原子写：中断不留下半截 JSON）──
+    atomic_write_text(
+        output_dir / "run_report.json",
         json.dumps(ctx, ensure_ascii=False, indent=2),
-        encoding="utf-8",
     )
 
     # ── Markdown 报告 ──
@@ -374,4 +375,4 @@ def _write_markdown_report(path: Path, ctx: dict[str, object]) -> None:
 
     lines.append("---")
     lines.append("*本报告由网页资源采集器自动生成。*")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_text(path, "\n".join(lines) + "\n")

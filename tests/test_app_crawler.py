@@ -1188,6 +1188,34 @@ class TestFormatDuration:
 # ========== 错误分类 ==========
 
 
+class TestAtomicWrite:
+    """报告产物的原子写：中断不留下半截文件，失败保留旧文件。"""
+
+    def test_write_lands_and_leaves_no_tmp(self, tmp_path: Path) -> None:
+        from web_crawler.app._fsutil import atomic_write_text
+
+        target = tmp_path / "run_report.json"
+        target.write_text('{"old": 1}', encoding="utf-8")
+        atomic_write_text(target, '{"new": 2}')
+        assert target.read_text(encoding="utf-8") == '{"new": 2}'
+        assert not (tmp_path / "run_report.json.tmp").exists()
+
+    def test_failed_replace_keeps_old_file(self, tmp_path: Path, monkeypatch: Any) -> None:
+        from web_crawler.app import _fsutil
+
+        target = tmp_path / "run_report.json"
+        target.write_text('{"old": 1}', encoding="utf-8")
+
+        def boom(src: str, dst: str) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(_fsutil.os, "replace", boom)
+        with pytest.raises(OSError):
+            _fsutil.atomic_write_text(target, '{"new": 2}')
+        assert target.read_text(encoding="utf-8") == '{"old": 1}'
+        assert not (tmp_path / "run_report.json.tmp").exists()
+
+
 class TestClassifyError:
     def test_auth(self) -> None:
         """classify_error 将 401 归类为 auth。"""
@@ -1220,6 +1248,18 @@ class TestClassifyError:
     def test_encrypted(self) -> None:
         """classify_error 将加密清单归类为 encrypted。"""
         assert cr.classify_error("encrypted playlist detected") == "encrypted"
+
+    def test_guard(self) -> None:
+        """安全门禁拦截单独归类，不再混进 other_error。"""
+        assert (
+            cr.classify_error("error: navigation blocked: private address 10.0.0.5") == "guard"
+        )
+        assert cr.classify_error("error: [安全拦截] https://example.com") == "guard"
+
+    def test_tls(self) -> None:
+        """证书/TLS 错误单独归类，便于提示用户检查证书或代理。"""
+        assert cr.classify_error("error: TLS certificate verify failed") == "tls"
+        assert cr.classify_error("error: [SSL: CERTIFICATE_VERIFY_FAILED]") == "tls"
 
     def test_network(self) -> None:
         """classify_error 将连接错误归类为 network。"""

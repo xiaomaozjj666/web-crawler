@@ -366,7 +366,8 @@ def _make_web_socket_guard(
     ``page.route`` 看不到 WebSocket（Playwright 用独立的 ``route_web_socket``），
     而恶意页面可借 WebSocket 做内网端口探测/带外通道——2026-11 PoC 实测
     ``ws://127.0.0.1:<port>/`` 的 upgrade 请求确实发出。放行的 WebSocket 会
-    连回服务端并在两个方向上转发消息，语义与未拦截时一致。
+    连回服务端并在两个方向上转发消息，语义与未拦截时一致；被拒绝的 WebSocket
+    **不连接**（握手不会发往目标），页面侧消息只在本地缓冲。
     """
 
     allowed_hosts = set() if allowed_hosts is None else allowed_hosts
@@ -392,16 +393,17 @@ def _make_web_socket_guard(
     def _handler(websocket: Any) -> None:
         try:
             if not _allowed(getattr(websocket, "url", "")):
-                websocket.close()
+                # 不调用 connect_to_server() 即为阻断：Playwright 不会把握手
+                # 发往目标，页面侧消息只缓冲、不会到达内网服务。
+                # 注意不能用 websocket.close()——2026-11 实测同步 API 在
+                # handler 里 close() 会死锁整次导航。
                 return
             server = websocket.connect_to_server()
             websocket.on_message(lambda message: server.send(message))
             server.on_message(lambda message: websocket.send(message))
         except Exception:
-            try:
-                websocket.close()
-            except Exception:
-                pass
+            # 放行失败（连接异常）：不重试、不吞掉页面——保持原消息缓冲语义
+            _log.debug("websocket forwarding failed for %s", getattr(websocket, "url", ""))
 
     return _handler
 
@@ -436,16 +438,13 @@ def _make_web_socket_guard_async(
     async def _handler(websocket: Any) -> None:
         try:
             if not await _allowed(getattr(websocket, "url", "")):
-                await websocket.close()
+                # 同同步版：不连接即阻断（不发握手到目标），避免 close 语义分歧
                 return
             server = await websocket.connect_to_server()
             websocket.on_message(lambda message: server.send(message))
             server.on_message(lambda message: websocket.send(message))
         except Exception:
-            try:
-                await websocket.close()
-            except Exception:
-                pass
+            _log.debug("websocket forwarding failed for %s", getattr(websocket, "url", ""))
 
     return _handler
 

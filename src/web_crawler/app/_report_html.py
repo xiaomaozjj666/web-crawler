@@ -14,6 +14,7 @@ import html as html_lib
 from pathlib import Path
 
 from web_crawler._cli import CRAWL_STATUS_TITLES
+from web_crawler.app._fsutil import atomic_write_text
 from web_crawler.app._offline_verify import format_offline_check
 from web_crawler.app._report_manifests import _ERROR_LABELS
 from web_crawler.app.crawler_models import ManifestRow, Resource
@@ -359,7 +360,7 @@ def _write_html_report(path: Path, ctx: dict[str, object]) -> None:
         "<footer>本报告由网页资源采集器自动生成 · 详见 run_report.json / run_report.md</footer>"
         "</div></body></html>"
     )
-    path.write_text(html, encoding="utf-8")
+    atomic_write_text(path, html)
 
 
 def diagnostic_for_status(status: str) -> str:

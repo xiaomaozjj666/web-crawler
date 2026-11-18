@@ -223,7 +223,8 @@ def test_web_socket_guard_blocks_private_and_allows_same_host() -> None:
 
     private_ws = _WS("ws://127.0.0.1:9000/socket")
     guarded(private_ws)
-    assert private_ws.closed is True
+    # 阻断语义 = 不连接（握手不发往目标）；close() 在同步 API 会死锁，禁用
+    assert private_ws.closed is False
     assert private_ws.connected is False
     assert blocked_resources == ["ws://127.0.0.1:9000/socket"]
 
@@ -1376,3 +1377,116 @@ class TestPreflightRetry:
         assert probe.blocked == ("http://169.254.169.254/meta",)
         assert probe.complete is True
         assert req.calls == 1
+
+
+class _ForwardingWS:
+    """记录双向转发是否接通的 WebSocketRoute 替身。"""
+
+    def __init__(self, url: str, *, fail_connect: bool = False) -> None:
+        self.url = url
+        self.fail_connect = fail_connect
+        self.closed = False
+        self.handler: Any = None
+        self.server_handler: Any = None
+        self.sent: list[str] = []
+        self.server_sent: list[str] = []
+        self._server = SimpleNamespace(
+            send=self._server_send, on_message=self._register_server_handler
+        )
+
+    def _server_send(self, message: str) -> None:
+        self.server_sent.append(message)
+
+    def _register_server_handler(self, handler: Any) -> None:
+        self.server_handler = handler
+
+    def close(self) -> None:
+        self.closed = True
+
+    def connect_to_server(self) -> Any:
+        if self.fail_connect:
+            raise RuntimeError("upgrade refused")
+        return self._server
+
+    def on_message(self, handler: Any) -> None:
+        self.handler = handler
+
+    def send(self, message: str) -> None:
+        self.sent.append(message)
+
+
+def test_web_socket_guard_forwards_both_directions() -> None:
+    from web_crawler._nav_guard import _make_web_socket_guard
+
+    guarded = _make_web_socket_guard(lambda url: None, allowed_hosts={"example.com"})
+    ws = _ForwardingWS("wss://example.com/socket")
+    guarded(ws)
+
+    assert ws.handler is not None and ws.server_handler is not None
+    ws.handler("from-page")
+    ws.server_handler("from-server")
+    assert ws.server_sent == ["from-page"]
+    assert ws.sent == ["from-server"]
+    assert ws.closed is False
+
+
+def test_web_socket_guard_tolerates_connect_failure() -> None:
+    """放行目标的握手失败不能关闭路由（close 在同步 API 会死锁整次导航）。"""
+    from web_crawler._nav_guard import _make_web_socket_guard
+
+    guarded = _make_web_socket_guard(lambda url: None, allowed_hosts={"example.com"})
+    ws = _ForwardingWS("wss://example.com/socket", fail_connect=True)
+    guarded(ws)
+    assert ws.closed is False
+
+
+def test_web_socket_guard_rejects_empty_host_and_other_schemes() -> None:
+    from web_crawler._nav_guard import _make_web_socket_guard
+
+    guarded = _make_web_socket_guard(lambda url: None)
+    for url in ("ws:///no-host", "http://example.com/x"):
+        ws = _ForwardingWS(url)
+        guarded(ws)
+        # 阻断 = 不连接（不发握手到目标）；不 close（同步 API close 会死锁）
+        assert ws.closed is False
+
+
+async def test_async_web_socket_guard_forwards_and_closes() -> None:
+    from web_crawler._nav_guard import _make_web_socket_guard_async
+
+    class _AsyncWS(_ForwardingWS):
+        async def close(self) -> None:  # type: ignore[override]
+            self.closed = True
+
+        async def connect_to_server(self) -> Any:  # type: ignore[override]
+            if self.fail_connect:
+                raise RuntimeError("upgrade refused")
+            return self._server
+
+    guarded = _make_web_socket_guard_async(lambda url: None, allowed_hosts={"example.com"})
+    ws = _AsyncWS("wss://example.com/socket")
+    await guarded(ws)
+    assert ws.handler is not None and ws.server_handler is not None
+    ws.handler("from-page")
+    ws.server_handler("from-server")
+    assert ws.server_sent == ["from-page"] and ws.sent == ["from-server"]
+
+    failing = _AsyncWS("wss://example.com/socket", fail_connect=True)
+    await guarded(failing)
+    assert failing.closed is False
+
+
+def test_sync_guard_blocks_non_network_and_hostless_subresources() -> None:
+    page = _Page()
+    blocked_resources: list[str] = []
+    install_navigation_guard(page, lambda url: None, blocked_resources=blocked_resources)
+    page.handler(_Route("https://example.com/"))
+
+    ftp_route = _Route("ftp://example.com/data.bin", resource_type="xhr")
+    hostless_route = _Route("http:///relative", resource_type="fetch")
+    page.handler(ftp_route)
+    page.handler(hostless_route)
+
+    assert ftp_route.aborted is True
+    assert hostless_route.aborted is True
+    assert "ftp://example.com/data.bin" in blocked_resources

@@ -94,6 +94,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **报告产物统一原子写**：新增 `app/_fsutil.atomic_write_text`（tmp + os.replace），
+  `run_report.json/md/html`、清单 JSON、`summary.txt` 与离线索引全部改用它；
+  写入中断或磁盘满时旧文件保持完整，不再留下半截 JSON。
+- **WebSocket 阻断语义修正**：被门禁拒绝的 WebSocket 不再调用 `close()`
+  （2026-11 实测同步 API 在 handler 内 close 会死锁整次导航），改为不调用
+  `connect_to_server()`——握手不会发往目标，页面侧消息只在本地缓冲；连接异常
+  只记 debug，不中断页面。
 - **原子写补齐**：`save_crawl_state` / `save_config_to_file` 改为 tmp +
   `os.replace`，中断或替换失败时旧状态保持完整（续跑不再可能读到半截 JSON）。
 - **依赖安全**：Pillow 升级到 13.0（修复 5 项 CVE）、soupsieve ≥2.10、pip/certifi
