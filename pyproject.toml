@@ -67,7 +67,7 @@ web-crawler-shell = "web_crawler.app.shell:main"
 web-captcha = "web_crawler.captcha_cli:main"
 
 [project.optional-dependencies]
-visual = ["Pillow>=12.3.0,<13"]
+visual = ["Pillow>=13.0.0,<14"]  # 13.0 修复 CVE-2026-96640 等五项（pip-audit 2026-11-18）
 all = [
     "curl_cffi>=0.9,<1",
     # 上限保持宽松：camoufox（<1.61）与 all 组合安装时由 pip 自动选兼容版本；
