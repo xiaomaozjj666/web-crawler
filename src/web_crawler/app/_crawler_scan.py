@@ -241,7 +241,10 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
         html = decode_text(data, content_type, args.encoding)
         ctx.page_files[page_url] = (page_path, _resolved_encoding(args.encoding, content_type))
         ctx.page_titles[page_url] = extract_title(html)
-        parser = PageParser(page_url)
+        parser = PageParser(
+            page_url,
+            download_linked_data=bool(getattr(args, "download_linked_data", False)),
+        )
         parser.feed(html)
         ctx.all_resources.extend(parser.resources)
 

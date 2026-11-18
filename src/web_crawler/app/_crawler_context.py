@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import threading
 from collections import deque
@@ -167,6 +168,17 @@ def load_extraction_rules(args: argparse.Namespace) -> ExtractionRules | None:
     return ExtractionRules.from_dict(embedded) if embedded is not None else None
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """tmp + os.replace 写入；中断时旧文件保持完整（崩溃续跑依赖此语义）。"""
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        temporary.write_text(text, encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink(missing_ok=True)
+
+
 def save_config_to_file(args: argparse.Namespace, filepath: str) -> None:
     """把抓取配置保存为 JSON。"""
     config = {
@@ -198,6 +210,7 @@ def save_config_to_file(args: argparse.Namespace, filepath: str) -> None:
         "dedup": args.dedup,
         "sitemap": args.sitemap,
         "smart_extract": args.smart_extract,
+        "download_linked_data": args.download_linked_data,
         "resume_crawl": args.resume_crawl,
         "extract_text": args.extract_text,
         "include_pattern": args.include_pattern,
@@ -212,7 +225,7 @@ def save_config_to_file(args: argparse.Namespace, filepath: str) -> None:
         config["field_rules"] = rules.to_dict()
     path = Path(filepath)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_write_text(path, json.dumps(config, ensure_ascii=False, indent=2))
     _log.info("config saved to %s", path)
 
 
@@ -235,7 +248,7 @@ def load_config_from_file(filepath: str) -> dict:
 def save_crawl_state(output_dir: Path, **state: object) -> None:
     """把当前抓取进度保存为 JSON 状态文件。"""
     path = output_dir / CRAWL_STATE_FILE
-    path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    _atomic_write_text(path, json.dumps(state, ensure_ascii=False))
 
 
 def load_crawl_state(output_dir: Path) -> dict:

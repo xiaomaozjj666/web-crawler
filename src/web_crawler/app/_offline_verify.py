@@ -220,10 +220,42 @@ def verify_offline(
         issues[kind] += 1
         example(kind, source, detail)
 
-    def contained(target: Path, source: Path) -> bool:
+    # 同一目录下的引用会成百上千次重复检查：目录解析与文件类型各缓存一次。
+    directory_cache: dict[Path, bool] = {}
+    kind_cache: dict[Path, str] = {}
+
+    def directory_inside(directory: Path) -> bool:
+        if directory == root:
+            return True
+        cached = directory_cache.get(directory)
+        if cached is None:
+            try:
+                cached = directory.resolve().is_relative_to(root)
+            except (OSError, ValueError, RuntimeError):
+                cached = False
+            directory_cache[directory] = cached
+        return cached
+
+    def kind_of(target: Path) -> str:
+        cached = kind_cache.get(target)
+        if cached is None:
+            cached = (
+                "link"
+                if target.is_symlink()
+                else "dir"
+                if target.is_dir()
+                else "file"
+                if target.is_file()
+                else "missing"
+            )
+            kind_cache[target] = cached
+        return cached
+
+    def contained(target: Path, source: Path, kind: str) -> bool:
         try:
-            if target.is_relative_to(root) and target.resolve().is_relative_to(root):
-                return True
+            if target.is_relative_to(root) and directory_inside(target.parent):
+                if kind != "link" or target.resolve().is_relative_to(root):
+                    return True
         except (OSError, ValueError, RuntimeError):
             issue("unverified", source, "无法解析文件位置")
             return False
@@ -239,7 +271,7 @@ def verify_offline(
         ):
             issue("unverified", source, "检查提前结束，仍有文档未检查")
             break
-        if not contained(source, source):
+        if not contained(source, source, kind_of(source)):
             continue
         try:
             if not source.is_file():
@@ -298,17 +330,25 @@ def verify_offline(
                     issue("unverified", source, "引用使用站点根路径，离线无法定位")
                     continue
                 target = Path(os.path.normpath(source.parent / path))
-                if not contained(target, source):
+                kind = kind_of(target)
+                if not contained(target, source, kind):
                     continue
                 local += 1
                 suffix = target.suffix.lower()
                 index_has_page |= (
                     purpose == "navigation" and suffix in _PAGE_SUFFIXES and target != index
                 )
-                if target.is_dir():
+                if kind == "dir":
                     issue("unverified", source, "引用指向目录，未检查其入口文件")
                     continue
-                if not target.is_file():
+                if kind == "missing":
+                    # 文件系统拒绝解析与「确实不存在」要区分：前者是未验，
+                    # 后者才是真缺失（monkeypatch/权限错误会落到这里）。
+                    try:
+                        target.resolve()
+                    except (OSError, ValueError, RuntimeError):
+                        issue("unverified", source, "无法解析文件位置")
+                        continue
                     issue("missing", source, target.relative_to(root).as_posix())
                     continue
                 if purpose == "css" or suffix == ".css":

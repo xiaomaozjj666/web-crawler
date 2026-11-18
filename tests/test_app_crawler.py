@@ -5200,3 +5200,111 @@ class TestPageLinkSchemeFilter:
             assert cr.normalize_url("mailto:a@b.c") == ""
         messages = [r.message for r in caplog.records if "URL rejected" in r.message]
         assert messages and all("seed" not in message for message in messages)
+
+
+# ========== 链接数据文件下载（跨项目「抓数据 → 分析」链路）==========
+
+
+class TestLinkedDataParser:
+    def test_anchor_data_file_becomes_resource_when_enabled(self) -> None:
+        parser = cr.PageParser("https://example.com/", download_linked_data=True)
+        parser.feed(
+            '<a href="/data/orders.csv">csv</a>'
+            '<a href="/data/book.xlsx">xlsx</a>'
+            '<a href="/page.html">page</a>'
+        )
+        urls = {resource.url for resource in parser.resources}
+        assert urls == {"https://example.com/data/orders.csv", "https://example.com/data/book.xlsx"}
+        # 页面链接仍然保留，不被资源化
+        assert "https://example.com/page.html" in parser.page_links
+        assert all(resource.kind == "data" for resource in parser.resources)
+
+    def test_anchor_data_file_ignored_by_default(self) -> None:
+        parser = cr.PageParser("https://example.com/")
+        parser.feed('<a href="/data/orders.csv">csv</a>')
+        assert parser.resources == []
+        assert parser.page_links == ["https://example.com/data/orders.csv"]
+
+    def test_duplicate_links_are_deduplicated(self) -> None:
+        parser = cr.PageParser("https://example.com/", download_linked_data=True)
+        parser.feed('<a href="/a.csv">1</a><a href="/a.csv">2</a>')
+        assert len(parser.resources) == 1
+
+
+class TestLinkedDataCrawl:
+    def test_download_linked_data_flag_lists_data_resources(self, tmp_path: Path) -> None:
+        html = b'<html><body><a href="/orders.csv">csv</a><a href="/page.html">p</a></body></html>'
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--list-only",
+                    "--download-linked-data",
+                    "--workers",
+                    "1",
+                ]
+            )
+            cr.crawl(args)
+        manifest = json.loads((tmp_path / "resources_manifest.json").read_text())
+        assert {row["url"] for row in manifest} == {"https://example.com/orders.csv"}
+
+    def test_without_flag_data_links_are_not_listed(self, tmp_path: Path) -> None:
+        html = b'<html><body><a href="/orders.csv">csv</a></body></html>'
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
+            cr.crawl(args)
+        manifest = json.loads((tmp_path / "resources_manifest.json").read_text())
+        assert manifest == []
+
+    def test_config_roundtrip_includes_flag(self, tmp_path: Path) -> None:
+        args = cr.build_parser().parse_args(
+            ["--url", "https://example.com", "--download-linked-data", "--list-only"]
+        )
+        target = tmp_path / "config.json"
+        ctx_mod.save_config_to_file(args, str(target))
+        config = json.loads(target.read_text(encoding="utf-8"))
+        assert config["download_linked_data"] is True
+
+
+class TestReadableTextCJKAndBlocks:
+    """中文行内拼接不污染空格；<pre>/表格保留结构。"""
+
+    def test_cjk_inline_no_spaces(self) -> None:
+        html = "<article><p>请先<strong>安装</strong>依赖</p></article>"
+        assert cr.extract_readable_text(html) == "请先安装依赖"
+
+    def test_cjk_punctuation_no_spaces(self) -> None:
+        html = "<article><p>第一，<em>第二</em>。</p></article>"
+        assert cr.extract_readable_text(html) == "第一，第二。"
+
+    def test_cjk_latin_boundary_keeps_space(self) -> None:
+        html = "<article><p>使用 <code>pip</code> 安装依赖</p></article>"
+        assert cr.extract_readable_text(html) == "使用 pip 安装依赖"
+
+    def test_english_inline_keeps_space(self) -> None:
+        html = "<article><p>Read <a href='/x'>the</a> docs</p></article>"
+        assert cr.extract_readable_text(html) == "Read the docs"
+
+    def test_pre_preserves_line_breaks_and_indent(self) -> None:
+        html = "<article><pre>line1\n  line2\n\nline3</pre></article>"
+        assert cr.extract_readable_text(html) == "line1\n  line2\n\nline3"
+
+    def test_table_rows_keep_cell_boundaries(self) -> None:
+        html = (
+            "<article><table><tr><th>名称</th><th>数量</th></tr>"
+            "<tr><td>苹果</td><td>2</td></tr></table></article>"
+        )
+        assert cr.extract_readable_text(html) == "名称 | 数量\n苹果 | 2"

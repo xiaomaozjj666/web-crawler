@@ -40,6 +40,7 @@ _log = logging.getLogger("crawler")
 __all__ = [
     "CSS_IMPORT_RE",
     "CSS_URL_RE",
+    "DATA_EXTENSIONS",
     "HTML_RESOURCE_ATTRS",
     "META_URL_NAMES",
     "PAGE_LINK_ATTRS",
@@ -130,6 +131,21 @@ VIDEO_EXTENSIONS = {
     ".ts",
     ".vtt",
     ".webm",
+}
+#: <a href> 指向的数据文件：开启 --download-linked-data 时作为可下载资源。
+#: 只收数据格式，避免把普通页面链接（.html/.pdf 等）误当资源批量下载。
+DATA_EXTENSIONS = {
+    ".csv",
+    ".db",
+    ".json",
+    ".jsonl",
+    ".ndjson",
+    ".parquet",
+    ".sqlite",
+    ".sqlite3",
+    ".tsv",
+    ".xls",
+    ".xlsx",
 }
 VIDEO_CONTENT_HINTS = (
     "application/dash+xml",
@@ -272,10 +288,12 @@ def _resolve_html_base(page_url: str, href: str) -> str:
 
 
 class PageParser(HTMLParser):
-    def __init__(self, page_url: str) -> None:
+    def __init__(self, page_url: str, *, download_linked_data: bool = False) -> None:
         super().__init__()
         self.page_url = page_url
+        self.download_linked_data = download_linked_data
         self._base_url: str | None = None
+        self._data_links: set[str] = set()
         self.resources: list[Resource] = []
         self.page_links: list[str] = []
 
@@ -311,6 +329,17 @@ class PageParser(HTMLParser):
                 page_link = normalize_url(urljoin(self._base_url or self.page_url, value))
                 if page_link:
                     self.page_links.append(page_link)
+                    # 可选：把 <a> 指向的数据文件当资源下载，打通「抓数据 → 分析」
+                    # 链路（默认关闭，避免把普通链接误当下载任务）。
+                    if (
+                        self.download_linked_data
+                        and Path(urlparse(page_link).path).suffix.lower() in DATA_EXTENSIONS
+                        and page_link not in self._data_links
+                    ):
+                        self._data_links.add(page_link)
+                        self.resources.append(
+                            Resource(page_link, f"{tag}[{attr}]", "data", self.page_url)
+                        )
 
     def _is_resource_link(self, attrs: dict[str, str]) -> bool:
         rel_values = {item.lower() for item in attrs.get("rel", "").split()}

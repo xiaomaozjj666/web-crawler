@@ -8,7 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **离线归档静态验收（`--verify-offline`）**：从 `offline_pages/index.html`
+- **子资源与 WebSocket 的 SSRF 门禁**：导航守卫此前只校验 document 请求，
+  页面脚本可用 fetch/XHR/WebSocket 直达内网与云元数据地址。现在子资源与
+  ws/wss 同样过门禁：与已放行文档同 host 的直接放行，跨 host 按 host 缓存
+  判定结果后拦截；`data:`/`blob:`/`about:` 等内联 scheme 不判定，`file:`
+  等一律 abort。拦截记入 `blocked_resources`（不拖垮整次任务）。
+- - **`--download-linked-data`**：把 `<a href>` 指向的数据文件（csv/tsv/json/
+  jsonl/xlsx/xls/parquet/sqlite/db）作为可下载资源；默认关闭，避免把普通链接
+  批量下载。UI 同步新增开关，配置保存/加载与入库白名单补齐。用于打通
+  「爬虫抓数据 → 数据分析」链路（已用本地 GBK CSV 做端到端验证）。
+- **离线验收性能**：目录解析与文件类型检查增加缓存（含词法包含快路径），
+  201 页 / 20,200 引用的合成归档从 **31.9s 降到 1.53s（20.8×）**，判定结果不变。
+- - **离线归档静态验收（`--verify-offline`）**：从 `offline_pages/index.html`
   出发，检查可达的 HTML / CSS / meta 资源（`og:image`、`twitter:image` 等）/
   link 预取（`prefetch`、`prerender`、`apple-touch-icon-precomposed`）/ iframe
   srcdoc / SVG / meta refresh；区分 `missing`（目标不存在）、`outside`（盘符、
@@ -83,6 +94,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **原子写补齐**：`save_crawl_state` / `save_config_to_file` 改为 tmp +
+  `os.replace`，中断或替换失败时旧状态保持完整（续跑不再可能读到半截 JSON）。
+- **依赖安全**：Pillow 升级到 13.0（修复 5 项 CVE）、soupsieve ≥2.10、pip/certifi
+  升级；`pip-audit` 对两仓 venv 现为 0 已知漏洞。`visual` extra 的 Pillow 下限同步提升。
 - **自动签名采集 E2E 用例真正执行**（`tests/test_e2e_reverse_agent.py`）：
   `full_loop` 与 `hook_capture` 此前在 Windows 上被跳过、且挂着加载期
   捕获的 xfail。现在：Proactor 事件循环 fixture 替代跳过（临时切换、

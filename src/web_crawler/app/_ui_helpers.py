@@ -210,6 +210,7 @@ def build_args(form: dict[str, list[str]]) -> argparse.Namespace:
     args.strip_overlays = checked("strip_overlays")
     args.rewrite_html = checked("rewrite_html")
     args.smart_extract = checked("smart_extract")
+    args.download_linked_data = checked("download_linked_data")
     args.resume_crawl = checked("resume_crawl")
     args.extract_text = checked("extract_text")
     args.keep_page_samples = checked("keep_page_samples")
@@ -248,6 +249,7 @@ _DB_CONFIG_FIELDS = (
     "strip_overlays",
     "rewrite_html",
     "smart_extract",
+    "download_linked_data",
     "resume_crawl",
     "extract_text",
     "crawl_pages",

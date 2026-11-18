@@ -464,6 +464,71 @@ _BLOCK_TAGS = frozenset(
 )
 
 
+#: 中日韩表意文字区间（含扩展 A/B、兼容区、全角标点区）。用于行内拼接时
+#: 决定是否需要空格：两个 CJK 字符之间补空格是**错误**的（中文没有词间空格）。
+_CJK_RE = re.compile(
+    r"[\u2e80-\u2eff\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
+    r"\uff00-\uffef\U00020000-\U0002ebef]"
+)
+
+#: 全角/CJK 标点：两侧都不补空格（「，。」「（」等）。
+_CJK_PUNCT = frozenset("，。、；：！？…—～·「」『』（）【】《》〈〉“”‘’")
+
+
+def _is_cjk(char: str) -> bool:
+    return bool(char) and bool(_CJK_RE.match(char))
+
+
+def _inline_separator(left: str, right: str) -> str:
+    """两个相邻行内文本片段之间是否需要分隔空格。
+
+    规则来自中英排版惯例（2026-11 实测：旧实现无条件补空格会把
+    「请先<strong>安装</strong>依赖」渲染成「请先 安装 依赖」，中文正文
+    被系统性污染；而英文相邻链接「Related pageSecond link」又必须补空格）：
+
+    * 任一侧是空白 → 保留一个空格（源码空白浏览器也会渲染成空格）；
+    * 两个 CJK 字符之间 → 不补空格；
+    * CJK 标点两侧 → 不补空格；
+    * CJK 与拉丁/数字交界 → 补空格（中文排版惯例）；
+    * 两侧都是 ASCII 字母数字 → 补空格；其余（句读、括号等）不补。
+    """
+    if not left or not right:
+        return ""
+    lchar, rchar = left[-1], right[0]
+    if lchar.isspace() or rchar.isspace():
+        return " "
+    if lchar in _CJK_PUNCT or rchar in _CJK_PUNCT:
+        return ""
+    l_cjk, r_cjk = _is_cjk(lchar), _is_cjk(rchar)
+    if l_cjk and r_cjk:
+        return ""
+    if l_cjk or r_cjk:
+        return " "
+    return " " if (lchar.isalnum() and rchar.isalnum()) else ""
+
+
+def _join_inline_parts(parts: list[str]) -> str:
+    """按 :func:`_inline_separator` 的规则拼接相邻行内文本片段。"""
+    out = ""
+    pending_space = False
+    for part in parts:
+        if not part:
+            continue
+        if not part.strip():
+            pending_space = pending_space or bool(out)
+            continue
+        if part[:1].isspace():
+            pending_space = pending_space or bool(out)
+        stripped = part.strip()
+        if not out:
+            out = stripped
+        else:
+            separator = " " if pending_space else _inline_separator(out, stripped)
+            out += separator + stripped
+        pending_space = part[-1:].isspace()
+    return out
+
+
 def _render_blocks(element: Any) -> str:
     """把 DOM 子树渲染成一行一块的正文文本（块级标签换行，行内不打断）。"""
     lines: list[str] = []
@@ -479,11 +544,12 @@ def _render_blocks(element: Any) -> str:
         )
 
     def leaf_text(node: Any) -> str:
-        """叶子节点整棵子树的文本合并为一行；相邻行内元素之间补空格。
+        """叶子节点整棵子树的文本合并为一行；相邻行内元素之间按字符类补空格。
 
         ``"".join(itertext())`` 会把相邻行内元素（如连续 <a>）的文本无分隔
-        拼在一起（实测 "Related pageSecond link"），按文本节点边界补空格
-        与旧版 :func:`_visible_text` 的行为一致。
+        拼在一起（实测 "Related pageSecond link"），但**无条件**补空格又会
+        把中文正文拆开（实测「请先 安装 依赖 ，然后 运行 脚本。」）。这里按
+        字符类决定分隔符，见 :func:`_inline_separator`。
         """
         parts: list[str] = []
         if node.text:
@@ -498,7 +564,33 @@ def _render_blocks(element: Any) -> str:
             parts.append(leaf_text(child))
             if child.tail:
                 parts.append(child.tail)
-        return " ".join(part for part in parts if part and part.strip())
+        return _join_inline_parts(parts)
+
+    def emit_pre(node: Any) -> None:
+        """<pre> 保留换行与缩进（代码块/终端输出），只清行尾空白与首尾空行。"""
+        raw = "".join(node.itertext())
+        if not raw:
+            return
+        raw_lines = [line.rstrip() for line in raw.replace("\r\n", "\n").split("\n")]
+        while raw_lines and not raw_lines[0].strip():
+            raw_lines.pop(0)
+        while raw_lines and not raw_lines[-1].strip():
+            raw_lines.pop()
+        if raw_lines:
+            lines.append("\n".join(raw_lines))
+
+    def emit_row(node: Any) -> None:
+        """表格行：单元格文本用 " | " 连成一行，保留行列关系。"""
+        cells: list[str] = []
+        for cell in node:
+            if not isinstance(cell.tag, str) or cell.tag.lower() not in ("td", "th"):
+                continue
+            text = " ".join("".join(cell.itertext()).split())
+            if text:
+                cells.append(text)
+        row = " | ".join(cells)
+        if row:
+            lines.append(row)
 
     def walk(node: Any) -> None:
         tag = node.tag if isinstance(node.tag, str) else ""
@@ -506,6 +598,12 @@ def _render_blocks(element: Any) -> str:
             return
         lowered = tag.lower()
         if lowered in _STRUCTURE_TAGS or lowered in _FORM_INPUT_TAGS or lowered in _CHROME_TAGS:
+            return
+        if lowered == "pre":
+            emit_pre(node)
+            return
+        if lowered == "tr":
+            emit_row(node)
             return
         if has_block_child(node):
             # 容器节点：块间散落的裸文本单独成行，再逐个下钻子节点。

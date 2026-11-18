@@ -85,7 +85,90 @@ def test_sync_guard_blocks_non_public_document_and_records_url() -> None:
     assert blocked == ["http://169.254.169.254/latest/meta-data/"]
 
 
-def test_sync_guard_passes_non_document_without_checking() -> None:
+def test_sync_guard_subresource_same_host_follows_document() -> None:
+    """文档放行后，同 host 子资源直接放行（不再重复门禁）。"""
+    page = _Page()
+    calls: list[str] = []
+
+    def check(url: str) -> str | None:
+        calls.append(url)
+        return "blocked" if "169.254" in url else None
+
+    install_navigation_guard(page, check)
+    page.handler(_Route("https://example.com/"))
+    route = _Route("https://example.com/app.js", resource_type="script")
+    page.handler(route)
+
+    assert route.fell_back is True
+    assert route.aborted is False
+    assert calls == ["https://example.com/"]
+
+
+def test_sync_guard_blocks_cross_host_private_subresource() -> None:
+    """跨 host 子资源必须过门禁：恶意页面 fetch 内网/云元数据目标被 abort。"""
+    page = _Page()
+    blocked: list[str] = []
+    blocked_resources: list[str] = []
+
+    def check(url: str) -> str | None:
+        return "private address" if "169.254" in url else None
+
+    install_navigation_guard(page, check, blocked, blocked_resources=blocked_resources)
+    page.handler(_Route("https://example.com/"))
+    route = _Route("http://169.254.169.254/latest/meta-data/", resource_type="fetch")
+    page.handler(route)
+
+    assert route.aborted is True
+    assert route.fell_back is False
+    # 子资源拦截不记入 blocked（不拖垮整次任务），单独计数便于诊断
+    assert blocked == []
+    assert blocked_resources == ["http://169.254.169.254/latest/meta-data/"]
+
+
+def test_sync_guard_allows_public_cross_host_subresource() -> None:
+    page = _Page()
+    install_navigation_guard(page, lambda url: None, check_subresources=True)
+    page.handler(_Route("https://example.com/"))
+    route = _Route("https://cdn.example.net/app.js", resource_type="script")
+    page.handler(route)
+    assert route.fell_back is True
+
+
+def test_sync_guard_inline_schemes_pass_and_file_is_blocked() -> None:
+    page = _Page()
+    blocked_resources: list[str] = []
+    install_navigation_guard(page, lambda url: None, blocked_resources=blocked_resources)
+    page.handler(_Route("https://example.com/"))
+
+    data_route = _Route("data:image/png;base64,AAAA", resource_type="image")
+    page.handler(data_route)
+    file_route = _Route("file:///C:/Windows/win.ini", resource_type="image")
+    page.handler(file_route)
+
+    assert data_route.fell_back is True
+    assert file_route.aborted is True
+    assert blocked_resources == ["file:///C:/Windows/win.ini"]
+
+
+def test_sync_guard_caches_subresource_verdict_per_host() -> None:
+    """同一 host 的多个子资源只做一次门禁判定（DNS 次数有界）。"""
+    page = _Page()
+    calls: list[str] = []
+
+    def check(url: str) -> str | None:
+        calls.append(url)
+        return None
+
+    install_navigation_guard(page, check)
+    page.handler(_Route("https://example.com/"))
+    page.handler(_Route("https://cdn.example.net/a.js", resource_type="script"))
+    page.handler(_Route("https://cdn.example.net/b.css", resource_type="stylesheet"))
+
+    assert calls == ["https://example.com/", "https://cdn.example.net/a.js"]
+
+
+def test_sync_guard_can_disable_subresource_checks() -> None:
+    """显式关闭子资源判定时恢复旧行为（信任模型需要时的逃生口）。"""
     page = _Page()
     calls: list[str] = []
 
@@ -93,12 +176,71 @@ def test_sync_guard_passes_non_document_without_checking() -> None:
         calls.append(url)
         return "blocked"
 
-    install_navigation_guard(page, check)
+    install_navigation_guard(page, check, check_subresources=False)
+    page.handler(_Route("https://example.com/"))
     route = _Route("http://127.0.0.1/app.js", resource_type="script")
     page.handler(route)
 
     assert route.fell_back is True
-    assert calls == []  # 子资源不走逐跳判定（输出侧打码负责）
+    assert calls == ["https://example.com/"]
+
+
+class _WS:
+    """最小 WebSocketRoute 替身。"""
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+        self.closed = False
+        self.connected = False
+        self._server: Any = SimpleNamespace(
+            send=lambda message: None, on_message=lambda handler: None
+        )
+
+    def close(self) -> None:
+        self.closed = True
+
+    def connect_to_server(self) -> Any:
+        self.connected = True
+        return self._server
+
+    def on_message(self, handler: Any) -> None:
+        self.handler = handler
+
+    def send(self, message: Any) -> None:
+        pass
+
+
+def test_web_socket_guard_blocks_private_and_allows_same_host() -> None:
+    from web_crawler._nav_guard import _make_web_socket_guard
+
+    allowed_hosts: set[str] = {"example.com"}
+    blocked_resources: list[str] = []
+    guarded = _make_web_socket_guard(
+        lambda url: "private" if "127.0.0.1" in url else None,
+        allowed_hosts=allowed_hosts,
+        blocked_resources=blocked_resources,
+    )
+
+    private_ws = _WS("ws://127.0.0.1:9000/socket")
+    guarded(private_ws)
+    assert private_ws.closed is True
+    assert private_ws.connected is False
+    assert blocked_resources == ["ws://127.0.0.1:9000/socket"]
+
+    same_host_ws = _WS("wss://example.com/socket")
+    guarded(same_host_ws)
+    assert same_host_ws.connected is True
+    assert same_host_ws.closed is False
+
+
+def test_web_socket_guard_maps_ws_scheme_to_http_for_gate() -> None:
+    """门禁只认 http(s)：ws:// 需映射成 http:// 再判定，否则全被 scheme 拒绝。"""
+    from web_crawler._nav_guard import _make_web_socket_guard
+
+    seen: list[str] = []
+    guarded = _make_web_socket_guard(lambda url: seen.append(url))
+    guarded(_WS("wss://public.example/socket"))
+    assert seen == ["https://public.example/socket"]
 
 
 def test_sync_guard_fails_closed_when_check_raises() -> None:
@@ -161,21 +303,27 @@ async def test_async_guard_allows_and_blocks() -> None:
 
 
 @pytest.mark.asyncio
-async def test_async_guard_skips_non_document() -> None:
+async def test_async_guard_checks_subresources_against_gate() -> None:
     page = _AsyncPage()
     calls: list[str] = []
 
-    # check_url 契约是同步函数；异步守卫内部同步调用它
+    # check_url 契约是同步函数；异步守卫经线程池调用它
     def check(url: str) -> str | None:
         calls.append(url)
-        return "blocked"
+        return "private" if "127.0.0.1" in url else None
 
     await install_navigation_guard_async(page, check)
-    route = _AsyncRoute("https://example.com/api", resource_type="xhr")
-    await page.handler(route)
+    await page.handler(_AsyncRoute("https://example.com/"))
 
-    assert route.fell_back is True
-    assert calls == []
+    same_host = _AsyncRoute("https://example.com/app.js", resource_type="script")
+    await page.handler(same_host)
+    assert same_host.fell_back is True
+
+    private = _AsyncRoute("http://127.0.0.1:9000/api", resource_type="xhr")
+    await page.handler(private)
+    assert private.aborted is True
+
+    assert calls == ["https://example.com/", "http://127.0.0.1:9000/api"]
 
 
 # -- 重定向链预检 -------------------------------------------------------------

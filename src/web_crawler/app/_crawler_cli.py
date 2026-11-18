@@ -167,6 +167,12 @@ Examples:
         "--sitemap", action="store_true", help="Discover pages from /sitemap.xml before crawling."
     )
     parser.add_argument(
+        "--download-linked-data",
+        action="store_true",
+        help="Treat <a href> links to data files (.csv/.xlsx/.json/.parquet/.db ...) as "
+        "downloadable resources. Off by default to avoid mass-downloading ordinary links.",
+    )
+    parser.add_argument(
         "--smart-extract", action="store_true", help="Extract structured data from scanned pages."
     )
     parser.add_argument(

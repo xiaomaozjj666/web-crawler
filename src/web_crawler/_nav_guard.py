@@ -26,9 +26,12 @@ Playwright 的 ``page.goto`` 会自动跟随 HTTP 重定向，且跳转发生在
 
 边界：
 
-* 只拦截 ``resource_type == "document"`` 的请求。脚本、图片、XHR 等子资源不
-  逐跳拦截（避免给每次请求增加判定开销），它们的目标地址仍由 MCP 输出侧的
-  出口过滤打码，不回传内网内容。
+* 文档级请求逐跳校验（主框架 / iframe / 弹窗 / 重定向）。子资源（script /
+  图片 / XHR / fetch）与 WebSocket 自 2026-11 起同样按目标判定：与已放行
+  文档同 host 的放行，跨 host 目标按 host 缓存门禁结果后拦截（详见
+  :func:`_make_guard`）。``data:``/``blob:``/``about:`` 等内联 scheme 不判定。
+  2026-11 三端口 PoC 实测旧实现放行全部子资源时，页面脚本的 fetch 与
+  WebSocket upgrade 都能到达内网地址。
 * DNS 重绑定：门禁在校验时解析域名，浏览器随后自行解析。Playwright 不提供按
   请求的 IP 钉扎（fetcher 侧的 ``CURLOPT_RESOLVE`` 无等价物），因此这里只能
   缩小 check-then-connect 窗口，**不能彻底消除**。这是已知残余风险。
@@ -47,6 +50,7 @@ Playwright 的 ``page.goto`` 会自动跟随 HTTP 重定向，且跳转发生在
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import re
 import time
@@ -169,12 +173,62 @@ def _is_subframe(route: Any) -> bool:
         return False
 
 
-def _make_guard(check_url: UrlCheck, blocked: list[str]) -> Callable[[Any], None]:
+#: 子资源中不产生网络请求的「内联」scheme：无需门禁。
+_INLINE_SUBRESOURCE_SCHEMES = frozenset({"data", "blob", "about"})
+#: 子资源中需要经过网络门禁的 scheme。
+_NETWORK_SCHEMES = frozenset({"http", "https"})
+_WS_SCHEMES = frozenset({"ws", "wss"})
+
+
+def _host_of(url: str) -> str:
+    try:
+        return (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def _scheme_of(url: str) -> str:
+    try:
+        return (urlsplit(url).scheme or "").lower()
+    except ValueError:
+        return ""
+
+
+def _http_equivalent(url: str) -> str:
+    """把 ws/wss 映射成 http/https 再交给门禁（门禁只认 http(s) scheme）。"""
+    scheme = _scheme_of(url)
+    if scheme == "ws":
+        return "http://" + url[5:]
+    if scheme == "wss":
+        return "https://" + url[6:]
+    return url
+
+
+def _make_guard(
+    check_url: UrlCheck,
+    blocked: list[str],
+    *,
+    allowed_hosts: set[str] | None = None,
+    blocked_resources: list[str] | None = None,
+    check_subresources: bool = True,
+) -> Callable[[Any], None]:
     """构造同步 route 处理函数。
 
     主框架文档被拒：记入 ``blocked`` 并 abort，调用方据此判定任务失败。
     子框架（iframe）文档被拒：只 abort、不记入——第三方广告框指向私网或解析
     失败的域名不应杀掉整次任务；请求本身已被阻断，不会向内网发出。
+
+    **子资源**（script/img/xhr/fetch 等）：2026-11 实测旧实现直接放行全部
+    子资源，渲染不可信页面时恶意脚本可用 fetch/XHR 向内网与云元数据地址
+    发请求（本地三端口 PoC：fetch 与 WebSocket 全部到达）。现在按目标判定：
+
+    * ``data:`` / ``blob:`` / ``about:`` 等内联 scheme 直接放行（不产生网络请求）；
+    * 与已放行文档同 host 的子资源放行（用户明确导航到的站点，其自身资源可信）；
+    * 其余 http(s) 子资源按 host 缓存门禁结果后判定，跨 host 的内网目标 abort；
+    * 其它 scheme（``file:`` 等）一律 abort。
+
+    门禁按 host 缓存（不是按请求）：一页几十个子资源通常只跨几个 host，
+    DNS 次数有界；同名 host 的判定结论在本次安装生命周期内复用。
 
     放行路径用 :meth:`~playwright.sync_api.Route.fallback` 而非 ``continue_``：
     Playwright 按"后注册先执行"派发处理器链，``continue_()`` 会终结整条链——
@@ -182,19 +236,52 @@ def _make_guard(check_url: UrlCheck, blocked: list[str]) -> Callable[[Any], None
     ``continue_()`` 会让先注册的资源拦截器（block_images 等）再也收不到请求；
     ``fallback()`` 把请求交还给链上更早注册的处理器，链耗尽时等效放行。
     """
+    allowed_hosts = set() if allowed_hosts is None else allowed_hosts
+    blocked_resources = [] if blocked_resources is None else blocked_resources
+    verdict_cache: dict[str, str | None] = {}
+    warned_hosts: set[str] = set()
+
+    def _decide_subresource(url: str) -> bool:
+        scheme = _scheme_of(url)
+        if scheme in _INLINE_SUBRESOURCE_SCHEMES:
+            return True
+        if scheme not in _NETWORK_SCHEMES:
+            blocked_resources.append(url)
+            return False
+        host = _host_of(url)
+        if host and host in allowed_hosts:
+            return True
+        if not host:
+            return False
+        if host not in verdict_cache:
+            verdict_cache[host] = _gate(check_url, url)
+        verdict = verdict_cache[host]
+        if verdict:
+            blocked_resources.append(url)
+            if host not in warned_hosts:
+                warned_hosts.add(host)
+                _log.warning("blocked cross-host subresource target %s: %s", url, verdict)
+            return False
+        return True
 
     def _guard(route: Any) -> None:
         try:
-            if not _is_document(route):
-                # 非文档请求交给链上更早注册的处理器（资源拦截器等）
-                route.fallback()
-                return
             url = _request_url(route)
-            if not _gate(check_url, url):
+            if _is_document(route):
+                if not _gate(check_url, url):
+                    # 放行：登记文档 host，供同 host 子资源免检
+                    host = _host_of(url)
+                    if host:
+                        allowed_hosts.add(host)
+                    route.fallback()
+                    return
+                if not _is_subframe(route):
+                    blocked.append(url)
+                route.abort()
+                return
+            if not check_subresources or _decide_subresource(url):
                 route.fallback()
                 return
-            if not _is_subframe(route):
-                blocked.append(url)
             route.abort()
         except Exception:
             # 守卫自身出错：请求必须被结束（否则导航挂起）并记为拒绝（失败关闭）
@@ -204,21 +291,62 @@ def _make_guard(check_url: UrlCheck, blocked: list[str]) -> Callable[[Any], None
     return _guard
 
 
-def _make_guard_async(check_url: UrlCheck, blocked: list[str]) -> Callable[[Any], Any]:
+def _make_guard_async(
+    check_url: UrlCheck,
+    blocked: list[str],
+    *,
+    allowed_hosts: set[str] | None = None,
+    blocked_resources: list[str] | None = None,
+    check_subresources: bool = True,
+) -> Callable[[Any], Any]:
     """异步版 :func:`_make_guard`（放行路径同为 ``fallback``，见其文档）。"""
+    allowed_hosts = set() if allowed_hosts is None else allowed_hosts
+    blocked_resources = [] if blocked_resources is None else blocked_resources
+    verdict_cache: dict[str, str | None] = {}
+    warned_hosts: set[str] = set()
+
+    async def _decide_subresource(url: str) -> bool:
+        scheme = _scheme_of(url)
+        if scheme in _INLINE_SUBRESOURCE_SCHEMES:
+            return True
+        if scheme not in _NETWORK_SCHEMES:
+            blocked_resources.append(url)
+            return False
+        host = _host_of(url)
+        if host and host in allowed_hosts:
+            return True
+        if not host:
+            return False
+        if host not in verdict_cache:
+            verdict_cache[host] = await _agate(check_url, url)
+        verdict = verdict_cache[host]
+        if verdict:
+            blocked_resources.append(url)
+            if host not in warned_hosts:
+                warned_hosts.add(host)
+                _log.warning("blocked cross-host subresource target %s: %s", url, verdict)
+            return False
+        return True
 
     async def _guard(route: Any) -> None:
         try:
-            if not _is_document(route):
-                await route.fallback()
-                return
             url = _request_url(route)
-            # 门禁可能做同步 DNS：经线程池执行，不阻塞事件循环（见 _agate）
-            if not await _agate(check_url, url):
+            if _is_document(route):
+                # 门禁可能做同步 DNS：经线程池执行，不阻塞事件循环（见 _agate）
+                if not await _agate(check_url, url):
+                    # 放行：登记文档 host，供同 host 子资源免检
+                    host = _host_of(url)
+                    if host:
+                        allowed_hosts.add(host)
+                    await route.fallback()
+                    return
+                if not _is_subframe(route):
+                    blocked.append(url)
+                await route.abort()
+                return
+            if not check_subresources or await _decide_subresource(url):
                 await route.fallback()
                 return
-            if not _is_subframe(route):
-                blocked.append(url)
             await route.abort()
         except Exception:
             blocked.append(_request_url(route) or "<unknown>")
@@ -227,8 +355,109 @@ def _make_guard_async(check_url: UrlCheck, blocked: list[str]) -> Callable[[Any]
     return _guard
 
 
+def _make_web_socket_guard(
+    check_url: UrlCheck,
+    *,
+    allowed_hosts: set[str] | None = None,
+    blocked_resources: list[str] | None = None,
+) -> Callable[[Any], None]:
+    """构造 WebSocket 守卫：跨 host 的 ws/wss 目标同样要过 SSRF 门禁。
+
+    ``page.route`` 看不到 WebSocket（Playwright 用独立的 ``route_web_socket``），
+    而恶意页面可借 WebSocket 做内网端口探测/带外通道——2026-11 PoC 实测
+    ``ws://127.0.0.1:<port>/`` 的 upgrade 请求确实发出。放行的 WebSocket 会
+    连回服务端并在两个方向上转发消息，语义与未拦截时一致。
+    """
+
+    allowed_hosts = set() if allowed_hosts is None else allowed_hosts
+    blocked_resources = [] if blocked_resources is None else blocked_resources
+    verdict_cache: dict[str, str | None] = {}
+
+    def _allowed(url: str) -> bool:
+        scheme = _scheme_of(url)
+        if scheme not in _WS_SCHEMES:
+            return False
+        host = _host_of(url)
+        if host and host in allowed_hosts:
+            return True
+        if not host:
+            return False
+        if host not in verdict_cache:
+            verdict_cache[host] = _gate(check_url, _http_equivalent(url))
+        allowed = not verdict_cache[host]
+        if not allowed:
+            blocked_resources.append(url)
+        return allowed
+
+    def _handler(websocket: Any) -> None:
+        try:
+            if not _allowed(getattr(websocket, "url", "")):
+                websocket.close()
+                return
+            server = websocket.connect_to_server()
+            websocket.on_message(lambda message: server.send(message))
+            server.on_message(lambda message: websocket.send(message))
+        except Exception:
+            try:
+                websocket.close()
+            except Exception:
+                pass
+
+    return _handler
+
+
+def _make_web_socket_guard_async(
+    check_url: UrlCheck,
+    *,
+    allowed_hosts: set[str] | None = None,
+    blocked_resources: list[str] | None = None,
+) -> Callable[[Any], Any]:
+    """异步版 :func:`_make_web_socket_guard`。"""
+    allowed_hosts = set() if allowed_hosts is None else allowed_hosts
+    blocked_resources = [] if blocked_resources is None else blocked_resources
+    verdict_cache: dict[str, str | None] = {}
+
+    async def _allowed(url: str) -> bool:
+        scheme = _scheme_of(url)
+        if scheme not in _WS_SCHEMES:
+            return False
+        host = _host_of(url)
+        if host and host in allowed_hosts:
+            return True
+        if not host:
+            return False
+        if host not in verdict_cache:
+            verdict_cache[host] = await _agate(check_url, _http_equivalent(url))
+        allowed = not verdict_cache[host]
+        if not allowed:
+            blocked_resources.append(url)
+        return allowed
+
+    async def _handler(websocket: Any) -> None:
+        try:
+            if not await _allowed(getattr(websocket, "url", "")):
+                await websocket.close()
+                return
+            server = await websocket.connect_to_server()
+            websocket.on_message(lambda message: server.send(message))
+            server.on_message(lambda message: websocket.send(message))
+        except Exception:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+
+    return _handler
+
+
 def install_navigation_guard(
-    page: Any, check_url: UrlCheck, blocked: list[str] | None = None
+    page: Any,
+    check_url: UrlCheck,
+    blocked: list[str] | None = None,
+    *,
+    check_subresources: bool = True,
+    blocked_resources: list[str] | None = None,
+    allowed_hosts: set[str] | None = None,
 ) -> list[str]:
     """在同步 Page 上安装导航守卫，返回被拦截 URL 列表（就地累积）。
 
@@ -236,6 +465,9 @@ def install_navigation_guard(
     文档请求；``page.goto`` 会因此抛错，调用方应据此返回 ``unsafe_target``。
     传入 ``blocked`` 可让同一会话的多个页面共享拦截记录。仅覆盖该页；弹窗等
     新页面请同时安装 :func:`install_context_navigation_guard`。
+
+    ``check_subresources=True``（默认）时子资源与 WebSocket 也按目标判定，
+    见 :func:`_make_guard` 与 :func:`_make_web_socket_guard`。
 
     注册顺序约束：Playwright 按"后注册先执行"派发 handler 链，``continue_()``
     会终结整条链——**先注册**的 handler 会被后注册者的 ``continue_()`` 旁路；
@@ -245,12 +477,38 @@ def install_navigation_guard(
     handler 会先于守卫执行并旁路守卫（安全洞）——禁止这样做。
     """
     blocked = [] if blocked is None else blocked
-    page.route("**/*", _make_guard(check_url, blocked))
+    page.route(
+        "**/*",
+        _make_guard(
+            check_url,
+            blocked,
+            allowed_hosts=allowed_hosts,
+            blocked_resources=blocked_resources,
+            check_subresources=check_subresources,
+        ),
+    )
+    if check_subresources:
+        route_ws = getattr(page, "route_web_socket", None)
+        if callable(route_ws):
+            route_ws(
+                "**/*",
+                _make_web_socket_guard(
+                    check_url,
+                    allowed_hosts=allowed_hosts,
+                    blocked_resources=blocked_resources,
+                ),
+            )
     return blocked
 
 
 def install_context_navigation_guard(
-    context: Any, check_url: UrlCheck, blocked: list[str] | None = None
+    context: Any,
+    check_url: UrlCheck,
+    blocked: list[str] | None = None,
+    *,
+    check_subresources: bool = True,
+    blocked_resources: list[str] | None = None,
+    allowed_hosts: set[str] | None = None,
 ) -> list[str]:
     """在 BrowserContext 上安装同一守卫，覆盖上下文内所有页面（含弹窗）。
 
@@ -258,25 +516,102 @@ def install_context_navigation_guard(
     点击触发的弹窗可直接访问内网，因此必须在上下文层安装。
     """
     blocked = [] if blocked is None else blocked
-    context.route("**/*", _make_guard(check_url, blocked))
+    context.route(
+        "**/*",
+        _make_guard(
+            check_url,
+            blocked,
+            allowed_hosts=allowed_hosts,
+            blocked_resources=blocked_resources,
+            check_subresources=check_subresources,
+        ),
+    )
+    if check_subresources:
+        route_ws = getattr(context, "route_web_socket", None)
+        if callable(route_ws):
+            route_ws(
+                "**/*",
+                _make_web_socket_guard(
+                    check_url,
+                    allowed_hosts=allowed_hosts,
+                    blocked_resources=blocked_resources,
+                ),
+            )
     return blocked
 
 
 async def install_navigation_guard_async(
-    page: Any, check_url: UrlCheck, blocked: list[str] | None = None
+    page: Any,
+    check_url: UrlCheck,
+    blocked: list[str] | None = None,
+    *,
+    check_subresources: bool = True,
+    blocked_resources: list[str] | None = None,
+    allowed_hosts: set[str] | None = None,
 ) -> list[str]:
     """异步版 :func:`install_navigation_guard`（Playwright async API）。"""
     blocked = [] if blocked is None else blocked
-    await page.route("**/*", _make_guard_async(check_url, blocked))
+    await page.route(
+        "**/*",
+        _make_guard_async(
+            check_url,
+            blocked,
+            allowed_hosts=allowed_hosts,
+            blocked_resources=blocked_resources,
+            check_subresources=check_subresources,
+        ),
+    )
+    if check_subresources:
+        route_ws = getattr(page, "route_web_socket", None)
+        if callable(route_ws):
+            result = route_ws(
+                "**/*",
+                _make_web_socket_guard_async(
+                    check_url,
+                    allowed_hosts=allowed_hosts,
+                    blocked_resources=blocked_resources,
+                ),
+            )
+            # 真实 async API 返回协程；旧版 Playwright / 测试 mock 可能同步返回。
+            if inspect.isawaitable(result):
+                await result
     return blocked
 
 
 async def install_context_navigation_guard_async(
-    context: Any, check_url: UrlCheck, blocked: list[str] | None = None
+    context: Any,
+    check_url: UrlCheck,
+    blocked: list[str] | None = None,
+    *,
+    check_subresources: bool = True,
+    blocked_resources: list[str] | None = None,
+    allowed_hosts: set[str] | None = None,
 ) -> list[str]:
     """异步版 :func:`install_context_navigation_guard`。"""
     blocked = [] if blocked is None else blocked
-    await context.route("**/*", _make_guard_async(check_url, blocked))
+    await context.route(
+        "**/*",
+        _make_guard_async(
+            check_url,
+            blocked,
+            allowed_hosts=allowed_hosts,
+            blocked_resources=blocked_resources,
+            check_subresources=check_subresources,
+        ),
+    )
+    if check_subresources:
+        route_ws = getattr(context, "route_web_socket", None)
+        if callable(route_ws):
+            result = route_ws(
+                "**/*",
+                _make_web_socket_guard_async(
+                    check_url,
+                    allowed_hosts=allowed_hosts,
+                    blocked_resources=blocked_resources,
+                ),
+            )
+            if inspect.isawaitable(result):
+                await result
     return blocked
 
 

@@ -403,6 +403,7 @@
               <label class="check"><input type="checkbox" name="video_only"> 只处理视频相关资源</label>
               <label class="check"><input type="checkbox" name="resume" checked> 断点续传（文件下到一半断了，接着下）</label>
               <label class="check"><input type="checkbox" name="dedup" checked> 内容去重（SHA256）</label>
+              <label class="check"><input type="checkbox" name="download_linked_data"> 下载链接的数据文件（CSV/Excel/JSON…）</label>
               <label class="check"><input type="checkbox" name="stealth"> 隐身抓取（TLS 指纹）</label>
               <label class="check"><input type="checkbox" name="render_js"> JS 渲染（无头浏览器）</label>
           <div class="hint">页面先用 headless Chromium 渲染再解析；适合 JS 单页站或拒绝纯 HTTP 的站点，渲染失败自动退回普通抓取</div>
