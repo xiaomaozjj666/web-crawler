@@ -192,6 +192,9 @@ class DynamicFetcher(BaseFetcher):
         #: 本次 fetch 期间被导航守卫拦截的子资源/WebSocket（按 host 判定）。
         #: 调用方可在 fetch 后读取，用于解释「为什么某些资源没被下载」。
         self.last_blocked_resources: list[str] = []
+        #: 被拒的 WebSocket 路由：handler 内 close 会死锁（同步 API），
+        #: 延迟到导航结束后统一关闭，页面能收到 close 事件。
+        self._deferred_ws: list[Any] = []
 
     # -- 代理 / 资源辅助 ------------------------------------------------------
     def _parse_proxy(self, proxy: str | None) -> dict[str, str] | None:
@@ -380,6 +383,7 @@ class DynamicFetcher(BaseFetcher):
             # 逐跳导航守卫（预检重定向链 + route 拦截 + 落点复核），判定与
             # 入口校验同源（见 _base._nav_check）
             from .._nav_guard import (
+                close_deferred_websockets,
                 frame_urls,
                 install_context_navigation_guard,
                 install_navigation_guard,
@@ -391,14 +395,19 @@ class DynamicFetcher(BaseFetcher):
             check = self._nav_check()
             # context 级守卫覆盖弹窗（window.open 的新页面不经过 page.route）
             self.last_blocked_resources = []
+            self._deferred_ws = []
             blocked_nav = install_context_navigation_guard(
-                context, check, blocked_resources=self.last_blocked_resources
+                context,
+                check,
+                blocked_resources=self.last_blocked_resources,
+                deferred_ws_close=self._deferred_ws,
             )
             install_navigation_guard(
                 page,
                 check,
                 blocked=blocked_nav,
                 blocked_resources=self.last_blocked_resources,
+                deferred_ws_close=self._deferred_ws,
             )
             referer = "https://www.google.com/" if self.google_search else None
             resp = safe_goto_sync(
@@ -437,6 +446,8 @@ class DynamicFetcher(BaseFetcher):
                 request_headers=self.extra_headers,
             )
         finally:
+            # 被拒的 WebSocket 在导航结束后再关闭（handler 内 close 会死锁）
+            close_deferred_websockets(self._deferred_ws)
             # 导出最近一次渲染的登录态：new_context 模式必须在 close 之前
             # （context 一旦关闭便无法读取状态）；persistent 模式不关 context，
             # 最终登录态还会在 close()/aclose() 时再次导出
@@ -661,6 +672,7 @@ class DynamicFetcher(BaseFetcher):
 
             # 逐跳导航守卫（同 fetch 路径；截图内容同样可能被用于下游决策）
             from .._nav_guard import (
+                close_deferred_websockets,
                 frame_urls,
                 install_context_navigation_guard,
                 install_navigation_guard,
@@ -671,14 +683,19 @@ class DynamicFetcher(BaseFetcher):
             check = self._nav_check()
             # context 级守卫覆盖弹窗（window.open 的新页面不经过 page.route）
             self.last_blocked_resources = []
+            self._deferred_ws = []
             blocked_nav = install_context_navigation_guard(
-                context, check, blocked_resources=self.last_blocked_resources
+                context,
+                check,
+                blocked_resources=self.last_blocked_resources,
+                deferred_ws_close=self._deferred_ws,
             )
             install_navigation_guard(
                 page,
                 check,
                 blocked=blocked_nav,
                 blocked_resources=self.last_blocked_resources,
+                deferred_ws_close=self._deferred_ws,
             )
             referer = "https://www.google.com/" if self.google_search else None
             safe_goto_sync(
@@ -761,6 +778,7 @@ class DynamicFetcher(BaseFetcher):
 
             return tiles
         finally:
+            close_deferred_websockets(self._deferred_ws)
             # 导出最近一次渲染的登录态（若配置）；persistent 模式不关 context
             self._export_storage_state(context)
             if own_context:

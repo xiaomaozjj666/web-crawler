@@ -360,6 +360,7 @@ def _make_web_socket_guard(
     *,
     allowed_hosts: set[str] | None = None,
     blocked_resources: list[str] | None = None,
+    deferred_close: list[Any] | None = None,
 ) -> Callable[[Any], None]:
     """构造 WebSocket 守卫：跨 host 的 ws/wss 目标同样要过 SSRF 门禁。
 
@@ -367,12 +368,12 @@ def _make_web_socket_guard(
     而恶意页面可借 WebSocket 做内网端口探测/带外通道——2026-11 PoC 实测
     ``ws://127.0.0.1:<port>/`` 的 upgrade 请求确实发出。放行的 WebSocket 会
     连回服务端并在两个方向上转发消息，语义与未拦截时一致；被拒绝的 WebSocket
-    **不连接**（握手不会发往目标），页面侧消息只在本地缓冲。
+    **不连接**（握手不会发往目标）。
 
-    已知取舍：被拒的 WebSocket 既不能 connect 也不能 close（同步 API 在
-    handler 内 ``close()`` 会死锁整次导航，2026-11 实测），页面侧会一直看到
-    CONNECTING 状态。抓取侧的等待（networkidle 等）都有超时上限，不会因此
-    挂死；依赖 WS 打开/关闭推进的页面可能等满超时，这是安全优先的代价。
+    同步 API 在 handler 内直接 ``close()`` 会死锁整次导航（2026-11 实测），因此
+    被拒的路由会追加到 ``deferred_close``，由调用方在导航/内容抓取结束后调用
+    :func:`close_deferred_websockets` 统一关闭——页面能收到 close 事件，而不是
+    永远停在 CONNECTING。未传 ``deferred_close`` 时保持"只不连接"的旧语义。
     """
 
     allowed_hosts = set() if allowed_hosts is None else allowed_hosts
@@ -402,8 +403,8 @@ def _make_web_socket_guard(
             if not _allowed(getattr(websocket, "url", "")):
                 # 不调用 connect_to_server() 即为阻断：Playwright 不会把握手
                 # 发往目标，页面侧消息只缓冲、不会到达内网服务。
-                # 注意不能用 websocket.close()——2026-11 实测同步 API 在
-                # handler 里 close() 会死锁整次导航。
+                if deferred_close is not None:
+                    deferred_close.append(websocket)
                 return
             server = websocket.connect_to_server()
             websocket.on_message(lambda message: server.send(message))
@@ -415,13 +416,32 @@ def _make_web_socket_guard(
     return _handler
 
 
+def close_deferred_websockets(routes: list[Any]) -> None:
+    """关闭导航期间被拒绝、延迟处理的路由（导航结束后调用，避免 handler 死锁）。
+
+    必须在导航完成后再调用：同步 API 在 route handler 内 close 会阻塞事件派发；
+    在 handler 之外调用则是安全的（2026-11 实测页面能收到 close 事件）。
+    """
+    while routes:
+        websocket = routes.pop()
+        try:
+            websocket.close()
+        except Exception:
+            _log.debug("deferred websocket close failed for %s", getattr(websocket, "url", ""))
+
+
 def _make_web_socket_guard_async(
     check_url: UrlCheck,
     *,
     allowed_hosts: set[str] | None = None,
     blocked_resources: list[str] | None = None,
+    deferred_close: list[Any] | None = None,
 ) -> Callable[[Any], Any]:
-    """异步版 :func:`_make_web_socket_guard`。"""
+    """异步版 :func:`_make_web_socket_guard`。
+
+    异步 handler 内 ``await websocket.close()`` 不会死锁（2026-11 实测），
+    因此被拒路由在这里直接关闭；``deferred_close`` 仅为签名对称保留。
+    """
     allowed_hosts = set() if allowed_hosts is None else allowed_hosts
     blocked_resources = [] if blocked_resources is None else blocked_resources
     verdict_cache: dict[str, str | None] = {}
@@ -445,7 +465,9 @@ def _make_web_socket_guard_async(
     async def _handler(websocket: Any) -> None:
         try:
             if not await _allowed(getattr(websocket, "url", "")):
-                # 同同步版：不连接即阻断（不发握手到目标），避免 close 语义分歧
+                # 异步 API 允许在 handler 内 close：给页面明确的关闭信号，
+                # 同时不连接目标（握手不会发出）。
+                await websocket.close()
                 return
             server = await websocket.connect_to_server()
             websocket.on_message(lambda message: server.send(message))
@@ -464,6 +486,7 @@ def install_navigation_guard(
     check_subresources: bool = True,
     blocked_resources: list[str] | None = None,
     allowed_hosts: set[str] | None = None,
+    deferred_ws_close: list[Any] | None = None,
 ) -> list[str]:
     """在同步 Page 上安装导航守卫，返回被拦截 URL 列表（就地累积）。
 
@@ -502,6 +525,7 @@ def install_navigation_guard(
                     check_url,
                     allowed_hosts=allowed_hosts,
                     blocked_resources=blocked_resources,
+                    deferred_close=deferred_ws_close,
                 ),
             )
     return blocked
@@ -515,6 +539,7 @@ def install_context_navigation_guard(
     check_subresources: bool = True,
     blocked_resources: list[str] | None = None,
     allowed_hosts: set[str] | None = None,
+    deferred_ws_close: list[Any] | None = None,
 ) -> list[str]:
     """在 BrowserContext 上安装同一守卫，覆盖上下文内所有页面（含弹窗）。
 
@@ -541,6 +566,7 @@ def install_context_navigation_guard(
                     check_url,
                     allowed_hosts=allowed_hosts,
                     blocked_resources=blocked_resources,
+                    deferred_close=deferred_ws_close,
                 ),
             )
     return blocked
@@ -554,6 +580,7 @@ async def install_navigation_guard_async(
     check_subresources: bool = True,
     blocked_resources: list[str] | None = None,
     allowed_hosts: set[str] | None = None,
+    deferred_ws_close: list[Any] | None = None,
 ) -> list[str]:
     """异步版 :func:`install_navigation_guard`（Playwright async API）。"""
     blocked = [] if blocked is None else blocked
@@ -576,6 +603,7 @@ async def install_navigation_guard_async(
                     check_url,
                     allowed_hosts=allowed_hosts,
                     blocked_resources=blocked_resources,
+                    deferred_close=deferred_ws_close,
                 ),
             )
             # 真实 async API 返回协程；旧版 Playwright / 测试 mock 可能同步返回。
@@ -592,6 +620,7 @@ async def install_context_navigation_guard_async(
     check_subresources: bool = True,
     blocked_resources: list[str] | None = None,
     allowed_hosts: set[str] | None = None,
+    deferred_ws_close: list[Any] | None = None,
 ) -> list[str]:
     """异步版 :func:`install_context_navigation_guard`。"""
     blocked = [] if blocked is None else blocked
@@ -614,6 +643,7 @@ async def install_context_navigation_guard_async(
                     check_url,
                     allowed_hosts=allowed_hosts,
                     blocked_resources=blocked_resources,
+                    deferred_close=deferred_ws_close,
                 ),
             )
             if inspect.isawaitable(result):

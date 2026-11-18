@@ -1493,3 +1493,54 @@ def test_sync_guard_blocks_non_network_and_hostless_subresources() -> None:
     assert ftp_route.aborted is True
     assert hostless_route.aborted is True
     assert "ftp://example.com/data.bin" in blocked_resources
+
+
+def test_web_socket_guard_defers_blocked_close_until_navigation_ends() -> None:
+    """同步 handler 内 close 会死锁：被拒路由延迟到导航结束后统一关闭。"""
+    from web_crawler._nav_guard import _make_web_socket_guard, close_deferred_websockets
+
+    deferred: list[Any] = []
+    guarded = _make_web_socket_guard(
+        lambda url: "private", blocked_resources=[], deferred_close=deferred
+    )
+    ws = _ForwardingWS("ws://127.0.0.1:9000/socket")
+    guarded(ws)
+
+    assert deferred == [ws]
+    assert ws.closed is False  # handler 内不 close
+
+    close_deferred_websockets(deferred)
+    assert ws.closed is True  # 页面能收到 close 事件
+    assert deferred == []
+
+
+def test_close_deferred_websockets_swallows_close_errors() -> None:
+    from web_crawler._nav_guard import close_deferred_websockets
+
+    class _BrokenWS:
+        def close(self) -> None:
+            raise RuntimeError("already gone")
+
+        url = "ws://example.com/x"
+
+    routes: list[Any] = [_BrokenWS()]
+    close_deferred_websockets(routes)  # 不能把收尾错误抛给导航流程
+    assert routes == []
+
+
+async def test_async_web_socket_guard_closes_blocked_route() -> None:
+    """异步 handler 内 close 不死锁：被拒路由直接关闭，页面收到 close。"""
+    from web_crawler._nav_guard import _make_web_socket_guard_async
+
+    class _AsyncWS(_ForwardingWS):
+        async def close(self) -> None:  # type: ignore[override]
+            self.closed = True
+
+        async def connect_to_server(self) -> Any:  # type: ignore[override]
+            return self._server
+
+    guarded = _make_web_socket_guard_async(lambda url: "blocked")
+    ws = _AsyncWS("ws://example.com/socket")
+    await guarded(ws)
+    assert ws.closed is True
+    assert ws.handler is None  # 被拒路由不建立转发

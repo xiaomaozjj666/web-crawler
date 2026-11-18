@@ -121,6 +121,8 @@ class CamoufoxFetcher(DynamicFetcher):
         self._async_camoufox_cm: Any = None
         #: 本次 fetch 期间被导航守卫拦截的子资源/WebSocket（见 DynamicFetcher 同名属性）
         self.last_blocked_resources: list[str] = []
+        #: 被拒的 WebSocket 路由：handler 内 close 会死锁（同步 API），导航后统一关
+        self._deferred_ws: list[Any] = []
 
     # -- 启动参数 -----------------------------------------------------------
     def _launch_kwargs(self) -> dict[str, Any]:
@@ -185,6 +187,7 @@ class CamoufoxFetcher(DynamicFetcher):
             # 逐跳导航守卫（预检重定向链 + route 拦截 + 落点复核），判定与
             # 入口校验同源（见 _base._nav_check）
             from .._nav_guard import (
+                close_deferred_websockets,
                 frame_urls,
                 install_context_navigation_guard,
                 install_navigation_guard,
@@ -196,14 +199,19 @@ class CamoufoxFetcher(DynamicFetcher):
             check = self._nav_check()
             # context 级守卫覆盖弹窗（window.open 的新页面不经过 page.route）
             self.last_blocked_resources = []
+            self._deferred_ws = []
             blocked_nav = install_context_navigation_guard(
-                context, check, blocked_resources=self.last_blocked_resources
+                context,
+                check,
+                blocked_resources=self.last_blocked_resources,
+                deferred_ws_close=self._deferred_ws,
             )
             install_navigation_guard(
                 page,
                 check,
                 blocked=blocked_nav,
                 blocked_resources=self.last_blocked_resources,
+                deferred_ws_close=self._deferred_ws,
             )
             referer = "https://www.google.com/" if self.google_search else None
             resp = safe_goto_sync(
@@ -237,6 +245,7 @@ class CamoufoxFetcher(DynamicFetcher):
                 page.url, status, content, headers, request_headers=self.extra_headers
             )
         finally:
+            close_deferred_websockets(self._deferred_ws)
             context.close()
 
     # -- 异步浏览器生命周期 ---------------------------------------------------

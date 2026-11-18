@@ -102,10 +102,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **错误分类补齐 `guard` / `tls`**：安全门禁拦截（`navigation blocked` /
   `[安全拦截]` / 私网目标）与证书/TLS 错误不再混入「其它错误」，报告按类
   汇总时可直接定位处置路径。
-- **WebSocket 阻断语义修正**：被门禁拒绝的 WebSocket 不再调用 `close()`
-  （2026-11 实测同步 API 在 handler 内 close 会死锁整次导航），改为不调用
-  `connect_to_server()`——握手不会发往目标，页面侧消息只在本地缓冲；连接异常
-  只记 debug，不中断页面。
+- **WebSocket 阻断语义修正**：被门禁拒绝的 WebSocket 不调用
+  `connect_to_server()`——握手不会发往目标；同步路径把路由延迟到导航结束后
+  统一 `close()`（handler 内 close 会死锁整次导航，导航后则安全），页面能收到
+  close 事件而不是永远停在 CONNECTING；异步路径在 handler 内 `await close()`
+  （实测安全）。连接异常只记 debug，不中断页面。
 - **门禁拦截入账**：子资源 / WebSocket 被 SSRF 门禁拦截后不再只有一条日志——
   `PageScanSummary` 新增 `blocked_assets`，`summary.txt` 与 `run_report.md`
   明示「门禁拦截子资源 N 个」，报告建议区解释原因（跨 host 私网/非 http(s)）
