@@ -94,9 +94,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **报告产物统一原子写**：新增 `app/_fsutil.atomic_write_text`（tmp + os.replace），
-  `run_report.json/md/html`、清单 JSON、`summary.txt` 与离线索引全部改用它；
-  写入中断或磁盘满时旧文件保持完整，不再留下半截 JSON。
+- **报告产物统一原子写**：新增 `app/_fsutil`（`atomic_write_text` /
+  `atomic_text_writer`）：同目录唯一 tmp（`mkstemp`）+ `fsync` + `os.replace`，
+  `run_report.json/md/html`、清单 JSON **与 CSV**、`summary.txt`、抽取数据与
+  离线索引全部改用它；Windows 目标被占用（`PermissionError`）时降级直写，
+  中断或磁盘满时旧文件保持完整，不再留下半截 JSON。
+- **错误分类补齐 `guard` / `tls`**：安全门禁拦截（`navigation blocked` /
+  `[安全拦截]` / 私网目标）与证书/TLS 错误不再混入「其它错误」，报告按类
+  汇总时可直接定位处置路径。
 - **WebSocket 阻断语义修正**：被门禁拒绝的 WebSocket 不再调用 `close()`
   （2026-11 实测同步 API 在 handler 内 close 会死锁整次导航），改为不调用
   `connect_to_server()`——握手不会发往目标，页面侧消息只在本地缓冲；连接异常
