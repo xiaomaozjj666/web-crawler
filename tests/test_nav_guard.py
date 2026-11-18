@@ -1443,12 +1443,15 @@ def test_web_socket_guard_tolerates_connect_failure() -> None:
 def test_web_socket_guard_rejects_empty_host_and_other_schemes() -> None:
     from web_crawler._nav_guard import _make_web_socket_guard
 
-    guarded = _make_web_socket_guard(lambda url: None)
+    blocked_resources: list[str] = []
+    guarded = _make_web_socket_guard(lambda url: None, blocked_resources=blocked_resources)
     for url in ("ws:///no-host", "http://example.com/x"):
         ws = _ForwardingWS(url)
         guarded(ws)
         # 阻断 = 不连接（不发握手到目标）；不 close（同步 API close 会死锁）
         assert ws.closed is False
+        # 非 ws scheme / 空 host 的阻断也要入账，否则报告里看不到
+        assert url in blocked_resources
 
 
 async def test_async_web_socket_guard_forwards_and_closes() -> None:

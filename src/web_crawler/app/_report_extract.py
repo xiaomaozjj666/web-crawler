@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from web_crawler.app._fsutil import atomic_text_writer, atomic_write_text
 from web_crawler.app._offline import RewriteTable
 from web_crawler.app.crawler_models import ManifestRow
 from web_crawler.parser import Selector
@@ -189,15 +190,15 @@ def smart_extract(html: str | Selector, page_url: str) -> dict[str, object]:
 
 
 def write_extracted_data(output_dir: Path, data: list[dict[str, object]]) -> None:
-    """把抽取数据写入 JSON 与 CSV。"""
+    """把抽取数据写入 JSON 与 CSV（两者都原子写）。"""
     json_path = output_dir / "extracted_data.json"
-    json_path.write_text(
+    atomic_write_text(
+        json_path,
         json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
     )
     csv_path = output_dir / "extracted_data.csv"
     if data:
-        with csv_path.open("w", newline="", encoding="utf-8") as f:
+        with atomic_text_writer(csv_path, newline="") as f:
             writer = csv.DictWriter(f, fieldnames=list(data[0].keys()))
             writer.writeheader()
             writer.writerows(data)

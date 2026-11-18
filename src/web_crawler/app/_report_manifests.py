@@ -15,7 +15,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from web_crawler.app._fsutil import atomic_write_text
+from web_crawler.app._fsutil import atomic_text_writer, atomic_write_text
 from web_crawler.app.crawler_models import ManifestRow
 from web_crawler.app.crawler_net import is_video_resource
 
@@ -40,7 +40,9 @@ FIELD_NAMES = [
 def _write_manifest_pair(output_dir: Path, rows: list[ManifestRow], prefix: str) -> int:
     """通用清单写入：生成 CSV + JSON 文件对。返回行数。"""
     csv_path = output_dir / f"{prefix}.csv"
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
+    # CSV 与 JSON 同为复核产物：两者都原子写，避免中断后出现
+    # 「完整 JSON + 半截 CSV」的不一致文件对。
+    with atomic_text_writer(csv_path, newline="") as f:
         writer = csv.DictWriter(f, fieldnames=FIELD_NAMES)
         writer.writeheader()
         for row in rows:

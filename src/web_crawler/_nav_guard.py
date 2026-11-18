@@ -368,6 +368,11 @@ def _make_web_socket_guard(
     ``ws://127.0.0.1:<port>/`` 的 upgrade 请求确实发出。放行的 WebSocket 会
     连回服务端并在两个方向上转发消息，语义与未拦截时一致；被拒绝的 WebSocket
     **不连接**（握手不会发往目标），页面侧消息只在本地缓冲。
+
+    已知取舍：被拒的 WebSocket 既不能 connect 也不能 close（同步 API 在
+    handler 内 ``close()`` 会死锁整次导航，2026-11 实测），页面侧会一直看到
+    CONNECTING 状态。抓取侧的等待（networkidle 等）都有超时上限，不会因此
+    挂死；依赖 WS 打开/关闭推进的页面可能等满超时，这是安全优先的代价。
     """
 
     allowed_hosts = set() if allowed_hosts is None else allowed_hosts
@@ -377,11 +382,13 @@ def _make_web_socket_guard(
     def _allowed(url: str) -> bool:
         scheme = _scheme_of(url)
         if scheme not in _WS_SCHEMES:
+            blocked_resources.append(url)
             return False
         host = _host_of(url)
         if host and host in allowed_hosts:
             return True
         if not host:
+            blocked_resources.append(url)
             return False
         if host not in verdict_cache:
             verdict_cache[host] = _gate(check_url, _http_equivalent(url))

@@ -1198,7 +1198,7 @@ class TestAtomicWrite:
         target.write_text('{"old": 1}', encoding="utf-8")
         atomic_write_text(target, '{"new": 2}')
         assert target.read_text(encoding="utf-8") == '{"new": 2}'
-        assert not (tmp_path / "run_report.json.tmp").exists()
+        assert not list(tmp_path.glob("run_report.json.*.tmp"))
 
     def test_failed_replace_keeps_old_file(self, tmp_path: Path, monkeypatch: Any) -> None:
         from web_crawler.app import _fsutil
@@ -1213,7 +1213,33 @@ class TestAtomicWrite:
         with pytest.raises(OSError):
             _fsutil.atomic_write_text(target, '{"new": 2}')
         assert target.read_text(encoding="utf-8") == '{"old": 1}'
-        assert not (tmp_path / "run_report.json.tmp").exists()
+        assert not list(tmp_path.glob("run_report.json.*.tmp"))
+
+    def test_permission_error_falls_back_to_direct_write(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        """Windows 目标被占用（PermissionError）时降级为直接写，保证报告落盘。"""
+        from web_crawler.app import _fsutil
+
+        target = tmp_path / "run_report.html"
+        target.write_text("<html>old</html>", encoding="utf-8")
+
+        def in_use(src: str, dst: str) -> None:
+            raise PermissionError("target is locked")
+
+        monkeypatch.setattr(_fsutil.os, "replace", in_use)
+        _fsutil.atomic_write_text(target, "<html>new</html>")
+        assert target.read_text(encoding="utf-8") == "<html>new</html>"
+        assert not list(tmp_path.glob("run_report.html.*.tmp"))
+
+    def test_atomic_csv_writer_lands_and_cleans_up(self, tmp_path: Path) -> None:
+        from web_crawler.app._fsutil import atomic_text_writer
+
+        target = tmp_path / "resources_manifest.csv"
+        with atomic_text_writer(target, newline="") as handle:
+            handle.write("a,b\n1,2\n")  # type: ignore[attr-defined]
+        assert target.read_text(encoding="utf-8").splitlines() == ["a,b", "1,2"]
+        assert not list(tmp_path.glob("resources_manifest.csv.*.tmp"))
 
 
 class TestClassifyError:
