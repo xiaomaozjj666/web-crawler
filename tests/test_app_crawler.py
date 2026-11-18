@@ -1251,9 +1251,7 @@ class TestClassifyError:
 
     def test_guard(self) -> None:
         """安全门禁拦截单独归类，不再混进 other_error。"""
-        assert (
-            cr.classify_error("error: navigation blocked: private address 10.0.0.5") == "guard"
-        )
+        assert cr.classify_error("error: navigation blocked: private address 10.0.0.5") == "guard"
         assert cr.classify_error("error: [安全拦截] https://example.com") == "guard"
 
     def test_tls(self) -> None:

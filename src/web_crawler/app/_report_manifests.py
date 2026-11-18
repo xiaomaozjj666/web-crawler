@@ -114,7 +114,17 @@ _ERROR_CLASSES: list[tuple[str, tuple[str, ...]]] = [
     # 安全门禁（导航 SSRF 守卫）与 TLS 证书错误各有明确的处置路径，
     # 不能混进 other_error：2026-11 实测两类失败都被归为「其它错误」，
     # 报告无法提示用户「这是门禁拦截/证书问题」。
-    ("guard", ("navigation blocked", "unsafetarget", "[安全拦截]", "private address", "non-public", "ssrf")),
+    (
+        "guard",
+        (
+            "navigation blocked",
+            "unsafetarget",
+            "[安全拦截]",
+            "private address",
+            "non-public",
+            "ssrf",
+        ),
+    ),
     ("tls", ("certificate", "ssl", "tls")),
     ("network", ("urlerror", "connection", "dns", "refused", "reset", "unreachable", "socket")),
     ("cancelled", ("cancelled", "canceled")),
