@@ -75,5 +75,12 @@ jobs:
       - run: pip install pip-audit
       # --skip-editable：本地源码包（web-crawler 自身）不是第三方依赖，
       # PyPI 上同名发行版的漏洞记录与本项目无关，跳过以免误报
+      # pypi.org 偶发读超时会伪造失败；放宽超时并重试，真漏洞仍会三次非零。
       - name: Audit installed dependencies
-        run: pip-audit --skip-editable
+        run: |
+          for attempt in 1 2 3; do
+            pip-audit --skip-editable --timeout 60 && exit 0
+            echo "pip-audit 第 ${attempt} 次失败（网络超时或存在漏洞），稍后重试…" >&2
+            sleep $((attempt * 10))
+          done
+          exit 1
