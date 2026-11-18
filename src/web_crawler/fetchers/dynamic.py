@@ -189,6 +189,9 @@ class DynamicFetcher(BaseFetcher):
         self._browser: Any = None
         self._async_pw: Any = None
         self._async_browser: Any = None
+        #: 本次 fetch 期间被导航守卫拦截的子资源/WebSocket（按 host 判定）。
+        #: 调用方可在 fetch 后读取，用于解释「为什么某些资源没被下载」。
+        self.last_blocked_resources: list[str] = []
 
     # -- 代理 / 资源辅助 ------------------------------------------------------
     def _parse_proxy(self, proxy: str | None) -> dict[str, str] | None:
@@ -387,8 +390,16 @@ class DynamicFetcher(BaseFetcher):
 
             check = self._nav_check()
             # context 级守卫覆盖弹窗（window.open 的新页面不经过 page.route）
-            blocked_nav = install_context_navigation_guard(context, check)
-            install_navigation_guard(page, check, blocked=blocked_nav)
+            self.last_blocked_resources = []
+            blocked_nav = install_context_navigation_guard(
+                context, check, blocked_resources=self.last_blocked_resources
+            )
+            install_navigation_guard(
+                page,
+                check,
+                blocked=blocked_nav,
+                blocked_resources=self.last_blocked_resources,
+            )
             referer = "https://www.google.com/" if self.google_search else None
             resp = safe_goto_sync(
                 page,
@@ -512,8 +523,16 @@ class DynamicFetcher(BaseFetcher):
 
             check = self._nav_check()
             # context 级守卫覆盖弹窗（window.open 的新页面不经过 page.route）
-            blocked_nav = await install_context_navigation_guard_async(context, check)
-            await install_navigation_guard_async(page, check, blocked=blocked_nav)
+            self.last_blocked_resources = []
+            blocked_nav = await install_context_navigation_guard_async(
+                context, check, blocked_resources=self.last_blocked_resources
+            )
+            await install_navigation_guard_async(
+                page,
+                check,
+                blocked=blocked_nav,
+                blocked_resources=self.last_blocked_resources,
+            )
             referer = "https://www.google.com/" if self.google_search else None
             resp = await safe_goto_async(
                 page,
@@ -651,8 +670,16 @@ class DynamicFetcher(BaseFetcher):
 
             check = self._nav_check()
             # context 级守卫覆盖弹窗（window.open 的新页面不经过 page.route）
-            blocked_nav = install_context_navigation_guard(context, check)
-            install_navigation_guard(page, check, blocked=blocked_nav)
+            self.last_blocked_resources = []
+            blocked_nav = install_context_navigation_guard(
+                context, check, blocked_resources=self.last_blocked_resources
+            )
+            install_navigation_guard(
+                page,
+                check,
+                blocked=blocked_nav,
+                blocked_resources=self.last_blocked_resources,
+            )
             referer = "https://www.google.com/" if self.google_search else None
             safe_goto_sync(
                 page,
@@ -786,8 +813,16 @@ class DynamicFetcher(BaseFetcher):
 
             check = self._nav_check()
             # context 级守卫覆盖弹窗（window.open 的新页面不经过 page.route）
-            blocked_nav = await install_context_navigation_guard_async(context, check)
-            await install_navigation_guard_async(page, check, blocked=blocked_nav)
+            self.last_blocked_resources = []
+            blocked_nav = await install_context_navigation_guard_async(
+                context, check, blocked_resources=self.last_blocked_resources
+            )
+            await install_navigation_guard_async(
+                page,
+                check,
+                blocked=blocked_nav,
+                blocked_resources=self.last_blocked_resources,
+            )
             referer = "https://www.google.com/" if self.google_search else None
             await safe_goto_async(
                 page,

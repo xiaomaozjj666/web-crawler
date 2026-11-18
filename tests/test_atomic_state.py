@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from web_crawler.app import _crawler_context as ctx
+from web_crawler.app import _fsutil
 
 
 def test_save_crawl_state_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -18,12 +19,12 @@ def test_save_crawl_state_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     def boom(src, dst):
         raise OSError("replace failed")
 
-    monkeypatch.setattr(ctx.os, "replace", boom)
+    monkeypatch.setattr(_fsutil.os, "replace", boom)
     with pytest.raises(OSError, match="replace failed"):
         ctx.save_crawl_state(tmp_path, pages=["b"], seen=2)
 
     assert path.read_bytes() == before
-    assert not (tmp_path / (ctx.CRAWL_STATE_FILE + ".tmp")).exists()
+    assert not list(tmp_path.glob(ctx.CRAWL_STATE_FILE + ".*.tmp"))
 
 
 def test_save_config_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,13 +73,13 @@ def test_save_config_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     ctx.save_config_to_file(args, str(target))
     before = target.read_bytes()
 
-    monkeypatch.setattr(ctx.os, "replace", lambda *_: (_ for _ in ()).throw(OSError("busy")))
+    monkeypatch.setattr(_fsutil.os, "replace", lambda *_: (_ for _ in ()).throw(OSError("busy")))
     args.max_pages = 99
     with pytest.raises(OSError, match="busy"):
         ctx.save_config_to_file(args, str(target))
 
     assert target.read_bytes() == before
-    assert not (tmp_path / ("config.json.tmp")).exists()
+    assert not list(tmp_path.glob("config.json.*.tmp"))
 
 
 def test_state_roundtrip(tmp_path: Path) -> None:

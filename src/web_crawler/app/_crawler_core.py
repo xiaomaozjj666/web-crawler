@@ -410,6 +410,29 @@ def _get_render_fetcher(timeout: float, proxy: str | None, headers: dict[str, st
     return cache[key]
 
 
+def _collect_blocked_resources(fetcher: Any) -> None:
+    """把本次渲染期间守卫拦截的子资源/WebSocket 追加到线程本地累计列表。"""
+    blocked = getattr(fetcher, "last_blocked_resources", None)
+    if blocked:
+        bucket = getattr(_render_local, "blocked_resources", None)
+        if bucket is None:
+            bucket = []
+            _render_local.blocked_resources = bucket
+        bucket.extend(str(item) for item in blocked)
+    # 取走即清空：同一 fetcher 会跨多个页面复用，不清理会把上一页的拦截
+    # 重复计入下一页（fetch 抛异常时由 render_page 的 finally 兜底）。
+    fetcher.last_blocked_resources = []
+
+
+def drain_blocked_resources() -> list[str]:
+    """取出并清空当前线程累计的守卫拦截记录（去重、保持首次出现顺序）。"""
+    bucket = getattr(_render_local, "blocked_resources", None)
+    if not bucket:
+        return []
+    _render_local.blocked_resources = []
+    return list(dict.fromkeys(bucket))
+
+
 def render_page(
     url: str,
     timeout: int,
@@ -427,7 +450,12 @@ def render_page(
         validate_url_host(url, resolve=True)
     proxy = getattr(control_args, "proxy", None) if control_args else None
     fetcher = _get_render_fetcher(float(timeout), proxy, headers)
-    resp = fetcher.fetch(url)
+    try:
+        resp = fetcher.fetch(url)
+    finally:
+        # 渲染中途抛异常（超时/浏览器崩溃）也要把已发生的拦截记下来：
+        # 否则报告里只会看到「页面失败」，看不到同时被门禁挡掉的资源。
+        _collect_blocked_resources(fetcher)
     if resp.status >= 400:
         exc = FetchError(f"HTTP Error {resp.status}")
         exc.status = resp.status  # type: ignore[attr-defined]
@@ -438,6 +466,7 @@ def render_page(
 
 def close_render_fetchers() -> None:
     """关闭当前线程持有的渲染 fetcher（crawl 收尾调用，释放浏览器进程）。"""
+    _render_local.blocked_resources = []
     cache: dict[Any, Any] | None = getattr(_render_local, "cache", None)
     if not cache:
         return

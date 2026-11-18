@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
 import threading
 from collections import deque
@@ -79,7 +78,9 @@ class _CrawlContext:
     page_queue: deque[str] = field(default_factory=deque)
     seen_pages: set[str] = field(default_factory=set)
     page_scan: PageScanSummary = field(
-        default_factory=lambda: PageScanSummary(failed=0, skipped=0, first_error="")
+        default_factory=lambda: PageScanSummary(
+            failed=0, skipped=0, first_error="", blocked_assets=0
+        )
     )
     # page_queue 的成员索引（enqueue_page / popleft 处同步维护），
     # 避免对 deque 做线性 ``in`` 检查（大爬取下越扫越慢）
@@ -169,14 +170,14 @@ def load_extraction_rules(args: argparse.Namespace) -> ExtractionRules | None:
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    """tmp + os.replace 写入；中断时旧文件保持完整（崩溃续跑依赖此语义）。"""
-    temporary = path.with_name(path.name + ".tmp")
-    try:
-        temporary.write_text(text, encoding="utf-8")
-        os.replace(temporary, path)
-    finally:
-        if temporary.exists():
-            temporary.unlink(missing_ok=True)
+    """原子写配置/续跑状态（委托 :func:`app._fsutil.atomic_write_text`）。
+
+    统一走「唯一 tmp + fsync + os.replace」的实现：两份逻辑在补洞时只会改
+    一边（例如 Windows 目标被占用时的降级），状态文件与报告必须同一套语义。
+    """
+    from web_crawler.app._fsutil import atomic_write_text
+
+    atomic_write_text(path, text)
 
 
 def save_config_to_file(args: argparse.Namespace, filepath: str) -> None:

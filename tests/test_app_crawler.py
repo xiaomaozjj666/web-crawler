@@ -1242,6 +1242,89 @@ class TestAtomicWrite:
         assert not list(tmp_path.glob("resources_manifest.csv.*.tmp"))
 
 
+class TestGuardBlockedAssetReporting:
+    """子资源被 SSRF 门禁拦截后，报告要能解释「哪些没下载、为什么」。"""
+
+    def test_report_context_and_recommendation(self) -> None:
+        ctx = cr.build_report_context(
+            [],
+            1,
+            0.0,
+            0.0,
+            page_scan={"failed": 0, "skipped": 0, "first_error": "", "blocked_assets": 3},
+        )
+        assert ctx["page_scan"]["blocked_assets"] == 3
+        recs = cr.build_recommendations(ctx)
+        assert any("门禁" in item["title"] for item in recs)
+
+    def test_render_page_drains_blocked_resources(self, monkeypatch: Any) -> None:
+        from types import SimpleNamespace
+
+        from web_crawler.app import _crawler_core as core
+
+        fetcher = SimpleNamespace(last_blocked_resources=["http://localhost:9/x"])
+
+        def fake_fetch(url: str) -> Any:
+            return SimpleNamespace(
+                status=200,
+                headers={"content-type": "text/html"},
+                content=b"<html>x</html>",
+            )
+
+        fetcher.fetch = fake_fetch  # type: ignore[attr-defined]
+        monkeypatch.setattr(core, "is_power_mode", lambda: True)
+        monkeypatch.setattr(core, "_get_render_fetcher", lambda *args, **kwargs: fetcher)
+
+        body, content_type = core.render_page("http://127.0.0.1/", 5, {})
+        assert body == b"<html>x</html>" and content_type == "text/html"
+        assert core.drain_blocked_resources() == ["http://localhost:9/x"]
+        assert core.drain_blocked_resources() == []
+
+    def test_render_failure_still_reports_blocked_resources(self, monkeypatch: Any) -> None:
+        from types import SimpleNamespace
+
+        from web_crawler.app import _crawler_core as core
+        from web_crawler.exceptions import FetchError
+
+        fetcher = SimpleNamespace(last_blocked_resources=[])
+
+        def fake_fetch(url: str) -> Any:
+            fetcher.last_blocked_resources = ["ws://10.0.0.5/socket"]
+            raise FetchError("browser crashed")
+
+        fetcher.fetch = fake_fetch  # type: ignore[attr-defined]
+        monkeypatch.setattr(core, "is_power_mode", lambda: True)
+        monkeypatch.setattr(core, "_get_render_fetcher", lambda *args, **kwargs: fetcher)
+
+        with pytest.raises(FetchError, match="browser crashed"):
+            core.render_page("http://127.0.0.1/", 5, {})
+        assert core.drain_blocked_resources() == ["ws://10.0.0.5/socket"]
+
+    def test_drain_deduplicates_and_clears(self) -> None:
+        from web_crawler.app import _crawler_core as core
+
+        core._render_local.blocked_resources = ["a", "b", "a"]
+        try:
+            assert core.drain_blocked_resources() == ["a", "b"]
+            assert core.drain_blocked_resources() == []
+        finally:
+            core._render_local.blocked_resources = []
+
+    def test_summary_and_markdown_report_mention_blocked_assets(self, tmp_path: Path) -> None:
+        page_scan = {"failed": 0, "skipped": 0, "first_error": "", "blocked_assets": 2}
+        cr.write_summary(tmp_path, [], 1, page_scan=page_scan)  # type: ignore[arg-type]
+        summary = (tmp_path / "summary.txt").read_text(encoding="utf-8")
+        assert "门禁拦截子资源" in summary and "2" in summary
+
+        cr.write_run_report(tmp_path, [], 1, page_scan=page_scan)  # type: ignore[arg-type]
+        markdown = (tmp_path / "run_report.md").read_text(encoding="utf-8")
+        assert "门禁拦截子资源" in markdown
+        html = (tmp_path / "run_report.html").read_text(encoding="utf-8")
+        assert "门禁拦截子资源" in html
+        payload = json.loads((tmp_path / "run_report.json").read_text(encoding="utf-8"))
+        assert payload["page_scan"]["blocked_assets"] == 2
+
+
 class TestClassifyError:
     def test_auth(self) -> None:
         """classify_error 将 401 归类为 auth。"""

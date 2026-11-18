@@ -126,3 +126,37 @@ class TestCrawlerHelpers:
         bad.write_text("[]", encoding="utf-8")
         with pytest.raises(ConfigError, match="JSON 对象"):
             load_config_from_file(bad)
+
+
+def test_restore_state_keeps_blocked_assets(tmp_path: Path, monkeypatch) -> None:
+    from web_crawler.app import _crawler_scan as scan
+
+    ctx = _CrawlContext(
+        args=argparse.Namespace(resume_crawl=True),
+        headers={},
+        output_dir=tmp_path,
+        max_bytes=None,
+        block_keywords=[],
+        robots=None,
+        rate_limiter=None,  # type: ignore[arg-type]
+        dedup=None,
+    )
+    monkeypatch.setattr(
+        scan.ctx_mod,
+        "load_crawl_state",
+        lambda _root: {
+            "page_queue": [],
+            "seen_pages": [],
+            "page_titles": {},
+            "page_files": {},
+            "resources": [],
+            "page_scan": {"failed": 1, "skipped": 2, "first_error": "x", "blocked_assets": 4},
+        },
+    )
+    scan._restore_state(ctx)
+    assert ctx.page_scan == {
+        "failed": 1,
+        "skipped": 2,
+        "first_error": "x",
+        "blocked_assets": 4,
+    }

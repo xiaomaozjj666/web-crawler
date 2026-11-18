@@ -119,6 +119,8 @@ class CamoufoxFetcher(DynamicFetcher):
         # Camoufox 上下文管理器句柄（跨 fetch 复用同一浏览器）
         self._camoufox_cm: Any = None
         self._async_camoufox_cm: Any = None
+        #: 本次 fetch 期间被导航守卫拦截的子资源/WebSocket（见 DynamicFetcher 同名属性）
+        self.last_blocked_resources: list[str] = []
 
     # -- 启动参数 -----------------------------------------------------------
     def _launch_kwargs(self) -> dict[str, Any]:
@@ -193,8 +195,16 @@ class CamoufoxFetcher(DynamicFetcher):
 
             check = self._nav_check()
             # context 级守卫覆盖弹窗（window.open 的新页面不经过 page.route）
-            blocked_nav = install_context_navigation_guard(context, check)
-            install_navigation_guard(page, check, blocked=blocked_nav)
+            self.last_blocked_resources = []
+            blocked_nav = install_context_navigation_guard(
+                context, check, blocked_resources=self.last_blocked_resources
+            )
+            install_navigation_guard(
+                page,
+                check,
+                blocked=blocked_nav,
+                blocked_resources=self.last_blocked_resources,
+            )
             referer = "https://www.google.com/" if self.google_search else None
             resp = safe_goto_sync(
                 page,
@@ -257,8 +267,16 @@ class CamoufoxFetcher(DynamicFetcher):
 
             check = self._nav_check()
             # context 级守卫覆盖弹窗（window.open 的新页面不经过 page.route）
-            blocked_nav = await install_context_navigation_guard_async(context, check)
-            await install_navigation_guard_async(page, check, blocked=blocked_nav)
+            self.last_blocked_resources = []
+            blocked_nav = await install_context_navigation_guard_async(
+                context, check, blocked_resources=self.last_blocked_resources
+            )
+            await install_navigation_guard_async(
+                page,
+                check,
+                blocked=blocked_nav,
+                blocked_resources=self.last_blocked_resources,
+            )
             referer = "https://www.google.com/" if self.google_search else None
             resp = await safe_goto_async(
                 page,

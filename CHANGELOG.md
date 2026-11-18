@@ -106,6 +106,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   （2026-11 实测同步 API 在 handler 内 close 会死锁整次导航），改为不调用
   `connect_to_server()`——握手不会发往目标，页面侧消息只在本地缓冲；连接异常
   只记 debug，不中断页面。
+- **门禁拦截入账**：子资源 / WebSocket 被 SSRF 门禁拦截后不再只有一条日志——
+  `PageScanSummary` 新增 `blocked_assets`，`summary.txt` 与 `run_report.md`
+  明示「门禁拦截子资源 N 个」，报告建议区解释原因（跨 host 私网/非 http(s)）
+  与处置方式；渲染中途失败也把已拦截项记入报告。
 - **原子写补齐**：`save_crawl_state` / `save_config_to_file` 改为 tmp +
   `os.replace`，中断或替换失败时旧状态保持完整（续跑不再可能读到半截 JSON）。
 - **依赖安全**：Pillow 升级到 13.0（修复 5 项 CVE）、soupsieve ≥2.10、pip/certifi

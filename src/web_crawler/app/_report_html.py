@@ -130,6 +130,9 @@ def _write_html_report(path: Path, ctx: dict[str, object]) -> None:
         ),
         ("info", "总耗时", ctx.get("duration_human", "未知"), ""),
     ]
+    blocked_assets = int(scan.get("blocked_assets") or 0)
+    if blocked_assets:
+        cards.append(("warn", "门禁拦截子资源", blocked_assets, "跨 host 私网/非 http(s)"))
     card_html = []
     rules = ctx.get("rule_results")
     if isinstance(rules, dict):

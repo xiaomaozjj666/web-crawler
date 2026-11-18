@@ -108,10 +108,12 @@ def _restore_state(ctx: _CrawlContext) -> None:
         failed = stats.get("failed")
         skipped = stats.get("skipped")
         first_error = stats.get("first_error")
+        blocked_assets = stats.get("blocked_assets")
         ctx.page_scan = {
             "failed": max(0, failed) if isinstance(failed, int) else 0,
             "skipped": max(0, skipped) if isinstance(skipped, int) else 0,
             "first_error": first_error if isinstance(first_error, str) else "",
+            "blocked_assets": max(0, blocked_assets) if isinstance(blocked_assets, int) else 0,
         }
     for rdict in saved.get("resources", []):
         ctx.all_resources.append(Resource(**rdict))
@@ -140,10 +142,21 @@ def _fetch_page_html(ctx: _CrawlContext, page_url: str) -> tuple[bytes, str]:
         ctx.rate_limiter.wait_if_needed(page_url)
         data, content_type = cr.render_page(page_url, args.timeout, ctx.headers, control_args=args)
         ctx.rate_limiter.record_request(page_url)
+        blocked = cr.drain_blocked_resources()
+        if blocked:
+            ctx.page_scan["blocked_assets"] += len(blocked)
+            _log.warning(
+                "%d subresource(s) blocked by navigation guard for %s: %s",
+                len(blocked),
+                page_url,
+                ", ".join(blocked[:3]),
+            )
         if ctx.max_bytes and len(data) > ctx.max_bytes:
             raise ValueError(f"file exceeds --max-bytes ({ctx.max_bytes})")
         return data, content_type
     except Exception as exc:
+        # 渲染中途失败也把已累计的拦截记进报告（否则「部分资源没下载」无迹可查）
+        ctx.page_scan["blocked_assets"] += len(cr.drain_blocked_resources())
         if isinstance(exc, RuntimeError) and str(exc) == "cancelled by user":
             raise
         _log.warning("JS render failed for %s: %s; falling back to HTTP fetch", page_url, exc)

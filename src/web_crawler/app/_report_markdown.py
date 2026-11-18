@@ -67,6 +67,11 @@ def write_summary(
         f"  结果          : {CRAWL_STATUS_TITLES[str(ctx['status'])]}",
         f"  扫描页面数    : {ctx.get('pages_scanned', 0)}",
         f"  失败/跳过页面 : {scan['failed']}/{scan['skipped']}",
+        *(
+            [f"  门禁拦截子资源 : {scan['blocked_assets']}  (跨 host 私网/非 http(s) 目标)"]
+            if scan.get("blocked_assets")
+            else []
+        ),
         f"  资源总数      : {resources.get('total', 0)}",
         "",
         "  ── 抓取配置 ──────────────────────────────────",
@@ -217,6 +222,10 @@ def _write_markdown_report(path: Path, ctx: dict[str, object]) -> None:
     scan = ctx.get("page_scan")
     if isinstance(scan, dict):
         lines.append(f"- **失败/跳过页面** {scan['failed']}/{scan['skipped']}")
+        if scan.get("blocked_assets"):
+            lines.append(
+                f"- **门禁拦截子资源** {scan['blocked_assets']}（跨 host 私网/非 http(s) 目标，未下载）"
+            )
         if scan["first_error"]:
             lines.extend(["", "## 首个页面错误", ""])
             lines.extend(f"    {line}" for line in str(scan["first_error"]).splitlines())

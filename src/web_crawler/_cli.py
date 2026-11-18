@@ -26,6 +26,9 @@ class PageScanSummary(TypedDict):
     failed: int
     skipped: int
     first_error: str
+    #: 被导航守卫按 SSRF 策略拦截的子资源/WebSocket 数量（跨 host 私网目标、
+    #: 非 http(s) 协议等）。用于解释「为什么某些资源没下载」，不影响页面成败。
+    blocked_assets: int
 
 
 CRAWL_STATUS_TITLES = {

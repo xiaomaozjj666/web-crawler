@@ -137,7 +137,8 @@ def build_report_context(
         "status": crawl_status(
             pages_scanned, page_scan, len(failed_rows), rule_results=rule_results
         ),
-        "page_scan": page_scan or {"failed": 0, "skipped": 0, "first_error": ""},
+        "page_scan": page_scan
+        or {"failed": 0, "skipped": 0, "first_error": "", "blocked_assets": 0},
         **({"offline_check": offline_check} if offline_check is not None else {}),
         **({"rule_results": rule_results} if rule_results is not None else {}),
         **(
@@ -198,6 +199,19 @@ def build_recommendations(ctx: dict[str, object]) -> list[dict[str, str]]:
 
     def add(priority: str, title: str, detail: str) -> None:
         recs.append({"priority": priority, "title": title, "detail": detail})
+
+    # 安全门禁拦截（子资源/WS）：解释「为什么某些资源没下载」，不是失败
+    page_scan = ctx.get("page_scan")
+    blocked_assets = page_scan.get("blocked_assets") if isinstance(page_scan, dict) else 0
+    if isinstance(blocked_assets, int) and blocked_assets > 0:
+        add(
+            "中",
+            f"{blocked_assets} 个子资源被安全门禁拦截",
+            "这些请求指向与入口文档不同 host 的私网/环回地址或非 http(s) 协议，"
+            "已按 SSRF 防护阻断（不影响页面正文提取）。若目标站点确有可信的私网"
+            "资源，请确认地址后在受控环境设置 WEB_CRAWLER_POWER_MODE=1（仅放行 "
+            "http/https，非 http(s) 协议仍会被拦）；其余情况属于预期防护。",
+        )
 
     # 无资源
     if total == 0:
