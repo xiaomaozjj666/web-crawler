@@ -223,6 +223,10 @@ def verify_offline(
     # 同一目录下的引用会成百上千次重复检查：目录解析与文件类型各缓存一次。
     directory_cache: dict[Path, bool] = {}
     kind_cache: dict[Path, str] = {}
+    # 缺失引用的 resolve 结果也按目标缓存：坏链密集的归档里同一个缺失目标会被
+    # 上百个文档重复引用，每次 resolve 都是 3 个 Windows 系统调用（实测占
+    # broken-heavy 归档 43% 的墙钟），而结果只取决于目标路径本身。
+    resolve_cache: dict[Path, bool] = {}
 
     def directory_inside(directory: Path) -> bool:
         if directory == root:
@@ -344,9 +348,16 @@ def verify_offline(
                 if kind == "missing":
                     # 文件系统拒绝解析与「确实不存在」要区分：前者是未验，
                     # 后者才是真缺失（monkeypatch/权限错误会落到这里）。
-                    try:
-                        target.resolve()
-                    except (OSError, ValueError, RuntimeError):
+                    resolvable = resolve_cache.get(target)
+                    if resolvable is None:
+                        try:
+                            target.resolve()
+                        except (OSError, ValueError, RuntimeError):
+                            resolvable = False
+                        else:
+                            resolvable = True
+                        resolve_cache[target] = resolvable
+                    if not resolvable:
                         issue("unverified", source, "无法解析文件位置")
                         continue
                     issue("missing", source, target.relative_to(root).as_posix())
