@@ -385,3 +385,20 @@ def test_unavailable_check_does_not_fake_missing(index_written: bool) -> None:
     assert check["outside"] == 0
     assert check["unverified"] == 1
     assert check["examples"][0]["kind"] == "unverified"
+
+
+def test_sibling_directory_with_shared_path_prefix_is_outside(tmp_path: Path) -> None:
+    """词法快路径不能把 `out2` 误判成 `out` 的子目录。"""
+    root = tmp_path / "out"
+    pages = root / "offline_pages"
+    pages.mkdir(parents=True)
+    (pages / "index.html").write_text(
+        '<a href="../../out2/page.html">sibling</a>', encoding="utf-8"
+    )
+    sibling = tmp_path / "out2"
+    sibling.mkdir()
+    (sibling / "page.html").write_text("<html>outside</html>", encoding="utf-8")
+
+    check = verify_offline(root)
+    assert check["outside"] == 1
+    assert check["status"] == "failed"

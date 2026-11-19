@@ -227,6 +227,17 @@ def verify_offline(
     # 上百个文档重复引用，每次 resolve 都是 3 个 Windows 系统调用（实测占
     # broken-heavy 归档 43% 的墙钟），而结果只取决于目标路径本身。
     resolve_cache: dict[Path, bool] = {}
+    # 词法包含快路径：target 由 source.parent/path 经 os.path.normpath 得到，
+    # 已是绝对、规范化的路径；字符串前缀判定与 Path.is_relative_to 对
+    # "确在 root 内" 的结论完全等价，但省掉 8 万次 pathlib 对象构造（实测占
+    # 坏链归档 28% 墙钟的纯 Python 开销）。词法在外时不短路，仍走原
+    # is_relative_to/resolve 逻辑，保留 "外部 symlink 指回 root 内" 的语义。
+    root_text = os.path.normcase(str(root)).rstrip("\\/")
+    root_prefix = root_text + os.sep
+
+    def lexically_inside(target: Path) -> bool:
+        text = os.path.normcase(str(target))
+        return text == root_text or text.startswith(root_prefix)
 
     def directory_inside(directory: Path) -> bool:
         if directory == root:
@@ -257,7 +268,8 @@ def verify_offline(
 
     def contained(target: Path, source: Path, kind: str) -> bool:
         try:
-            if target.is_relative_to(root) and directory_inside(target.parent):
+            inside = lexically_inside(target) or target.is_relative_to(root)
+            if inside and directory_inside(target.parent):
                 if kind != "link" or target.resolve().is_relative_to(root):
                     return True
         except (OSError, ValueError, RuntimeError):
