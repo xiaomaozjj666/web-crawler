@@ -404,7 +404,7 @@ web-crawler --url https://example.com --out ./out --json
 2. 打开 GitHub 仓库 **Settings → Secrets and variables → Actions → New repository secret**，创建名为 `CODECOV_TOKEN` 的 secret 并粘贴 token；不要把 token 写入仓库文件。
 3. 重跑 CI，并在 Codecov 核对 `minimal-deps` / `full-deps` 报告是否到达。
 
-公开仓库也可按 [Codecov 官方 tokenless 文档](https://docs.codecov.com/docs/codecov-tokens#uploading-without-a-token)，在 Codecov 组织的 **Global Upload Token** 设置中允许任意来源上传；开启后无需 `CODECOV_TOKEN`。workflow 使用官方 `codecov/codecov-action@v5`，secret 为空时走公开仓库 tokenless 路径，实际可用性以 Codecov 组织设置为准。详细贡献者说明见 [CONTRIBUTING.md](CONTRIBUTING.md#codecov-首次接入维护者网页操作)。
+公开仓库也可按 [Codecov 官方 tokenless 文档](https://docs.codecov.com/docs/codecov-tokens#uploading-without-a-token)，在 Codecov 组织的 **Global Upload Token** 设置中允许任意来源上传；开启后无需 `CODECOV_TOKEN`。workflow 使用官方 `codecov/codecov-action@v7`，secret 为空时走公开仓库 tokenless 路径，实际可用性以 Codecov 组织设置为准。详细贡献者说明见 [CONTRIBUTING.md](CONTRIBUTING.md#codecov-首次接入维护者网页操作)。
 
 ### 直接运行（源码树，免 pip install）
 
