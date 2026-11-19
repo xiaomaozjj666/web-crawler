@@ -135,7 +135,10 @@ filterwarnings = [
     # camoufox 0.5.9 在 CI（Linux 容器）上因身份声明的 OS/GPU 与宿主不一致，
     # 自动启用 canvas 噪声并抛 LeakWarning；e2e 合成页面不依赖 canvas 读回，
     # 该提示是环境差异而非缺陷（2026-11-19 Nightly e2e 实测）。
-    "ignore::camoufox._warnings.LeakWarning",
+    # 用消息文本匹配而不是 `camoufox._warnings.LeakWarning`：常规 CI 不安装
+    # camoufox extra，按类名写会让 pytest 在解析 filterwarnings 时 import 失败
+    # （2026-11-19 CI 实测 ModuleNotFoundError）。
+    "ignore:Canvas and WebGL readback return random data",
     # 最小依赖环境的 test job 故意覆盖 httpx 降级路径：此警告是设计内的
     # 运行时提示（用户装齐依赖后不会出现），不是测试要抓的缺陷。
     # 注意不加模块限定：警告以 stacklevel=2 抛出，来源模块是调用方
