@@ -26,7 +26,7 @@ from typing import TextIO
 from web_crawler.app import _crawler_context as ctx_mod
 from web_crawler.app import _crawler_core as cr
 from web_crawler.app._crawler_context import _CrawlContext
-from web_crawler.app._offline import OFFLINE_INDEX, write_offline_index
+from web_crawler.app._offline import OFFLINE_INDEX, OFFLINE_PAGES_DIRNAME, write_offline_index
 from web_crawler.app._offline_verify import unavailable_offline_check, verify_offline
 from web_crawler.app._report_extract import _extraction_selector
 from web_crawler.app.crawler_models import ManifestRow, PageExtraction, Resource
@@ -236,7 +236,7 @@ def _post_process(
             rewritten_paths: set[str] = set()
             pages = {
                 url: ctx_mod.reserve_page_path(
-                    ctx.page_artifact_path(url, "offline_pages").with_suffix(".html"),
+                    ctx.page_artifact_path(url, OFFLINE_PAGES_DIRNAME).with_suffix(".html"),
                     url,
                     rewritten_paths,
                 )

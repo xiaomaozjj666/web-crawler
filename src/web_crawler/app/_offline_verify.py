@@ -22,7 +22,7 @@ from lxml import etree
 from tinycss2 import parse_component_value_list, parse_stylesheet, parse_stylesheet_bytes
 
 from web_crawler._nav_guard import _REFRESH_UNPARSEABLE, _refresh_target
-from web_crawler.app._offline import OFFLINE_INDEX
+from web_crawler.app._offline import OFFLINE_INDEX, OFFLINE_PAGES_DIRNAME
 from web_crawler.app.crawler_net import (
     HTML_RESOURCE_ATTRS,
     META_URL_NAMES,
@@ -234,6 +234,12 @@ def verify_offline(
     # is_relative_to/resolve 逻辑，保留 "外部 symlink 指回 root 内" 的语义。
     root_text = os.path.normcase(str(root)).rstrip("\\/")
     root_prefix = root_text + os.sep
+    # offline_pages 子树：重写页（离线契约的自包含交付物）所在目录。
+    offline_root = os.path.normcase(str(root / OFFLINE_PAGES_DIRNAME)).rstrip("\\/")
+
+    def _in_offline_pages(target: Path) -> bool:
+        text = os.path.normcase(str(target))
+        return text.startswith(offline_root + os.sep)
 
     def lexically_inside(target: Path) -> bool:
         text = os.path.normcase(str(target))
@@ -377,6 +383,12 @@ def verify_offline(
                 if purpose == "css" or suffix == ".css":
                     item: tuple[Path, Literal["html", "css"]] = (target, "css")
                 elif purpose == "html" or (purpose == "navigation" and suffix in _PAGE_SUFFIXES):
+                    # 离线契约只承诺 offline_pages/ 下的重写页自包含；assets/ 里的
+                    # HTML 是"链接目标被当作资源抓回来的原始字节"，不重写、不承诺
+                    # 其内部引用可达。把原始资产 HTML 当文档追引用，会把从未打算
+                    # 自包含的页面报成 missing（2026-11-19 真实站点回归实测）。
+                    if not _in_offline_pages(target):
+                        continue
                     item = (target, "html")
                 else:
                     continue

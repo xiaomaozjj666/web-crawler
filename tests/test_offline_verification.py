@@ -402,3 +402,26 @@ def test_sibling_directory_with_shared_path_prefix_is_outside(tmp_path: Path) ->
     check = verify_offline(root)
     assert check["outside"] == 1
     assert check["status"] == "failed"
+
+
+def test_raw_asset_html_is_not_treated_as_a_document(tmp_path: Path) -> None:
+    """assets/ 下的原始 HTML（链接目标被抓回来的字节）不承诺自包含：
+    其内部 ghost.png/ghost.html 不参与验收，也不应报 missing。"""
+    root = tmp_path
+    offline = root / "offline_pages"
+    offline.mkdir(parents=True)
+    assets = root / "assets"
+    assets.mkdir()
+    (offline / "index.html").write_text('<a href="page.html">p</a>', encoding="utf-8")
+    (offline / "page.html").write_text(
+        '<a href="../assets/x.html">asset page</a><img src="../assets/ok.png">', encoding="utf-8"
+    )
+    (assets / "ok.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (assets / "x.html").write_text(
+        '<img src="ghost.png"><a href="ghost.html">g</a>', encoding="utf-8"
+    )
+
+    check = verify_offline(root)
+    assert check["missing"] == 0
+    assert check["outside"] == 0
+    assert check["status"] in {"passed", "limited"}

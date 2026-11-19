@@ -27,7 +27,8 @@ from web_crawler.app.crawler_net import (
 from web_crawler.parser.rules import parse_html
 
 _log = logging.getLogger("crawler")
-OFFLINE_INDEX = "offline_pages/index.html"
+OFFLINE_PAGES_DIRNAME = "offline_pages"
+OFFLINE_INDEX = f"{OFFLINE_PAGES_DIRNAME}/index.html"
 _DOCTYPE = re.compile(r"^\s*(<!doctype\s+[^>]+>)", re.IGNORECASE)
 _CSS_REFERENCE = re.compile(
     r"/\*.*?\*/"
@@ -130,7 +131,7 @@ class RewriteTable:
             source = self._assets.get(row.url)
             if source and (_media_type(row) == "text/css" or row.category == "css"):
                 name = sha256(row.url.encode("utf-8")).hexdigest() + ".css"
-                destination = Path("offline_pages") / "_styles" / name
+                destination = Path(OFFLINE_PAGES_DIRNAME) / "_styles" / name
                 candidates.append((row, source, destination))
                 self._assets[row.url] = destination.as_posix()
         for row, source, destination in candidates:
@@ -223,7 +224,7 @@ class RewriteTable:
 def write_offline_index(
     output_dir: Path, pages: Mapping[str, Path], titles: Mapping[str, str]
 ) -> None:
-    directory = output_dir / "offline_pages"
+    directory = output_dir / OFFLINE_PAGES_DIRNAME
     entries = "".join(
         f'<li><a href="{escape(quote(path.relative_to(directory).as_posix(), safe="/"))}">'
         f"{escape(titles.get(url) or url)}</a></li>\n"
