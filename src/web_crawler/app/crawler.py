@@ -205,6 +205,7 @@ def _crawl(args: argparse.Namespace) -> int:
         "expand_playlists": getattr(args, "expand_playlists", ""),
         "smart_extract": getattr(args, "smart_extract", ""),
         "extract_text": getattr(args, "extract_text", ""),
+        "extract_markdown": getattr(args, "extract_markdown", ""),
         "strip_overlays": getattr(args, "strip_overlays", ""),
         "decrypt": getattr(args, "decrypt", ""),
         "sitemap": getattr(args, "sitemap", ""),

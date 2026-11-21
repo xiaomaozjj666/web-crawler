@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`--extract-markdown` 结构化 Markdown 输出**（对标 GitHub 趋势榜
+  firecrawl 的「网页 → Markdown」核心卖点）：新增 `extract_markdown()` 与
+  `--extract-markdown`，把正文容器渲染成保留语义标记的 Markdown——标题层级、
+  有序/无序列表（含嵌套缩进）、链接、强调、行内代码、`<pre>` 代码围栏、
+  带分隔行的 MD 表格、引用块、块间空行；容器选优与骨架剥离复用
+  `extract_readable_text` 同一套逻辑，中文行内拼接沿用统一空格规则。
+  产物按主机/路径存 `extracted_markdown/*.md`，与 `--extract-text` 相互独立。
 - **子资源与 WebSocket 的 SSRF 门禁**：导航守卫此前只校验 document 请求，
   页面脚本可用 fetch/XHR/WebSocket 直达内网与云元数据地址。现在子资源与
   ws/wss 同样过门禁：与已放行文档同 host 的直接放行，跨 host 按 host 缓存

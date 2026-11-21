@@ -3404,6 +3404,81 @@ class TestCrawlExtractText:
         assert (tmp_path / "extracted_text").exists()
 
 
+class TestCrawlExtractMarkdown:
+    """--extract-markdown：firecrawl 式结构化 Markdown 输出。"""
+
+    def test_extract_markdown_writes_files(self, tmp_path: Path) -> None:
+        html = (
+            "<html><body><article>"
+            "<h2>区域销售</h2>"
+            "<p>华东区使用<b>新口径</b>统计，详见<a href='/r'>说明</a>。</p>"
+            "<ul><li>苹果</li><li>香蕉</li></ul>"
+            "<table><tr><th>名称</th><th>数量</th></tr><tr><td>苹果</td><td>3</td></tr></table>"
+            "</article></body>"
+            "<img src='https://example.com/img.png'></html>"
+        ).encode()
+
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--extract-markdown",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
+            exit_code = cr.crawl(args)
+        assert exit_code == 0
+        md_files = list((tmp_path / "extracted_markdown").rglob("*.md"))
+        assert md_files, "应生成至少一个 .md 产物"
+        content = md_files[0].read_text(encoding="utf-8")
+        assert "## 区域销售" in content
+        assert "**新口径**" in content
+        assert "[说明](/r)" in content
+        assert "- 苹果" in content
+        assert "| 名称 | 数量 |" in content
+        assert "| --- | --- |" in content
+
+    def test_extract_markdown_unit_renders_semantics(self) -> None:
+        html = (
+            "<article><h3>要点</h3><blockquote>引用一</blockquote>"
+            "<pre><code>print(1)</code></pre>"
+            "<ol><li>第一</li><li>第二</li></ol></article>"
+        )
+        result = cr.extract_markdown(html)
+        assert "### 要点" in result
+        assert "> 引用一" in result
+        assert "```" in result and "print(1)" in result
+        assert "1. 第一" in result and "2. 第二" in result
+
+    def test_markdown_and_text_flags_are_independent(self, tmp_path: Path) -> None:
+        html = (
+            b"<html><body><article><p>Enough body text for the extraction pipeline</p>"
+            b"<img src='https://example.com/i.png'></article></body></html>"
+        )
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--extract-markdown",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
+            assert cr.crawl(args) == 0
+        assert (tmp_path / "extracted_markdown").exists()
+        # 未开 --extract-text 时不应生成纯文本目录
+        assert not (tmp_path / "extracted_text").exists()
+
+
 class TestCrawlVideoMode:
     def test_video_mode(self, tmp_path: Path) -> None:
         """--video-mode 生成视频清单。"""

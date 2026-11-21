@@ -183,6 +183,12 @@ Examples:
         action="store_true",
         help="Extract readable article text from saved HTML pages.",
     )
+    parser.add_argument(
+        "--extract-markdown",
+        dest="extract_markdown",
+        action="store_true",
+        help="Extract structured Markdown (headings/lists/links/tables/code) into extracted_markdown/.",
+    )
     parser.add_argument("--rules", help="Apply a JSON field rule file to each scanned page.")
     parser.add_argument(
         "--sample", help="Validate rules on a local HTML file. --url labels the result if supplied."

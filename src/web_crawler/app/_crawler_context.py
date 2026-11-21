@@ -214,6 +214,7 @@ def save_config_to_file(args: argparse.Namespace, filepath: str) -> None:
         "download_linked_data": args.download_linked_data,
         "resume_crawl": args.resume_crawl,
         "extract_text": args.extract_text,
+        "extract_markdown": args.extract_markdown,
         "include_pattern": args.include_pattern,
         "exclude_pattern": args.exclude_pattern,
         "proxy": args.proxy,

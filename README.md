@@ -53,6 +53,8 @@ flowchart TB
 
 正文提取保留块级结构（段落/标题/列表项各占一行），并剥离 script/style/nav/footer 等页面骨架与连续重复行——直接可作为 LLM 或人工阅读的分析输入，不再是被压成一整行、混着导航噪音的字符串。可见文本几乎为空的 SSR 页面会自动回退到内嵌 JSON 状态块（`<script type="application/json">` 与 `window.__INITIAL_STATE__ = {...}` 两类形态，覆盖 Next.js / Nuxt / React Router / 字节系 `__MODERN_SERVER_DATA__`），2026-11 实测 docs.trae.ai/solo 与 /solo/skills 从 0 字恢复到 1.8–2.5 万字符。
 
+**结构化 Markdown 输出（对标 firecrawl「网页 → Markdown」）**：`--extract-markdown` 把正文渲染成保留语义标记的 Markdown 并按主机/路径存到 `extracted_markdown/*.md`——标题层级（`#`~`######`）、有序/无序列表（含嵌套缩进）、链接（`[文字](href)`）、强调（`**`/`*`）、行内代码、`<pre>` 代码围栏、表格（MD 表格带分隔行）、引用块（`>`），中文行内拼接沿用纯文本渲染的空格规则（不污染中文、英文相邻片段补空格）；与 `--extract-text` 相互独立，可同时开启。
+
 ### 从页面样本到批量提取
 
 1. 在采集表单展开「字段规则与页面样本」，勾选「保留页面样本用于验证」。任务完成后，在「任务详情 → 页面提取」打开「字段规则验证」。验证只处理已保存的 HTML。

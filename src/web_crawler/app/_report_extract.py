@@ -205,21 +205,14 @@ def write_extracted_data(output_dir: Path, data: list[dict[str, object]]) -> Non
     _log.info("extracted data: %s, %s", json_path, csv_path)
 
 
-def extract_readable_text(html: str | Selector) -> str:
-    """优先提取 article、main 或常见正文容器的可见文本。
-
-    与单行的 :func:`_visible_text` 不同，本函数保留块级结构：段落/标题/
-    列表项各占一行，行内标签（a / strong / code …）不打断所在段落；同时
-    剥离 script / style / nav / footer 等非正文骨架并去掉连续重复行。
-    供 LLM 或人阅读的正文输入用这个，计数字段仍用 :func:`_visible_text`。
+def _select_content_root(selector: Selector) -> Any:
+    """在候选容器里选正文根节点（article/main/常见容器/body，近峰值取优先）。
 
     正文容器不再盲目取第一个 ``<article>``：多个候选（全部 article +
     main/常见内容容器 + body）按可见文本量取最长者——2026-11 竞品调研
     实测 julius.ai 产品页第一个 article 只有 111 字，main 有 1416 字，
     盲取首 article 会把正文截掉 92%。
     """
-    selector = _extraction_selector(html)
-
     candidates: list[Selector] = []
     candidates.extend(selector.css("article"))
     candidates.extend(
@@ -248,7 +241,20 @@ def extract_readable_text(html: str | Selector) -> str:
         if volume >= threshold:
             root = node
             break
-    visible = _render_blocks(root.element)
+    return root.element
+
+
+def extract_readable_text(html: str | Selector) -> str:
+    """优先提取 article、main 或常见正文容器的可见文本。
+
+    与单行的 :func:`_visible_text` 不同，本函数保留块级结构：段落/标题/
+    列表项各占一行，行内标签（a / strong / code …）不打断所在段落；同时
+    剥离 script / style / nav / footer 等非正文骨架并去掉连续重复行。
+    供 LLM 或人阅读的正文输入用这个，计数字段仍用 :func:`_visible_text`。
+    """
+    selector = _extraction_selector(html)
+    root = _select_content_root(selector)
+    visible = _render_blocks(root)
     if len(visible) >= _EMBEDDED_MIN_VISIBLE:
         return visible
     # 可见文本极少（JS 壳/SSR 数据页）：正文可能在 <script type="application/
@@ -259,6 +265,25 @@ def extract_readable_text(html: str | Selector) -> str:
     if len(embedded) >= 40 and len(embedded) > len(visible) + 20:
         return embedded
     return visible
+
+
+def extract_markdown(html: str | Selector) -> str:
+    """把正文容器渲染成结构化 Markdown（firecrawl 式「网页 → Markdown」）。
+
+    与 :func:`extract_readable_text` 共用同一套容器选优与骨架剥离，但输出
+    保留语义标记：标题层级（``#``）、列表（``-`` / 有序号）、链接
+    （``[文字](href)``）、强调（``**`` / ``*``）、行内代码、代码围栏、
+    表格（MD 表格带分隔行）与引用块（``>``）。供直接归档 / LLM 摄取。
+    """
+    selector = _extraction_selector(html)
+    root = _select_content_root(selector)
+    markdown = _render_markdown(root)
+    if len(markdown) >= _EMBEDDED_MIN_VISIBLE:
+        return markdown
+    embedded = _embedded_json_text(selector)
+    if len(embedded) >= 40 and len(embedded) > len(markdown) + 20:
+        return embedded
+    return markdown
 
 
 # 可见文本低于该长度时尝试从内嵌 JSON 状态块兜底提取正文
@@ -625,3 +650,200 @@ def _render_blocks(element: Any) -> str:
             continue
         result.append(line)
     return "\n".join(result)
+
+
+_LIST_MD_TAGS = {"ul", "ol"}
+_HEADING_LEVELS = {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
+
+
+def _leaf_markdown(node: Any) -> str:
+    """叶子子树渲染为行内 Markdown：链接/强调/行内代码带标记，其余纯文本。
+
+    标记先挂到片段上再交给 :func:`_join_inline_parts`：CJK/字母与 ``*``/
+    `` ` `` 边界不会插空格（``使用**Python**开发``）。列表标签在此跳过
+    （嵌套列表由块级渲染递归处理，避免正文与列表标记重复）。
+    """
+    parts: list[str] = []
+    if node.text:
+        parts.append(node.text)
+    for child in node:
+        if not isinstance(child.tag, str):
+            parts.append(child.text or "")
+            if child.tail:
+                parts.append(child.tail)
+            continue
+        lowered = child.tag.lower()
+        if lowered in _STRUCTURE_TAGS | _FORM_INPUT_TAGS | _CHROME_TAGS | _LIST_MD_TAGS:
+            if child.tail:
+                parts.append(child.tail)
+            continue
+        inner = _leaf_markdown(child)
+        if lowered == "a":
+            href = str(child.get("href") or "").strip()
+            rendered = f"[{inner}]({href})" if href and inner else inner
+        elif lowered in ("strong", "b"):
+            rendered = f"**{inner}**" if inner.strip() else inner
+        elif lowered in ("em", "i"):
+            rendered = f"*{inner}*" if inner.strip() else inner
+        elif lowered == "code":
+            rendered = f"`{inner.strip()}`" if inner.strip() else inner
+        else:
+            rendered = inner
+        if rendered:
+            parts.append(rendered)
+        if child.tail:
+            parts.append(child.tail)
+    return _join_inline_parts(parts)
+
+
+def _render_markdown(element: Any) -> str:
+    """把 DOM 子树渲染成 Markdown（标题/列表/链接/表格/代码围栏/引用）。"""
+    lines: list[str] = []
+
+    def emit(out: list[str], value: object) -> None:
+        text = " ".join(str(value or "").split())
+        if text:
+            out.append(text)
+
+    def has_block_child(node: Any) -> bool:
+        return any(
+            isinstance(child.tag, str) and child.tag.lower() in _BLOCK_TAGS for child in node
+        )
+
+    def emit_pre(out: list[str], node: Any) -> None:
+        raw = "".join(node.itertext())
+        if not raw.strip():
+            return
+        raw_lines = [line.rstrip() for line in raw.replace("\r\n", "\n").split("\n")]
+        while raw_lines and not raw_lines[0].strip():
+            raw_lines.pop(0)
+        while raw_lines and not raw_lines[-1].strip():
+            raw_lines.pop()
+        if raw_lines:
+            out.append("```")
+            out.extend(raw_lines)
+            out.append("```")
+
+    def emit_table(out: list[str], node: Any) -> None:
+        rows: list[list[str]] = []
+        for tr in node.iter("tr"):
+            cells: list[str] = []
+            for cell in tr:
+                if not isinstance(cell.tag, str) or cell.tag.lower() not in ("td", "th"):
+                    continue
+                cells.append(" ".join("".join(cell.itertext()).split()))
+            if cells:
+                rows.append(cells)
+        if not rows:
+            return
+        width = max(len(row) for row in rows)
+        out.append("| " + " | ".join(rows[0] + [""] * (width - len(rows[0]))) + " |")
+        out.append("| " + " | ".join(["---"] * width) + " |")
+        for row in rows[1:]:
+            out.append("| " + " | ".join(row + [""] * (width - len(row))) + " |")
+
+    def emit_list(out: list[str], node: Any, ordered: bool, depth: int) -> None:
+        index = 0
+        indent = "  " * depth
+        for child in node:
+            if not isinstance(child.tag, str) or child.tag.lower() != "li":
+                continue
+            index += 1
+            marker = f"{index}. " if ordered else "- "
+            for position, line in enumerate(_leaf_markdown(child).split("\n")):
+                if not line.strip():
+                    continue
+                if position == 0:
+                    out.append(indent + marker + line.strip())
+                else:
+                    out.append(indent + "  " + line.strip())
+            for sub in child:
+                if not isinstance(sub.tag, str):
+                    continue
+                sub_lower = sub.tag.lower()
+                if sub_lower == "ul":
+                    emit_list(out, sub, False, depth + 1)
+                elif sub_lower == "ol":
+                    emit_list(out, sub, True, depth + 1)
+                elif sub_lower in _BLOCK_TAGS:
+                    emit_block(out, sub)
+
+    def emit_block(out: list[str], node: Any) -> None:
+        tag = node.tag if isinstance(node.tag, str) else ""
+        if not tag:
+            return
+        lowered = tag.lower()
+        if lowered in _STRUCTURE_TAGS or lowered in _FORM_INPUT_TAGS or lowered in _CHROME_TAGS:
+            return
+        # Markdown 块间需要空行，否则部分渲染器会把相邻块粘成一段；
+        # 表格行/列表项/代码围栏内部是连续行，不受影响。
+        if out and out[-1].strip():
+            out.append("")
+        if lowered == "pre":
+            emit_pre(out, node)
+            return
+        if lowered == "table":
+            emit_table(out, node)
+            return
+        if lowered == "hr":
+            out.append("---")
+            return
+        if lowered in _HEADING_LEVELS:
+            text = _leaf_markdown(node)
+            if text.strip():
+                out.append("#" * _HEADING_LEVELS[lowered] + " " + " ".join(text.split()))
+            return
+        if lowered == "blockquote":
+            if has_block_child(node):
+                inner_lines: list[str] = []
+                emit(inner_lines, node.text)
+                for child in node:
+                    emit_block(inner_lines, child)
+                    if child.tail and child.tail.strip():
+                        emit(inner_lines, child.tail)
+                for line in inner_lines:
+                    if line.strip():
+                        out.append("> " + line)
+            else:
+                for line in _leaf_markdown(node).split("\n"):
+                    if line.strip():
+                        out.append("> " + line.strip())
+            return
+        if lowered == "ul":
+            emit_list(out, node, False, 0)
+            return
+        if lowered == "ol":
+            emit_list(out, node, True, 0)
+            return
+        if lowered == "li":
+            # 游离 li（ul 被解析器剥掉等工件）：按无序列表项渲染
+            emit_list(out, node.getparent() or node, False, 0)
+            return
+        if has_block_child(node):
+            emit(out, node.text)
+            for child in node:
+                emit_block(out, child)
+                if child.tail and child.tail.strip():
+                    emit(out, child.tail)
+            return
+        emit(out, _leaf_markdown(node))
+
+    if element.text and element.text.strip():
+        emit(lines, element.text)
+    for child in element:
+        if isinstance(child.tag, str) and child.tag.lower() in _CHROME_TAGS:
+            if child.tail and child.tail.strip():
+                emit(lines, child.tail)
+            continue
+        emit_block(lines, child)
+        if child.tail and child.tail.strip():
+            emit(lines, child.tail)
+    result: list[str] = []
+    for line in lines:
+        if line and result and result[-1] == line:
+            continue
+        result.append(line)
+    return "\n".join(result)
+
+
+

@@ -33,6 +33,7 @@ from web_crawler.app.crawler_models import ManifestRow, PageExtraction, Resource
 from web_crawler.app.crawler_report import (
     RewriteTable,
     _format_bytes,
+    extract_markdown,
     extract_readable_text,
     format_duration,
     smart_extract,
@@ -99,6 +100,7 @@ def _extract_pages(ctx: _CrawlContext) -> None:
     if not (
         getattr(args, "smart_extract", False)
         or getattr(args, "extract_text", False)
+        or getattr(args, "extract_markdown", False)
         or getattr(args, "page_sample_callback", None)
         or ctx.rules is not None
     ) or _post_pause_check(args):
@@ -131,6 +133,7 @@ def _extract_page_contents(ctx: _CrawlContext, feed: TextIO | None) -> None:
     args = ctx.args
     structured = getattr(args, "smart_extract", False)
     readable = getattr(args, "extract_text", False)
+    markdown = getattr(args, "extract_markdown", False)
     on_extraction = getattr(args, "extraction_callback", None)
     on_sample = getattr(args, "page_sample_callback", None)
     extracted_data: list[dict[str, object]] = []
@@ -140,8 +143,15 @@ def _extract_page_contents(ctx: _CrawlContext, feed: TextIO | None) -> None:
             text_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             _log.warning("could not create extracted text directory: %s", exc)
+    md_dir = ctx.output_dir / "extracted_markdown"
+    if markdown:
+        try:
+            md_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            _log.warning("could not create extracted markdown directory: %s", exc)
 
     text_count = 0
+    markdown_count = 0
     coverage = ctx.rule_coverage
     for page_url, html in _iter_page_html(ctx, coverage.add_error if coverage else None):
         if _post_pause_check(args):
@@ -149,7 +159,7 @@ def _extract_page_contents(ctx: _CrawlContext, feed: TextIO | None) -> None:
         title = ctx.page_titles.get(page_url, "")
         if on_sample is not None:
             on_sample(page_url, title, html)
-        if not (structured or readable or ctx.rules is not None):
+        if not (structured or readable or markdown or ctx.rules is not None):
             continue
         selector = _extraction_selector(html)
         data = None
@@ -180,6 +190,24 @@ def _extract_page_contents(ctx: _CrawlContext, feed: TextIO | None) -> None:
                     )
             except Exception as exc:
                 _log.warning("text extraction failed for %s: %s", page_url, exc)
+        markdown_text = ""
+        if markdown:
+            try:
+                content = extract_markdown(selector)
+                markdown_text = content
+                if content.strip():
+                    path = ctx.page_artifact_path(page_url, "extracted_markdown")
+                    destination = path.with_name(path.name + ".md")
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_text(content, encoding="utf-8")
+                    markdown_count += 1
+                elif not readable:
+                    _log.warning(
+                        "no extractable markdown for %s (page may be a JS shell); consider --render-js",
+                        page_url,
+                    )
+            except Exception as exc:
+                _log.warning("markdown extraction failed for %s: %s", page_url, exc)
         if ctx.rules is not None and coverage is not None:
             try:
                 rule_result = ctx.rules.extract(selector, page_url=page_url)
@@ -195,7 +223,9 @@ def _extract_page_contents(ctx: _CrawlContext, feed: TextIO | None) -> None:
                         feed = None
                         ctx.rule_write_errors += 1
                         _log.warning("could not write field result file: %s", exc)
-        if on_extraction is not None and (text or data is not None or rule_result is not None):
+        if on_extraction is not None and (
+            text or markdown_text or data is not None or rule_result is not None
+        ):
             on_extraction(PageExtraction(page_url, title, text, data, rule_result))
 
     if extracted_data:
@@ -203,6 +233,12 @@ def _extract_page_contents(ctx: _CrawlContext, feed: TextIO | None) -> None:
             write_extracted_data(ctx.output_dir, extracted_data)
         except OSError as exc:
             _log.warning("could not write extracted data: %s", exc)
+    if markdown:
+        _log.info(
+            "extracted markdown: %d pages -> %s",
+            markdown_count,
+            ctx.output_dir / "extracted_markdown",
+        )
     if readable:
         _log.info("extracted text: %d pages -> %s", text_count, text_dir)
 
