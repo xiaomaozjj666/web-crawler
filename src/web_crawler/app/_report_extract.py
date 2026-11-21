@@ -844,6 +844,3 @@ def _render_markdown(element: Any) -> str:
             continue
         result.append(line)
     return "\n".join(result)
-
-
-
