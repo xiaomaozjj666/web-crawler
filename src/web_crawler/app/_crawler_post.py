@@ -226,7 +226,8 @@ def _extract_page_contents(ctx: _CrawlContext, feed: TextIO | None) -> None:
         if on_extraction is not None and (
             text or markdown_text or data is not None or rule_result is not None
         ):
-            on_extraction(PageExtraction(page_url, title, text, data, rule_result))
+            # 未开正文提取时用 Markdown 原文兜底，Web UI 的「页面提取」才有内容可看
+            on_extraction(PageExtraction(page_url, title, text or markdown_text, data, rule_result))
 
     if extracted_data:
         try:

@@ -186,6 +186,19 @@ def _emit_summary(
     return {"cancelled": 1, "error": 3}.get(summary["status"], 0)
 
 
+def _redact_proxy(value: object) -> object:
+    """报告 config 中的代理 URL 脱敏（``user:pass@host`` → ``***@host``）。
+
+    run_report.json 等报告默认会外发/归档；代理 URL 常内嵌账号密码，
+    原样写入等于明文泄密。仅保留主机与端口用于事后审计。
+    """
+    text = str(value or "")
+    scheme, sep, rest = text.partition("://")
+    if not sep or "@" not in rest:
+        return value
+    return f"{scheme}://***@{rest.rsplit('@', 1)[1]}"
+
+
 def _crawl(args: argparse.Namespace) -> int:
     """应用层爬取主流程：页面扫描 → 资源过滤 → 并发下载 → 后处理与报告。"""
     crawl_start_time = time.time()
@@ -206,10 +219,12 @@ def _crawl(args: argparse.Namespace) -> int:
         "smart_extract": getattr(args, "smart_extract", ""),
         "extract_text": getattr(args, "extract_text", ""),
         "extract_markdown": getattr(args, "extract_markdown", ""),
+        "download_linked_data": getattr(args, "download_linked_data", ""),
         "strip_overlays": getattr(args, "strip_overlays", ""),
         "decrypt": getattr(args, "decrypt", ""),
         "sitemap": getattr(args, "sitemap", ""),
         "crawl_pages": getattr(args, "crawl_pages", ""),
+        "resume_crawl": getattr(args, "resume_crawl", ""),
         "max_pages": getattr(args, "max_pages", ""),
         "max_bytes": getattr(args, "max_bytes", ""),
         # 反爬相关开关进报告 config：事后才能区分普通 / stealth / 渲染运行
@@ -217,7 +232,8 @@ def _crawl(args: argparse.Namespace) -> int:
         "stealth": getattr(args, "stealth", ""),
         "impersonate": getattr(args, "impersonate", ""),
         "render_js": getattr(args, "render_js", ""),
-        "proxy": getattr(args, "proxy", ""),
+        # 代理凭据脱敏：报告会外发，host/端口足够审计
+        "proxy": _redact_proxy(getattr(args, "proxy", "")),
     }
     try:
         extra_headers = parse_headers(args.header)

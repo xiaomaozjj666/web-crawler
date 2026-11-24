@@ -49,7 +49,7 @@ flowchart TB
 | :---: |
 | <img src="docs/screenshots/ui-console.png" alt="Web Crawler 控制台" width="820" /> |
 
-控制台顶部显示网页采集、验证码识别和 JS 逆向的运行状态。网页采集勾选「智能数据提取」或「正文提取」后，可在任务详情的「页面提取」查看内容，并从页面筛选其来源资源。每次任务保存自己的提取结果，复用输出目录后仍可查阅旧任务。磁盘上的正文按主机和页面路径保存到 `extracted_text/`，避免不同页面的同名文件互相覆盖。
+控制台顶部显示网页采集、验证码识别和 JS 逆向的运行状态。网页采集勾选「智能数据提取」「正文提取」或「正文 Markdown」后，可在任务详情的「页面提取」查看内容（未开启正文提取时，该面板展示 Markdown 原文），并从页面筛选其来源资源。每次任务保存自己的提取结果，复用输出目录后仍可查阅旧任务。磁盘上的正文按主机和页面路径保存到 `extracted_text/`，避免不同页面的同名文件互相覆盖；Markdown 保存到 `extracted_markdown/`。
 
 正文提取保留块级结构（段落/标题/列表项各占一行），并剥离 script/style/nav/footer 等页面骨架与连续重复行——直接可作为 LLM 或人工阅读的分析输入，不再是被压成一整行、混着导航噪音的字符串。可见文本几乎为空的 SSR 页面会自动回退到内嵌 JSON 状态块（`<script type="application/json">` 与 `window.__INITIAL_STATE__ = {...}` 两类形态，覆盖 Next.js / Nuxt / React Router / 字节系 `__MODERN_SERVER_DATA__`），2026-11 实测 docs.trae.ai/solo 与 /solo/skills 从 0 字恢复到 1.8–2.5 万字符。
 
@@ -83,7 +83,9 @@ python main.py https://example.com/ --output items.jsonl
 
 表单的「导出采集配置」保存目标、采集参数和字段规则，可用 `web-crawler --load-config crawl-config.json --out ./out` 运行。也可以把 CLI 的 `--save-config` 产物导入表单。控制台导出的配置省略请求头、本机输出目录和只适用于本机任务的选项。
 
-需要把页面里以 `<a>` 链接的数据文件（CSV / Excel / JSON / Parquet / SQLite）一并下载时，加 `--download-linked-data`（默认关闭，避免把普通链接误当下载任务）。下载后的原始文件可直接交给 data-analysis-agent 等分析工具，GB18030 导出的 CSV 也能被核验链路读取。
+需要把页面里以 `<a>` 链接的数据文件（CSV / Excel / JSON / Parquet / SQLite）一并下载时，加 `--download-linked-data`（默认关闭，避免把普通链接误当下载任务）。开启后这些数据文件只作为资源下载，不再进入页面队列被当作 HTML 解析。下载后的原始文件可直接交给 data-analysis-agent 等分析工具，GB18030 导出的 CSV 也能被核验链路读取。
+
+`--crawl-pages` 跟随同域页面链接时会校验响应类型：PDF / CSV / ZIP 等非文档响应（以及 `--download-linked-data` 命中的数据文件）不会落成页面、不会做正文/Markdown 抽取，也不会生成离线页；起始 URL 不受此限制。
 
 采集时勾选「离线重写 HTML」，或在 CLI 中使用 `--rewrite-html`。采集完成后，任务详情会显示离线页面数量和目录；可从输出目录里的 `run_report.html` 进入页面索引，也可直接打开 `offline_pages/index.html`。移动结果时保留整个输出目录，已下载的资源和页间链接使用相对路径。未下载的 HTTP(S) 资源仍指向原站。
 

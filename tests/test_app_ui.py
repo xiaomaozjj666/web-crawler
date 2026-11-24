@@ -397,6 +397,7 @@ class TestBuildArgs:
             "dedup": ["on"],
             "stealth": ["on"],
             "render_js": ["on"],
+            "extract_markdown": ["on"],
         }
         args = build_args(form)
         assert args.url == "https://example.com"
@@ -415,9 +416,19 @@ class TestBuildArgs:
         assert args.dedup is True
         assert args.stealth is True
         assert args.render_js is True
+        assert args.extract_markdown is True
         assert "Cookie: name=value" in args.header
         assert args.save_config == ""
         assert args.load_config == ""
+
+    def test_extract_markdown_config_roundtrip(self) -> None:
+        """正文 Markdown 开关可导出便携配置、导入后仍生效（表单 ↔ 配置往返）。"""
+        args = build_args({"url": ["https://example.com"], "extract_markdown": ["on"]})
+        portable = _ui_helpers.portable_crawl_config(args)
+        assert portable["extract_markdown"] is True
+        restored = _ui_helpers.normalize_crawl_config(portable)
+        assert restored["extract_markdown"] is True
+        assert build_args({"url": ["https://example.com"]}).extract_markdown is False
 
     def test_defaults(self) -> None:
         """最小表单使用默认值。"""
@@ -1708,6 +1719,30 @@ class TestJobsCleanup:
         assert len(ui.JOBS) <= ui.MAX_JOBS + 1
 
 
+class TestRunEndpointExtractMarkdown:
+    """/run 表单里的正文 Markdown 开关要一路落到任务参数与入库配置（重试可用）。"""
+
+    def test_extract_markdown_reaches_job_and_db(self, http_server: str) -> None:
+        with patch.object(_ui_http, "run_job"):
+            resp = httpx.post(
+                f"{http_server}/run",
+                data={
+                    "url": "https://example.com",
+                    "out": "",
+                    "max_pages": "1",
+                    "extract_markdown": "on",
+                },
+            )
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["status"] == "running"
+        job = ui.JOBS[payload["id"]]
+        assert job.args.extract_markdown is True
+        task = ui.database.get_task(job.id)
+        assert task is not None
+        assert task["config"]["extract_markdown"] is True
+
+
 class TestReverseJobsCleanup:
     def test_reverse_jobs_cleanup_over_max(self, http_server: str) -> None:
         """REVERSE_JOBS 超过 MAX_REVERSE_JOBS 时清理已完成任务。"""
@@ -1805,6 +1840,7 @@ class TestJobsHistoryApi:
                     "cookie": "session=secret",
                     "headers": "Authorization: token",
                     "keep_page_samples": "1",
+                    "extract_markdown": "1",
                     "block_keywords": "",
                     "delay": "0.05",
                     "field_rules": json.dumps(rules),
@@ -1813,6 +1849,7 @@ class TestJobsHistoryApi:
             assert not ({"cookie", "header", "headers", "out", "keep_page_samples"} & set(exported))
             assert exported["delay"] == 0.05
             assert exported["block_keyword"] == [""]
+            assert exported["extract_markdown"] is True
             assert exported["field_rules"]["fields"]["title"]["required"] is True
             loaded = client.post("/crawl/config/import", json=exported).json()["config"]
             assert loaded == exported

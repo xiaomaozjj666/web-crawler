@@ -213,6 +213,7 @@ def build_args(form: dict[str, list[str]]) -> argparse.Namespace:
     args.download_linked_data = checked("download_linked_data")
     args.resume_crawl = checked("resume_crawl")
     args.extract_text = checked("extract_text")
+    args.extract_markdown = checked("extract_markdown")
     args.keep_page_samples = checked("keep_page_samples")
     args.crawl_pages = checked("crawl_pages")
     args.respect_robots = checked("respect_robots")
@@ -252,6 +253,7 @@ _DB_CONFIG_FIELDS = (
     "download_linked_data",
     "resume_crawl",
     "extract_text",
+    "extract_markdown",
     "crawl_pages",
     "respect_robots",
     "stealth",

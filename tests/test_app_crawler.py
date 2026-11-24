@@ -1325,6 +1325,41 @@ class TestGuardBlockedAssetReporting:
         assert payload["page_scan"]["blocked_assets"] == 2
 
 
+class TestReportConfigRedaction:
+    """报告 config 里的代理凭据必须脱敏（报告默认外发/归档）。"""
+
+    def test_redact_proxy_helper(self) -> None:
+        assert cr._redact_proxy("http://user:pass@host:8080") == "http://***@host:8080"
+        assert cr._redact_proxy("socks5h://u:p@10.0.0.1:1080") == "socks5h://***@10.0.0.1:1080"
+        assert cr._redact_proxy("http://proxy.example.com:3128") == "http://proxy.example.com:3128"
+        assert cr._redact_proxy("") == ""
+        assert cr._redact_proxy(None) is None
+
+    def test_crawl_report_redacts_proxy(self, tmp_path: Path) -> None:
+        html = b'<html><body><img src="https://example.com/a.png"></body></html>'
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--proxy",
+                    "http://user:secret@proxy.example.com:8080",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
+            assert cr.crawl(args) == 0
+        report = json.loads((tmp_path / "run_report.json").read_text(encoding="utf-8"))
+        assert report["config"]["proxy"] == "http://***@proxy.example.com:8080"
+        markdown = (tmp_path / "run_report.md").read_text(encoding="utf-8")
+        assert "secret" not in markdown
+        assert "extract_markdown" in markdown
+        assert "download_linked_data" in markdown
+
+
 class TestClassifyError:
     def test_auth(self) -> None:
         """classify_error 将 401 归类为 auth。"""
@@ -3089,6 +3124,47 @@ class TestCrawlCrawlPages:
             exit_code = cr.crawl(args)
         assert exit_code == 0
 
+    def test_non_document_links_are_not_saved_as_pages(self, tmp_path: Path) -> None:
+        """--crawl-pages 跟随到 PDF/CSV 等非文档响应时跳过，不产生垃圾页面。"""
+        index = b'<html><body><a href="/file.pdf">pdf</a><img src="i.png"></body></html>'
+        pdf = b"%PDF-1.4 binary payload"
+
+        def mock_fetch(url: str, *args: Any, **kwargs: Any) -> tuple[bytes, str]:
+            if ".pdf" in url:
+                return (pdf, "application/pdf")
+            return (index, "text/html")
+
+        with patch.object(core, "fetch", side_effect=mock_fetch):
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--crawl-pages",
+                    "--max-pages",
+                    "2",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
+            assert cr.crawl(args) == 0
+        assert not list((tmp_path / "pages").rglob("*.pdf"))
+        report = json.loads((tmp_path / "run_report.json").read_text(encoding="utf-8"))
+        assert report["page_scan"]["skipped"] >= 1
+
+    def test_seed_url_is_always_scanned(self, tmp_path: Path) -> None:
+        """显式指定的种子 URL 不做响应类型过滤（保持旧行为）。"""
+        pdf = b"%PDF-1.4 binary payload"
+
+        with patch.object(core, "fetch", return_value=(pdf, "application/pdf")):
+            args = cr.build_parser().parse_args(
+                ["--url", "https://example.com/file.pdf", "--out", str(tmp_path), "--list-only"]
+            )
+            assert cr.crawl(args) == 0
+        assert list((tmp_path / "pages").rglob("*"))
+
 
 class TestCrawlUrlPatterns:
     def test_include_pattern(self, tmp_path: Path) -> None:
@@ -3454,6 +3530,80 @@ class TestCrawlExtractMarkdown:
         assert "> 引用一" in result
         assert "```" in result and "print(1)" in result
         assert "1. 第一" in result and "2. 第二" in result
+
+    def test_standalone_inline_elements_keep_markup(self) -> None:
+        """容器直属的行内元素（不在 <p> 内）也要保留 Markdown 标记。"""
+        html = (
+            "<article><p>前言段落文字足够长的一段。</p>"
+            "<a href='/x'>独立链接</a><strong>独立强调</strong><em>独立斜体</em>"
+            "<code>code()</code><a href='/y'><strong>嵌套</strong></a></article>"
+        )
+        result = cr.extract_markdown(html)
+        assert "[独立链接](/x)" in result
+        assert "**独立强调**" in result
+        assert "*独立斜体*" in result
+        assert "`code()`" in result
+        assert "[**嵌套**](/y)" in result
+
+    def test_list_item_with_paragraph_is_not_duplicated(self) -> None:
+        """<li><p>文字</p></li> 只输出一次（此前会列表项 + 段落重复两遍）。"""
+        html = "<article><ul><li><p>段落列表项</p></li><li>普通项</li></ul></article>"
+        result = cr.extract_markdown(html)
+        assert "- 段落列表项" in result
+        assert "- 普通项" in result
+        assert result.count("段落列表项") == 1
+
+    def test_nested_list_indentation_and_blocks(self) -> None:
+        html = (
+            "<article><ol><li>一<ul><li>a</li><li>b</li></ul></li>"
+            "<li><div>块级列表项</div></li></ol></article>"
+        )
+        result = cr.extract_markdown(html)
+        assert "1. 一" in result
+        assert "  - a" in result
+        assert "2. 块级列表项" in result
+
+    def test_cjk_spacing_around_inline_markers(self) -> None:
+        """中文与 **/` 交界不插空格（对齐源码文档契约与纯文本空格规则）。"""
+        html = "<article><p>请先<strong>安装</strong>依赖，然后运行<code>pip install</code>。</p></article>"
+        result = cr.extract_markdown(html)
+        assert "请先**安装**依赖" in result
+        assert "运行 `pip install`。" in result
+
+    def test_hr_and_table_pipe_are_safe(self) -> None:
+        html = (
+            "<article><div>上面<hr>下面</div>"
+            "<table><tr><th>a|b</th><th>c</th></tr><tr><td>1</td><td>2</td></tr></table></article>"
+        )
+        result = cr.extract_markdown(html)
+        assert "---" in result
+        assert "| a\\|b | c |" in result
+
+    def test_markdown_only_feeds_extraction_callback(self, tmp_path: Path) -> None:
+        """未开正文提取时，用 Markdown 原文填充页面提取，Web UI 才能看到内容。"""
+        html = (
+            b"<html><body><article><p>Enough body text for the extraction pipeline</p>"
+            b"<img src='https://example.com/i.png'></article></body></html>"
+        )
+        collected: list[Any] = []
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--extract-markdown",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
+            args.extraction_callback = collected.append
+            assert cr.crawl(args) == 0
+        assert collected
+        assert collected[0].text.strip() == "Enough body text for the extraction pipeline"
+        assert "example.com" in collected[0].url
 
     def test_markdown_and_text_flags_are_independent(self, tmp_path: Path) -> None:
         html = (
@@ -5437,8 +5587,8 @@ class TestLinkedDataParser:
         )
         urls = {resource.url for resource in parser.resources}
         assert urls == {"https://example.com/data/orders.csv", "https://example.com/data/book.xlsx"}
-        # 页面链接仍然保留，不被资源化
-        assert "https://example.com/page.html" in parser.page_links
+        # 普通页面链接仍然保留；已资源化的数据文件不再入页面队列
+        assert parser.page_links == ["https://example.com/page.html"]
         assert all(resource.kind == "data" for resource in parser.resources)
 
     def test_anchor_data_file_ignored_by_default(self) -> None:

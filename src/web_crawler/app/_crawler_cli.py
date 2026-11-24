@@ -50,7 +50,11 @@ Examples:
     parser.add_argument(
         "--same-domain", action="store_true", help="Only scan/download same-domain URLs."
     )
-    parser.add_argument("--crawl-pages", action="store_true", help="Follow same-domain page links.")
+    parser.add_argument(
+        "--crawl-pages",
+        action="store_true",
+        help="Follow same-domain page links (non-HTML responses such as PDF/CSV/ZIP are skipped).",
+    )
     parser.add_argument("--max-pages", type=int, default=1, help="Maximum pages to scan.")
     parser.add_argument(
         "--include-css-urls",
@@ -170,7 +174,8 @@ Examples:
         "--download-linked-data",
         action="store_true",
         help="Treat <a href> links to data files (.csv/.xlsx/.json/.parquet/.db ...) as "
-        "downloadable resources. Off by default to avoid mass-downloading ordinary links.",
+        "downloadable resources (they are not scanned as HTML pages). "
+        "Off by default to avoid mass-downloading ordinary links.",
     )
     parser.add_argument(
         "--smart-extract", action="store_true", help="Extract structured data from scanned pages."

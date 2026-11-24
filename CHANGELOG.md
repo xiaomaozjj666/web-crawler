@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   带分隔行的 MD 表格、引用块、块间空行；容器选优与骨架剥离复用
   `extract_readable_text` 同一套逻辑，中文行内拼接沿用统一空格规则。
   产物按主机/路径存 `extracted_markdown/*.md`，与 `--extract-text` 相互独立。
+  Web UI 同步新增「正文 Markdown」开关，配置导出/导入与任务重试均可往返；
+  未开正文提取时「页面提取」用 Markdown 原文兜底展示。
 - **子资源与 WebSocket 的 SSRF 门禁**：导航守卫此前只校验 document 请求，
   页面脚本可用 fetch/XHR/WebSocket 直达内网与云元数据地址。现在子资源与
   ws/wss 同样过门禁：与已放行文档同 host 的直接放行，跨 host 按 host 缓存
@@ -101,6 +103,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Markdown 渲染四处缺陷**：直属容器的 `<a>`/`<strong>`/`<em>`/`<code>` 此前
+  丢标记（链接退化成纯文本）；`<li><p>文字</p></li>` 会把正文输出两遍；中文
+  与 `**`/`` ` `` 交界被强插空格（`包含 **重点** 与`）；容器内 `<hr>` 被吞、
+  表格单元格 `|` 未转义会断表格。分隔符改为按「去掉标记后的可见文本」判定，
+  行内标记统一走同一套套壳逻辑。
+- **报告 config 泄露代理凭据**：`run_report.json` 原样写入 `--proxy`（常含
+  `user:pass`）。现在脱敏为 `scheme://***@host:port`，主机/端口保留供审计。
+- **报告配置表补齐新开关**：`extract_markdown` / `download_linked_data` /
+  `resume_crawl` / `stealth` / `impersonate` / `render_js` 进入 MD/HTML 配置表。
+- **`--crawl-pages` 不再把二进制当页面**：PDF/CSV/ZIP 等明确非文档响应
+  （以及 `--download-linked-data` 命中的数据文件）不再落成页面、不再做正文/
+  Markdown 抽取与离线页；种子 URL 保持旧行为。开启 `--download-linked-data`
+  时数据文件只作为资源下载，不再同时进页面队列。
 - **报告产物统一原子写**：新增 `app/_fsutil`（`atomic_write_text` /
   `atomic_text_writer`）：同目录唯一 tmp（`mkstemp`）+ `fsync` + `os.replace`，
   `run_report.json/md/html`、清单 JSON **与 CSV**、`summary.txt`、抽取数据与

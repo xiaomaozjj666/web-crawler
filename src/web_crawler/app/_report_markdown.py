@@ -254,12 +254,18 @@ def _write_markdown_report(path: Path, ctx: dict[str, object]) -> None:
             "expand_playlists",
             "smart_extract",
             "extract_text",
+            "extract_markdown",
+            "download_linked_data",
             "strip_overlays",
             "decrypt",
             "sitemap",
             "crawl_pages",
+            "resume_crawl",
             "max_pages",
             "max_bytes",
+            "stealth",
+            "impersonate",
+            "render_js",
         ):
             if key in cfg:
                 lines.append(f"| {key} | {cfg[key]} |")

@@ -470,6 +470,7 @@ _BLOCK_TAGS = frozenset(
         "h5",
         "h6",
         "header",
+        "hr",
         "li",
         "main",
         "nav",
@@ -654,46 +655,101 @@ def _render_blocks(element: Any) -> str:
 
 _LIST_MD_TAGS = {"ul", "ol"}
 _HEADING_LEVELS = {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
+#: 行内渲染时整棵跳过的标签（脚本/控件/骨架/嵌套列表由块级渲染处理）
+_SKIP_INLINE_TAGS = _STRUCTURE_TAGS | _FORM_INPUT_TAGS | _CHROME_TAGS | _LIST_MD_TAGS
 
 
-def _leaf_markdown(node: Any) -> str:
+def _apply_inline_markup(node: Any, lowered: str, inner: str) -> str:
+    """给行内元素套上 Markdown 标记（链接/强调/行内代码），其余原样返回。"""
+    if lowered == "a":
+        href = str(node.get("href") or "").strip()
+        return f"[{inner}]({href})" if href and inner else inner
+    if lowered in ("strong", "b"):
+        return f"**{inner}**" if inner.strip() else inner
+    if lowered in ("em", "i"):
+        return f"*{inner}*" if inner.strip() else inner
+    if lowered == "code":
+        return f"`{inner.strip()}`" if inner.strip() else inner
+    return inner
+
+
+def _inline_visible_text(node: Any) -> str:
+    """行内元素子树的可见文本（不含骨架/控件标签），用于分隔符边界判定。"""
+    pieces: list[str] = [node.text or ""]
+    for child in node:
+        if isinstance(child.tag, str) and child.tag.lower() not in _SKIP_INLINE_TAGS:
+            pieces.append(_inline_visible_text(child))
+        pieces.append(child.tail or "")
+    return "".join(pieces)
+
+
+def _join_markdown_parts(parts: list[tuple[str, str]]) -> str:
+    """拼接 ``(渲染文本, 可见文本)`` 片段。
+
+    分隔符按**可见文本**的边界字符判定，而不是按渲染后的标记字符（``*`` /
+    `` ` `` / ``[``）：否则 ``请先<strong>安装</strong>依赖`` 会渲染成
+    ``请先 **安装** 依赖``，中文正文被标记符号系统性污染。空白与 ``tail``
+    的原始空格语义与 :func:`_join_inline_parts` 一致。
+    """
+    out = ""
+    pending_space = False
+    last_visible = ""
+    for rendered, visible in parts:
+        if not rendered:
+            continue
+        if not rendered.strip():
+            pending_space = pending_space or bool(out)
+            continue
+        if rendered[:1].isspace():
+            pending_space = pending_space or bool(out)
+        stripped = rendered.strip()
+        visible_edges = visible.strip()
+        if not out:
+            out = stripped
+        else:
+            if pending_space:
+                separator = " "
+            elif visible_edges and last_visible:
+                separator = _inline_separator(last_visible, visible_edges[0])
+            else:
+                separator = _inline_separator(out, stripped)
+            out += separator + stripped
+        pending_space = rendered[-1:].isspace()
+        if visible_edges:
+            last_visible = visible_edges[-1]
+    return out
+
+
+def _leaf_markdown(node: Any, *, skip_block_children: bool = False) -> str:
     """叶子子树渲染为行内 Markdown：链接/强调/行内代码带标记，其余纯文本。
 
-    标记先挂到片段上再交给 :func:`_join_inline_parts`：CJK/字母与 ``*``/
-    `` ` `` 边界不会插空格（``使用**Python**开发``）。列表标签在此跳过
-    （嵌套列表由块级渲染递归处理，避免正文与列表标记重复）。
+    ``skip_block_children`` 用于列表项：块级子节点（``<p>``/``<pre>`` 等）
+    由调用方单独渲染，避免与行内文本重复输出。
     """
-    parts: list[str] = []
+    parts: list[tuple[str, str]] = []
     if node.text:
-        parts.append(node.text)
+        parts.append((node.text, node.text))
     for child in node:
         if not isinstance(child.tag, str):
-            parts.append(child.text or "")
+            text = child.text or ""
+            if text:
+                parts.append((text, text))
             if child.tail:
-                parts.append(child.tail)
+                parts.append((child.tail, child.tail))
             continue
         lowered = child.tag.lower()
-        if lowered in _STRUCTURE_TAGS | _FORM_INPUT_TAGS | _CHROME_TAGS | _LIST_MD_TAGS:
+        if lowered in _SKIP_INLINE_TAGS or (skip_block_children and lowered in _BLOCK_TAGS):
             if child.tail:
-                parts.append(child.tail)
+                parts.append((child.tail, child.tail))
             continue
         inner = _leaf_markdown(child)
-        if lowered == "a":
-            href = str(child.get("href") or "").strip()
-            rendered = f"[{inner}]({href})" if href and inner else inner
-        elif lowered in ("strong", "b"):
-            rendered = f"**{inner}**" if inner.strip() else inner
-        elif lowered in ("em", "i"):
-            rendered = f"*{inner}*" if inner.strip() else inner
-        elif lowered == "code":
-            rendered = f"`{inner.strip()}`" if inner.strip() else inner
-        else:
-            rendered = inner
+        rendered = _apply_inline_markup(child, lowered, inner)
         if rendered:
-            parts.append(rendered)
+            # 边界用去掉标记后的可见文本：CJK 与 **/` 交界不多插空格
+            parts.append((rendered, _inline_visible_text(child) or inner))
         if child.tail:
-            parts.append(child.tail)
-    return _join_inline_parts(parts)
+            parts.append((child.tail, child.tail))
+    return _join_markdown_parts(parts)
 
 
 def _render_markdown(element: Any) -> str:
@@ -731,7 +787,8 @@ def _render_markdown(element: Any) -> str:
             for cell in tr:
                 if not isinstance(cell.tag, str) or cell.tag.lower() not in ("td", "th"):
                     continue
-                cells.append(" ".join("".join(cell.itertext()).split()))
+                # 单元格内的竖线必须转义，否则会把 MD 表格列结构打断
+                cells.append(" ".join("".join(cell.itertext()).split()).replace("|", "\\|"))
             if cells:
                 rows.append(cells)
         if not rows:
@@ -742,31 +799,39 @@ def _render_markdown(element: Any) -> str:
         for row in rows[1:]:
             out.append("| " + " | ".join(row + [""] * (width - len(row))) + " |")
 
-    def emit_list(out: list[str], node: Any, ordered: bool, depth: int) -> None:
+    def emit_list(out: list[str], items: Any, ordered: bool, depth: int) -> None:
+        """渲染列表项；``items`` 可以是容器（迭代出 li）或单个 li 的列表。
+
+        列表项内的块级子节点（``<p>``/``<pre>``/表格等）单独渲染成续行，
+        行内渲染跳过它们，避免 ``<li><p>文字</p></li>`` 重复输出两遍。
+        """
         index = 0
         indent = "  " * depth
-        for child in node:
+        for child in items:
             if not isinstance(child.tag, str) or child.tag.lower() != "li":
                 continue
             index += 1
             marker = f"{index}. " if ordered else "- "
-            for position, line in enumerate(_leaf_markdown(child).split("\n")):
-                if not line.strip():
-                    continue
-                if position == 0:
-                    out.append(indent + marker + line.strip())
-                else:
-                    out.append(indent + "  " + line.strip())
+            head = _leaf_markdown(child, skip_block_children=True)
+            item_lines = [line.strip() for line in head.split("\n") if line.strip()]
+            nested: list[Any] = []
             for sub in child:
                 if not isinstance(sub.tag, str):
                     continue
                 sub_lower = sub.tag.lower()
-                if sub_lower == "ul":
-                    emit_list(out, sub, False, depth + 1)
-                elif sub_lower == "ol":
-                    emit_list(out, sub, True, depth + 1)
+                if sub_lower in _LIST_MD_TAGS:
+                    nested.append(sub)
                 elif sub_lower in _BLOCK_TAGS:
-                    emit_block(out, sub)
+                    block_lines: list[str] = []
+                    emit_block(block_lines, sub)
+                    item_lines.extend(line.strip() for line in block_lines if line.strip())
+            if item_lines:
+                out.append(indent + marker + item_lines[0])
+                out.extend(indent + "  " + line for line in item_lines[1:])
+            else:
+                out.append(indent + marker.rstrip())
+            for sub in nested:
+                emit_list(out, sub, sub.tag.lower() == "ol", depth + 1)
 
     def emit_block(out: list[str], node: Any) -> None:
         tag = node.tag if isinstance(node.tag, str) else ""
@@ -816,8 +881,8 @@ def _render_markdown(element: Any) -> str:
             emit_list(out, node, True, 0)
             return
         if lowered == "li":
-            # 游离 li（ul 被解析器剥掉等工件）：按无序列表项渲染
-            emit_list(out, node.getparent() or node, False, 0)
+            # 游离 li（ul 被解析器剥掉等工件）：按单个无序列表项渲染
+            emit_list(out, [node], False, 0)
             return
         if has_block_child(node):
             emit(out, node.text)
@@ -826,7 +891,8 @@ def _render_markdown(element: Any) -> str:
                 if child.tail and child.tail.strip():
                     emit(out, child.tail)
             return
-        emit(out, _leaf_markdown(node))
+        # 直属容器（非段落）的行内元素也要保留标记：常见于 <section><a>…</a></section>
+        emit(out, _apply_inline_markup(node, lowered, _leaf_markdown(node)))
 
     if element.text and element.text.strip():
         emit(lines, element.text)

@@ -30,6 +30,7 @@ from web_crawler.app.crawler_net import (
     decode_text,
     extract_title,
     is_blocked_url,
+    normalize_url,
     output_path_for_url,
     same_domain,
 )
@@ -42,6 +43,25 @@ _log = logging.getLogger("crawler")
 # 固定"每 5 页全量重写一次"会造成 O(P²) 写放大——大爬取后期每 5 页卡顿数秒。
 # 除队列耗尽的最终保存外，两次保存至少间隔该时长，成本占比保持有界。
 _STATE_SAVE_MIN_INTERVAL_SECONDS = 2.0
+
+
+#: 明确按文档处理的非 HTML content-type（部分站点用 text/plain 返回 HTML）。
+_DOCUMENT_CONTENT_TYPES = frozenset({"text/plain", "application/xhtml+xml"})
+
+
+def _is_page_document(content_type: str, url: str) -> bool:
+    """响应是否应作为 HTML 页面落盘（无 content-type 时保持旧行为）。
+
+    ``--crawl-pages`` 会把 ``<a href>`` 指向的 PDF/CSV/ZIP 等也入队；若不按
+    响应类型过滤，这些二进制会被保存成页面、做正文/Markdown 抽取并生成
+    离线页（本地实测 CSV 变成 data.html/.md/.txt 三份垃圾产物）。
+    """
+    ctype = content_type.split(";", 1)[0].strip().lower()
+    if not ctype:
+        return True
+    if "html" in ctype or "xml" in ctype:
+        return True
+    return ctype in _DOCUMENT_CONTENT_TYPES
 
 
 def _resolved_encoding(fallback: str | None, content_type: str) -> str:
@@ -179,6 +199,10 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
     args = ctx.args
     cancelled = False  # 统一取消标志：任何阶段触发取消后跳过后续耗时步骤并返回 1
     saved_paths = {str(path).casefold() for path, _ in ctx.page_files.values()}
+    try:
+        seed_url = normalize_url(args.url)
+    except ValueError:  # pragma: no cover - 入口已校验过 URL
+        seed_url = args.url
     while ctx.page_queue and len(ctx.seen_pages) < args.max_pages:
         try:
             cr.wait_if_paused(args)
@@ -244,6 +268,11 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
                 ctx.page_scan["first_error"] = diagnostic[:4000]
             continue
 
+        if page_url != seed_url and not _is_page_document(content_type, page_url):
+            # 非种子链接明确是二进制/数据响应：不落成页面，避免产生垃圾离线产物
+            ctx.page_scan["skipped"] += 1
+            _log.info("skipped non-document page: %s (%s)", page_url, content_type or "unknown")
+            continue
         page_path = output_path_for_url(page_url, ctx.output_dir, "text/html", prefix="pages")
         if not page_path.suffix:  # pragma: no cover - text/html 总是返回带后缀的路径
             page_path = page_path.with_suffix(".html")

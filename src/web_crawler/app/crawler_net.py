@@ -328,9 +328,10 @@ class PageParser(HTMLParser):
             if value and _is_http_url(value):
                 page_link = normalize_url(urljoin(self._base_url or self.page_url, value))
                 if page_link:
-                    self.page_links.append(page_link)
                     # 可选：把 <a> 指向的数据文件当资源下载，打通「抓数据 → 分析」
-                    # 链路（默认关闭，避免把普通链接误当下载任务）。
+                    # 链路（默认关闭，避免把普通链接误当下载任务）。已资源化的
+                    # 数据文件不再入页面队列：否则 --crawl-pages 会把它当 HTML
+                    # 页面保存并做正文/离线抽取（CSV → 垃圾页面）。
                     if (
                         self.download_linked_data
                         and Path(urlparse(page_link).path).suffix.lower() in DATA_EXTENSIONS
@@ -340,6 +341,8 @@ class PageParser(HTMLParser):
                         self.resources.append(
                             Resource(page_link, f"{tag}[{attr}]", "data", self.page_url)
                         )
+                        continue
+                    self.page_links.append(page_link)
 
     def _is_resource_link(self, attrs: dict[str, str]) -> bool:
         rel_values = {item.lower() for item in attrs.get("rel", "").split()}
