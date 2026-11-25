@@ -444,6 +444,68 @@ PYTHONPATH=src python -m web_crawler.app.ui --open
 > `WEB_CRAWLER_POWER_MODE=1`（解锁内网/云元数据目标），**不要**在有真实
 > 凭据的机器上随意运行。常规使用请按上面的 `web-crawler` / `crawler-ui` 启动。
 
+### 一次抓取 API：`/v1/scrape`
+
+启动 `crawler-ui` 后，控制面额外提供对标 Firecrawl `/v1/scrape` 的同步接口：
+**一次调用返回单个 URL 的全部产物**，不落盘、不下载子资源。它复用采集器
+同一套抓取（`fetch`：SSRF/协议/大小限制、重试退避）与提取（正文 Markdown、
+`<a href>` 链接、标题/描述/语言）实现，默认不新增任何内网访问能力。
+
+```bash
+# GET：查询串传 URL
+curl "http://127.0.0.1:8765/v1/scrape?url=https://example.com&include_html=1"
+
+# POST：JSON（include_html 默认 false，返回 HTML 可能很大）
+curl -X POST http://127.0.0.1:8765/v1/scrape \
+  -H "content-type: application/json" \
+  -d '{"url": "https://example.com", "include_html": false}'
+
+# POST：表单编码同样可用
+curl -X POST http://127.0.0.1:8765/v1/scrape -d "url=https://example.com"
+```
+
+返回（字段形状固定；未请求 HTML 时 `html` 为 `null`）：
+
+```json
+{
+  "url": "https://example.com/",
+  "status_code": 200,
+  "content_type": "text/html; charset=UTF-8",
+  "title": "Example Domain",
+  "markdown": "# Example Domain\n\nThis domain is for use in ...",
+  "html": null,
+  "links": ["https://www.iana.org/domains/example"],
+  "metadata": {"description": "", "lang": "en"}
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `url` | 去 fragment 后的请求 URL |
+| `status_code` | 上游响应状态码 |
+| `content_type` | 上游 `Content-Type` 原值 |
+| `title` / `markdown` | `<title>` 文本 / 正文容器渲染的 Markdown（与 `--extract-markdown` 同源） |
+| `html` | 解码后的完整 HTML；仅 `include_html=true` 时返回 |
+| `links` | 页面 `<a href>` 绝对化、去重后的链接（支持 `<base href>`，仅 http/https） |
+| `metadata` | `description`（`<meta name="description">`）与 `lang`（`<html lang>`） |
+
+失败返回结构化 JSON，不抛裸异常：
+
+| 状态码 | `error` | 场景 |
+| --- | --- | --- |
+| 400 | `missing_url` / `invalid_url` / `blocked_url` | URL 为空、非 http(s)、畸形，或指向私网/环回/链路本地（SSRF 门禁，与采集器同源） |
+| 415 | `not_html` | 上游明确返回非 HTML（如 `application/pdf`、`image/*`） |
+| 502 | `upstream_error` / `fetch_failed` | 上游 4xx/5xx（`upstream_status` 透出）或传输层失败 |
+
+```json
+{"error": "not_html", "message": "上游返回非 HTML 内容（application/pdf）", "url": "https://example.com/file.pdf", "content_type": "application/pdf"}
+```
+
+与既有控制面一致：Host 白名单（DNS rebinding 防护）对所有请求生效；GET/POST
+`/v1/scrape` 都校验同源 Origin/Referer（curl 与本地脚本不带这两个头，正常放行），
+防止恶意网页借本机服务发起跨站抓取。接口无鉴权，与其余 `crawler-ui` 路由一样
+只应绑定回环地址。
+
 ### Docker
 
 ```bash

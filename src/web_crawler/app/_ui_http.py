@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, urlparse
 from web_crawler.app import db as database
 from web_crawler.parser.rules import MAX_RULES_BYTES, ExtractionRules
 
+from ._scrape import ScrapeError, scrape_page
 from ._ui_helpers import (
     DEFAULT_BLOCK_KEYWORDS,
     DEFAULT_OUTPUT,
@@ -55,6 +56,8 @@ from ._ui_state import (
 
 _log = logging.getLogger(__name__)
 _PAGE_AUDIT_BATCH_SIZE = 16
+# /v1/scrape 的 JSON 请求体上限（只含 url + 布尔开关，正常远小于 1 KiB）
+_SCRAPE_MAX_BODY_BYTES = 64 * 1024
 
 # Host 头主机部分的合法形式：括号 IPv6 字面量（[::1] / [fe80::1%12]）
 # 或常规 reg-name / IPv4（字母数字点横线）。含 / \ ? # @ : 等保留字符的
@@ -145,6 +148,13 @@ def _active_task_counts() -> dict[str, int]:
     return {"crawler": crawler, "reverse": reverse, "captcha": captcha}
 
 
+def _truthy_flag(value: object) -> bool:
+    """解析布尔开关：``True`` 或 ``1/true/yes/on`` 视为真（大小写不敏感）。"""
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _pagination(query: dict[str, list[str]], default_size: int) -> tuple[int, int]:
     try:
         page = int(query.get("page", ["1"])[0])
@@ -221,12 +231,78 @@ class Handler(BaseHTTPRequestHandler):
                 _log.exception("db update_task_status failed for %s", job.id)
         return {"ok": True}
 
+    # ── /v1/scrape（一次调用返回全部产物，对标 Firecrawl）──────────────
+
+    def _read_scrape_request(self) -> tuple[str, bool]:
+        """解析 ``POST /v1/scrape``：JSON 请求体（首选）或表单编码。
+
+        JSON 形如 ``{"url": "...", "include_html": false}``；表单为
+        ``url=...&include_html=1``。两者都缺省时回落到查询串，兼容
+        ``POST /v1/scrape?url=...`` 的脚本写法。
+        """
+        query = parse_qs(urlparse(self.path).query)
+        media_type = (self.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+        if media_type == "application/json":
+            try:
+                declared_length = int(self.headers.get("content-length", "0") or "0")
+            except ValueError:
+                declared_length = 0
+            try:
+                body = self.read_json_body(_SCRAPE_MAX_BODY_BYTES)
+            except ValueError as exc:  # 请求体超限
+                raise ScrapeError(400, "invalid_body", str(exc)) from exc
+            if body is None:
+                if declared_length > 0:
+                    raise ScrapeError(400, "invalid_body", "请求体不是合法 JSON")
+                body = {}
+            if not isinstance(body, dict):
+                raise ScrapeError(400, "invalid_body", "请求体必须是 JSON 对象")
+            url: object = body.get("url", query.get("url", [""])[0])
+            include: object = body.get("include_html", query.get("include_html", [""])[0])
+        else:
+            form = self.read_form(keep_blank_values=True)
+            url = form.get("url", query.get("url", [""]))[0]
+            include = form.get("include_html", query.get("include_html", [""]))[0]
+        if not isinstance(url, str):
+            raise ScrapeError(400, "invalid_url", "url 必须是字符串")
+        return url, _truthy_flag(include)
+
+    def _run_scrape(self, url: str, include_html: bool) -> None:
+        """执行一次抓取并输出 JSON；结构化错误映射为对应状态码。"""
+        try:
+            payload = scrape_page(url, include_html=include_html)
+        except ScrapeError as exc:
+            self._scrape_error(exc, url)
+            return
+        self.respond_json(payload)
+
+    def _scrape_error(self, exc: ScrapeError, url: str) -> None:
+        payload: dict[str, object] = {
+            "error": exc.code,
+            "message": exc.message,
+            "url": url,
+        }
+        payload.update(exc.details)
+        self.respond_json(payload, status=exc.status)
+
     def do_GET(self) -> None:
         # DNS rebinding 防护：所有端点一视同仁，Host 不在白名单直接 403
         if not self._is_host_allowed():
             self._reject_host()
             return
         path = urlparse(self.path).path
+        if path == "/v1/scrape":
+            # GET 也要过同源校验：否则恶意页面可用 <img>/<script> 触发本机
+            # 服务去抓任意公网 URL（POST 的 CSRF 防护可被 GET 绕过）。
+            if not self._is_same_origin_request():
+                self.respond_json({"ok": False, "error": "跨站请求被拒绝"}, status=403)
+                return
+            query = parse_qs(urlparse(self.path).query)
+            self._run_scrape(
+                query.get("url", [""])[0],
+                _truthy_flag(query.get("include_html", [""])[0]),
+            )
+            return
         if self.path in {"/", "/index.html"}:
             self.respond(
                 200,
@@ -403,6 +479,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         query = parse_qs(urlparse(self.path).query)
         path = urlparse(self.path).path
+        if path == "/v1/scrape":
+            try:
+                url, include_html = self._read_scrape_request()
+            except ScrapeError as exc:
+                self._scrape_error(exc, "")
+                return
+            self._run_scrape(url, include_html)
+            return
         if path in {"/crawl/config/import", "/crawl/config/export"}:
             try:
                 if path.endswith("/import"):
