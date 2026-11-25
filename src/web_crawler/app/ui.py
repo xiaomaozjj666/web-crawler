@@ -83,7 +83,7 @@ def main() -> None:
 
     from web_crawler import __version__
 
-    _parser = _ap.ArgumentParser(description="Web Resource Crawler UI")
+    _parser = _ap.ArgumentParser(prog="crawler-ui", description="Web 资源采集控制台（本地 Web UI）")
     _parser.add_argument(
         "-V",
         "--version",

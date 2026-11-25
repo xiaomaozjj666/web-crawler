@@ -15,6 +15,15 @@ Scrapling 风格的隐身网页爬虫库：**自适应选择器**、**TLS 指纹
 
 📖 **完整文档**（架构详解 / API 参考 / 逆向 Agent 手册）：[https://xiaomaozjj666.github.io/web-crawler/](https://xiaomaozjj666.github.io/web-crawler/)
 
+## 最快上手
+
+```bash
+pip install "stealth-web-crawler[all]"    # 核心 + TLS 隐身 + JS 渲染；源码安装见「安装与运行」
+python -m web_crawler.app.ui --open       # 本地控制台：http://127.0.0.1:8765
+```
+
+写代码时导入名是 `web_crawler`（发行名是 `stealth-web-crawler`）；抓取 / 解析 / Spider 三段示例见 [快速开始](#快速开始)，Docker 与 MCP 接入见 [安装与运行](#安装与运行)。
+
 ## 分层架构
 
 ```mermaid
@@ -43,7 +52,7 @@ flowchart TB
 
 ## 界面预览
 
-本地 Web UI（`python -m web_crawler.app.ui`，默认 http://127.0.0.1:8765）：网页采集（图片/JS/视频/文件下载、并发与断点续传）、JS 逆向 Agent、任务历史三个入口，SSE 实时推送进度与日志。
+本地 Web UI（`python -m web_crawler.app.ui`，默认 http://127.0.0.1:8765）：网页采集（图片/JS/视频/文件下载、并发与断点续传）、JS 逆向 Agent、任务历史三个入口，SSE 实时推送进度与日志。表单顶部提供「常用预设」（单页资源 / 整站镜像 / 正文转 Markdown / 视频资源清单），一键勾好一组选项后仍可微调；勾选「只生成清单，不下载文件」后，仅下载阶段生效的选项会置灰并标注「当前不生效」，但不会禁用控件、也不改变提交的字段。
 
 | 网页采集控制台 · 本地 Web UI |
 | :---: |
@@ -353,10 +362,11 @@ playwright install chromium        # 仅 DynamicFetcher / StealthyFetcher 需要
 | `web-crawler-reverse` | JS 逆向 Agent 命令行 |
 | `web-crawler-startproject` | 爬虫项目脚手架（对标 `scrapy startproject`）：生成含示例 Spider 的可跑骨架 |
 | `web-crawler-shell` | 交互式调试 shell（对标 `scrapy shell`）：`fetch <url>` 后即时试 css/xpath/links |
+| `web-captcha` | 图片验证码识别 CLI（文本 OCR / 滑块定位 / 点选坐标） |
 
 ### 统一 CLI 输出与爬取反馈
 
-六个入口均提供互斥的 `-q/--quiet`、`-v/--verbose`、`--json`：
+七个入口均提供互斥的 `-q/--quiet`、`-v/--verbose`、`--json`：
 
 | 模式 | 行为 |
 | --- | --- |
@@ -428,9 +438,9 @@ py -m web_crawler.app.ui --host 0.0.0.0 --port 8765 --allow-remote
 PYTHONPATH=src python -m web_crawler.app.ui --open
 ```
 
-> 本仓库不附带任何一键启动脚本。个人如需解锁内网/云元数据目标，可在
-> **自己的可信环境**里设置 `WEB_CRAWLER_POWER_MODE=1` 后运行
-> （见下方 [Power Mode](#-power-mode个人全解锁默认关闭) 章节）。
+> 仓库根目录的 `启动爬虫-满血版.cmd` 是个人可信环境用的启动器：它会设置
+> `WEB_CRAWLER_POWER_MODE=1`（解锁内网/云元数据目标），**不要**在有真实
+> 凭据的机器上随意运行。常规使用请按上面的 `web-crawler` / `crawler-ui` 启动。
 
 ### Docker
 

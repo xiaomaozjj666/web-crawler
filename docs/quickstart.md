@@ -44,10 +44,16 @@ playwright install chromium      # 仅 DynamicFetcher / StealthyFetcher 需要
     需要 `[dev]` 开发工具（pytest / ruff / mypy）时，克隆仓库后运行
     `pip install -e ".[dev]"`。
 
-安装成功后会自动注册六个命令：`web-crawler`（资源下载 CLI）、`crawler-ui`
+安装成功后会自动注册七个命令：`web-crawler`（资源下载 CLI）、`crawler-ui`
 （本地 Web UI）、`web-crawler-mcp`（MCP 服务）、`web-crawler-reverse`
 （JS 逆向 CLI）、`web-crawler-startproject`（项目脚手架）、
-`web-crawler-shell`（交互式调试 shell）。
+`web-crawler-shell`（交互式调试 shell）、`web-captcha`（图片验证码识别 CLI）。
+
+!!! tip "本地 Web UI：三分钟"
+    资源采集也可以完全不开命令行——运行 `crawler-ui --open`（默认
+    http://127.0.0.1:8765）后，在「网页采集」页填 URL、点「常用预设」
+    （单页资源 / 整站镜像 / 正文转 Markdown / 视频资源清单）再点「开始采集」即可；
+    SSE 实时推送进度，勾选「只生成清单」后仅下载阶段生效的选项会自动置灰。
 
 ## 第一个请求：隐身抓取
 

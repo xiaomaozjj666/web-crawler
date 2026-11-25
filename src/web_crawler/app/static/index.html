@@ -70,6 +70,21 @@
     textarea { min-height: 72px; resize: vertical; font-family: Consolas, monospace; font-size: 13px; }
     .row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
     .opt-group { margin-bottom: 14px; }
+    /* 折叠的「请求设置」后面紧跟「抓取范围」标题，需要额外上边距，否则标题贴着摘要行 */
+    .section + .opt-group { margin-top: 18px; }
+    /* 选项网格里的说明文字独占一整行，避免挤进某个格子把后续复选框顶乱 */
+    .grid > .hint { grid-column: 1 / -1; margin-top: -4px; }
+    /* 预设按钮条 */
+    .preset-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 14px 0 4px; }
+    .preset-label { font-size: 13px; font-weight: 600; color: var(--muted); margin-right: 4px; }
+    .preset-btn { padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--text); font-size: 13px; cursor: pointer; }
+    .preset-btn:hover { border-color: var(--accent, #4c8dff); }
+    .preset-btn[aria-pressed="true"] { background: var(--accent, #4c8dff); border-color: var(--accent, #4c8dff); color: #fff; }
+    .preset-status { margin: 0 0 0 4px; }
+    /* 当前组合下不生效的选项：置灰但保留勾选值（仍随表单提交，不改变既有语义） */
+    .is-moot { opacity: .45; }
+    .is-moot::after { content: "（当前不生效）"; font-size: 12px; font-weight: 400; color: var(--muted); }
+    #crawler-request-settings > summary { cursor: pointer; font-weight: 600; font-size: 13px; }
     .opt-group h4 { margin: 0 0 8px; font-size: 13px; color: var(--text-muted, #888); font-weight: 600; }
     .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 18px; margin-top: 14px; }
     .check { display: flex; align-items: center; gap: 8px; font-weight: 500; color: var(--text); font-size: 14px; cursor: pointer; }
@@ -106,6 +121,8 @@
       .action-dock { padding: 10px 20px; }
       .action-dock .buttons { gap: 8px; }
       .action-dock .buttons button { flex: 1 1 auto; padding: 10px 12px; }
+      /* 触控目标不低于 44px；桌面端保持胶囊按钮的紧凑高度 */
+      .preset-btn { min-height: 44px; }
     }
 
     /* ========== JS 逆向 Agent 面板 ========== */
@@ -354,6 +371,14 @@
           <label for="out">保存目录</label>
           <input id="out" name="out" type="text" value="" placeholder="留空则保存到 程序目录/crawler_output">
 
+          <div class="preset-bar" role="group" aria-label="常用预设">
+            <span class="preset-label">常用预设</span>
+            <button type="button" class="preset-btn" data-preset="single" title="只抓当前页的图片、CSS、JS 等资源并下载">单页资源</button>
+            <button type="button" class="preset-btn" data-preset="mirror" title="跟随站内链接与 Sitemap，重写 HTML 便于离线浏览">整站镜像</button>
+            <button type="button" class="preset-btn" data-preset="markdown" title="只把正文转成 Markdown，不下载页面资源">正文转 Markdown</button>
+            <button type="button" class="preset-btn" data-preset="video" title="只登记视频相关资源地址（含播放列表地址），不展开分段、不下载文件">视频资源清单</button>
+            <span id="preset-status" class="hint preset-status" role="status"></span>
+          </div>
           <div class="row">
             <div><label for="max_pages">最多扫描页面</label><input id="max_pages" name="max_pages" type="number" min="1" value="1"></div>
             <div><label for="workers">并发线程数</label><input id="workers" name="workers" type="number" min="1" max="64" value="8"></div>
@@ -366,7 +391,8 @@
             <div></div><div></div>
           </div>
 
-          <div class="section">
+          <details id="crawler-request-settings" class="section">
+            <summary>请求设置：Cookie、Referer、请求头与过滤关键词（可选）</summary>
             <label for="cookie">Cookie</label>
             <textarea id="cookie" name="cookie" placeholder="name=value; name2=value2"></textarea>
             <div class="hint">只填你自己的授权 Cookie。</div>
@@ -380,7 +406,7 @@
             <label for="block_keywords">过滤关键词 / 域名</label>
             <textarea id="block_keywords" name="block_keywords">{block_keywords}</textarea>
             <div class="hint">URL 含这些关键词则跳过。已内置常见广告和验证服务关键词。</div>
-          </div>
+          </details>
 
           <div class="opt-group">
             <h4>抓取范围</h4>
@@ -817,6 +843,11 @@
         else field.value = config[name] == null ? '' : String(config[name]);
       });
       if (config.field_rules) document.getElementById('crawler-rule-settings').open = true;
+      if (window.__crawlPresetSync) window.__crawlPresetSync();
+      // 导入的配置带了请求设置时自动展开，避免用户看不到被填进折叠区的值
+      if (['referer', 'headers'].some(function(n) { return config[n]; }) || (config.block_keyword && config.block_keyword.length)) {
+        document.getElementById('crawler-request-settings').open = true;
+      }
     }
     var configFeedback = document.getElementById('crawl-config-status');
     var configFile = document.getElementById('crawl-config-file');
@@ -2601,6 +2632,74 @@
 
     capRefreshJobs();
     setInterval(capRefreshJobs, 15000);
+  })();
+  </script>
+  <script>
+  // 采集预设 + 选项冲突提示。只改复选框/数字框的值，不禁用任何控件，
+  // 因此提交的表单字段与手动勾选完全一致。
+  (function() {
+    var form = document.getElementById('crawler-form');
+    if (!form) return;
+    var BASE = {
+      same_domain: true, include_css_urls: true, crawl_pages: false, sitemap: false,
+      expand_playlists: false, resume_crawl: false, list_only: false, video_mode: false,
+      video_only: false, resume: true, dedup: true, download_linked_data: false,
+      organize: true, strip_overlays: true, rewrite_html: false, smart_extract: false,
+      extract_text: false, extract_markdown: false
+    };
+    var PRESETS = {
+      single: { checks: {}, max_pages: 1, label: '单页资源' },
+      mirror: { checks: { crawl_pages: true, sitemap: true, rewrite_html: true, resume_crawl: true, organize: false }, max_pages: 200, label: '整站镜像' },
+      markdown: { checks: { list_only: true, extract_markdown: true }, max_pages: 1, label: '正文转 Markdown' },
+      video: { checks: { list_only: true, video_mode: true, video_only: true }, max_pages: 1, label: '视频资源清单' }
+    };
+    // 勾选「只生成清单」后不再下载文件，这些只在下载阶段起作用的选项不会生效
+    var MOOT_WHEN_LIST_ONLY = ['resume', 'dedup', 'decrypt', 'include_css_urls', 'expand_playlists', 'max_bytes'];
+    var buttons = Array.prototype.slice.call(document.querySelectorAll('.preset-btn'));
+    var statusEl = document.getElementById('preset-status');
+    var el = function(name) { return form.elements.namedItem(name); };
+
+    function presetValues(key) {
+      var p = PRESETS[key], v = {};
+      Object.keys(BASE).forEach(function(k) { v[k] = k in p.checks ? p.checks[k] : BASE[k]; });
+      return v;
+    }
+    function matchesPreset(key) {
+      var v = presetValues(key);
+      var ok = Object.keys(v).every(function(k) { var f = el(k); return !f || f.checked === v[k]; });
+      var mp = el('max_pages');
+      return ok && (!mp || Number(mp.value) === PRESETS[key].max_pages);
+    }
+    function syncMoot() {
+      var listOnly = el('list_only') && el('list_only').checked;
+      MOOT_WHEN_LIST_ONLY.forEach(function(name) {
+        var f = el(name); if (!f) return;
+        var box = f.type === 'checkbox' ? f.closest('label') : f.closest('div');
+        if (!box) return;
+        box.classList.toggle('is-moot', !!listOnly);
+        if (listOnly) box.title = '已勾选「只生成清单，不下载文件」，此项只在下载时生效';
+        else box.removeAttribute('title');
+      });
+    }
+    function sync() {
+      var active = null;
+      Object.keys(PRESETS).forEach(function(k) { if (!active && matchesPreset(k)) active = k; });
+      buttons.forEach(function(b) { b.setAttribute('aria-pressed', String(b.dataset.preset === active)); });
+      statusEl.textContent = active ? '' : '当前为自定义组合';
+      syncMoot();
+    }
+    function apply(key) {
+      var v = presetValues(key);
+      Object.keys(v).forEach(function(k) { var f = el(k); if (f) f.checked = v[k]; });
+      var mp = el('max_pages'); if (mp) mp.value = PRESETS[key].max_pages;
+      sync();
+      statusEl.textContent = '已应用「' + PRESETS[key].label + '」，可继续微调下面的选项';
+    }
+    buttons.forEach(function(b) { b.addEventListener('click', function() { apply(b.dataset.preset); }); });
+    form.addEventListener('change', sync);
+    form.addEventListener('input', function(e) { if (e.target && e.target.name === 'max_pages') sync(); });
+    window.__crawlPresetSync = sync;
+    sync();
   })();
   </script>
 </body>
