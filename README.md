@@ -657,6 +657,7 @@ src/web_crawler/          # 核心库
     db.py                 # SQLite 持久化（任务 + 结果，线程安全）
     ui.py                 # 本地 Web UI（SSE 实时推送）
     static/index.html     # UI 前端模板（运行时读取）
+    static/js/*.js        # 页面脚本（文件顺序即执行顺序，经 /static/js/*.js 路由提供）
   py.typed                # PEP 561 类型标记
 tests/                    # pytest 测试套件
 benchmarks.py             # 解析器/fetcher 微基准 + 回归检测

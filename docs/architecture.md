@@ -66,6 +66,7 @@ src/web_crawler/app/       # 应用层（随核心包分发）
   ui.py                   # 本地 Web UI（SSE 实时推送）
   static/
     index.html            # UI 前端模板（运行时读取）
+    js/*.js               # 页面脚本（顺序即执行顺序，经 /static/js/*.js 路由提供）
 tests/                    # pytest 测试套件
 benchmarks.py             # 解析器/fetcher 微基准 + 内置基线 + 回归检测
 mkdocs.yml                # API 文档站点配置

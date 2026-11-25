@@ -84,7 +84,9 @@ def _as_float(value: object, default: float) -> float:
 
 # 前端页面模板：独立文件便于维护（web_crawler/app/static/index.html），运行时读取。
 # 模板含 {block_keywords} 占位符，由 do_GET 在响应时替换。
-_PAGE_TEMPLATE_PATH = Path(__file__).resolve().parent / "static" / "index.html"
+# 同目录下的 js/ 由 ``_ui_http`` 的 /static/js/*.js 路由提供（同一资源根）。
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+_PAGE_TEMPLATE_PATH = STATIC_DIR / "index.html"
 
 
 def _load_page_template() -> str:

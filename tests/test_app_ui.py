@@ -11,6 +11,7 @@ import base64
 import http.client
 import json
 import logging
+import re
 import struct
 import sys
 import threading
@@ -1506,6 +1507,51 @@ class TestPageTemplate:
         )
         page = ui._load_page_template()
         assert "模板缺失" in page
+
+
+class TestExternalScripts:
+    """页面外置脚本：index.html 的引用与实际文件一致，静态路由正确响应。"""
+
+    def test_page_references_external_scripts_in_order(self) -> None:
+        """脚本按拆分前的执行顺序引入，且引用的文件真实存在（打包依赖 package-data）。"""
+        srcs = re.findall(r'<script src="([^"]+)"></script>', ui.PAGE)
+        assert srcs == [
+            "/static/js/01-theme-tabs.js",
+            "/static/js/02-crawler.js",
+            "/static/js/03-reverse-agent.js",
+            "/static/js/04-history-results.js",
+            "/static/js/05-captcha.js",
+        ]
+        for src in srcs:
+            on_disk = _ui_helpers.STATIC_DIR / src.removeprefix("/static/")
+            assert on_disk.is_file(), f"页面引用了不存在的脚本：{on_disk}"
+            assert on_disk.read_text(encoding="utf-8").strip(), src
+
+    def test_serves_script_with_js_content_type_and_cache_headers(self, http_server: str) -> None:
+        """GET /static/js/*.js 返回 JS 类型 + no-cache + ETag，内容与磁盘一致。"""
+        url = f"{http_server}/static/js/01-theme-tabs.js"
+        resp = httpx.get(url)
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/javascript; charset=utf-8"
+        assert resp.headers["cache-control"] == "no-cache"
+        assert resp.headers["etag"]
+        on_disk = _ui_helpers.STATIC_DIR / "js" / "01-theme-tabs.js"
+        assert resp.content == on_disk.read_bytes()
+
+    def test_etag_revalidation_returns_304(self, http_server: str) -> None:
+        """带 If-None-Match 复验未改动的脚本回 304（不重复传主体）。"""
+        url = f"{http_server}/static/js/05-captcha.js"
+        first = httpx.get(url)
+        again = httpx.get(url, headers={"If-None-Match": first.headers["etag"]})
+        assert again.status_code == 304
+        assert again.content == b""
+
+    def test_unknown_or_traversal_path_returns_404(self, http_server: str) -> None:
+        """白名单只匹配单段文件名：不存在的文件与编码后的穿越路径都 404。"""
+        assert httpx.get(f"{http_server}/static/js/missing-asset.js").status_code == 404
+        # %2e%2e%2f 不被 URL 规范化，服务端看到的仍是一段带编码的文件名
+        traversal = f"{http_server}/static/js/%2e%2e%2f%2e%2e%2findex.html"
+        assert httpx.get(traversal).status_code == 404
 
 
 class TestMain:

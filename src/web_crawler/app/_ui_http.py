@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import logging
 import re
@@ -27,6 +28,7 @@ from ._ui_helpers import (
     DEFAULT_BLOCK_KEYWORDS,
     DEFAULT_OUTPUT,
     PAGE,
+    STATIC_DIR,
     _is_loopback_host,
     _normalize_imported_config,
     _open_folder,
@@ -58,6 +60,15 @@ _log = logging.getLogger(__name__)
 _PAGE_AUDIT_BATCH_SIZE = 16
 # /v1/scrape 的 JSON 请求体上限（只含 url + 布尔开关，正常远小于 1 KiB）
 _SCRAPE_MAX_BODY_BYTES = 64 * 1024
+
+# 前端静态资源：页面的 <script src="/static/js/..."> 从这里取（与页面模板同根）。
+# 路由用「单段文件名」白名单匹配，天然排除 ../ 之类路径穿越；
+# 文件不存在直接 404（新增 js 无需改 Python）。
+_STATIC_JS_RE = re.compile(r"^/static/js/([A-Za-z0-9._-]+\.js)$")
+_STATIC_JS_CONTENT_TYPE = "application/javascript; charset=utf-8"
+# 本地工具 UI 的 js 与 Python 版本同步发布、URL 不带指纹：走 no-cache 强制
+# 每次用 ETag 复验（未改动回 304），既不缓存旧脚本也不重复传主体。
+_STATIC_CACHE_CONTROL = "no-cache"
 
 # Host 头主机部分的合法形式：括号 IPv6 字面量（[::1] / [fe80::1%12]）
 # 或常规 reg-name / IPv4（字母数字点横线）。含 / \ ? # @ : 等保留字符的
@@ -291,6 +302,10 @@ class Handler(BaseHTTPRequestHandler):
             self._reject_host()
             return
         path = urlparse(self.path).path
+        static_match = _STATIC_JS_RE.fullmatch(path)
+        if static_match is not None:
+            self._serve_static_js(static_match.group(1))
+            return
         if path == "/v1/scrape":
             # GET 也要过同源校验：否则恶意页面可用 <img>/<script> 触发本机
             # 服务去抓任意公网 URL（POST 的 CSRF 防护可被 GET 绕过）。
@@ -910,6 +925,28 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):  # pragma: no cover - 客户端断开连接时触发
             # 客户端关闭连接
             return
+
+    def _serve_static_js(self, name: str) -> None:
+        """响应 ``/static/js/<name>``：ETag 复验，未改动回 304。"""
+        try:
+            body = (STATIC_DIR / "js" / name).read_bytes()
+        except OSError:
+            self.send_error(404)
+            return
+        etag = '"' + hashlib.sha256(body).hexdigest() + '"'
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("etag", etag)
+            self.send_header("cache-control", _STATIC_CACHE_CONTROL)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("content-type", _STATIC_JS_CONTENT_TYPE)
+        self.send_header("content-length", str(len(body)))
+        self.send_header("cache-control", _STATIC_CACHE_CONTROL)
+        self.send_header("etag", etag)
+        self.end_headers()
+        self.wfile.write(body)
 
     def respond(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)

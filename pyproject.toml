@@ -189,4 +189,5 @@ include = ["web_crawler*"]
 
 [tool.setuptools.package-data]
 web_crawler = ["py.typed"]
-"web_crawler.app" = ["py.typed", "static/*.html"]
+# 前端页面与其外置脚本都是运行时资源：漏带任何一个都会让 Web UI 脚本 404
+"web_crawler.app" = ["py.typed", "static/*.html", "static/js/*.js"]
