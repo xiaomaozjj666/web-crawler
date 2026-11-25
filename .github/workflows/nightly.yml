@@ -27,8 +27,8 @@ jobs:
     # ReverseAgent 的 observe→think→act 循环）只在夜间与手动触发时执行，
     # 日间 CI 以 -m "not slow" 排除，保住 PR 反馈速度。
     # 依赖装法与 ci.yml 的 test-extras 对齐（all,dev,camoufox,captcha,mcp），
-    # 另补 visual（Pillow）；浏览器二进制需显式下载——test-extras 从不跑
-    # slow 测试所以没装过浏览器，这里必须补上。
+    # 另补 visual（Pillow）；浏览器二进制需显式下载——test-extras 只为自己
+    # 那组 ui_smoke 装了 Chromium，Camoufox 与 slow e2e 的浏览器这里必须补上。
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

@@ -99,8 +99,10 @@ jobs:
           cache-dependency-path: pyproject.toml
       - run: pip install -e ".[all,dev,camoufox,captcha,mcp]"
       - name: Run tests with coverage
+        # ui_smoke 在下一步用真实浏览器单独跑：浏览器测试与覆盖率测量隔离，
+        # 避免 Chromium/驱动抖动影响 97% 卡口（其余矩阵 job 无浏览器，自动 skip）
         run: >
-          pytest -m "not slow" --tb=short -q
+          pytest -m "not slow and not ui_smoke" --tb=short -q
           --cov=web_crawler
           --cov-fail-under=97
           --cov-report=term-missing
@@ -114,6 +116,12 @@ jobs:
           name: full-deps-ubuntu-py3.12
           token: "${{ secrets.CODECOV_TOKEN }}"
           fail_ci_if_error: false
+      - name: Install Playwright Chromium for Web UI smoke tests
+        # 首次约 1~2 分钟（浏览器包 + 系统依赖）；tests/test_ui_smoke.py 自身
+        # 不会下载浏览器，缺浏览器时整组 skip
+        run: python -m playwright install --with-deps chromium
+      - name: Run Web UI smoke tests (real browser)
+        run: pytest tests/test_ui_smoke.py -m ui_smoke -q --tb=short
 
   bench:
     runs-on: ubuntu-latest

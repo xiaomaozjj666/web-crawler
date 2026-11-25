@@ -127,7 +127,12 @@ asyncio_mode = "auto"
 # 异常后整个 pytest 以 INTERNALERROR 退出（2026-10-27 Nightly e2e 实测）。
 # 显式声明为 function（pytest-asyncio 未来版本的默认值），一次性消除该告警。
 asyncio_default_fixture_loop_scope = "function"
-markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    # 真实浏览器（Playwright + Chromium）驱动 crawler-ui 的冒烟测试；
+    # 未安装浏览器时整组 skip，CI 只在 full-deps job 执行（见 .github/workflows/ci.yml）
+    "ui_smoke: real-browser Web UI smoke tests (needs Playwright + Chromium)",
+]
 filterwarnings = [
     # 默认把一切警告升级为错误（严格模式，pandas/numpy 同款做法）；
     # 下方的 ignore 条目在其之前插入过滤器栈，优先级更高，即"先豁免后严格"
