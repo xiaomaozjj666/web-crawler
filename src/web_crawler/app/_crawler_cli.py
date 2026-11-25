@@ -98,6 +98,12 @@ Examples:
     )
     parser.add_argument("--max-pages", type=_positive_int, default=1, help="Maximum pages to scan.")
     parser.add_argument(
+        "--max-resources",
+        type=_non_negative_int,
+        default=0,
+        help="Cap total resources before download; 0 disables.",
+    )
+    parser.add_argument(
         "--include-css-urls",
         action="store_true",
         help="Download CSS url(...) and @import resources.",

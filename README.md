@@ -379,6 +379,8 @@ TTY 下爬取进度原地刷新。重定向、管道和 CI 环境使用节流日
 
 `status` 为 `success`（完成）、`partial`（存在页面或资源失败）、`skipped`（页面按规则跳过）、`cancelled`（取消）或 `error`（无法完成扫描）。采集退出码为 `0`（完成、部分完成或按规则跳过）、`1`（取消）、`2`（参数错误）或 `3`（页面全部失败）。`listed_only` 是旧版 `skipped` 计数中的仅列出资源数。
 
+`--max-pages` 只限页面数；大站的 CSS 内资源与播放列表展开没有天然上限，需要总量护栏时用 `--max-resources N`（0 = 不限）在进入下载前截断，并输出 warning。`run_report.json` 的 `top_pages` 每项还带该页的 `status_code`、`content_type`、`description` 与 `lang`（取不到时为 `null` / 空串），便于逐页核对抓到的到底是什么。
+
 ```bash
 web-crawler --url https://example.com --out ./out --json
 # 单页无资源时的字段示例（数值来自实际运行，不是固定模板）：

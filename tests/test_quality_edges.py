@@ -162,3 +162,32 @@ def test_restore_state_keeps_blocked_assets(tmp_path: Path, monkeypatch) -> None
         "first_error": "x",
         "blocked_assets": 4,
     }
+
+
+def test_filter_resources_honours_max_resources(tmp_path: Path) -> None:
+    """--max-resources 在进入下载前截断资源总量；0 表示不限制。"""
+    from types import SimpleNamespace
+
+    from web_crawler.app import _crawler_download as dl
+
+    def make_ctx(max_resources: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            args=SimpleNamespace(
+                same_domain=False,
+                video_only=False,
+                include_pattern=None,
+                exclude_pattern=None,
+                max_resources=max_resources,
+            ),
+            block_keywords=[],
+            all_resources=[
+                Resource(
+                    f"https://example.com/{i}.js", "script[src]", "script", "https://example.com/"
+                )
+                for i in range(5)
+            ],
+        )
+
+    assert len(dl._filter_resources(make_ctx(2))) == 2
+    assert len(dl._filter_resources(make_ctx(0))) == 5
+    assert len(dl._filter_resources(make_ctx(99))) == 5

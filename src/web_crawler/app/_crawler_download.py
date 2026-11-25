@@ -67,6 +67,16 @@ def _filter_resources(ctx: _CrawlContext) -> list[Resource]:
         resources = [r for r in resources if _include_re.search(r.url)]
     if _exclude_re:
         resources = [r for r in resources if not _exclude_re.search(r.url)]
+    # 资源总量上限（--max-resources）：只限页面时，大站的 CSS/播放列表展开
+    # 仍可能把队列撑到数万条；这里在进入下载前统一截断并如实记录。
+    max_resources = int(getattr(args, "max_resources", 0) or 0)
+    if max_resources > 0 and len(resources) > max_resources:
+        _log.warning(
+            "resource limit reached: keeping first %d of %d resources (--max-resources)",
+            max_resources,
+            len(resources),
+        )
+        resources = resources[:max_resources]
     return resources
 
 
