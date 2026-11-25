@@ -537,3 +537,108 @@ class TestValidatorCacheUnit:
         )
         cache = cache_mod.ValidatorCache.load(tmp_path)
         assert len(cache) == 1
+
+    def test_load_non_dict_payload_ignored(self, tmp_path: Path) -> None:
+        path = cache_mod.cache_path(tmp_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+        assert len(cache_mod.ValidatorCache.load(tmp_path)) == 0
+
+    def test_load_skips_empty_url_keys(self, tmp_path: Path) -> None:
+        path = cache_mod.cache_path(tmp_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"version": 1, "entries": {"": {"etag": ETAG, "saved_path": IMG_RELATIVE}}}),
+            encoding="utf-8",
+        )
+        assert len(cache_mod.ValidatorCache.load(tmp_path)) == 0
+
+    def test_save_failure_restores_dirty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        artifact = tmp_path / IMG_RELATIVE
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(IMG_DATA)
+        cache = cache_mod.ValidatorCache()
+        cache.record(IMG_URL, tmp_path, artifact, etag=ETAG, content_type="image/png", byte_count=1)
+
+        def boom(*_args: Any, **_kwargs: Any) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(cache_mod, "atomic_write_text", boom)
+        with pytest.raises(OSError):
+            cache.save(tmp_path)
+        # 写失败后仍保持 dirty：恢复写盘能力后再次保存应成功
+        monkeypatch.undo()
+        assert cache.save(tmp_path) is True
+
+    def test_conditional_headers_etag_only(self, tmp_path: Path) -> None:
+        artifact = tmp_path / IMG_RELATIVE
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(IMG_DATA)
+        cache = cache_mod.ValidatorCache()
+        cache.record(IMG_URL, tmp_path, artifact, etag=ETAG, content_type="image/png", byte_count=1)
+        assert cache.conditional_headers(IMG_URL, tmp_path) == {"If-None-Match": ETAG}
+
+    def test_conditional_headers_last_modified_only(self, tmp_path: Path) -> None:
+        artifact = tmp_path / IMG_RELATIVE
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(IMG_DATA)
+        cache = cache_mod.ValidatorCache()
+        cache.record(
+            IMG_URL,
+            tmp_path,
+            artifact,
+            last_modified=LAST_MODIFIED,
+            content_type="image/png",
+            byte_count=1,
+        )
+        assert cache.conditional_headers(IMG_URL, tmp_path) == {"If-Modified-Since": LAST_MODIFIED}
+
+    def test_reuse_missing_or_unstattable_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cache = cache_mod.ValidatorCache()
+        assert cache.reuse(IMG_URL, tmp_path) is None
+
+        artifact = tmp_path / IMG_RELATIVE
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(IMG_DATA)
+        cache.record(IMG_URL, tmp_path, artifact, etag=ETAG, content_type="image/png", byte_count=1)
+
+        # 越过 resolve_saved_path 的 is_file 检查，专门命中 reuse() 里的 stat 失败分支
+        monkeypatch.setattr(
+            cache_mod.ValidatorCache,
+            "resolve_saved_path",
+            staticmethod(lambda _artifact, _output_dir: artifact),
+        )
+
+        def broken_stat(*_args: Any, **_kwargs: Any) -> Any:
+            raise OSError("gone")
+
+        monkeypatch.setattr(Path, "stat", broken_stat)
+        assert cache.reuse(IMG_URL, tmp_path) is None
+
+    def test_resolve_empty_or_unresolvable_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert (
+            cache_mod.ValidatorCache.resolve_saved_path(
+                cache_mod.CachedArtifact(etag=ETAG, saved_path=""), tmp_path
+            )
+            is None
+        )
+
+        original_resolve = Path.resolve
+        cache = cache_mod.ValidatorCache()
+        artifact = tmp_path / IMG_RELATIVE
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(IMG_DATA)
+        cache.record(IMG_URL, tmp_path, artifact, etag=ETAG, content_type="image/png", byte_count=1)
+
+        def broken_resolve(self: Path, *args: Any, **kwargs: Any) -> Path:
+            raise ValueError("bad path")
+
+        monkeypatch.setattr(Path, "resolve", broken_resolve)
+        assert cache.reuse(IMG_URL, tmp_path) is None
+        monkeypatch.setattr(Path, "resolve", original_resolve)

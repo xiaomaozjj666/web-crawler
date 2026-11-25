@@ -169,7 +169,7 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
-# 门禁值略低于实测（默认依赖档 ~94%；全量依赖档另由 CI 以 97 卡口），为平台分支差异留余量；只升不降
+# 门禁值略低于实测（默认依赖档 ~94%；全量依赖档另由 CI 以 96 卡口），为平台分支差异留余量；只升不降
 fail_under = 92
 
 [tool.mypy]
