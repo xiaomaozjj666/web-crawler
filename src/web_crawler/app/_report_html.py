@@ -402,6 +402,11 @@ def diagnostic_for_status(status: str) -> str:
         return "Encrypted playlist detected: recorded only; protected playlist entries are not expanded or decrypted."
     if "dedup" in lowered:
         return "Skipped: identical content (SHA256) already downloaded from a different URL."
+    if "not modified" in lowered:
+        return (
+            "304 Not Modified: upstream confirmed the resource is unchanged and the previous "
+            "local artifact was reused (--cache); nothing was downloaded."
+        )
     if status.startswith("error"):
         return (
             "Request failed: check network connectivity, URL validity, headers, and authorization."

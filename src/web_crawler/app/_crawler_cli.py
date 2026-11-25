@@ -243,6 +243,13 @@ Examples:
         "--resume-crawl", action="store_true", help="Resume interrupted crawl from saved state."
     )
     parser.add_argument(
+        "--cache",
+        action="store_true",
+        help="Revalidate instead of re-downloading: send If-None-Match/If-Modified-Since "
+        "from <out>/.cache/validators.json and reuse the previous artifact on HTTP 304. "
+        "Off by default.",
+    )
+    parser.add_argument(
         "--extract-text",
         action="store_true",
         help="Extract readable article text from saved HTML pages.",

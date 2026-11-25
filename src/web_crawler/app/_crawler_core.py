@@ -221,6 +221,30 @@ def report_progress(args: argparse.Namespace | None, **payload: object) -> None:
 # ── Fetch（应用层横切关注点 + 库级网络管线）─────────────────────
 
 
+def _header_value(headers: Any, name: str) -> str:
+    """大小写不敏感地取一个响应头（httpx 全小写，curl_cffi 常见 Title-Case）。"""
+    if headers is None:
+        return ""
+    getter = getattr(headers, "get", None)
+    if getter is not None:
+        try:
+            value = getter(name)
+        except Exception:  # pragma: no cover - 畸形映射的防御
+            value = None
+        if value:
+            return str(value)
+    items = getattr(headers, "items", None)
+    if items is not None:
+        lowered = name.lower()
+        try:
+            for key, value in items():
+                if str(key).lower() == lowered and value:
+                    return str(value)
+        except Exception:  # pragma: no cover - 畸形映射的防御
+            return ""
+    return ""
+
+
 def fetch(
     url: str,
     timeout: int,
@@ -231,6 +255,10 @@ def fetch(
     rate_limiter: DomainRateLimiter | None = None,
     control_args: argparse.Namespace | None = None,
     meta: dict[str, object] | None = None,
+    *,
+    extra_headers: dict[str, str] | None = None,
+    allow_not_modified: bool = False,
+    response_meta: dict[str, object] | None = None,
 ) -> tuple[bytes, str]:
     """抓取 ``url``：``resume_path`` 时流式落盘（断点续传），否则整包返回。
 
@@ -243,6 +271,15 @@ def fetch(
     ``meta`` 非空时写入本次**成功**响应的 ``status`` / ``content_type``
     （页面扫描用它填充逐页元数据；失败响应不写，避免把重试中的中间状态
     带进报告）。
+
+    ``extra_headers`` 追加到请求（``--cache`` 的条件请求头）。``allow_not_modified``
+    为真时 ``304 Not Modified`` 不再是失败：不重试、不写盘，返回 ``(b"", "")``，
+    调用方据 ``response_meta["status"]`` 判定复用。``response_meta`` 是出参，
+    写入本次响应的 ``status`` / ``content_type`` / ``etag`` / ``last_modified``
+    （含 304；与只记成功响应的 ``meta`` 区分）。
+
+    注意：条件请求头只应在 ``allow_not_modified=True`` 时发送——否则 304 的
+    空 body 会被内存路径当成「成功下载 0 字节」，覆盖掉好产物。
     """
     # SSRF 防护：请求前校验 host，拒绝私网/环回/链路本地目标（含云元数据地址）；
     # 重定向目标由库层 Fetcher 逐跳校验（scheme + host）。
@@ -255,22 +292,33 @@ def fetch(
     impersonate: str | None = getattr(control_args, "impersonate", "chrome131") if stealth else None
     proxy = getattr(control_args, "proxy", None) if control_args else None
     request_headers = _request_headers(url, headers)
+    if extra_headers:
+        request_headers.update(extra_headers)
     if stealth and request_headers.get("User-Agent") == DEFAULT_USER_AGENT:
         # TLS 指纹已伪装成浏览器，UA 不能还停留在爬虫默认值（见 _stealth_user_agent）。
         request_headers["User-Agent"] = _stealth_user_agent(impersonate)
 
     # 最终响应头暂存（on_headers 回调写入）：content_type 供返回值，
     # Retry-After 供 429 退避使用。
-    response_meta: dict[str, str] = {}
+    _state: dict[str, str] = {}
+
+    def _record_response(status: int, resp_headers: Any) -> None:
+        """把本次响应（含 304）的状态/类型/校验器写进出参 response_meta。"""
+        if response_meta is None:
+            return
+        response_meta["status"] = status
+        response_meta["content_type"] = _header_value(resp_headers, "content-type")
+        response_meta["etag"] = _header_value(resp_headers, "etag")
+        response_meta["last_modified"] = _header_value(resp_headers, "last-modified")
 
     def _on_headers(status: int, resp_headers: Any) -> None:
-        content_type = resp_headers.get("content-type") or resp_headers.get("Content-Type") or ""
-        response_meta["content_type"] = str(content_type)
+        content_type = _header_value(resp_headers, "content-type")
+        _state["content_type"] = content_type
         if meta is not None:
             meta["status"] = status
-            meta["content_type"] = str(content_type)
-        retry_after = resp_headers.get("Retry-After") or resp_headers.get("retry-after") or ""
-        response_meta["retry_after"] = str(retry_after)
+            meta["content_type"] = content_type
+        _record_response(status, resp_headers)
+        _state["retry_after"] = _header_value(resp_headers, "retry-after")
 
     def _should_abort() -> bool:
         # 每分块写入前的暂停/取消探针：先阻塞等待暂停解除，再返回是否取消。
@@ -300,42 +348,53 @@ def fetch(
                 )
                 if rate_limiter:
                     rate_limiter.record_request(url)
-                return b"", response_meta.get("content_type", "")
+                return b"", _state.get("content_type", "")
 
             # 内存路径：整包抓取（页面/robots/sitemap/CSS 等需要完整内容的资源）
             resp = fetcher.get(url, headers=request_headers)
+            if resp.status == 304 and allow_not_modified:
+                # 条件请求命中：上游确认内容未变，调用方复用上次产物（不写盘）
+                _record_response(304, resp.headers)
+                if rate_limiter:
+                    rate_limiter.record_request(url)
+                return b"", ""
             if resp.status >= 400:
                 exc = FetchError(f"HTTP Error {resp.status}")
                 exc.status = resp.status  # type: ignore[attr-defined]
                 if resp.status == 429:
-                    retry_after = (
-                        resp.headers.get("Retry-After") or resp.headers.get("retry-after") or ""
-                    )
-                    response_meta["retry_after"] = str(retry_after)
+                    _state["retry_after"] = _header_value(resp.headers, "retry-after")
                 raise exc
             content = resp.content
             if max_bytes and len(content) > max_bytes:
                 raise ValueError(f"file exceeds --max-bytes ({max_bytes})")
             if rate_limiter:
                 rate_limiter.record_request(url)
-            content_type = resp.headers.get("content-type") or resp.headers.get("Content-Type")
+            content_type = _header_value(resp.headers, "content-type")
             if meta is not None:
                 meta["status"] = resp.status
-                meta["content_type"] = str(content_type or "")
-            return content, str(content_type or "")
+                meta["content_type"] = content_type
+            _record_response(resp.status, resp.headers)
+            return content, content_type
 
         except FetchError as exc:
             message = str(exc)
+            status = getattr(exc, "status", None)
+            if allow_not_modified and status == 304:
+                # 流式路径（Fetcher.download 只接受 200/206）把 304 当错误上抛：
+                # 按条件请求命中处理，不重试、不写盘（.part 保持原样）。
+                _record_response(304, None)
+                if rate_limiter:
+                    rate_limiter.record_request(url)
+                return b"", ""
             if "aborted" in message:
                 # 用户主动中止（download 的 should_abort 探针触发）
                 raise RuntimeError("cancelled by user") from exc
             if "max_bytes" in message:
                 # 保留历史 ValueError 语义（max-bytes 超限不重试，直接上抛）
                 raise ValueError(f"file exceeds --max-bytes ({max_bytes})") from exc
-            status = getattr(exc, "status", None)
             if status is not None:
                 if status == 429 and rate_limiter:
-                    delay = rate_limiter.handle_429(url, response_meta.get("retry_after"))
+                    delay = rate_limiter.handle_429(url, _state.get("retry_after"))
                     if delay and attempt < retries:
                         wait_if_paused(control_args)  # 退避期间暂停/取消同样生效
                         time.sleep(min(delay, 30))

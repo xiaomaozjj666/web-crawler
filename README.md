@@ -381,6 +381,35 @@ TTY 下爬取进度原地刷新。重定向、管道和 CI 环境使用节流日
 
 `--max-pages` 只限页面数；大站的 CSS 内资源与播放列表展开没有天然上限，需要总量护栏时用 `--max-resources N`（0 = 不限）在进入下载前截断，并输出 warning。`run_report.json` 的 `top_pages` 每项还带该页的 `status_code`、`content_type`、`description` 与 `lang`（取不到时为 `null` / 空串），便于逐页核对抓到的到底是什么。
 
+### 增量重抓：`--cache` 条件请求缓存
+
+同一输出目录重复抓取时，`--cache`（默认关闭）把上次响应的 `ETag` / `Last-Modified`
+记进 `<输出目录>/.cache/validators.json`，下次抓同一 URL 自动带上
+`If-None-Match` / `If-Modified-Since`：
+
+```bash
+web-crawler --url https://example.com --out ./out --cache
+```
+
+- 上游回 `304 Not Modified`：不下载、不写盘，直接复用上次产物。资源清单里该行状态是
+  `ok (not modified)`，`saved_path` 指向复用的文件，`bytes` 是产物实际大小，`diagnostic`
+  说明这是 304 复用。保留 `ok` 前缀是为了兼容既有聚合语义（成功数、离线重写表都按
+  `ok*` 匹配）；`run_report.json` 的 `downloaded_bytes` 只统计本轮真正传输的字节。
+- 上游回 `2xx`：正常下载并刷新校验器。服务器不发 `ETag`/`Last-Modified` 的 URL 不会
+  发条件请求（没有可比对的校验器），按普通抓取处理。
+- 缓存永不导致任务失败：缓存文件损坏 / 旧版本格式 / 条目里的产物已被删除 / 304 回来时
+  产物恰好不见了，全部退回普通抓取，并重建条目。
+- 缓存只覆盖**资源下载**。页面 HTML 每轮仍会重新抓取（页面参与正文抽取与离线重写，
+  复用旧页面会掩盖站点改版）。
+- `--list-only` 不下载任何资源，因此不写缓存；`--resume-crawl` 的进度仍写在
+  `.crawl_state.json`，两者是不同文件，各写各的、互不覆盖。
+- 条目格式：`{"version": 1, "entries": {url: {etag, last_modified, saved_path,
+  content_type, bytes}}}`；`saved_path` 是相对输出目录的路径，整个目录搬走后仍可复用。
+
+**何时该清**：缓存只信上游的校验器，不判断本地产物是否被人改过。如果手工编辑/替换过
+输出目录里的文件，删掉 `.cache/validators.json`（或整个 `.cache/`）再抓——否则上游
+一回 304 就会把被改过的旧产物当成最新。换站点、换 `--out`、或怀疑站点误报 304 时同理。
+
 ```bash
 web-crawler --url https://example.com --out ./out --json
 # 单页无资源时的字段示例（数值来自实际运行，不是固定模板）：

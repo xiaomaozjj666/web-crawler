@@ -60,6 +60,7 @@ from web_crawler._cli import (
     emit_json,
     output_mode,
 )
+from web_crawler.app._crawler_cache import ValidatorCache, cache_path
 from web_crawler.app._crawler_cli import build_parser
 from web_crawler.app._crawler_context import (  # noqa: F401
     CRAWL_STATE_FILE,
@@ -225,6 +226,7 @@ def _crawl(args: argparse.Namespace) -> int:
         "sitemap": getattr(args, "sitemap", ""),
         "crawl_pages": getattr(args, "crawl_pages", ""),
         "resume_crawl": getattr(args, "resume_crawl", ""),
+        "cache": getattr(args, "cache", ""),
         "max_pages": getattr(args, "max_pages", ""),
         "max_bytes": getattr(args, "max_bytes", ""),
         # 反爬相关开关进报告 config：事后才能区分普通 / stealth / 渲染运行
@@ -249,6 +251,9 @@ def _crawl(args: argparse.Namespace) -> int:
     headers = {"User-Agent": args.user_agent, **extra_headers}
     output_dir = Path(args.out).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    # --cache：条件请求校验器表（损坏/旧格式在 load 内降级为空表）。
+    # 未开启时保持 None，下载层走完全不变的老路径。
+    validator_cache = ValidatorCache.load(output_dir) if getattr(args, "cache", False) else None
     try:
         root_url = normalize_url(args.url)
     except ValueError as exc:
@@ -270,6 +275,7 @@ def _crawl(args: argparse.Namespace) -> int:
         dedup=ContentDedup() if args.dedup else None,
         rules=rules,
         rule_coverage=rules.coverage() if rules is not None else None,
+        validator_cache=validator_cache,
     )
 
     # ── 页面发现与扫描 ──
@@ -309,6 +315,15 @@ def _crawl(args: argparse.Namespace) -> int:
     manifest_rows: list[ManifestRow] = []
     if resources:
         cancelled = _run_downloads(ctx, manifest_rows)
+
+    # --cache：校验器落盘（取消时也保存已完成条目；无变更不写文件）。
+    # 与 --resume-crawl 的状态文件是两个文件，互不覆盖。
+    if validator_cache is not None:
+        try:
+            if validator_cache.save(output_dir):
+                _log.info("validator cache saved: %s", cache_path(output_dir))
+        except OSError as exc:
+            _log.warning("failed to save validator cache: %s", exc)
 
     # ── 后处理 ──
     video_count, failed_count = _post_process(

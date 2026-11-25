@@ -27,8 +27,11 @@ from concurrent.futures import (
     wait,
 )
 from dataclasses import asdict
+from pathlib import Path
+from typing import Any
 
 from web_crawler.app import _crawler_core as cr
+from web_crawler.app._crawler_cache import NOT_MODIFIED_STATUS, ValidatorCache
 from web_crawler.app._crawler_context import _CrawlContext
 from web_crawler.app._crawler_discovery import discover_playlist_resources
 from web_crawler.app.crawler_models import ManifestRow, Resource
@@ -90,6 +93,58 @@ def _append_jsonl_row(ctx: _CrawlContext, row: ManifestRow) -> None:
         _log.warning("failed to write JSONL manifest: %s", exc)
 
 
+def _fetch_resource(
+    ctx: _CrawlContext,
+    resource: Resource,
+    target: Path,
+    stream_to_disk: bool,
+) -> tuple[bytes, str, Path | None, dict[str, object]]:
+    """抓取单个资源；``--cache`` 时带条件请求，304 命中返回复用的本地产物。
+
+    返回 ``(data, content_type, reused_path, response_meta)``：
+    ``reused_path`` 非空表示上游答 304、本轮没有下载（产物是上次的
+    ``saved_path``）；``response_meta`` 由 :func:`cr.fetch` 填充，含本次
+    响应的 status / etag / last_modified（缓存更新用）。
+
+    缓存只做「要不要下载」的优化：条件请求失败、304 但本地产物已缺失，
+    都会退回普通抓取——缓存永远不能把任务变成失败。
+    """
+    args = ctx.args
+    cache: ValidatorCache | None = ctx.validator_cache
+    kwargs: dict[str, Any] = {
+        "resume_path": target if stream_to_disk else None,
+        "rate_limiter": ctx.rate_limiter,
+        "control_args": args,
+    }
+    response_meta: dict[str, object] = {}
+    conditional: dict[str, str] = {}
+    if cache is not None:
+        conditional = cache.conditional_headers(resource.url, ctx.output_dir)
+        if conditional:
+            kwargs["extra_headers"] = conditional
+            kwargs["allow_not_modified"] = True
+        kwargs["response_meta"] = response_meta
+    data, content_type = cr.fetch(
+        resource.url, args.timeout, ctx.headers, args.retries, ctx.max_bytes, **kwargs
+    )
+    if conditional and response_meta.get("status") == 304:
+        reused = cache.reuse(resource.url, ctx.output_dir) if cache is not None else None
+        if reused is not None:
+            path, cached_type, _ = reused
+            _log.info("not modified (304), reusing %s", path)
+            return b"", cached_type or content_type, path, response_meta
+        # 缓存条目存在但产物在查询后被删/移走：退回无条件抓取，保证如实下载
+        _log.warning(
+            "upstream 304 for %s but the cached artifact is gone; refetching", resource.url
+        )
+        for key in ("extra_headers", "allow_not_modified"):
+            kwargs.pop(key, None)
+        data, content_type = cr.fetch(
+            resource.url, args.timeout, ctx.headers, args.retries, ctx.max_bytes, **kwargs
+        )
+    return data, content_type, None, response_meta
+
+
 def _process_resource(ctx: _CrawlContext, resource: Resource) -> ManifestRow | None:
     """下载单个资源：去重 / 解密 / CSS 与播放列表二级发现，产出清单行。
 
@@ -126,27 +181,33 @@ def _process_resource(ctx: _CrawlContext, resource: Resource) -> ManifestRow | N
             or bool(args.expand_playlists)
         )
         stream_to_disk = getattr(args, "resume", False) or not needs_content
-        data, content_type = cr.fetch(
-            resource.url,
-            args.timeout,
-            ctx.headers,
-            args.retries,
-            ctx.max_bytes,
-            resume_path=target if stream_to_disk else None,
-            rate_limiter=ctx.rate_limiter,
-            control_args=args,
+        data, content_type, reused_path, response_meta = _fetch_resource(
+            ctx, resource, target, stream_to_disk
         )
-        if stream_to_disk and target.is_file():
+        cache_hit = reused_path is not None
+        if cache_hit:
+            # 304：不写盘，产物就是上次的 saved_path；需要内容（CSS/播放列表/
+            # 去重/解密）时从盘上读回，保证二级发现与首次下载一致。
+            assert reused_path is not None
+            target = reused_path
+            data = target.read_bytes() if needs_content else b""
+            byte_count = target.stat().st_size
+        elif stream_to_disk and target.is_file():
             if needs_content:
                 data = target.read_bytes()
             byte_count = target.stat().st_size
         else:
             byte_count = len(data)
 
-        # 内容去重
-        is_dup, sha256 = ctx.dedup.is_duplicate(data, resource.url) if ctx.dedup else (False, "")
+        # 内容去重（缓存命中没有新内容，不参与去重）
+        if cache_hit:
+            is_dup, sha256 = False, ""
+        else:
+            is_dup, sha256 = (
+                ctx.dedup.is_duplicate(data, resource.url) if ctx.dedup else (False, "")
+            )
 
-        if not is_dup:
+        if not is_dup and not cache_hit:
             final_prefix = output_prefix_for_resource(args, resource, content_type, ctx.page_titles)
             final_target = output_path_for_url(
                 resource.url, ctx.output_dir, content_type, prefix=final_prefix
@@ -171,7 +232,19 @@ def _process_resource(ctx: _CrawlContext, resource: Resource) -> ManifestRow | N
                             raise ValueError(f"decryption failed, skipped: {resource.url}") from exc
                 target.write_bytes(write_data)
 
-        status = "ok"
+        if ctx.validator_cache is not None and not is_dup and not cache_hit:
+            # 只有真下载过才更新校验器：304 命中沿用旧条目（上游仍匹配）
+            ctx.validator_cache.record(
+                resource.url,
+                ctx.output_dir,
+                target,
+                content_type=content_type,
+                byte_count=byte_count,
+                etag=str(response_meta.get("etag") or ""),
+                last_modified=str(response_meta.get("last_modified") or ""),
+            )
+
+        status = NOT_MODIFIED_STATUS if cache_hit else "ok"
         local_discoveries: list[Resource] = []
 
         # CSS 资源发现

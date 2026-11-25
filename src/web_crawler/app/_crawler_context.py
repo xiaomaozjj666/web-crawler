@@ -25,7 +25,7 @@ from collections import deque
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.robotparser import RobotFileParser
 
 from web_crawler._cli import PageScanSummary
@@ -34,6 +34,9 @@ from web_crawler.app.crawler_models import Resource
 from web_crawler.app.crawler_net import ContentDedup, DomainRateLimiter
 from web_crawler.exceptions import ConfigError
 from web_crawler.parser.rules import ExtractionRules, RuleCoverage
+
+if TYPE_CHECKING:
+    from web_crawler.app._crawler_cache import ValidatorCache
 
 # 与 app.crawler 共用同一个 logger：UI 通过 attach_log_handler 挂到
 # "crawler" logger 的 handler 对所有模块日志生效，行为与拆分前一致。
@@ -118,6 +121,9 @@ class _CrawlContext:
     rules: ExtractionRules | None = None
     rule_coverage: RuleCoverage | None = None
     rule_write_errors: int = 0
+    # --cache：条件请求校验器表（None = 未开启，下载层完全不碰缓存路径）。
+    # 与 --resume-crawl 的 .crawl_state.json 相互独立：不同文件、各自落盘。
+    validator_cache: ValidatorCache | None = None
 
     def rule_summary(self) -> dict[str, int] | None:
         if self.rule_coverage is None:
@@ -220,6 +226,7 @@ def save_config_to_file(args: argparse.Namespace, filepath: str) -> None:
         "smart_extract": args.smart_extract,
         "download_linked_data": args.download_linked_data,
         "resume_crawl": args.resume_crawl,
+        "cache": getattr(args, "cache", False),
         "extract_text": args.extract_text,
         "extract_markdown": getattr(args, "extract_markdown", False),
         "include_pattern": args.include_pattern,
