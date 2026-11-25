@@ -15,8 +15,10 @@ patch 的模块全局名（``cr.fetch`` / ``cr.should_stop`` /
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections import deque
+from html.parser import HTMLParser
 from urllib.parse import urlparse
 
 from web_crawler._cli import render_error
@@ -47,6 +49,67 @@ _STATE_SAVE_MIN_INTERVAL_SECONDS = 2.0
 
 #: 明确按文档处理的非 HTML content-type（部分站点用 text/plain 返回 HTML）。
 _DOCUMENT_CONTENT_TYPES = frozenset({"text/plain", "application/xhtml+xml"})
+
+# ── 逐页元数据（<meta name="description"> / <html lang>）──
+# 只扫描文档头部：元数据在 head 内，且大页面（数 MB 内联脚本）不该为两个
+# 字段整篇再解析一遍。截断 HTML（无 </head>）按前 256 KiB 处理。
+_META_SCAN_LIMIT = 256 * 1024
+_HEAD_END_RE = re.compile(r"</head\s*>", re.IGNORECASE)
+_DESCRIPTION_MAX_CHARS = 500
+_LANG_MAX_CHARS = 50
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _clean_meta_text(value: str, limit: int) -> str:
+    """折叠空白并限长：meta 内容常带换行/缩进，超过上限的按上限截断。"""
+    return _WHITESPACE_RE.sub(" ", value).strip()[:limit]
+
+
+class _PageMetaParser(HTMLParser):
+    """采集首个非空 ``<html lang>`` 与 ``<meta name="description">``。
+
+    ``html.parser`` 对大小写、单双引号、无引号属性与截断标签一律容错：
+    属性名自动小写、属性值自动反转义；EOF 处未闭合的标签被丢弃（不会抛错）。
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.description = ""
+        self.lang = ""
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "html" and not self.lang:
+            for name, value in attrs:
+                if name == "lang" and value and value.strip():
+                    self.lang = _clean_meta_text(value, _LANG_MAX_CHARS)
+                    break
+        elif tag == "meta" and not self.description:
+            attributes = {name: value for name, value in attrs}
+            if (attributes.get("name") or "").strip().lower() == "description":
+                content = attributes.get("content") or ""
+                if content.strip():
+                    self.description = _clean_meta_text(content, _DESCRIPTION_MAX_CHARS)
+
+
+def _extract_page_meta(html_text: str) -> tuple[str, str]:
+    """从页面 HTML 提取 ``(description, lang)``；缺失时均为空串。
+
+    非 HTML、截断 HTML、超大页面都只做尽力而为的提取，绝不抛异常——
+    元数据是报告增值字段，不能因为解析失败影响抓取主流程。
+    """
+    if not html_text:
+        return "", ""
+    excerpt = html_text[:_META_SCAN_LIMIT]
+    head_end = _HEAD_END_RE.search(excerpt)
+    if head_end is not None:
+        excerpt = excerpt[: head_end.end()]
+    parser = _PageMetaParser()
+    try:
+        parser.feed(excerpt)
+        parser.close()
+    except Exception:  # pragma: no cover - html.parser 对畸形输入的兜底
+        _log.debug("page meta extraction failed", exc_info=True)
+    return parser.description, parser.lang
 
 
 def _is_page_document(content_type: str, url: str) -> bool:
@@ -120,6 +183,22 @@ def _restore_state(ctx: _CrawlContext) -> None:
     ctx.queued_pages = set(ctx.page_queue)
     ctx.seen_pages = set(saved.get("seen_pages", []))
     ctx.page_titles = {k: str(v) for k, v in saved.get("page_titles", {}).items()}
+    # 逐页元数据：旧版状态无该字段（按空处理），残缺条目逐项兜底，保证
+    # 恢复后的报告字段形状与新抓取一致。
+    saved_meta = saved.get("page_meta")
+    if isinstance(saved_meta, dict):
+        for url, entry in saved_meta.items():
+            if not isinstance(url, str) or not isinstance(entry, dict):
+                continue
+            status = entry.get("status_code")
+            ctx.page_meta[url] = {
+                "status_code": (
+                    status if isinstance(status, int) and not isinstance(status, bool) else None
+                ),
+                "content_type": str(entry.get("content_type") or ""),
+                "description": str(entry.get("description") or ""),
+                "lang": str(entry.get("lang") or ""),
+            }
     saved_files = saved.get("page_files", {})
     if isinstance(saved_files, dict):
         for url, entry in saved_files.items():
@@ -161,18 +240,23 @@ def _restore_state(ctx: _CrawlContext) -> None:
     )
 
 
-def _fetch_page_html(ctx: _CrawlContext, page_url: str) -> tuple[bytes, str]:
+def _fetch_page_html(
+    ctx: _CrawlContext, page_url: str, meta: dict[str, object] | None = None
+) -> tuple[bytes, str]:
     """``--render-js`` 路径：headless Chromium 渲染页面，失败退回静态 HTTP。
 
     渲染走库级 ``DynamicFetcher``（导航逐跳守卫 / 代理 / SSRF 校验在库层
     生效）；渲染失败（浏览器崩溃、超时、目标站对 headless 报 4xx 等）不
     终止扫描，退回 :func:`cr.fetch` 的静态路径，让错误统一走既有分类。
-    域级限速两条路径共用同一个 limiter。
+    域级限速两条路径共用同一个 limiter。``meta`` 透传给底层抓取函数，
+    用于回填页面状态码 / Content-Type（失败路径不写，保持未知态）。
     """
     args = ctx.args
     try:
         ctx.rate_limiter.wait_if_needed(page_url)
-        data, content_type = cr.render_page(page_url, args.timeout, ctx.headers, control_args=args)
+        data, content_type = cr.render_page(
+            page_url, args.timeout, ctx.headers, control_args=args, meta=meta
+        )
         ctx.rate_limiter.record_request(page_url)
         blocked = cr.drain_blocked_resources()
         if blocked:
@@ -200,6 +284,7 @@ def _fetch_page_html(ctx: _CrawlContext, page_url: str) -> tuple[bytes, str]:
             ctx.max_bytes,
             rate_limiter=ctx.rate_limiter,
             control_args=args,
+            meta=meta,
         )
 
 
@@ -257,9 +342,10 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
             processed_resources=0,
         )
         ctx.seen_pages.add(page_url)
+        response_meta: dict[str, object] = {}
         try:
             if getattr(args, "render_js", False):
-                data, content_type = _fetch_page_html(ctx, page_url)
+                data, content_type = _fetch_page_html(ctx, page_url, meta=response_meta)
             else:
                 data, content_type = cr.fetch(
                     page_url,
@@ -269,6 +355,7 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
                     ctx.max_bytes,
                     rate_limiter=ctx.rate_limiter,
                     control_args=args,
+                    meta=response_meta,
                 )
         except Exception as exc:
             if isinstance(exc, RuntimeError) and str(exc) == "cancelled by user":
@@ -295,6 +382,18 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
         html = decode_text(data, content_type, args.encoding)
         ctx.page_files[page_url] = (page_path, _resolved_encoding(args.encoding, content_type))
         ctx.page_titles[page_url] = extract_title(html)
+        description, lang = _extract_page_meta(html)
+        status_code = response_meta.get("status")
+        ctx.page_meta[page_url] = {
+            "status_code": (
+                status_code
+                if isinstance(status_code, int) and not isinstance(status_code, bool)
+                else None
+            ),
+            "content_type": str(response_meta.get("content_type") or content_type or ""),
+            "description": description,
+            "lang": lang,
+        }
         parser = PageParser(
             page_url,
             download_linked_data=bool(getattr(args, "download_linked_data", False)),
@@ -329,6 +428,7 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
                             page_queue=list(ctx.page_queue),
                             seen_pages=list(ctx.seen_pages),
                             page_titles=ctx.page_titles,
+                            page_meta=ctx.page_meta,
                             page_files={
                                 url: [path.relative_to(ctx.output_dir).as_posix(), encoding]
                                 for url, (path, encoding) in ctx.page_files.items()

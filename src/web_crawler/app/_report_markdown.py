@@ -36,6 +36,7 @@ def write_summary(
     rule_results: dict[str, int] | None = None,
     offline_pages: int = 0,
     offline_check: OfflineCheck | None = None,
+    page_meta: dict[str, dict[str, object]] | None = None,
 ) -> None:
     ctx = build_report_context(
         rows,
@@ -47,6 +48,7 @@ def write_summary(
         rule_results=rule_results,
         offline_pages=offline_pages,
         offline_check=offline_check,
+        page_meta=page_meta,
     )
     resources = ctx["resources"]
     assert isinstance(resources, dict)
@@ -167,6 +169,7 @@ def write_run_report(
     rule_results: dict[str, int] | None = None,
     offline_pages: int = 0,
     offline_check: OfflineCheck | None = None,
+    page_meta: dict[str, dict[str, object]] | None = None,
 ) -> None:
     ctx = build_report_context(
         rows,
@@ -178,6 +181,7 @@ def write_run_report(
         rule_results=rule_results,
         offline_pages=offline_pages,
         offline_check=offline_check,
+        page_meta=page_meta,
     )
     ctx["recommendations"] = build_recommendations(ctx)
 
@@ -350,14 +354,26 @@ def _write_markdown_report(path: Path, ctx: dict[str, object]) -> None:
     if top_pages:
         lines.append("## 资源最多的页面 (前 15)")
         lines.append("")
-        lines.append("| 页面 | 标题 | 资源数 |")
-        lines.append("| --- | --- | ---: |")
+        lines.append("| 页面 | 标题 | 状态 | 类型 | 语言 | 描述 | 资源数 |")
+        lines.append("| --- | --- | ---: | --- | --- | --- | ---: |")
         for item in top_pages:
             assert isinstance(item, dict)
             url = item.get("page_url", "")
             short = url if len(url) <= 60 else url[:57] + "..."
             title = item.get("page_title", "") or "-"
-            lines.append(f"| {short} | {title} | {item.get('resource_count', 0)} |")
+            status = item.get("status_code")
+            status_text = str(status) if isinstance(status, int) else "-"
+            content_type = str(item.get("content_type") or "").split(";", 1)[0].strip() or "-"
+            lang = str(item.get("lang") or "") or "-"
+            # 表格单元格里的 | 必须转义，否则描述会撑破 Markdown 表格
+            description = str(item.get("description") or "").replace("|", "\\|")
+            if len(description) > 60:
+                description = description[:57] + "..."
+            description = description or "-"
+            lines.append(
+                f"| {short} | {title} | {status_text} | {content_type} | {lang} "
+                f"| {description} | {item.get('resource_count', 0)} |"
+            )
         lines.append("")
 
     failures_by_class = ctx.get("failures_by_class", {})

@@ -90,6 +90,10 @@ class _CrawlContext:
     # 阶段按需从磁盘逐页重读（见 _crawler_post._iter_page_html）。
     page_files: dict[str, tuple[Path, str]] = field(default_factory=dict)
     page_titles: dict[str, str] = field(default_factory=dict)
+    # 逐页元数据：page_url -> {status_code, content_type, description, lang}。
+    # description / lang 缺失时为空串，status_code 未知时为 None（键始终存在，
+    # 保证报告 JSON 的字段形状稳定）。与 page_titles 一起写入续爬状态。
+    page_meta: dict[str, dict[str, object]] = field(default_factory=dict)
     all_resources: list[Resource] = field(default_factory=list)
     # all_resources 的 dict 形态缓存（只增不减；resource_dicts() 按长度差增量补齐）
     _resource_dicts: list[dict[str, str]] = field(default_factory=list, repr=False)

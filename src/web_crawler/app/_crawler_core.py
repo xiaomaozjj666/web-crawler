@@ -230,6 +230,7 @@ def fetch(
     resume_path: Path | None = None,
     rate_limiter: DomainRateLimiter | None = None,
     control_args: argparse.Namespace | None = None,
+    meta: dict[str, object] | None = None,
 ) -> tuple[bytes, str]:
     """抓取 ``url``：``resume_path`` 时流式落盘（断点续传），否则整包返回。
 
@@ -238,6 +239,10 @@ def fetch(
     职责——入口 SSRF 校验、请求头基底、域级限速、429 退避与暂停/取消钩子。
 
     返回 ``(body, content_type)``；落盘路径 body 为 ``b""``（内容在盘上）。
+
+    ``meta`` 非空时写入本次**成功**响应的 ``status`` / ``content_type``
+    （页面扫描用它填充逐页元数据；失败响应不写，避免把重试中的中间状态
+    带进报告）。
     """
     # SSRF 防护：请求前校验 host，拒绝私网/环回/链路本地目标（含云元数据地址）；
     # 重定向目标由库层 Fetcher 逐跳校验（scheme + host）。
@@ -261,6 +266,9 @@ def fetch(
     def _on_headers(status: int, resp_headers: Any) -> None:
         content_type = resp_headers.get("content-type") or resp_headers.get("Content-Type") or ""
         response_meta["content_type"] = str(content_type)
+        if meta is not None:
+            meta["status"] = status
+            meta["content_type"] = str(content_type)
         retry_after = resp_headers.get("Retry-After") or resp_headers.get("retry-after") or ""
         response_meta["retry_after"] = str(retry_after)
 
@@ -311,6 +319,9 @@ def fetch(
             if rate_limiter:
                 rate_limiter.record_request(url)
             content_type = resp.headers.get("content-type") or resp.headers.get("Content-Type")
+            if meta is not None:
+                meta["status"] = resp.status
+                meta["content_type"] = str(content_type or "")
             return content, str(content_type or "")
 
         except FetchError as exc:
@@ -438,6 +449,7 @@ def render_page(
     timeout: int,
     headers: dict[str, str],
     control_args: argparse.Namespace | None = None,
+    meta: dict[str, object] | None = None,
 ) -> tuple[bytes, str]:
     """用 headless Chromium 渲染 ``url``，返回 ``(body, content_type)``。
 
@@ -445,6 +457,8 @@ def render_page(
     4xx 视为失败（FetchError 携带 status，供上层统一分类）。渲染由库级
     ``DynamicFetcher`` 完成——导航逐跳守卫（预检 + route 拦截 + 落点复核）
     在其内部生效。
+
+    ``meta`` 非空时写入成功渲染响应的 ``status`` / ``content_type``。
     """
     if not is_power_mode():
         validate_url_host(url, resolve=True)
@@ -461,6 +475,9 @@ def render_page(
         exc.status = resp.status  # type: ignore[attr-defined]
         raise exc
     content_type = resp.headers.get("content-type") or resp.headers.get("Content-Type") or ""
+    if meta is not None:
+        meta["status"] = resp.status
+        meta["content_type"] = str(content_type)
     return resp.content, str(content_type)
 
 

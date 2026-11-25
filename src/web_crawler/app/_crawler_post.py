@@ -343,6 +343,7 @@ def _post_process(
                 rule_results=ctx.rule_summary(),
                 offline_pages=ctx.offline_page_count,
                 offline_check=ctx.offline_check,
+                page_meta=ctx.page_meta,
             )
             write_run_report(
                 output_dir,
@@ -355,6 +356,7 @@ def _post_process(
                 rule_results=ctx.rule_summary(),
                 offline_pages=ctx.offline_page_count,
                 offline_check=ctx.offline_check,
+                page_meta=ctx.page_meta,
             )
         except Exception as exc:
             _log.warning("failed to write run report: %s", exc)

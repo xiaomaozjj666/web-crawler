@@ -27,6 +27,24 @@ except ImportError:
     HAS_AES = False
 
 
+def _page_meta_fields(
+    page_url: str, page_meta: dict[str, dict[str, object]] | None
+) -> dict[str, object]:
+    """取单页元数据字段；无记录时回落到 null / 空串（字段始终存在）。"""
+    entry = page_meta.get(page_url) if page_meta else None
+    if not isinstance(entry, dict):
+        entry = {}
+    status = entry.get("status_code")
+    return {
+        "status_code": (
+            status if isinstance(status, int) and not isinstance(status, bool) else None
+        ),
+        "content_type": str(entry.get("content_type") or ""),
+        "description": str(entry.get("description") or ""),
+        "lang": str(entry.get("lang") or ""),
+    }
+
+
 def build_report_context(
     rows: list[ManifestRow],
     pages_scanned: int,
@@ -38,8 +56,14 @@ def build_report_context(
     rule_results: dict[str, int] | None = None,
     offline_pages: int = 0,
     offline_check: OfflineCheck | None = None,
+    page_meta: dict[str, dict[str, object]] | None = None,
 ) -> dict[str, object]:
-    """从抓取结果构建一份完整的报告上下文字典，供 JSON / Markdown / HTML 共用。"""
+    """从抓取结果构建一份完整的报告上下文字典，供 JSON / Markdown / HTML 共用。
+
+    ``page_meta``（page_url -> 元数据）只为 ``top_pages`` 提供逐页状态码 /
+    Content-Type / ``<meta name="description">`` / ``<html lang>``；缺失时
+    这些字段回落到 null / 空串，保证 JSON 字段形状稳定。
+    """
     status_counts: dict[str, int] = {}
     category_counts: dict[str, int] = {}
     category_bytes: dict[str, int] = {}
@@ -172,7 +196,12 @@ def build_report_context(
         "by_error_class": {cls: error_classes[cls] for cls in sorted(error_classes)},
         "by_skip_class": {cls: skip_classes[cls] for cls in sorted(skip_classes)},
         "top_pages": [
-            {"page_url": url, "page_title": page_title_map.get(url, ""), "resource_count": count}
+            {
+                "page_url": url,
+                "page_title": page_title_map.get(url, ""),
+                "resource_count": count,
+                **_page_meta_fields(url, page_meta),
+            }
             for url, count in top_pages
         ],
         "largest_files": largest,

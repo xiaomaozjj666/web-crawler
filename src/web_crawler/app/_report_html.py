@@ -287,13 +287,25 @@ def _write_html_report(path: Path, ctx: dict[str, object]) -> None:
         for item in top_pages:
             assert isinstance(item, dict)
             title = item.get("page_title", "") or "-"
+            status_code = item.get("status_code")
+            status_text = str(status_code) if isinstance(status_code, int) else "-"
+            content_type = str(item.get("content_type") or "").split(";", 1)[0].strip() or "-"
+            lang = str(item.get("lang") or "") or "-"
+            description = str(item.get("description") or "")
+            if len(description) > 120:
+                description = description[:117] + "..."
             page_rows.append(
                 f"<tr><td class='url'>{esc(item.get('page_url', ''))}</td>"
                 f"<td>{esc(title)}</td>"
+                f"<td class='num'>{esc(status_text)}</td>"
+                f"<td>{esc(content_type)}</td>"
+                f"<td>{esc(lang)}</td>"
+                f"<td>{esc(description or '-')}</td>"
                 f"<td class='num'>{item.get('resource_count', 0)}</td></tr>"
             )
         pages_table = (
-            "<table><tr><th>页面</th><th>标题</th><th class='num'>资源数</th></tr>"
+            "<table><tr><th>页面</th><th>标题</th><th class='num'>状态</th>"
+            "<th>类型</th><th>语言</th><th>描述</th><th class='num'>资源数</th></tr>"
             + "".join(page_rows)
             + "</table>"
         )
