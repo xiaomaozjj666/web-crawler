@@ -6,7 +6,10 @@
 - :mod:`web_crawler.app._ui_helpers` — 常量与纯函数（表单解析/校验/序列化）
 - :mod:`web_crawler.app._ui_state` — 任务状态 dataclass 与进程内注册表
 - :mod:`web_crawler.app._ui_runner` — 采集/逆向任务的子线程执行器
-- :mod:`web_crawler.app._ui_http` — HTTP Handler 与全部路由
+- :mod:`web_crawler.app._ui_http` — HTTP Handler 与 GET/DELETE 路由、POST 分派
+- :mod:`web_crawler.app._ui_post_crawl` — POST 采集族路由（scrape / 配置 / 规则 / 启停）
+- :mod:`web_crawler.app._ui_post_reverse` — POST 逆向族路由（run / stop / clear / 配置）
+- :mod:`web_crawler.app._ui_post_captcha` — POST 验证码族路由（run / image）
 
 本模块保留 ``main()`` 入口并 re-export 全部历史导入路径，
 ``python -m web_crawler.app.ui`` 与 ``web_crawler.app.ui.main`` 用法不变。

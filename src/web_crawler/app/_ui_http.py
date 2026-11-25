@@ -2,43 +2,40 @@
 
 ``Handler`` 为 ``BaseHTTPRequestHandler`` 子类，承载控制面全部路由：
 页面 / 状态查询 / SSE 流 / 任务历史 API / 采集与逆向任务的启动控制。
+
+``do_POST`` 只做 Host / CSRF 校验与路由族分派，各族分支内容在
+:mod:`web_crawler.app._ui_post_crawl` / :mod:`web_crawler.app._ui_post_reverse` /
+:mod:`web_crawler.app._ui_post_captcha`（纯结构拆分：路径、字段、状态码与
+错误文案逐字不变）。被测试 patch 的模块全局名（``run_job`` /
+``run_reverse_job`` / ``run_captcha_job`` / ``_open_folder``）有意留在本模块，
+族的子线程启动与目录打开经 ``Handler`` 的私有接缝触发。
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
 import json
 import logging
 import re
 import threading
 import uuid
-from contextlib import suppress
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 from urllib.parse import parse_qs, urlparse
 
 from web_crawler.app import db as database
-from web_crawler.parser.rules import MAX_RULES_BYTES, ExtractionRules
 
+from . import _ui_post_captcha, _ui_post_crawl, _ui_post_reverse
 from ._scrape import ScrapeError, scrape_page
 from ._ui_helpers import (
     DEFAULT_BLOCK_KEYWORDS,
-    DEFAULT_OUTPUT,
     PAGE,
     STATIC_DIR,
     _is_loopback_host,
-    _normalize_imported_config,
     _open_folder,
     _task_config_for_db,
-    build_args,
-    build_args_from_task,
-    build_reverse_config,
-    normalize_crawl_config,
-    output_path,
-    portable_crawl_config,
 )
 from ._ui_runner import run_captcha_job, run_job, run_reverse_job
 from ._ui_state import (
@@ -46,9 +43,7 @@ from ._ui_state import (
     CAPTCHA_JOBS_LOCK,
     JOBS,
     JOBS_LOCK,
-    MAX_CAPTCHA_JOBS,
     MAX_JOBS,
-    MAX_REVERSE_JOBS,
     REVERSE_JOBS,
     REVERSE_JOBS_LOCK,
     CaptchaJobState,
@@ -57,7 +52,6 @@ from ._ui_state import (
 )
 
 _log = logging.getLogger(__name__)
-_PAGE_AUDIT_BATCH_SIZE = 16
 # /v1/scrape 的 JSON 请求体上限（只含 url + 布尔开关，正常远小于 1 KiB）
 _SCRAPE_MAX_BODY_BYTES = 64 * 1024
 
@@ -241,6 +235,23 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 _log.exception("db update_task_status failed for %s", job.id)
         return {"ok": True}
+
+    # ── 路由族模块的私有接缝 ────────────────────────────────────────
+    # 被测试 patch.object(_ui_http, ...) 替换的模块全局名（run_job /
+    # run_reverse_job / run_captcha_job / _open_folder）有意留在本模块：
+    # _ui_post_* 只经下列方法触发，patch 语义与拆分前一致。
+
+    def _launch_reverse_job(self, rjob: ReverseJobState) -> None:
+        """启动逆向任务执行线程。"""
+        threading.Thread(target=run_reverse_job, args=(rjob,), daemon=True).start()
+
+    def _launch_captcha_job(self, cjob: CaptchaJobState) -> None:
+        """启动验证码识别任务执行线程。"""
+        threading.Thread(target=run_captcha_job, args=(cjob,), daemon=True).start()
+
+    def _open_output_dir(self, out_dir: Path) -> None:
+        """在系统文件管理器中打开目录。"""
+        _open_folder(str(out_dir))
 
     # ── /v1/scrape（一次调用返回全部产物，对标 Firecrawl）──────────────
 
@@ -494,260 +505,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         query = parse_qs(urlparse(self.path).query)
         path = urlparse(self.path).path
-        if path == "/v1/scrape":
-            try:
-                url, include_html = self._read_scrape_request()
-            except ScrapeError as exc:
-                self._scrape_error(exc, "")
-                return
-            self._run_scrape(url, include_html)
+        # 校验通过后按路由族分派：各族只匹配互斥的精确路径/正则（全部未命中
+        # 才 404），因此族的先后不影响命中结果；族内分支顺序与拆分前的
+        # if 链逐字一致，响应内容/状态码均在 _ui_post_* 模块内原样保留。
+        if _ui_post_crawl.dispatch(self, path, query):
             return
-        if path in {"/crawl/config/import", "/crawl/config/export"}:
-            try:
-                if path.endswith("/import"):
-                    config = normalize_crawl_config(self.read_json_body(2 * MAX_RULES_BYTES))
-                else:
-                    config = portable_crawl_config(
-                        build_args(self.read_form(keep_blank_values=True))
-                    )
-            except ValueError as exc:
-                self.respond_json({"error": str(exc)}, status=400)
-                return
-            self.respond_json({"config": config})
+        if _ui_post_reverse.dispatch(self, path, query):
             return
-        rules_route = re.fullmatch(r"/jobs/([^/]+)/validate-rules", path)
-        if rules_route is not None:
-            try:
-                rules = ExtractionRules.from_dict(self.read_json_body(MAX_RULES_BYTES))
-                page_url = query.get("url", [""])[0]
-                sample = database.get_page_sample(rules_route[1], page_url)
-                if sample is None:
-                    self.respond_json({"error": "没有保留此页的验证样本"}, status=404)
-                    return
-                result = rules.extract(sample, page_url=page_url)
-            except ValueError as exc:
-                self.respond_json({"error": str(exc)}, status=400)
-                return
-            self.respond_json({"rules": rules.to_dict(), "result": result})
-            return
-        audit_route = re.fullmatch(r"/jobs/([^/]+)/audit-rules", path)
-        if audit_route is not None:
-            try:
-                rules = ExtractionRules.from_dict(self.read_json_body(MAX_RULES_BYTES))
-            except ValueError as exc:
-                self.respond_json({"error": str(exc)}, status=400)
-                return
-            task_id = audit_route[1]
-            job = JOBS.get(task_id)
-            if job is not None and job.is_active():
-                self.respond_json({"error": "采集结束后可验证整批样本"}, status=409)
-                return
-            after = query.get("after", [""])[0]
-            sample_count = database.count_page_samples(task_id) if not after else None
-            samples = database.page_samples_after(task_id, after, _PAGE_AUDIT_BATCH_SIZE + 1)
-            audit = rules.coverage()
-            for page_url, compressed in samples[:_PAGE_AUDIT_BATCH_SIZE]:
-                try:
-                    result = rules.extract(
-                        database.decode_page_sample(compressed), page_url=page_url
-                    )
-                except ValueError as exc:
-                    audit.add_error(page_url, exc)
-                else:
-                    audit.add_result(result)
-            next_after = (
-                samples[_PAGE_AUDIT_BATCH_SIZE - 1][0]
-                if len(samples) > _PAGE_AUDIT_BATCH_SIZE
-                else None
-            )
-            with suppress(ConnectionError):  # 用户可以在浏览器中取消当前批次。
-                self.respond_json(
-                    {
-                        "rules": rules.to_dict(),
-                        "coverage": audit.report(),
-                        "next_after": next_after,
-                        "total_samples": sample_count,
-                    }
-                )
-            return
-        if path == "/run":
-            form = self.read_form(keep_blank_values=True)
-            try:
-                args = build_args(form)
-            except ValueError as exc:
-                self.respond_json({"ok": False, "error": str(exc)})
-                return
-            self._start_crawl(args)
-            return
-        if path == "/retry":
-            # 用库里的任务记录重跑一次：配置来自入库白名单，不碰 Cookie
-            task_id = query.get("id", [""])[0]
-            retry_task = database.get_task(task_id)
-            if not retry_task:
-                self.respond_json({"ok": False, "error": "任务不存在"})
-                return
-            try:
-                args = build_args_from_task(retry_task)
-            except ValueError as exc:
-                self.respond_json({"ok": False, "error": str(exc)})
-                return
-            self._start_crawl(args)
-            return
-        if path in {"/pause", "/resume", "/cancel"}:
-            existing = JOBS.get(query.get("id", [""])[0])
-            if not existing:
-                self.respond_json({"ok": False, "message": "任务不存在"})
-                return
-            self.respond_json(self._control_crawl(existing, path))
-            return
-        if path == "/open-output":
-            form = self.read_form()
-            out_dir = Path(output_path(form.get("out", [DEFAULT_OUTPUT])[0]))
-            # 白名单：仅允许打开默认输出目录或已登记任务的输出目录（含子目录），
-            # 防止任意路径被 os.startfile 打开/启动（Windows 上可启动可执行文件）
-            resolved = out_dir.resolve()
-            with JOBS_LOCK:
-                allowed_roots = {str(Path(j.output_dir).resolve()) for j in JOBS.values()}
-            allowed_roots.add(str(Path(DEFAULT_OUTPUT).resolve()))
-            if not any(
-                resolved == Path(root).resolve() or Path(root).resolve() in resolved.parents
-                for root in allowed_roots
-            ):
-                self.respond_json({"ok": False, "message": "目录不在允许范围内"})
-                return
-            try:
-                if not out_dir.exists():
-                    out_dir.mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                self.respond_json({"ok": False, "message": f"无法创建目录：{exc}"})
-                return
-            if not out_dir.is_dir():
-                self.respond_json({"ok": False, "message": "路径不是目录"})
-                return
-            try:
-                _open_folder(str(out_dir))
-                self.respond_json({"ok": True, "message": f"已打开：{out_dir}"})
-            except Exception as exc:
-                self.respond_json({"ok": False, "message": f"无法打开：{exc}"})
-            return
-        if path == "/reverse/run":
-            form = self.read_form()
-            url = form.get("url", [""])[0].strip()
-            task = form.get("task", [""])[0].strip()
-            if not url:
-                self.respond_json({"ok": False, "error": "URL 不能为空"})
-                return
-            rev_config: dict[str, Any] = build_reverse_config(form)
-            job_id = uuid.uuid4().hex[:12]
-            rjob = ReverseJobState(
-                id=job_id,
-                url=url,
-                task=task,
-                config=rev_config,
-                max_steps=int(rev_config.get("max_steps", 20)),
-                target_params=list(rev_config.get("target_params") or []),
-            )
-            with REVERSE_JOBS_LOCK:
-                REVERSE_JOBS[job_id] = rjob
-                # 清理已完成的任务
-                if len(REVERSE_JOBS) > MAX_REVERSE_JOBS:
-                    for jid in list(REVERSE_JOBS.keys()):
-                        rj = REVERSE_JOBS[jid]
-                        if rj.status in ("done", "error", "cancelled"):
-                            del REVERSE_JOBS[jid]
-            threading.Thread(target=run_reverse_job, args=(rjob,), daemon=True).start()
-            self.respond_json({"id": job_id, "status": "running"})
-            return
-        if path == "/captcha/run":
-            form = self.read_form()
-            url = form.get("url", [""])[0].strip()
-            headless = form.get("headless", [""])[0] == "1"
-            if not url:
-                self.respond_json({"ok": False, "error": "URL 不能为空"})
-                return
-            job_id = uuid.uuid4().hex[:12]
-            cjob = CaptchaJobState(id=job_id, url=url, headless=headless)
-            with CAPTCHA_JOBS_LOCK:
-                CAPTCHA_JOBS[job_id] = cjob
-                if len(CAPTCHA_JOBS) > MAX_CAPTCHA_JOBS:
-                    for jid in list(CAPTCHA_JOBS.keys()):
-                        cj = CAPTCHA_JOBS[jid]
-                        if cj.status in ("done", "error"):
-                            del CAPTCHA_JOBS[jid]
-            threading.Thread(target=run_captcha_job, args=(cjob,), daemon=True).start()
-            self.respond_json({"id": job_id, "status": "running"})
-            return
-        if path == "/captcha/image":
-            form = self.read_form()
-            image_b64 = form.get("image", [""])[0].strip()
-            math_mode = form.get("math", [""])[0] == "1"
-            if not image_b64:
-                self.respond_json({"ok": False, "error": "缺少图片数据"})
-                return
-            try:
-                from ..ai.image_captcha import ImageCaptchaSolver, ImageSolverConfig
-                from ..ai.llm import get_vision_provider
-
-                provider = get_vision_provider(None)
-                solver = ImageCaptchaSolver(
-                    provider=provider, config=ImageSolverConfig(math_mode=math_mode)
-                )
-                raw = (
-                    base64.b64decode(image_b64.split(",", 1)[1])
-                    if image_b64.startswith("data:")
-                    else base64.b64decode(image_b64)
-                )
-                text = solver.solve_text(raw, mime="image/png")
-            except Exception as exc:
-                self.respond_json({"ok": False, "error": f"识别失败: {exc}"})
-                return
-            self.respond_json({"ok": bool(text), "text": text, "math": math_mode})
-            return
-        if path == "/reverse/stop":
-            rstop = REVERSE_JOBS.get(query.get("id", [""])[0])
-            if not rstop:
-                self.respond_json({"ok": False, "message": "任务不存在"})
-                return
-            # stop_event 由库侧 should_stop 回调消费:Agent 在每步循环顶部
-            # 检查该标志,返回 True 立即中断并标记 cancelled
-            rstop.stop_event.set()
-            self.respond_json(
-                {
-                    "ok": True,
-                    "message": "已请求停止:Agent 将在当前动作完成后立即中断",
-                }
-            )
-            return
-        if path == "/reverse/clear":
-            # 清空指定任务的运行时数据（保留最终结果）
-            rjob_existing = REVERSE_JOBS.get(query.get("id", [""])[0])
-            if not rjob_existing:
-                self.respond_json({"ok": False, "message": "任务不存在"})
-                return
-            rjob_existing.clear_runtime()
-            self.respond_json({"ok": True, "id": rjob_existing.id})
-            return
-        if path == "/reverse/config/export":
-            # 接收表单，返回 JSON 配置文件下载
-            form = self.read_form()
-            rev_config = build_reverse_config(form)
-            body = json.dumps(rev_config, ensure_ascii=False, indent=2).encode("utf-8")
-            self.send_response(200)
-            self.send_header("content-type", "application/json; charset=utf-8")
-            self.send_header("content-length", str(len(body)))
-            self.send_header("content-disposition", 'attachment; filename="reverse_config.json"')
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        if path == "/reverse/config/import":
-            # 接收 JSON 配置，返回标准化后的 config dict（前端用来回填表单）
-            data = self.read_json_body()
-            if not isinstance(data, dict):
-                self.respond_json({"error": "配置文件必须是 JSON 对象"})
-                return
-            # 标准化：补全缺失字段，剔除未知字段，类型转换
-            normalized = _normalize_imported_config(data)
-            self.respond_json({"config": normalized})
+        if _ui_post_captcha.dispatch(self, path, query):
             return
         self.send_error(404)
 
