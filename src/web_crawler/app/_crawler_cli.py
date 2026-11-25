@@ -11,10 +11,51 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 
 from web_crawler import __version__
 from web_crawler._cli import add_output_arguments
 from web_crawler.app._crawler_context import DEFAULT_USER_AGENT, DEFAULT_WORKERS
+
+
+def _positive_int(value: str) -> int:
+    """argparse 类型：>=1 的整数。非法时给中文提示并以退出码 2 结束，不甩 traceback。"""
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"需要整数，收到 {value!r}") from exc
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"需要 >= 1 的整数，收到 {number}")
+    return number
+
+
+def _non_negative_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"需要整数，收到 {value!r}") from exc
+    if number < 0:
+        raise argparse.ArgumentTypeError(f"需要 >= 0 的整数，收到 {number}")
+    return number
+
+
+def _non_negative_float(value: str) -> float:
+    try:
+        number = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"需要数字，收到 {value!r}") from exc
+    if number < 0:
+        raise argparse.ArgumentTypeError(f"需要 >= 0 的数字，收到 {number}")
+    return number
+
+
+def _regex_arg(value: str) -> str:
+    """argparse 类型：可编译的正则。坏正则在解析期报错，而不是下载阶段抛 traceback。"""
+    try:
+        re.compile(value)
+    except re.error as exc:
+        raise argparse.ArgumentTypeError(f"无效的正则表达式 {value!r}：{exc}") from exc
+    return value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -55,7 +96,7 @@ Examples:
         action="store_true",
         help="Follow same-domain page links (non-HTML responses such as PDF/CSV/ZIP are skipped).",
     )
-    parser.add_argument("--max-pages", type=int, default=1, help="Maximum pages to scan.")
+    parser.add_argument("--max-pages", type=_positive_int, default=1, help="Maximum pages to scan.")
     parser.add_argument(
         "--include-css-urls",
         action="store_true",
@@ -99,22 +140,30 @@ Examples:
     parser.add_argument(
         "--respect-robots", action="store_true", help="Respect robots.txt crawl rules."
     )
-    parser.add_argument("--timeout", type=int, default=20, help="Request timeout in seconds.")
     parser.add_argument(
-        "--retries", type=int, default=1, help="Retries per URL after a failed request."
+        "--timeout", type=_positive_int, default=20, help="Request timeout in seconds."
     )
     parser.add_argument(
-        "--delay", type=float, default=0.5, help="Delay between requests (per-domain adaptive)."
+        "--retries",
+        type=_non_negative_int,
+        default=1,
+        help="Retries per URL after a failed request.",
+    )
+    parser.add_argument(
+        "--delay",
+        type=_non_negative_float,
+        default=0.5,
+        help="Delay between requests (per-domain adaptive).",
     )
     parser.add_argument(
         "--workers",
-        type=int,
+        type=_positive_int,
         default=DEFAULT_WORKERS,
         help="Number of concurrent download threads.",
     )
     parser.add_argument(
         "--max-bytes",
-        type=int,
+        type=_non_negative_int,
         default=0,
         help="Skip files larger than this many bytes; 0 disables.",
     )
@@ -132,8 +181,12 @@ Examples:
         default=[],
         help="Skip URLs containing this keyword/domain (repeatable).",
     )
-    parser.add_argument("--include-pattern", help="Only download URLs matching this regex pattern.")
-    parser.add_argument("--exclude-pattern", help="Skip URLs matching this regex pattern.")
+    parser.add_argument(
+        "--include-pattern", type=_regex_arg, help="Only download URLs matching this regex pattern."
+    )
+    parser.add_argument(
+        "--exclude-pattern", type=_regex_arg, help="Skip URLs matching this regex pattern."
+    )
     parser.add_argument("--proxy", help="HTTP/HTTPS proxy address, e.g. http://127.0.0.1:7890")
     parser.add_argument(
         "--stealth",

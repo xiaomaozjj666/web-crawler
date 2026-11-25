@@ -104,6 +104,18 @@ def _restore_state(ctx: _CrawlContext) -> None:
     if not saved:
         _log.info("no saved state found, starting fresh")
         return
+    # 状态必须属于同一个起始站点：否则复用输出目录换站续跑会把旧站页面/资源带进来。
+    saved_seed = saved.get("seed_url")
+    if not saved_seed:
+        _log.warning("saved state has no seed_url (旧版本状态), ignoring it and starting fresh")
+        return
+    if saved_seed != ctx.seed_url:
+        _log.warning(
+            "saved state belongs to %s, not %s; ignoring it and starting fresh",
+            saved_seed,
+            ctx.seed_url,
+        )
+        return
     ctx.page_queue = deque(saved.get("page_queue", []))
     ctx.queued_pages = set(ctx.page_queue)
     ctx.seen_pages = set(saved.get("seen_pages", []))
@@ -313,6 +325,7 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
                     try:
                         ctx_mod.save_crawl_state(
                             ctx.output_dir,
+                            seed_url=ctx.seed_url,
                             page_queue=list(ctx.page_queue),
                             seen_pages=list(ctx.seen_pages),
                             page_titles=ctx.page_titles,

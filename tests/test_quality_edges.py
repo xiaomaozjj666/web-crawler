@@ -140,11 +140,13 @@ def test_restore_state_keeps_blocked_assets(tmp_path: Path, monkeypatch) -> None
         robots=None,
         rate_limiter=None,  # type: ignore[arg-type]
         dedup=None,
+        seed_url="https://example.com",
     )
     monkeypatch.setattr(
         scan.ctx_mod,
         "load_crawl_state",
         lambda _root: {
+            "seed_url": "https://example.com",
             "page_queue": [],
             "seen_pages": [],
             "page_titles": {},

@@ -275,6 +275,7 @@ def _crawl(args: argparse.Namespace) -> int:
     # ── 页面发现与扫描 ──
     cancelled = False
     if root_url:
+        ctx.seed_url = root_url
         _seed_page_queue(ctx, root_url)
         _restore_state(ctx)
         cancelled = _scan_pages(ctx)
@@ -327,7 +328,18 @@ def _crawl(args: argparse.Namespace) -> int:
 
 def main() -> None:
     parser = build_parser()
-    args = parser.parse_args()
+    try:
+        args = parser.parse_args()
+    except SystemExit as exc:
+        # 参数错误（退出码 2）在 --json 模式下也要给机器可解析的文档：
+        # 此前 argparse 只往 stderr 打印用法，stdout 是 0 字节，--json 的契约被打破。
+        if exc.code == 2 and "--json" in sys.argv[1:]:
+            emit_error(
+                ValueError("命令行参数无效，请检查 stderr 中的用法提示"),
+                argparse.Namespace(json_output=True),
+                context="--args",
+            )
+        raise
     configure_logging(args)
 
     if args.verify_offline:

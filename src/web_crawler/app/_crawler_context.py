@@ -96,6 +96,9 @@ class _CrawlContext:
     # 下载阶段状态
     queue: list[Resource] = field(default_factory=list)
     queued_urls: set[str] = field(default_factory=set)
+    # 本轮起始 URL（已规范化）：--resume-crawl 的状态必须与它一致，
+    # 否则复用同一输出目录换站会抓回旧站页面。
+    seed_url: str = ""
     new_discoveries: list[Resource] = field(default_factory=list)
     resource_dependencies: set[tuple[str, str]] = field(default_factory=set)
     processed_count: list[int] = field(default_factory=lambda: [0])

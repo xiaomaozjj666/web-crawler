@@ -2896,10 +2896,11 @@ class TestCrawlSitemap:
 
 class TestCrawlResumeCrawl:
     def test_resume_crawl_with_saved_state(self, tmp_path: Path) -> None:
-        """resume_crawl 加载已保存的状态。"""
+        """resume_crawl 加载已保存的状态（状态必须带同一 seed_url）。"""
         # 先保存一个状态
         cr.save_crawl_state(
             tmp_path,
+            seed_url="https://example.com",
             page_queue=["https://example.com"],
             seen_pages=["https://example.com/old"],
             page_titles={"https://example.com/old": "Old"},
@@ -2922,6 +2923,42 @@ class TestCrawlResumeCrawl:
             )
             exit_code = cr.crawl(args)
         assert exit_code == 0
+
+    def test_resume_crawl_ignores_state_from_other_site(self, tmp_path: Path) -> None:
+        """同一输出目录换站续跑时，旧站状态必须被忽略，不能把旧页面抓回来。"""
+        cr.save_crawl_state(
+            tmp_path,
+            seed_url="https://old.example",
+            page_queue=["https://old.example/page"],
+            seen_pages=["https://old.example/page"],
+            page_titles={},
+            resources=[],
+            sha256_set=[],
+        )
+        html = b"<html><body><p>content</p></body></html>"
+        fetched: list[str] = []
+
+        def fake_fetch(url, *args, **kwargs):
+            fetched.append(url)
+            return (html, "text/html")
+
+        with patch.object(core, "fetch", side_effect=fake_fetch):
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://new.example",
+                    "--out",
+                    str(tmp_path),
+                    "--resume-crawl",
+                    "--list-only",
+                    "--workers",
+                    "1",
+                ]
+            )
+            exit_code = cr.crawl(args)
+        assert exit_code == 0
+        assert all("old.example" not in url for url in fetched)
+        assert any("new.example" in url for url in fetched)
 
     def test_resume_crawl_no_saved_state(self, tmp_path: Path) -> None:
         """resume_crawl 无保存状态时从头开始。"""
