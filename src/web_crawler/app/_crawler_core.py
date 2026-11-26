@@ -429,6 +429,11 @@ def fetch(
 # DynamicFetcher 持有真实浏览器进程，同样不可跨线程并发使用：
 # 每个 worker 线程按 (timeout, proxy, headers) 缓存独立实例。
 _render_local = threading.local()
+# 全部线程已创建的渲染 fetcher 登记表：页面扫描在工作线程里渲染，收尾的
+# close_render_fetchers() 在 crawl 主线程执行，只清线程本地缓存会漏掉
+# worker 线程里的浏览器进程（长驻会话泄漏）。登记表让收尾关闭所有实例。
+_render_registry: list[Any] = []
+_render_registry_lock = threading.Lock()
 
 
 def _import_dynamic_fetcher() -> Any:
@@ -470,14 +475,17 @@ def _get_render_fetcher(timeout: float, proxy: str | None, headers: dict[str, st
         return cache[key]
     fetcher_cls = _import_dynamic_fetcher()
     browser_headers = {k: v for k, v in headers.items() if k.lower() != "user-agent"}
-    cache[key] = fetcher_cls(
+    fetcher = fetcher_cls(
         timeout=float(timeout),
         proxy=proxy,
         extra_headers=browser_headers or None,
         block_images=True,
         network_idle=True,
     )
-    return cache[key]
+    cache[key] = fetcher
+    with _render_registry_lock:
+        _render_registry.append(fetcher)
+    return fetcher
 
 
 def _collect_blocked_resources(fetcher: Any) -> None:
@@ -541,17 +549,30 @@ def render_page(
 
 
 def close_render_fetchers() -> None:
-    """关闭当前线程持有的渲染 fetcher（crawl 收尾调用，释放浏览器进程）。"""
+    """关闭本线程及全部工作线程持有的渲染 fetcher（crawl 收尾释放浏览器进程）。
+
+    页面扫描改为并发后，渲染实例散落在多个 worker 线程的线程本地缓存里，
+    收尾只清当前线程会漏关浏览器；登记表（创建即登记）保证全部实例被关闭。
+    同一实例可能同时在线程缓存与登记表中，按对象身份去重避免重复 close。
+    """
     _render_local.blocked_resources = []
     cache: dict[Any, Any] | None = getattr(_render_local, "cache", None)
-    if not cache:
-        return
-    for fetcher in cache.values():
+    instances: list[Any] = []
+    if cache:
+        instances.extend(cache.values())
+        cache.clear()
+    with _render_registry_lock:
+        instances.extend(_render_registry)
+        _render_registry.clear()
+    closed: set[int] = set()
+    for fetcher in instances:
+        if id(fetcher) in closed:
+            continue
+        closed.add(id(fetcher))
         try:
             fetcher.close()
         except Exception as exc:  # pragma: no cover - 浏览器已崩溃时 best-effort 清理
             _log.warning("failed to close render fetcher: %s", exc)
-    cache.clear()
 
 
 # ── 抓取主函数 ───────────────────────────────────────────────────────

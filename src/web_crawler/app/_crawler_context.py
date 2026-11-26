@@ -114,6 +114,9 @@ class _CrawlContext:
     last_state_save: list[float] = field(default_factory=lambda: [0.0])
     discovery_lock: threading.Lock = field(default_factory=threading.Lock)
     manifest_lock: threading.Lock = field(default_factory=threading.Lock)
+    # 页面扫描计数锁：--render-js 的渲染在工作线程执行，导航守卫拦截计数
+    # 由多个 worker 并发累加（failed / skipped 只在调度线程写，无需加锁）
+    page_scan_lock: threading.Lock = field(default_factory=threading.Lock)
     jsonl_file: Any = None
     result_committed: bool = False
     offline_page_count: int = 0

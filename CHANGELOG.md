@@ -84,6 +84,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **页面扫描改为异步并发管线**：`crawl()` 的页面扫描从「逐页串行」改成
+  asyncio 调度 + 固定大小线程池（`--workers` 同时控制扫描与下载并发）。
+  事件循环独占待扫队列、去重、robots/域过滤、限速账本与 `--resume-crawl`
+  状态快照（单写者，语义与串行版一致）；阻塞的 HTTP/渲染抓取与 HTML 解析
+  在工作线程执行。`--max-pages` 计数、取消/暂停、状态保存节流（每 5 页 +
+  最小间隔 + 队列耗尽）与既有行为对齐；`--render-js` 的浏览器实例散落在
+  worker 线程，收尾由登记表统一关闭（此前只清当前线程会漏关进程）。
+  全量依赖档实测覆盖率回到 97%，`test-extras` 门禁同步从 96 恢复到 97。
 - **robots 抓取失败不再静默**：记 warning 后按「无限制」继续（行为兼容），
   但日志留痕——此前 403 会静默变成全放行，合规结论无法复核。
 - **HTTP 403/401 错误提示指向有效方向**：直接建议 `--stealth` /

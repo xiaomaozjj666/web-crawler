@@ -165,7 +165,7 @@ Examples:
         "--workers",
         type=_positive_int,
         default=DEFAULT_WORKERS,
-        help="Number of concurrent download threads.",
+        help="Number of concurrent page-scan and download threads.",
     )
     parser.add_argument(
         "--max-bytes",

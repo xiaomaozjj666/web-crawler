@@ -3203,6 +3203,108 @@ class TestCrawlCrawlPages:
         assert list((tmp_path / "pages").rglob("*"))
 
 
+class TestCrawlPageConcurrency:
+    """页面扫描的并发管线：--workers 决定同时在途的页面数。"""
+
+    def test_pages_are_fetched_concurrently(self, tmp_path: Path) -> None:
+        """多个子页面同时在途（串行实现的并发峰值恒为 1）。"""
+        index = b'<html><body><a href="/a">a</a><a href="/b">b</a><a href="/c">c</a></body></html>'
+        lock = threading.Lock()
+        in_flight = 0
+        peak = [0]
+        gate = threading.Event()
+
+        def mock_fetch(url: str, *args: Any, **kwargs: Any) -> tuple[bytes, str]:
+            nonlocal in_flight
+            if url in ("https://example.com", "https://example.com/"):
+                return index, "text/html"
+            with lock:
+                in_flight += 1
+                peak[0] = max(peak[0], in_flight)
+                if in_flight >= 2:
+                    gate.set()
+            # 等到第二个并发请求到达；串行执行时只能靠超时退出（峰值保持 1）
+            gate.wait(2)
+            with lock:
+                in_flight -= 1
+            return b"<html><body>child</body></html>", "text/html"
+
+        with patch.object(core, "fetch", side_effect=mock_fetch):
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--crawl-pages",
+                    "--max-pages",
+                    "4",
+                    "--list-only",
+                    "--workers",
+                    "3",
+                    "--delay",
+                    "0",
+                ]
+            )
+            assert cr.crawl(args) == 0
+        assert peak[0] >= 2
+        assert len(list((tmp_path / "pages").rglob("*.html"))) == 4
+
+    def test_page_fetch_cancel_returns_1(self, tmp_path: Path) -> None:
+        """页面抓取收到用户取消信号 → 按取消退出（不进入下载与后处理）。"""
+
+        def mock_fetch(url: str, *args: Any, **kwargs: Any) -> tuple[bytes, str]:
+            raise RuntimeError("cancelled by user")
+
+        with patch.object(core, "fetch", side_effect=mock_fetch):
+            args = cr.build_parser().parse_args(
+                ["--url", "https://example.com", "--out", str(tmp_path), "--workers", "1"]
+            )
+            assert cr.crawl(args) == 1
+        assert not (tmp_path / "resources_manifest.json").exists()
+
+    def test_resume_state_saved_during_concurrent_scan(self, tmp_path: Path) -> None:
+        """并发扫描的续跑快照仍由调度线程写出（含页面相对路径与资源）。"""
+        index = b'<html><body><a href="/a">a</a></body></html>'
+        saved: list[dict[str, Any]] = []
+        real_save = ctx_mod.save_crawl_state
+
+        def spy(output_dir: Path, **state: Any) -> None:
+            saved.append(state)
+            real_save(output_dir, **state)
+
+        with (
+            patch.object(core, "fetch", side_effect=lambda *a, **k: (index, "text/html")),
+            patch.object(ctx_mod, "save_crawl_state", side_effect=spy),
+        ):
+            args = cr.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--crawl-pages",
+                    "--max-pages",
+                    "2",
+                    "--list-only",
+                    "--workers",
+                    "2",
+                    "--delay",
+                    "0",
+                    "--resume-crawl",
+                ]
+            )
+            assert cr.crawl(args) == 0
+        assert saved
+        state = saved[-1]
+        assert any(url.startswith("https://example.com") for url in state["seen_pages"])
+        seed_entry = next(
+            value for url, value in state["page_files"].items() if url == "https://example.com"
+        )
+        assert seed_entry[0].startswith("pages/")
+        assert state["page_scan"]["failed"] == 0
+
+
 class TestCrawlUrlPatterns:
     def test_include_pattern(self, tmp_path: Path) -> None:
         """--include-pattern 过滤匹配的资源。"""
@@ -5141,6 +5243,26 @@ class TestRenderPageBridge:
         core.close_render_fetchers()
         assert _FakeDynamicFetcher.instances[0].closed is True
         assert core._render_local.cache == {}
+
+    def test_close_render_fetchers_covers_worker_threads(self) -> None:
+        """并发扫描时渲染实例建在 worker 线程：主线程收尾也必须全部关闭。"""
+        core._render_registry.clear()
+        try:
+            with patch.object(core, "_import_dynamic_fetcher", return_value=_FakeDynamicFetcher):
+                thread = threading.Thread(
+                    target=core.render_page, args=("https://example.com", 30, {})
+                )
+                thread.start()
+                thread.join()
+            assert len(_FakeDynamicFetcher.instances) == 1
+            # 主线程的线程本地缓存是空的：旧实现会漏关 worker 线程的浏览器
+            assert core._render_local.cache == {}
+            core.close_render_fetchers()
+            assert _FakeDynamicFetcher.instances[0].closed is True
+            assert core._render_registry == []
+        finally:
+            core._render_registry.clear()
+            core._render_local.cache = {}
 
 
 class TestRenderJsScanPath:

@@ -1,7 +1,12 @@
-"""爬虫的页面扫描阶段（种子入队 / 状态恢复 / 逐页扫描）。
+"""爬虫的页面扫描阶段（种子入队 / 状态恢复 / 并发扫描）。
 
 从 :mod:`app.crawler` 拆出的 crawl() 前段阶段函数：
 ``_seed_page_queue`` / ``_restore_state`` / ``_scan_pages``。
+
+页面扫描走「asyncio 调度 + 固定大小线程池」的并发管线：事件循环独占队列、
+去重、robots/域过滤、限速账本与续跑状态（单线程写入，语义与串行实现一致），
+阻塞的 HTTP/渲染抓取与 HTML 解析在工作线程执行（线程本地 fetcher 缓存保证
+会话不跨线程复用）。``--workers`` 同时控制扫描并发与下载并发。
 
 本模块通过 facade 导入 ``app.crawler`` 并在运行期按属性访问被测试
 patch 的模块全局名（``cr.fetch`` / ``cr.should_stop`` /
@@ -14,11 +19,15 @@ patch 的模块全局名（``cr.fetch`` / ``cr.should_stop`` /
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
+from pathlib import Path
 from urllib.parse import urlparse
 
 from web_crawler._cli import render_error
@@ -260,7 +269,8 @@ def _fetch_page_html(
         ctx.rate_limiter.record_request(page_url)
         blocked = cr.drain_blocked_resources()
         if blocked:
-            ctx.page_scan["blocked_assets"] += len(blocked)
+            with ctx.page_scan_lock:
+                ctx.page_scan["blocked_assets"] += len(blocked)
             _log.warning(
                 "%d subresource(s) blocked by navigation guard for %s: %s",
                 len(blocked),
@@ -272,7 +282,10 @@ def _fetch_page_html(
         return data, content_type
     except Exception as exc:
         # 渲染中途失败也把已累计的拦截记进报告（否则「部分资源没下载」无迹可查）
-        ctx.page_scan["blocked_assets"] += len(cr.drain_blocked_resources())
+        blocked = cr.drain_blocked_resources()
+        if blocked:
+            with ctx.page_scan_lock:
+                ctx.page_scan["blocked_assets"] += len(blocked)
         if isinstance(exc, RuntimeError) and str(exc) == "cancelled by user":
             raise
         _log.warning("JS render failed for %s: %s; falling back to HTTP fetch", page_url, exc)
@@ -288,30 +301,97 @@ def _fetch_page_html(
         )
 
 
-def _scan_pages(ctx: _CrawlContext) -> bool:
-    """逐页扫描：抓取页面、解析资源、按 --crawl-pages 扩展待扫队列。
+@dataclass
+class _PageOutcome:
+    """单个页面在工作线程中抓取/解析后的结果（调度线程据此更新 ctx）。"""
 
-    返回是否被用户取消（取消后调用方应跳过下载与后处理）。
+    url: str
+    page_path: Path
+    content_type: str = ""
+    encoding: str = "utf-8"
+    title: str = ""
+    description: str = ""
+    lang: str = ""
+    status_code: int | None = None
+    resources: list[Resource] = field(default_factory=list)
+    page_links: list[str] = field(default_factory=list)
+    # 取消（用户中止）/ 抓取失败 / 非文档响应三种跳过原因互斥
+    cancelled: bool = False
+    error: str = ""
+    non_document: bool = False
+
+
+def _scan_page(
+    ctx: _CrawlContext,
+    page_url: str,
+    seed_url: str,
+    page_path: Path,
+) -> _PageOutcome:
+    """工作线程：抓取页面（必要时渲染）、落盘并解析资源（不触碰 ctx 集合）。"""
+    args = ctx.args
+    response_meta: dict[str, object] = {}
+    try:
+        if getattr(args, "render_js", False):
+            data, content_type = _fetch_page_html(ctx, page_url, meta=response_meta)
+        else:
+            data, content_type = cr.fetch(
+                page_url,
+                args.timeout,
+                ctx.headers,
+                args.retries,
+                ctx.max_bytes,
+                rate_limiter=ctx.rate_limiter,
+                control_args=args,
+                meta=response_meta,
+            )
+    except Exception as exc:
+        if isinstance(exc, RuntimeError) and str(exc) == "cancelled by user":
+            return _PageOutcome(url=page_url, page_path=page_path, cancelled=True)
+        return _PageOutcome(
+            url=page_url, page_path=page_path, error=render_error(exc, context=page_url)
+        )
+
+    if page_url != seed_url and not _is_page_document(content_type, page_url):
+        # 非种子链接明确是二进制/数据响应：不落成页面，避免产生垃圾离线产物
+        return _PageOutcome(
+            url=page_url, page_path=page_path, content_type=content_type, non_document=True
+        )
+
+    page_path.parent.mkdir(parents=True, exist_ok=True)
+    page_path.write_bytes(data)
+    html = decode_text(data, content_type, args.encoding)
+    description, lang = _extract_page_meta(html)
+    status_code = response_meta.get("status")
+    parser = PageParser(
+        page_url,
+        download_linked_data=bool(getattr(args, "download_linked_data", False)),
+    )
+    parser.feed(html)
+    return _PageOutcome(
+        url=page_url,
+        page_path=page_path,
+        content_type=content_type,
+        encoding=_resolved_encoding(args.encoding, content_type),
+        title=extract_title(html),
+        description=description,
+        lang=lang,
+        status_code=(
+            status_code
+            if isinstance(status_code, int) and not isinstance(status_code, bool)
+            else None
+        ),
+        resources=parser.resources,
+        page_links=list(parser.page_links),
+    )
+
+
+def _next_scan_page(ctx: _CrawlContext) -> str | None:
+    """取下一个可扫描页面（应用 block / 域名 / robots 过滤）；队列耗尽返回 None。
+
+    过滤计数（skipped）与日志只在调度线程执行，保证并发下计数不丢。
     """
     args = ctx.args
-    cancelled = False  # 统一取消标志：任何阶段触发取消后跳过后续耗时步骤并返回 1
-    saved_paths = {str(path).casefold() for path, _ in ctx.page_files.values()}
-    try:
-        seed_url = normalize_url(args.url)
-    except ValueError:  # pragma: no cover - 入口已校验过 URL
-        seed_url = args.url
-    while ctx.page_queue and len(ctx.seen_pages) < args.max_pages:
-        try:
-            cr.wait_if_paused(args)
-        except RuntimeError:
-            # 暂停期间被取消 → wait_for_resume 抛 cancelled,按取消处理而非任务出错
-            _log.info("cancelled by user")
-            cancelled = True
-            break
-        if cr.should_stop(args):
-            _log.info("cancelled before scanning next page")
-            cancelled = True
-            break
+    while ctx.page_queue:
         page_url = ctx.pop_page()
         if not page_url or page_url in ctx.seen_pages:  # pragma: no cover - 防御性：队列已预过滤
             continue
@@ -330,113 +410,156 @@ def _scan_pages(ctx: _CrawlContext) -> bool:
             ctx.page_scan["skipped"] += 1
             _log.info("robots.txt skipped page: %s", page_url)
             continue
+        return page_url
+    return None
 
-        _log.info("scanning page: %s", page_url)
-        cr.report_progress(
-            args,
-            phase="page",
-            current_url=page_url,
-            pages_scanned=len(ctx.page_titles),
-            total_pages=args.max_pages,
-            total_resources=0,
-            processed_resources=0,
+
+def _apply_page_outcome(ctx: _CrawlContext, outcome: _PageOutcome) -> None:
+    """把页面抓取结果并入上下文（只在调度线程调用，无需额外锁）。"""
+    args = ctx.args
+    page_url = outcome.url
+    if outcome.error:
+        _log.error("%s", outcome.error)
+        ctx.page_scan["failed"] += 1
+        if not ctx.page_scan["first_error"]:
+            ctx.page_scan["first_error"] = outcome.error[:4000]
+        return
+    if outcome.non_document:
+        ctx.page_scan["skipped"] += 1
+        _log.info("skipped non-document page: %s (%s)", page_url, outcome.content_type or "unknown")
+        return
+
+    ctx.page_files[page_url] = (outcome.page_path, outcome.encoding)
+    ctx.page_titles[page_url] = outcome.title
+    ctx.page_meta[page_url] = {
+        "status_code": outcome.status_code,
+        "content_type": str(outcome.content_type or ""),
+        "description": outcome.description,
+        "lang": outcome.lang,
+    }
+    ctx.all_resources.extend(outcome.resources)
+
+    if args.crawl_pages:
+        for link in outcome.page_links:
+            if link not in ctx.seen_pages and link not in ctx.queued_pages:
+                if is_blocked_url(
+                    link, ctx.block_keywords
+                ):  # pragma: no cover - 防御性：资源级 block 检查已在更上层处理
+                    continue
+                if not args.same_domain or same_domain(link, args.url):
+                    ctx.enqueue_page(link)
+
+
+def _save_scan_state_if_due(ctx: _CrawlContext, *, idle: bool) -> None:
+    """按节流策略保存 --resume-crawl 状态（idle=队列与在途都为空）。
+
+    状态保存只在调度线程发生：页面列表、资源与去重哈希都是单写者，
+    并发 worker 不会与快照交错。``idle`` 对应串行实现里「队列耗尽」
+    的无条件保存；其余情况按每 5 页 + 最小时间间隔节流，避免 O(P²) 写放大。
+    """
+    args = ctx.args
+    if not getattr(args, "resume_crawl", False):
+        return
+    # 与串行实现一致：只有开启 --crawl-pages 时才维护续跑状态
+    # （不扩展队列的单页抓取没有可续的页面集合）
+    if not getattr(args, "crawl_pages", False):
+        return
+    if not idle and len(ctx.seen_pages) % 5 != 0:
+        return
+    now = time.monotonic()
+    if not idle and now - ctx.last_state_save[0] < _STATE_SAVE_MIN_INTERVAL_SECONDS:
+        return
+    ctx.last_state_save[0] = now
+    try:
+        ctx_mod.save_crawl_state(
+            ctx.output_dir,
+            seed_url=ctx.seed_url,
+            page_queue=list(ctx.page_queue),
+            seen_pages=list(ctx.seen_pages),
+            page_titles=ctx.page_titles,
+            page_meta=ctx.page_meta,
+            page_files={
+                url: [path.relative_to(ctx.output_dir).as_posix(), encoding]
+                for url, (path, encoding) in ctx.page_files.items()
+            },
+            page_scan=ctx.page_scan,
+            resources=ctx.resource_dicts(),
+            sha256_set=ctx.dedup.seen_hashes() if ctx.dedup else [],
         )
-        ctx.seen_pages.add(page_url)
-        response_meta: dict[str, object] = {}
-        try:
-            if getattr(args, "render_js", False):
-                data, content_type = _fetch_page_html(ctx, page_url, meta=response_meta)
-            else:
-                data, content_type = cr.fetch(
-                    page_url,
-                    args.timeout,
-                    ctx.headers,
-                    args.retries,
-                    ctx.max_bytes,
-                    rate_limiter=ctx.rate_limiter,
-                    control_args=args,
-                    meta=response_meta,
+    except Exception as exc:  # pragma: no cover - 防御性：状态保存异常吞掉
+        _log.warning("failed to save crawl state: %s", exc)
+
+
+async def _scan_pages_async(ctx: _CrawlContext, seed_url: str, saved_paths: set[str]) -> bool:
+    """并发扫描调度：填满并发槽位 → 等任一完成 → 并入结果 → 状态节流保存。"""
+    args = ctx.args
+    workers = max(1, int(getattr(args, "workers", 1) or 1))
+    loop = asyncio.get_running_loop()
+    pending: dict[asyncio.Future[_PageOutcome], str] = {}
+    cancelled = False
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="page-scan") as pool:
+        while True:
+            # 补槽位：暂停/取消每派发一页检查一次（与串行实现的检查频次一致）；
+            # max_pages 以「已入 seen 的页面」为计数，与旧行为同源。
+            while not cancelled and len(pending) < workers and len(ctx.seen_pages) < args.max_pages:
+                try:
+                    cr.wait_if_paused(args)
+                except RuntimeError:
+                    # 暂停期间被取消 → wait_for_resume 抛 cancelled,按取消处理而非任务出错
+                    _log.info("cancelled by user")
+                    cancelled = True
+                    break
+                if cr.should_stop(args):
+                    _log.info("cancelled before scanning next page")
+                    cancelled = True
+                    break
+                page_url = _next_scan_page(ctx)
+                if page_url is None:
+                    break
+                page_path = output_path_for_url(
+                    page_url, ctx.output_dir, "text/html", prefix="pages"
                 )
-        except Exception as exc:
-            if isinstance(exc, RuntimeError) and str(exc) == "cancelled by user":
-                return True
-            diagnostic = render_error(exc, context=page_url)
-            _log.error("%s", diagnostic)
-            ctx.page_scan["failed"] += 1
-            if not ctx.page_scan["first_error"]:
-                ctx.page_scan["first_error"] = diagnostic[:4000]
-            continue
-
-        if page_url != seed_url and not _is_page_document(content_type, page_url):
-            # 非种子链接明确是二进制/数据响应：不落成页面，避免产生垃圾离线产物
-            ctx.page_scan["skipped"] += 1
-            _log.info("skipped non-document page: %s (%s)", page_url, content_type or "unknown")
-            continue
-        page_path = output_path_for_url(page_url, ctx.output_dir, "text/html", prefix="pages")
-        if not page_path.suffix:  # pragma: no cover - text/html 总是返回带后缀的路径
-            page_path = page_path.with_suffix(".html")
-        page_path = ctx_mod.reserve_page_path(page_path, page_url, saved_paths)
-        page_path.parent.mkdir(parents=True, exist_ok=True)
-        page_path.write_bytes(data)
-
-        html = decode_text(data, content_type, args.encoding)
-        ctx.page_files[page_url] = (page_path, _resolved_encoding(args.encoding, content_type))
-        ctx.page_titles[page_url] = extract_title(html)
-        description, lang = _extract_page_meta(html)
-        status_code = response_meta.get("status")
-        ctx.page_meta[page_url] = {
-            "status_code": (
-                status_code
-                if isinstance(status_code, int) and not isinstance(status_code, bool)
-                else None
-            ),
-            "content_type": str(response_meta.get("content_type") or content_type or ""),
-            "description": description,
-            "lang": lang,
-        }
-        parser = PageParser(
-            page_url,
-            download_linked_data=bool(getattr(args, "download_linked_data", False)),
-        )
-        parser.feed(html)
-        ctx.all_resources.extend(parser.resources)
-
-        if args.crawl_pages:
-            for link in parser.page_links:
-                if link not in ctx.seen_pages and link not in ctx.queued_pages:
-                    if is_blocked_url(
-                        link, ctx.block_keywords
-                    ):  # pragma: no cover - 防御性：资源级 block 检查已在更上层处理
-                        continue
-                    if not args.same_domain or same_domain(link, args.url):
-                        ctx.enqueue_page(link)
-
-            # 状态保存节流：每 5 页或队列耗尽时尝试保存；状态体大时再叠加
-            # 最小时间间隔（见 _STATE_SAVE_MIN_INTERVAL_SECONDS），防止 O(P²) 写放大
-            if getattr(args, "resume_crawl", False) and (
-                len(ctx.seen_pages) % 5 == 0 or not ctx.page_queue
-            ):
-                now = time.monotonic()
-                if not ctx.page_queue or (
-                    now - ctx.last_state_save[0] >= _STATE_SAVE_MIN_INTERVAL_SECONDS
-                ):
-                    ctx.last_state_save[0] = now
-                    try:
-                        ctx_mod.save_crawl_state(
-                            ctx.output_dir,
-                            seed_url=ctx.seed_url,
-                            page_queue=list(ctx.page_queue),
-                            seen_pages=list(ctx.seen_pages),
-                            page_titles=ctx.page_titles,
-                            page_meta=ctx.page_meta,
-                            page_files={
-                                url: [path.relative_to(ctx.output_dir).as_posix(), encoding]
-                                for url, (path, encoding) in ctx.page_files.items()
-                            },
-                            page_scan=ctx.page_scan,
-                            resources=ctx.resource_dicts(),
-                            sha256_set=ctx.dedup.seen_hashes() if ctx.dedup else [],
-                        )
-                    except Exception as exc:  # pragma: no cover - 防御性：状态保存异常吞掉
-                        _log.warning("failed to save crawl state: %s", exc)
+                if not page_path.suffix:  # pragma: no cover - text/html 总是返回带后缀的路径
+                    page_path = page_path.with_suffix(".html")
+                # 路径在调度线程按队列顺序预留：与串行实现的最长命中顺序一致
+                page_path = ctx_mod.reserve_page_path(page_path, page_url, saved_paths)
+                ctx.seen_pages.add(page_url)
+                _log.info("scanning page: %s", page_url)
+                cr.report_progress(
+                    args,
+                    phase="page",
+                    current_url=page_url,
+                    pages_scanned=len(ctx.page_titles),
+                    total_pages=args.max_pages,
+                    total_resources=0,
+                    processed_resources=0,
+                )
+                future = loop.run_in_executor(pool, _scan_page, ctx, page_url, seed_url, page_path)
+                pending[future] = page_url
+            if not pending:
+                break
+            done, _ = await asyncio.wait(set(pending), return_when=asyncio.FIRST_COMPLETED)
+            for future in done:
+                pending.pop(future)
+                outcome = future.result()
+                if outcome.cancelled:
+                    # 在途页面已开始：其结果照常并入，只是不再派发新页面
+                    cancelled = True
+                    continue
+                _apply_page_outcome(ctx, outcome)
+                _save_scan_state_if_due(ctx, idle=not ctx.page_queue and not pending)
     return cancelled
+
+
+def _scan_pages(ctx: _CrawlContext) -> bool:
+    """并发扫描页面：抓取、解析资源、按 --crawl-pages 扩展待扫队列。
+
+    返回是否被用户取消（取消后调用方应跳过下载与后处理）。
+    """
+    args = ctx.args
+    saved_paths = {str(path).casefold() for path, _ in ctx.page_files.values()}
+    try:
+        seed_url = normalize_url(args.url)
+    except ValueError:  # pragma: no cover - 入口已校验过 URL
+        seed_url = args.url
+    return asyncio.run(_scan_pages_async(ctx, seed_url, saved_paths))

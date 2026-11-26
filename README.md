@@ -695,7 +695,7 @@ python benchmarks.py --check-regression   # 性能回归检查（CI 模式）
 
 GitHub Actions 在每次 push 时运行 lint、类型检查、带覆盖率的测试、基准回归检查与文档构建（`--strict`）；标记为 `@pytest.mark.slow` 的慢速测试（如 Camoufox 端到端套件）默认被排除。
 
-覆盖率徽章显示 master 最新实测覆盖率（当前约 96%）；两个 CI 门禁为 `--cov-fail-under`：标准 test job 装 dev 依赖、门禁 92，`test-extras` job 装全量可选依赖、门禁 96。历史实测数字见 [CHANGELOG](CHANGELOG.md)。
+覆盖率徽章显示 master 最新实测覆盖率（当前约 97%）；两个 CI 门禁为 `--cov-fail-under`：标准 test job 装 dev 依赖、门禁 92，`test-extras` job 装全量可选依赖、门禁 97。历史实测数字见 [CHANGELOG](CHANGELOG.md)。
 
 ## 合规说明
 
