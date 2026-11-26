@@ -119,6 +119,7 @@ from web_crawler.app._crawler_core import (  # noqa: F401
     _log,
     _stealth_user_agent,
     attach_log_handler,
+    close_app_fetchers,
     close_render_fetchers,
     decrypt_aes128,
     detach_log_handler,
@@ -150,6 +151,9 @@ def crawl(args: argparse.Namespace) -> int:
         # --render-js 的渲染 fetcher 持有浏览器进程：无论成功/取消/异常都释放，
         # 避免长驻会话泄漏（UI 反复起任务时会累积 Chromium 实例）。
         close_render_fetchers()
+        # 并发扫描/下载的库级 fetcher 建在 worker 线程：线程退出不会关连接，
+        # 由其登记表统一关闭，避免 unclosed socket / 连接池泄漏。
+        close_app_fetchers()
         reporter.close()
         if had_callback:
             args.progress_callback = previous_callback

@@ -5264,6 +5264,35 @@ class TestRenderPageBridge:
             core._render_registry.clear()
             core._render_local.cache = {}
 
+    def test_close_app_fetchers_covers_worker_threads(self) -> None:
+        """并发抓取的库级 fetcher 建在 worker 线程：crawl 收尾统一关闭连接池。"""
+
+        class _FakeLibFetcher:
+            instances: list[_FakeLibFetcher] = []
+
+            def __init__(self, **kwargs: Any) -> None:
+                self.closed = False
+                _FakeLibFetcher.instances.append(self)
+
+            def close(self) -> None:
+                self.closed = True
+
+        core._app_fetchers.clear()
+        core._fetchers_local.cache = {}
+        try:
+            with patch.object(core, "_import_lib_fetcher", return_value=_FakeLibFetcher):
+                thread = threading.Thread(target=core._get_app_fetcher, args=(None, 30.0, None))
+                thread.start()
+                thread.join()
+            fetcher = _FakeLibFetcher.instances[-1]
+            assert fetcher.closed is False
+            core.close_app_fetchers()
+            assert fetcher.closed is True
+            assert core._app_fetchers == []
+        finally:
+            core._app_fetchers.clear()
+            core._fetchers_local.cache = {}
+
 
 class TestRenderJsScanPath:
     """页面扫描的 --render-js 分支：渲染优先、失败退回静态 HTTP。"""

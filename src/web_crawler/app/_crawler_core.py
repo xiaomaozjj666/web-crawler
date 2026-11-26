@@ -119,9 +119,14 @@ def _import_lib_fetcher() -> Any:
 
 # 应用 fetcher 按线程缓存：下载/抓取跑在 ThreadPoolExecutor 里，同一
 # fetcher 的 curl 会话不可跨线程并发使用（有状态资源）；threading.local
-# 让每个 worker 线程持有独立会话，线程结束时随 local 存储一起回收。
+# 让每个 worker 线程持有独立会话。
 # 键为 (impersonate, proxy, timeout)：任一变化即换新实例。
 _fetchers_local = threading.local()
+# 已创建的 fetcher 登记表：线程本地缓存在线程退出时只是被丢弃，fetcher 持有
+# 的连接池/会话要等 GC 才释放（httpx 路径会报 unclosed socket）。页面扫描
+# 改为并发后 fetcher 散落在短命的 worker 线程里，必须由 crawl 收尾统一关闭。
+_app_fetchers: list[Any] = []
+_app_fetchers_lock = threading.Lock()
 
 
 def _get_app_fetcher(
@@ -156,7 +161,38 @@ def _get_app_fetcher(
         follow_redirects=True,  # 库层手动逐跳跟随并校验（scheme + host，防 SSRF）
         max_redirects=_MAX_REDIRECTS,
     )
+    with _app_fetchers_lock:
+        _app_fetchers.append(cache[key])
     return cache[key]
+
+
+def close_app_fetchers() -> None:
+    """关闭所有线程创建的库级 ``Fetcher``，释放连接池与会话。
+
+    并发扫描/下载的 fetcher 建在 worker 线程的线程本地缓存里；线程退出只
+    丢弃引用，连接要等 GC 才关（httpx 路径会报 unclosed socket）。crawl
+    收尾统一关闭：当前线程缓存 + 登记表，按对象身份去重避免重复 close。
+    """
+    cache: dict[Any, Any] | None = getattr(_fetchers_local, "cache", None)
+    instances: list[Any] = []
+    if cache:
+        instances.extend(cache.values())
+        cache.clear()
+    with _app_fetchers_lock:
+        instances.extend(_app_fetchers)
+        _app_fetchers.clear()
+    closed: set[int] = set()
+    for fetcher in instances:
+        if id(fetcher) in closed:
+            continue
+        closed.add(id(fetcher))
+        close = getattr(fetcher, "close", None)
+        if close is None:  # pragma: no cover - 库级 Fetcher 一定有 close
+            continue
+        try:
+            close()
+        except Exception as exc:  # pragma: no cover - 尽力清理，失败不打断收尾
+            _log.warning("failed to close app fetcher: %s", exc)
 
 
 def _request_headers(url: str, headers: dict[str, str]) -> dict[str, str]:

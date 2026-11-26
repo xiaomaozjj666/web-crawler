@@ -370,7 +370,9 @@ def _scan_page(
     return _PageOutcome(
         url=page_url,
         page_path=page_path,
-        content_type=content_type,
+        # 报告里的 content_type 优先取响应头（与拆分前一致），
+        # 解码/后缀判定仍用抓取返回值
+        content_type=str(response_meta.get("content_type") or content_type or ""),
         encoding=_resolved_encoding(args.encoding, content_type),
         title=extract_title(html),
         description=description,
