@@ -50,9 +50,13 @@ from ..exceptions import ConfigError
 __all__ = ["AutoThrottle"]
 
 
-@dataclass
+@dataclass(slots=True)
 class _DomainState:
-    """单域限速账本（AutoThrottle 内部状态，不对外暴露）。"""
+    """单域限速账本（AutoThrottle 内部状态，不对外暴露）。
+
+    ``slots=True``：账本按域实例化，``max_domains`` 可达 65536，免掉逐实例
+    ``__dict__`` 既省内存也让热路径（每次下载反馈一次）的属性读写更快。
+    """
 
     # 响应延迟 EMA（秒）；None 表示该域尚无成功样本
     ema_latency: float | None = None
@@ -175,33 +179,38 @@ class AutoThrottle:
         """
         elapsed = max(elapsed, 0.0)
         key = domain.lower()
+        # 热路径：每次真实下载反馈一次，逐次属性查找都是纯开销。把账本
+        # 字典 / 上限 / 惩罚系数提到本地变量；EMA 递推里只取一次 self.alpha。
+        domains = self._domains
+        max_domains = self.max_domains
+        factor = self.penalty_factor
         with self._lock:
             # LRU 触碰：先 pop 再写回（move_to_end 语义），使 dict 尾部
             # 恒为最近反馈的域；新域同样落尾（冷启动，见类 docstring）
-            state = self._domains.pop(key, None)
+            state = domains.pop(key, None)
             if state is None:
                 state = _DomainState()
-            self._domains[key] = state
+            domains[key] = state
             # 超限淘汰最久未反馈的域（dict 首部）：长时开放爬取海量唯一
             # 域名时内存有界；被淘汰域重新反馈时由上面的冷启动路径接住
-            while len(self._domains) > self.max_domains:
-                self._domains.pop(next(iter(self._domains)))
+            while len(domains) > max_domains:
+                domains.pop(next(iter(domains)))
             state.samples += 1
             if success:
                 state.consecutive_failures = 0
                 # 首样本直接赋值（见模块 docstring），后续按 EMA 递推
-                if state.ema_latency is None:
+                ema = state.ema_latency
+                if ema is None:
                     state.ema_latency = elapsed
                 else:
-                    state.ema_latency = (
-                        self.alpha * elapsed + (1.0 - self.alpha) * state.ema_latency
-                    )
+                    alpha = self.alpha
+                    state.ema_latency = alpha * elapsed + (1.0 - alpha) * ema
                 # 成功：惩罚对称回落，1.0 为下限（无惩罚）
-                state.penalty = max(state.penalty / self.penalty_factor, 1.0)
+                state.penalty = max(1.0, state.penalty / factor)
             else:
                 state.consecutive_failures += 1
                 # 失败：惩罚逐次放大，max_penalty 封顶
-                state.penalty = min(state.penalty * self.penalty_factor, self.max_penalty)
+                state.penalty = min(self.max_penalty, state.penalty * factor)
 
     # -- 查询 ---------------------------------------------------------------
     def get_delay(self, domain: str) -> float:

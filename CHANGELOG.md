@@ -116,6 +116,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **bench 的 `AutoThrottle.note_response` 超阈告警（advisory）**：CI 实测
+  1.283 µs/op，超 1.0 µs 基线 28%。该条目是 Spider 抓取路径的限速账本反馈
+  （每次下载一次），`spider/autothrottle.py` 自 49f0159 起未改动，与近期
+  并发扫描改造无关——同一次运行里未改动的解析类条目也整体慢约 40%
+  （`Selector(str)` 0.63 vs 0.45），同一份代码在 5 次 CI 运行里落在
+  0.84–1.28 µs，属共享 runner 的测量噪声。处理：单域账本 `_DomainState`
+  改 `slots=True`（免逐域 `__dict__`），热路径的字典/上限/系数提到本地变量；
+  同进程交错实测 0.445→0.40 µs（约 10%）。本条目迭代数 10k→200k，把测量
+  窗口从 ~10 ms 拉到 ~60 ms，读数不再由调度抢占主导。基线值与 20% 阈值
+  均未调整。
 - **并发扫描的断点续跑一致性**：状态快照曾把「已出队、worker 尚未回填」的
   在途页面写进 `seen_pages`，进程中断后续跑会把这些页面当作已完成永久漏抓。
   快照现在把在途页面从 `seen_pages` 剔除并按原出队顺序放回 `page_queue`

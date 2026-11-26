@@ -305,7 +305,14 @@ def bench_cache_read() -> dict[str, float]:
 
 
 def bench_autothrottle_ema() -> dict[str, float]:
-    """AutoThrottle EMA 延迟更新热路径（限速核心）。"""
+    """AutoThrottle EMA 延迟更新热路径（限速核心）。
+
+    迭代数取 200k（其余条目 10k）：本项单次 ~0.3~0.5 us，10k 次只有
+    ~10 ms 测量窗口，共享 runner 上一次调度抢占就能让读数漂 20%+——
+    同一份未改动的 autothrottle 代码在连续 5 次 CI 运行里落在
+    0.84~1.28 us（基线 1.0 us，20% 容差被噪声反复顶破）。窗口拉长到
+    ~60 ms 后读数由真实 CPU 开销主导，基线比较才反映代码而非调度抖动。
+    """
     from web_crawler.spider import AutoThrottle
 
     at = AutoThrottle(alpha=0.3, target_concurrency=2.0)
@@ -314,7 +321,7 @@ def bench_autothrottle_ema() -> dict[str, float]:
         "AutoThrottle.note_response": _bench(
             "AutoThrottle.note_response",
             lambda: at.note_response("bench.example.com", 0.05, True),
-            iterations=10000,
+            iterations=200_000,
         )
     }
 

@@ -231,6 +231,23 @@ def test_read_paths_do_not_touch_lru_order() -> None:
     assert set(at.stats()) == {"b.com", "c.com"}
 
 
+def test_domain_ledger_entry_has_no_instance_dict() -> None:
+    """单域账本用 __slots__（无逐实例 __dict__），防内存与热路径回退。
+
+    ``max_domains`` 上限 65536，账本免 __dict__ 是「内存有界」的实现前提
+    之一；note_response 是每次下载都走的热路径，属性走槽位而非字典查找。
+    改成普通类会让每域多一份 dict（数 MB 级）并拖慢反馈。
+    """
+    from web_crawler.spider.autothrottle import _DomainState
+
+    state = _DomainState()
+    assert not hasattr(state, "__dict__")
+    assert state.ema_latency is None
+    assert state.penalty == 1.0
+    assert state.consecutive_failures == 0
+    assert state.samples == 0
+
+
 # ===========================================================================
 # Spider 集成：假时钟 + 假 sleep 的确定性时序断言
 # ===========================================================================
