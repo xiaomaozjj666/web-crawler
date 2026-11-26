@@ -174,33 +174,41 @@ class DomainRateLimiter:
         self._blocked_until: dict[str, float] = {}
 
     def wait_if_needed(self, url: str) -> None:
+        """等待到本域的下一个可用发送时隙。
+
+        并发 worker 会同时进入本方法：若只读「距上次请求过了多久」再各自
+        ``sleep``，所有线程会看到同一个旧时间戳而同时放行，``--delay`` 在
+        并发下等于失效。这里在同一把锁内**预约**发送时隙并把预约写回
+        ``_last_times``，后到的调用者在此基础上再排一个 ``default_delay``，
+        从而保持串行时代的「同域请求间隔 >= delay」语义。
+        """
         domain = urlparse(url).netloc.lower()
+        now = time.time()
+        deadline = now
         with self._lock:
             blocked = self._blocked_until.get(domain, 0.0)
-            if blocked > time.time():
-                wait_sec = blocked - time.time()
-                _log.debug("rate-limited domain %s, waiting %.1fs", domain, wait_sec)
+            if blocked > now:
+                # 429 退避：先等到域解封，再在其后排队（不超过历史 120s 上限）
+                deadline = min(blocked, now + 120)
+                _log.debug("rate-limited domain %s, waiting %.1fs", domain, deadline - now)
+                base = deadline
             else:
-                wait_sec = 0.0
-        if wait_sec > 0:
-            time.sleep(min(wait_sec, 120))
-
-        if self._default_delay <= 0:
-            return
-        with self._lock:
-            last = self._last_times.get(domain, 0.0)
-            elapsed = time.time() - last
-            if elapsed < self._default_delay:
-                sleep_for = self._default_delay - elapsed
-            else:
-                sleep_for = 0.0
+                base = now
+            if self._default_delay > 0:
+                last = self._last_times.get(domain)
+                # 首次请求不额外等待；已有预约/请求时间时在其后排队
+                scheduled = base if last is None else max(base, last + self._default_delay)
+                self._last_times[domain] = scheduled
+                deadline = max(deadline, scheduled)
+        sleep_for = deadline - time.time()
         if sleep_for > 0:
             time.sleep(sleep_for)
 
     def record_request(self, url: str) -> None:
         domain = urlparse(url).netloc.lower()
         with self._lock:
-            self._last_times[domain] = time.time()
+            # 不能把并发线程已预约的未来时隙改回「现在」，否则后到者会提前放行
+            self._last_times[domain] = max(self._last_times.get(domain, 0.0), time.time())
 
     def handle_429(self, url: str, retry_after: str | None) -> float | None:
         """处理 429 响应。调用方应重试时返回需等待的秒数。"""

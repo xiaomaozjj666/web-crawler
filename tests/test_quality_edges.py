@@ -3,18 +3,25 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import itertools
 import json
+import logging
+import sys
+import threading
 import time
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 from tinycss2 import parse_stylesheet
 
+from web_crawler.app import _crawler_core as core
 from web_crawler.app import _crawler_post as post
 from web_crawler.app import _crawler_scan as scan
 from web_crawler.app import _offline_verify as ov
 from web_crawler.app import _report_extract as rx
+from web_crawler.app import crawler as crawler_app
 from web_crawler.app._crawler_cli import (
     _non_negative_float,
     _non_negative_int,
@@ -24,7 +31,8 @@ from web_crawler.app._crawler_cli import (
 from web_crawler.app._crawler_context import _CrawlContext, load_config_from_file, reserve_page_path
 from web_crawler.app._crawler_scan import _resolved_encoding
 from web_crawler.app.crawler_models import Resource
-from web_crawler.exceptions import ConfigError
+from web_crawler.app.crawler_net import ContentDedup, DomainRateLimiter
+from web_crawler.exceptions import ConfigError, FetchError
 
 
 class TestProseFilter:
@@ -103,7 +111,12 @@ class TestCrawlerHelpers:
     def test_resolved_encoding_fallbacks(self) -> None:
         assert _resolved_encoding("gbk", "text/html") == "gbk"
         assert _resolved_encoding(None, "text/html; charset=GB18030; x=1") == "gb18030"
+        assert _resolved_encoding(None, "text/html; charset=") == "utf-8"
         assert _resolved_encoding(None, "text/html") == "utf-8"
+
+    def test_page_meta_parser_skips_non_lang_attributes(self) -> None:
+        html = '<html data-app="x" lang="zh-CN"><head></head><body></body></html>'
+        assert scan._extract_page_meta(html) == ("", "zh-CN")
 
     def test_reserve_page_path_collision_adds_digest(self, tmp_path: Path) -> None:
         used = {str(tmp_path / "a.html").casefold()}
@@ -669,3 +682,809 @@ class TestCliTypeValidators:
         with pytest.raises(argparse.ArgumentTypeError, match="无效的正则"):
             _regex_arg("[")
         assert _regex_arg(r"a\d+") == r"a\d+"
+
+
+# ── 并发扫描管线：worker 结果 / 取消 / 限速 / 续跑一致性 ──────────────
+
+
+def _make_scan_ctx(tmp_path: Path, **overrides: object) -> _CrawlContext:
+    """构造页面扫描上下文（覆盖 _scan_page / 调度函数读取的 args 字段）。"""
+    defaults: dict[str, object] = {
+        "url": "https://example.com",
+        "out": str(tmp_path),
+        "timeout": 30,
+        "retries": 0,
+        "max_bytes": 0,
+        "encoding": None,
+        "workers": 2,
+        "max_pages": 100,
+        "same_domain": False,
+        "user_agent": "UA",
+        "crawl_pages": False,
+        "render_js": False,
+        "download_linked_data": False,
+        "resume_crawl": False,
+        "sitemap": False,
+    }
+    defaults.update(overrides)
+    return _CrawlContext(
+        args=argparse.Namespace(**defaults),
+        headers={},
+        output_dir=tmp_path,
+        max_bytes=None,
+        block_keywords=[],
+        robots=None,
+        rate_limiter=DomainRateLimiter(),
+        dedup=None,
+        seed_url="https://example.com",
+    )
+
+
+class TestScanWorkerOutcomes:
+    """工作线程结果包：抓取取消 / 非文档 / 后处理异常的归类。"""
+
+    def test_fetch_cancel_marks_outcome_cancelled(self, tmp_path: Path) -> None:
+        ctx = _make_scan_ctx(tmp_path)
+        page_path = tmp_path / "pages" / "x.html"
+        with patch.object(core, "fetch", side_effect=RuntimeError("cancelled by user")):
+            outcome = scan._scan_page(
+                ctx, "https://example.com/x", "https://example.com", page_path
+            )
+        assert outcome.cancelled
+        assert not outcome.error and not outcome.non_document
+
+    def test_child_binary_response_is_non_document(self, tmp_path: Path) -> None:
+        ctx = _make_scan_ctx(tmp_path)
+        page_path = tmp_path / "pages" / "f.html"
+        with patch.object(core, "fetch", return_value=(b"%PDF-1.4", "application/pdf")):
+            outcome = scan._scan_page(
+                ctx, "https://example.com/f.pdf", "https://example.com", page_path
+            )
+        assert outcome.non_document
+        assert not page_path.exists()
+
+    def test_empty_content_type_is_saved_as_page(self, tmp_path: Path) -> None:
+        """无 Content-Type 时保持旧行为：子链接仍按页面落盘。"""
+        ctx = _make_scan_ctx(tmp_path)
+        page_path = tmp_path / "pages" / "plain.html"
+        with patch.object(core, "fetch", return_value=(b"<html>plain</html>", "")):
+            outcome = scan._scan_page(
+                ctx, "https://example.com/plain", "https://example.com", page_path
+            )
+        assert not outcome.error and not outcome.non_document
+        assert page_path.read_bytes() == b"<html>plain</html>"
+        assert outcome.content_type == ""
+
+    def test_post_processing_failure_is_reported_as_page_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """非法 charset / 磁盘或解析异常不得让整个并发扫描崩溃。"""
+        ctx = _make_scan_ctx(tmp_path)
+        page_path = tmp_path / "pages" / "bad.html"
+
+        def boom(*args: object, **kwargs: object) -> str:
+            raise LookupError("unknown encoding: not-a-charset")
+
+        monkeypatch.setattr(scan, "decode_text", boom)
+        with patch.object(core, "fetch", return_value=(b"<html>bad</html>", "text/html")):
+            outcome = scan._scan_page(
+                ctx, "https://example.com/bad", "https://example.com", page_path
+            )
+        assert outcome.error
+        assert not outcome.cancelled and not outcome.non_document
+
+
+class TestRenderBlockedAccounting:
+    """--render-js 的导航守卫拦截计数（worker 并发累加路径）。"""
+
+    def test_render_success_counts_blocked_assets(self, tmp_path: Path) -> None:
+        ctx = _make_scan_ctx(tmp_path, render_js=True)
+        with (
+            patch.object(core, "render_page", return_value=(b"<html>x</html>", "text/html")),
+            patch.object(core, "drain_blocked_resources", return_value=["a", "b"]),
+        ):
+            data, _ct = scan._fetch_page_html(ctx, "https://example.com/")
+        assert data == b"<html>x</html>"
+        assert ctx.page_scan["blocked_assets"] == 2
+
+    def test_render_failure_counts_blocked_assets_then_falls_back(self, tmp_path: Path) -> None:
+        ctx = _make_scan_ctx(tmp_path, render_js=True)
+        with (
+            patch.object(core, "render_page", side_effect=FetchError("render crashed")),
+            patch.object(core, "drain_blocked_resources", return_value=["blocked.png"]),
+            patch.object(core, "fetch", return_value=(b"<html>static</html>", "text/html")),
+        ):
+            data, _ct = scan._fetch_page_html(ctx, "https://example.com/")
+        assert data == b"<html>static</html>"
+        assert ctx.page_scan["blocked_assets"] == 1
+
+
+class TestScanSchedulerEdges:
+    """调度线程的过滤计数 / sitemap 入队 / 结果合并边界。"""
+
+    def test_next_scan_page_filters_blocked_domain_and_robots(self, tmp_path: Path) -> None:
+        ctx = _make_scan_ctx(tmp_path, same_domain=True)
+        ctx.block_keywords = ["blocked"]
+        ctx.robots = MagicMock()
+        ctx.robots.can_fetch.side_effect = lambda _ua, url: "robots" not in url
+        for url in (
+            "https://example.com/blocked",
+            "https://other.com/x",
+            "https://example.com/robots",
+            "https://example.com/ok",
+        ):
+            ctx.enqueue_page(url)
+        assert scan._next_scan_page(ctx) == "https://example.com/ok"
+        assert ctx.page_scan["skipped"] == 3
+        assert scan._next_scan_page(ctx) is None
+
+    def test_seed_page_queue_sitemap_filters_duplicates_and_blocked(self, tmp_path: Path) -> None:
+        ctx = _make_scan_ctx(tmp_path, sitemap=True, same_domain=True)
+        ctx.block_keywords = ["blocked"]
+        discovered = [
+            "https://example.com",  # 与种子重复
+            "https://example.com/blocked",
+            "https://other.com/x",  # 跨域
+            "https://example.com/ok",
+        ]
+        with patch.object(scan, "discover_sitemap_urls", return_value=discovered):
+            scan._seed_page_queue(ctx, "https://example.com")
+        assert list(ctx.page_queue) == ["https://example.com", "https://example.com/ok"]
+
+    def test_apply_outcome_error_keeps_existing_first_error(self, tmp_path: Path) -> None:
+        ctx = _make_scan_ctx(tmp_path)
+        ctx.page_scan["first_error"] = "earlier"
+        outcome = scan._PageOutcome(
+            url="https://example.com/x",
+            page_path=tmp_path / "pages" / "x.html",
+            error="later",
+        )
+        scan._apply_page_outcome(ctx, outcome)
+        assert ctx.page_scan["failed"] == 1
+        assert ctx.page_scan["first_error"] == "earlier"
+
+    def test_apply_outcome_skips_known_blocked_and_cross_domain_links(self, tmp_path: Path) -> None:
+        ctx = _make_scan_ctx(tmp_path, crawl_pages=True, same_domain=True)
+        ctx.block_keywords = ["blocked"]
+        ctx.seen_pages.add("https://example.com/seen")
+        ctx.enqueue_page("https://example.com/queued")
+        outcome = scan._PageOutcome(
+            url="https://example.com/page",
+            page_path=tmp_path / "pages" / "p.html",
+            page_links=[
+                "https://example.com/seen",
+                "https://example.com/queued",
+                "https://example.com/blocked",
+                "https://other.com/x",
+                "https://example.com/new",
+            ],
+        )
+        scan._apply_page_outcome(ctx, outcome)
+        assert list(ctx.page_queue) == ["https://example.com/queued", "https://example.com/new"]
+
+
+class TestReservePagePathLoop:
+    def test_second_collision_appends_counter(self, tmp_path: Path) -> None:
+        url = "https://x.com/a"
+        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+        base = tmp_path / "a.html"
+        already = tmp_path / f"a_{digest}.html"
+        used = {str(base).casefold(), str(already).casefold()}
+        path = reserve_page_path(base, url, used)
+        assert path.name == f"a_{digest}_1.html"
+
+
+class TestRestoreStateCorruptEntries:
+    """旧版/残缺状态条目的逐项兜底（不因单条脏数据整体失败）。"""
+
+    def test_corrupt_entries_are_ignored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ctx = _make_scan_ctx(tmp_path, resume_crawl=True)
+        ctx.dedup = ContentDedup()
+        pages_dir = tmp_path / "pages"
+        pages_dir.mkdir()
+        (pages_dir / "ok.html").write_text("<html>ok</html>", encoding="utf-8")
+        (tmp_path / "outside.html").write_text("<html>x</html>", encoding="utf-8")
+        saved = {
+            "seed_url": "https://example.com",
+            "page_queue": [],
+            "seen_pages": [],
+            "page_titles": {
+                url: "T"
+                for url in (
+                    "https://example.com/ok",
+                    "https://example.com/ok2",
+                    "https://example.com/ok3",
+                    "https://example.com/outside",
+                    "https://example.com/boom",
+                )
+            },
+            "page_meta": {"u1": "not-a-dict", "u2": {"status_code": True, "content_type": None}},
+            "page_files": {
+                "https://example.com/ok": ["pages/ok.html", "utf-8"],
+                "https://example.com/nottitle": ["pages/ok.html", "utf-8"],
+                "https://example.com/ok2": ["pages/ok.html", "utf-8", "extra"],
+                "https://example.com/ok3": [123, "utf-8"],
+                "https://example.com/outside": ["outside.html", "utf-8"],
+                "https://example.com/boom": ["pages/boom.html", "utf-8"],
+            },
+            "resources": [
+                {
+                    "url": "https://example.com/a.js",
+                    "found_in": "script[src]",
+                    "kind": "script",
+                    "page_url": "https://example.com/",
+                }
+            ],
+            "sha256_set": ["a" * 64, 123],
+            "page_scan": {
+                "failed": -1,
+                "skipped": "x",
+                "first_error": 5,
+                "blocked_assets": -2,
+            },
+        }
+        real_resolve = Path.resolve
+
+        def fake_resolve(self: Path, *args: object, **kwargs: object) -> Path:
+            if self.name == "boom.html":
+                raise OSError("cannot resolve")
+            return real_resolve(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "resolve", fake_resolve)
+        monkeypatch.setattr(scan.ctx_mod, "load_crawl_state", lambda _root: saved)
+        scan._restore_state(ctx)
+
+        assert set(ctx.page_files) == {"https://example.com/ok"}
+        assert len(ctx.all_resources) == 1
+        assert ctx.dedup is not None and ctx.dedup.seen_count() == 2
+        assert ctx.page_meta["u2"]["status_code"] is None
+        assert ctx.page_scan == {
+            "failed": 0,
+            "skipped": 0,
+            "first_error": "",
+            "blocked_assets": 0,
+        }
+
+    def test_non_dict_page_files_is_ignored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ctx = _make_scan_ctx(tmp_path, resume_crawl=True)
+        monkeypatch.setattr(
+            scan.ctx_mod,
+            "load_crawl_state",
+            lambda _root: {
+                "seed_url": "https://example.com",
+                "page_titles": {},
+                "page_files": [],
+                "resources": [],
+            },
+        )
+        scan._restore_state(ctx)
+        assert ctx.page_files == {}
+
+
+class TestResumeSnapshotInFlight:
+    """续跑快照不能把在途页面写成已完成（并发下的断点一致性）。"""
+
+    def _ctx_with_pending(self, tmp_path: Path) -> _CrawlContext:
+        ctx = _make_scan_ctx(tmp_path, resume_crawl=True, crawl_pages=True)
+        for index in range(4):
+            ctx.seen_pages.add(f"https://example.com/{index}")
+        ctx.seen_pages.add("https://example.com/inflight")
+        ctx.enqueue_page("https://example.com/remaining")
+        return ctx
+
+    def test_in_flight_pages_requeued_and_excluded_from_seen(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        saved: dict[str, object] = {}
+        monkeypatch.setattr(scan.ctx_mod, "save_crawl_state", lambda _out, **kw: saved.update(kw))
+        scan._save_scan_state_if_due(
+            self._ctx_with_pending(tmp_path),
+            idle=False,
+            in_flight=["https://example.com/inflight"],
+        )
+        assert "https://example.com/inflight" not in saved["seen_pages"]
+        assert saved["page_queue"] == [
+            "https://example.com/inflight",
+            "https://example.com/remaining",
+        ]
+
+    def test_idle_snapshot_keeps_every_seen_page(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        saved: dict[str, object] = {}
+        monkeypatch.setattr(scan.ctx_mod, "save_crawl_state", lambda _out, **kw: saved.update(kw))
+        ctx = self._ctx_with_pending(tmp_path)
+        ctx.page_queue.clear()
+        ctx.queued_pages.clear()
+        scan._save_scan_state_if_due(ctx, idle=True)
+        assert len(saved["seen_pages"]) == len(ctx.seen_pages)
+        assert saved["page_queue"] == []
+
+    def test_resume_from_snapshot_refetches_in_flight_page(self, tmp_path: Path) -> None:
+        scan._save_scan_state_if_due(
+            self._ctx_with_pending(tmp_path),
+            idle=False,
+            in_flight=["https://example.com/inflight"],
+        )
+        resumed = _make_scan_ctx(tmp_path, resume_crawl=True, crawl_pages=True)
+        scan._restore_state(resumed)
+        assert "https://example.com/inflight" in resumed.page_queue
+        assert "https://example.com/inflight" not in resumed.seen_pages
+
+        fetched: list[str] = []
+
+        def fake_fetch(url: str, *args: object, **kwargs: object) -> tuple[bytes, str]:
+            fetched.append(url)
+            return b"<html>page</html>", "text/html"
+
+        with patch.object(core, "fetch", side_effect=fake_fetch):
+            assert scan._scan_pages(resumed) is False
+        assert "https://example.com/inflight" in fetched
+        assert "https://example.com/inflight" in resumed.page_titles
+
+
+class TestConcurrentScanRobustness:
+    """并发管线的端到端行为：取消合并 / 单页坏数据不拖垮整轮。"""
+
+    def test_one_worker_cancels_while_other_page_is_merged(self, tmp_path: Path) -> None:
+        index = b'<html><body><a href="/a">a</a><a href="/b">b</a></body></html>'
+
+        def fake_fetch(url: str, *args: object, **kwargs: object) -> tuple[bytes, str]:
+            if url.rstrip("/") == "https://example.com":
+                return index, "text/html"
+            if url.endswith("/a"):
+                raise RuntimeError("cancelled by user")
+            return b"<html><body>ok</body></html>", "text/html"
+
+        with patch.object(core, "fetch", side_effect=fake_fetch):
+            args = crawler_app.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--crawl-pages",
+                    "--max-pages",
+                    "3",
+                    "--workers",
+                    "2",
+                    "--delay",
+                    "0",
+                    "--list-only",
+                ]
+            )
+            assert crawler_app.crawl(args) == 1
+        saved_pages = {path.name for path in (tmp_path / "pages").rglob("*.html")}
+        assert "b.html" in saved_pages
+        assert "a.html" not in saved_pages
+
+    def test_post_processing_error_does_not_abort_crawl(self, tmp_path: Path) -> None:
+        index = b'<html><body><a href="/broken">x</a><a href="/good">y</a></body></html>'
+
+        def fake_fetch(url: str, *args: object, **kwargs: object) -> tuple[bytes, str]:
+            if url.rstrip("/") == "https://example.com":
+                return index, "text/html"
+            if url.endswith("/broken"):
+                return b"BROKEN<html>bad</html>", "text/html"
+            return b"<html><body>ok</body></html>", "text/html"
+
+        def fake_decode(data: bytes, content_type: str, fallback: str | None) -> str:
+            if data.startswith(b"BROKEN"):
+                raise LookupError("unknown encoding")
+            return data.decode("utf-8", errors="replace")
+
+        with (
+            patch.object(core, "fetch", side_effect=fake_fetch),
+            patch.object(scan, "decode_text", side_effect=fake_decode),
+        ):
+            args = crawler_app.build_parser().parse_args(
+                [
+                    "--url",
+                    "https://example.com",
+                    "--out",
+                    str(tmp_path),
+                    "--crawl-pages",
+                    "--max-pages",
+                    "3",
+                    "--workers",
+                    "2",
+                    "--delay",
+                    "0",
+                    "--list-only",
+                ]
+            )
+            assert crawler_app.crawl(args) == 0
+        report = json.loads((tmp_path / "run_report.json").read_text(encoding="utf-8"))
+        assert report["page_scan"]["failed"] == 1
+
+
+class TestRateLimiterConcurrency:
+    """--delay 在并发 worker 下仍保持同域请求间隔（预约时隙而非齐发）。"""
+
+    def test_concurrent_callers_are_spaced_by_default_delay(self) -> None:
+        limiter = DomainRateLimiter(default_delay=0.05)
+        starts: list[float] = []
+        lock = threading.Lock()
+
+        def worker() -> None:
+            limiter.wait_if_needed("https://example.com/x")
+            with lock:
+                starts.append(time.monotonic())
+            limiter.record_request("https://example.com/x")
+
+        threads = [threading.Thread(target=worker) for _ in range(3)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        starts.sort()
+        gaps = [later - earlier for earlier, later in itertools.pairwise(starts)]
+        assert len(gaps) == 2
+        assert min(gaps) >= 0.03
+
+    def test_record_request_does_not_rewind_future_reservation(self) -> None:
+        limiter = DomainRateLimiter(default_delay=0.05)
+        limiter._last_times["example.com"] = time.time() + 5
+        limiter.record_request("https://example.com/x")
+        assert limiter._last_times["example.com"] > time.time() + 4
+
+
+class TestFetcherTeardownEdges:
+    """fetcher 收尾：当前线程缓存 + 登记表去重；渲染实例多 worker 回收。"""
+
+    def test_close_app_fetchers_closes_current_thread_cache_and_dedupes(self) -> None:
+        class _FakeFetcher:
+            instances: list[_FakeFetcher] = []
+
+            def __init__(self, **kwargs: object) -> None:
+                self.closes = 0
+                _FakeFetcher.instances.append(self)
+
+            def close(self) -> None:
+                self.closes += 1
+
+        core._app_fetchers.clear()
+        core._fetchers_local.cache = {}
+        try:
+            with patch.object(core, "_import_lib_fetcher", return_value=_FakeFetcher):
+                fetcher = core._get_app_fetcher(None, 30.0, None)
+            # 登记表里已有一份；再追加一份模拟「线程缓存 + 登记表」双持有
+            core._app_fetchers.append(fetcher)
+            core.close_app_fetchers()
+            assert fetcher.closes == 1
+            assert core._fetchers_local.cache == {}
+            assert core._app_fetchers == []
+        finally:
+            core._app_fetchers.clear()
+            core._fetchers_local.cache = {}
+
+    def test_import_dynamic_fetcher_fallback_after_first_import_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import builtins
+
+        import web_crawler
+
+        expected = web_crawler.DynamicFetcher
+        real_import = builtins.__import__
+        state = {"calls": 0}
+
+        def flaky(
+            name: str,
+            globals_: dict | None = None,
+            locals_: dict | None = None,
+            fromlist: tuple[str, ...] = (),
+            level: int = 0,
+        ) -> object:
+            if name == "web_crawler" and "DynamicFetcher" in fromlist and state["calls"] == 0:
+                state["calls"] += 1
+                raise ImportError("simulated missing package")
+            return real_import(name, globals_, locals_, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", flaky)
+        assert core._import_dynamic_fetcher() is expected
+
+    def test_render_instances_from_multiple_workers_are_all_closed(self) -> None:
+        class _FakeRender:
+            instances: list[_FakeRender] = []
+
+            def __init__(self, **kwargs: object) -> None:
+                self.closed = False
+                _FakeRender.instances.append(self)
+
+            def fetch(self, url: str) -> Mock:
+                return Mock(
+                    status=200, content=b"<html>r</html>", headers={"content-type": "text/html"}
+                )
+
+            def close(self) -> None:
+                self.closed = True
+
+        core._render_registry.clear()
+        core._render_local.cache = {}
+        try:
+            with patch.object(core, "_import_dynamic_fetcher", return_value=_FakeRender):
+                threads = [
+                    threading.Thread(target=core.render_page, args=("https://example.com", 30, {}))
+                    for _ in range(3)
+                ]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+            assert len(_FakeRender.instances) == 3
+            core.close_render_fetchers()
+            assert all(instance.closed for instance in _FakeRender.instances)
+            assert core._render_registry == []
+        finally:
+            core._render_registry.clear()
+            core._render_local.cache = {}
+
+
+class TestFetchBranchCoverage:
+    """fetch 的条件请求 / 429 / 无状态错误 / 中止探针 / power mode 分支。"""
+
+    @staticmethod
+    def _resp(status: int, body: bytes, headers: dict[str, str]) -> Mock:
+        return Mock(status=status, content=body, headers=headers)
+
+    def test_memory_304_without_rate_limiter(self) -> None:
+        fake = Mock()
+        fake.get.return_value = self._resp(304, b"", {"etag": "e1"})
+        meta: dict[str, object] = {}
+        with patch.object(core, "_get_app_fetcher", return_value=fake):
+            data, ctype = core.fetch(
+                "https://example.com",
+                30,
+                {},
+                0,
+                None,
+                allow_not_modified=True,
+                response_meta=meta,
+            )
+        assert (data, ctype) == (b"", "")
+        assert meta["status"] == 304
+        assert meta["etag"] == "e1"
+
+    def test_streaming_304_is_treated_as_not_modified(self, tmp_path: Path) -> None:
+        exc = FetchError("HTTP Error 304: download failed")
+        exc.status = 304  # type: ignore[attr-defined]
+        fake = Mock()
+        fake.download.side_effect = exc
+        meta: dict[str, object] = {}
+        limiter = Mock()
+        with patch.object(core, "_get_app_fetcher", return_value=fake):
+            data, ctype = core.fetch(
+                "https://example.com/f.bin",
+                30,
+                {},
+                0,
+                None,
+                resume_path=tmp_path / "f.bin",
+                allow_not_modified=True,
+                response_meta=meta,
+                rate_limiter=limiter,
+            )
+        assert (data, ctype) == (b"", "")
+        assert meta["status"] == 304
+        limiter.record_request.assert_called_once()
+
+    def test_fetch_error_without_status_is_retried(self) -> None:
+        fake = Mock()
+        fake.get.side_effect = [FetchError("socket boom"), self._resp(200, b"ok", {})]
+        with (
+            patch.object(core, "_get_app_fetcher", return_value=fake),
+            patch.object(core.time, "sleep") as sleep,
+        ):
+            data, _ctype = core.fetch("https://example.com", 30, {}, 1, None)
+        assert data == b"ok"
+        assert sleep.called
+
+    def test_429_without_retry_budget_raises(self) -> None:
+        fake = Mock()
+        fake.get.return_value = self._resp(429, b"", {"Retry-After": "1"})
+        limiter = Mock()
+        limiter.handle_429.return_value = 1
+        with (
+            patch.object(core, "_get_app_fetcher", return_value=fake),
+            patch.object(core.time, "sleep") as sleep,
+            pytest.raises(FetchError, match="429"),
+        ):
+            core.fetch("https://example.com", 30, {}, 0, None, rate_limiter=limiter)
+        sleep.assert_not_called()
+
+    def test_streaming_meta_and_abort_probe(self, tmp_path: Path) -> None:
+        control = Mock()
+        control.stealth = False
+        control.impersonate = None
+        control.proxy = None
+        control.should_stop = Mock(return_value=False)
+        control.wait_if_paused = Mock()
+        probe: dict[str, bool] = {}
+
+        def fake_download(url: str, dest: Path, **kwargs: object) -> Path:
+            kwargs["on_headers"](200, {"content-type": "image/png"})  # type: ignore[operator]
+            probe["abort"] = kwargs["should_abort"]()  # type: ignore[operator]
+            return dest
+
+        fake = Mock()
+        fake.download.side_effect = fake_download
+        meta: dict[str, object] = {}
+        with patch.object(core, "_get_app_fetcher", return_value=fake):
+            core.fetch(
+                "https://example.com/f.bin",
+                30,
+                {},
+                0,
+                None,
+                resume_path=tmp_path / "f.bin",
+                control_args=control,
+                meta=meta,
+            )
+        assert meta == {"status": 200, "content_type": "image/png"}
+        assert probe["abort"] is False
+        control.wait_if_paused.assert_called_once()
+        control.should_stop.assert_called_once()
+
+    def test_power_mode_skips_host_validation(self) -> None:
+        fake = Mock()
+        fake.get.return_value = self._resp(200, b"ok", {})
+        with (
+            patch.object(core, "is_power_mode", return_value=True),
+            patch.object(core, "validate_url_host") as validate,
+            patch.object(core, "_get_app_fetcher", return_value=fake),
+        ):
+            assert core.fetch("https://example.com", 30, {}, 0, None) == (b"ok", "")
+        validate.assert_not_called()
+
+    def test_header_value_fallbacks(self) -> None:
+        class _NoGet:
+            def items(self) -> list[tuple[str, str]]:
+                return [("Content-Type", "text/html")]
+
+        class _BadGet:
+            def get(self, name: str) -> None:
+                raise RuntimeError("boom")
+
+            def items(self) -> list[tuple[str, str]]:
+                return [("Content-Type", "text/html")]
+
+        class _BadItems:
+            def get(self, name: str) -> None:
+                return None
+
+            def items(self) -> list[tuple[str, str]]:
+                raise RuntimeError("boom")
+
+        assert core._header_value(_NoGet(), "Content-Type") == "text/html"
+        assert core._header_value(_BadGet(), "content-type") == "text/html"
+        assert core._header_value(_BadItems(), "content-type") == ""
+
+    def test_header_value_mapping_without_match(self) -> None:
+        class _NoMatch:
+            def get(self, name: str) -> None:
+                return None
+
+            def items(self) -> list[tuple[str, str]]:
+                return [("X-Other", "v")]
+
+        assert core._header_value(_NoMatch(), "content-type") == ""
+
+    def test_streaming_304_without_rate_limiter(self, tmp_path: Path) -> None:
+        exc = FetchError("HTTP Error 304: download failed")
+        exc.status = 304  # type: ignore[attr-defined]
+        fake = Mock()
+        fake.download.side_effect = exc
+        meta: dict[str, object] = {}
+        with patch.object(core, "_get_app_fetcher", return_value=fake):
+            assert core.fetch(
+                "https://example.com/f.bin",
+                30,
+                {},
+                0,
+                None,
+                resume_path=tmp_path / "f.bin",
+                allow_not_modified=True,
+                response_meta=meta,
+            ) == (b"", "")
+        assert meta["status"] == 304
+
+    def test_fetch_error_without_status_and_no_retry_raises(self) -> None:
+        fake = Mock()
+        fake.get.side_effect = FetchError("socket boom")
+        with (
+            patch.object(core, "_get_app_fetcher", return_value=fake),
+            patch.object(core.time, "sleep") as sleep,
+            pytest.raises(FetchError, match="socket boom"),
+        ):
+            core.fetch("https://example.com", 30, {}, 0, None)
+        sleep.assert_not_called()
+
+
+class TestCoreLoggingAndHeaders:
+    """日志 handler 幂等挂载 / 请求头 Referer 保留。"""
+
+    def test_attach_and_detach_log_handler_are_idempotent(self) -> None:
+        handler = logging.Handler()
+        try:
+            core.attach_log_handler(handler)
+            core.attach_log_handler(handler)
+            assert core._log.handlers.count(handler) == 1
+        finally:
+            core.detach_log_handler(handler)
+            core.detach_log_handler(handler)
+        assert handler not in core._log.handlers
+
+    def test_request_headers_keep_explicit_referer(self) -> None:
+        headers = core._request_headers(
+            "https://example.com/page", {"User-Agent": "UA", "Referer": "https://r/"}
+        )
+        assert headers["User-Agent"] == "UA"
+        assert headers["Referer"] == "https://r/"
+
+    def test_dynamic_fetcher_unavailable_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        with (
+            patch.dict(sys.modules, {"web_crawler": None}),
+            pytest.raises(FetchError, match="DynamicFetcher"),
+        ):
+            core._import_dynamic_fetcher()
+
+
+class TestCrawlEntryFailurePaths:
+    """crawl 入口的降级：无效 URL / 校验器落盘失败 / 配置保存失败。"""
+
+    def test_invalid_seed_url_marks_page_scan_failed(self, tmp_path: Path) -> None:
+        args = crawler_app.build_parser().parse_args(
+            ["--url", "not a url", "--out", str(tmp_path), "--list-only"]
+        )
+        assert crawler_app.crawl(args) != 0
+        report = json.loads((tmp_path / "run_report.json").read_text(encoding="utf-8"))
+        assert report["page_scan"]["failed"] == 1
+
+    def test_validator_cache_save_failure_is_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        html = b"<html><body>ok</body></html>"
+        with (
+            patch.object(core, "fetch", return_value=(html, "text/html")),
+            patch.object(crawler_app.ValidatorCache, "save", side_effect=OSError("disk full")),
+            caplog.at_level(logging.WARNING, logger="crawler"),
+        ):
+            args = crawler_app.build_parser().parse_args(
+                ["--url", "https://example.com", "--out", str(tmp_path), "--list-only", "--cache"]
+            )
+            assert crawler_app.crawl(args) == 0
+        assert "failed to save validator cache" in caplog.text
+
+    def test_save_config_failure_exits_2(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(
+            crawler_app,
+            "save_config_to_file",
+            Mock(side_effect=OSError("read-only")),
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["web-crawler", "--url", "https://example.com", "--save-config", "out.json"],
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            crawler_app.main()
+        assert excinfo.value.code == 2
+        assert "read-only" in capsys.readouterr().err
+
+    def test_main_json_mode_reports_bad_args_as_json(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(sys, "argv", ["web-crawler", "--json", "--workers", "abc"])
+        with pytest.raises(SystemExit) as excinfo:
+            crawler_app.main()
+        assert excinfo.value.code == 2
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["status"] == "error"

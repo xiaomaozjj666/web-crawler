@@ -357,16 +357,24 @@ def _scan_page(
             url=page_url, page_path=page_path, content_type=content_type, non_document=True
         )
 
-    page_path.parent.mkdir(parents=True, exist_ok=True)
-    page_path.write_bytes(data)
-    html = decode_text(data, content_type, args.encoding)
-    description, lang = _extract_page_meta(html)
-    status_code = response_meta.get("status")
-    parser = PageParser(
-        page_url,
-        download_linked_data=bool(getattr(args, "download_linked_data", False)),
-    )
-    parser.feed(html)
+    try:
+        page_path.parent.mkdir(parents=True, exist_ok=True)
+        page_path.write_bytes(data)
+        html = decode_text(data, content_type, args.encoding)
+        description, lang = _extract_page_meta(html)
+        status_code = response_meta.get("status")
+        parser = PageParser(
+            page_url,
+            download_linked_data=bool(getattr(args, "download_linked_data", False)),
+        )
+        parser.feed(html)
+    except Exception as exc:
+        # 落盘/解码/解析失败按单页失败处理：非法 charset 名、磁盘错误等不能
+        # 终止整个并发扫描（与下载阶段的 worker 兜底一致，且串行时代这里会
+        # 直接崩掉整个 crawl）。
+        return _PageOutcome(
+            url=page_url, page_path=page_path, error=render_error(exc, context=page_url)
+        )
     return _PageOutcome(
         url=page_url,
         page_path=page_path,
@@ -452,12 +460,19 @@ def _apply_page_outcome(ctx: _CrawlContext, outcome: _PageOutcome) -> None:
                     ctx.enqueue_page(link)
 
 
-def _save_scan_state_if_due(ctx: _CrawlContext, *, idle: bool) -> None:
+def _save_scan_state_if_due(
+    ctx: _CrawlContext, *, idle: bool, in_flight: list[str] | None = None
+) -> None:
     """按节流策略保存 --resume-crawl 状态（idle=队列与在途都为空）。
 
     状态保存只在调度线程发生：页面列表、资源与去重哈希都是单写者，
     并发 worker 不会与快照交错。``idle`` 对应串行实现里「队列耗尽」
     的无条件保存；其余情况按每 5 页 + 最小时间间隔节流，避免 O(P²) 写放大。
+
+    ``in_flight`` 是已出队、worker 尚未回填的页面。它们已计入 ``seen_pages``
+    但没有页面文件/资源：若原样写入快照，进程中断后续跑会把这些页面当成
+    「已扫描」永久漏掉。快照把它们从 ``seen_pages`` 剔除并按原出队顺序放回
+    ``page_queue`` 头部，续跑时按未完成页面重新抓取。
     """
     args = ctx.args
     if not getattr(args, "resume_crawl", False):
@@ -472,12 +487,15 @@ def _save_scan_state_if_due(ctx: _CrawlContext, *, idle: bool) -> None:
     if not idle and now - ctx.last_state_save[0] < _STATE_SAVE_MIN_INTERVAL_SECONDS:
         return
     ctx.last_state_save[0] = now
+    pending_pages = list(in_flight or ())
+    pending_set = set(pending_pages)
     try:
         ctx_mod.save_crawl_state(
             ctx.output_dir,
             seed_url=ctx.seed_url,
-            page_queue=list(ctx.page_queue),
-            seen_pages=list(ctx.seen_pages),
+            # 在途页面放回队列头部（它们比剩余队列出队更早），续跑时重抓
+            page_queue=pending_pages + list(ctx.page_queue),
+            seen_pages=[url for url in ctx.seen_pages if url not in pending_set],
             page_titles=ctx.page_titles,
             page_meta=ctx.page_meta,
             page_files={
@@ -549,7 +567,11 @@ async def _scan_pages_async(ctx: _CrawlContext, seed_url: str, saved_paths: set[
                     cancelled = True
                     continue
                 _apply_page_outcome(ctx, outcome)
-                _save_scan_state_if_due(ctx, idle=not ctx.page_queue and not pending)
+                _save_scan_state_if_due(
+                    ctx,
+                    idle=not ctx.page_queue and not pending,
+                    in_flight=list(pending.values()),
+                )
     return cancelled
 
 

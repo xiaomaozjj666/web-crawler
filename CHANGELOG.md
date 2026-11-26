@@ -93,7 +93,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   worker 线程，收尾由登记表统一关闭（此前只清当前线程会漏关进程）；
   库级 `Fetcher`（连接池/会话）同样登记并在 crawl 收尾统一 `close()`，
   修掉 worker 线程退出后靠 GC 才释放连接导致的 unclosed socket。
-  全量依赖档实测覆盖率回到 97%，`test-extras` 门禁同步从 96 恢复到 97。
+  全量依赖档实测覆盖率 97.45%（`test-extras` 门禁从 96 恢复到 97）。
 - **robots 抓取失败不再静默**：记 warning 后按「无限制」继续（行为兼容），
   但日志留痕——此前 403 会静默变成全放行，合规结论无法复核。
 - **HTTP 403/401 错误提示指向有效方向**：直接建议 `--stealth` /
@@ -113,6 +113,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **并发扫描的断点续跑一致性**：状态快照曾把「已出队、worker 尚未回填」的
+  在途页面写进 `seen_pages`，进程中断后续跑会把这些页面当作已完成永久漏抓。
+  快照现在把在途页面从 `seen_pages` 剔除并按原出队顺序放回 `page_queue`
+  头部，恢复后重新抓取。
+- **`--delay` 在并发 worker 下失效**：多个线程同时读到同一个「上次请求时间」
+  而齐发，同域请求间隔语义丢失。`DomainRateLimiter` 改为在锁内预约发送时隙
+  （429 退避后同样排队）。真实 HTTP 实测（3 worker）：`--delay 0.08` 时峰值
+  并发 1、请求间隔 0.078–0.094s；`--delay 0` 时峰值并发 3。
+- **单页落盘/解码异常不再终止整轮扫描**：worker 的目录创建/写盘/解码/解析
+  异常按单页失败计入 `page_scan.failed`（与下载阶段的 worker 兜底一致），
+  非法 charset 或磁盘错误不会让整个并发扫描崩掉。
 - **Markdown 渲染四处缺陷**：直属容器的 `<a>`/`<strong>`/`<em>`/`<code>` 此前
   丢标记（链接退化成纯文本）；`<li><p>文字</p></li>` 会把正文输出两遍；中文
   与 `**`/`` ` `` 交界被强插空格（`包含 **重点** 与`）；容器内 `<hr>` 被吞、
