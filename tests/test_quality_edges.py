@@ -27,8 +27,15 @@ from web_crawler.app._crawler_cli import (
     _non_negative_int,
     _positive_int,
     _regex_arg,
+    _worker_count,
 )
-from web_crawler.app._crawler_context import _CrawlContext, load_config_from_file, reserve_page_path
+from web_crawler.app._crawler_context import (
+    MAX_WORKERS,
+    _CrawlContext,
+    clamp_workers,
+    load_config_from_file,
+    reserve_page_path,
+)
 from web_crawler.app._crawler_scan import _resolved_encoding
 from web_crawler.app.crawler_models import Resource
 from web_crawler.app.crawler_net import ContentDedup, DomainRateLimiter
@@ -682,6 +689,48 @@ class TestCliTypeValidators:
         with pytest.raises(argparse.ArgumentTypeError, match="无效的正则"):
             _regex_arg("[")
         assert _regex_arg(r"a\d+") == r"a\d+"
+
+    def test_worker_count_rejects_over_limit(self) -> None:
+        assert _worker_count("1") == 1
+        assert _worker_count(str(MAX_WORKERS)) == MAX_WORKERS
+        with pytest.raises(argparse.ArgumentTypeError, match="并发数上限"):
+            _worker_count(str(MAX_WORKERS + 1))
+
+
+class TestWorkerThresholds:
+    """并发上限：线程/连接池/浏览器进程不会随用户输入无限放大。"""
+
+    def test_clamp_workers_bounds(self) -> None:
+        assert clamp_workers(0) == 1
+        assert clamp_workers(-5) == 1
+        assert clamp_workers(MAX_WORKERS + 100) == MAX_WORKERS
+        assert clamp_workers(None) == 8
+        assert clamp_workers("not-a-number") == 8
+        assert clamp_workers(3) == 3
+
+    def test_scan_worker_count_caps_render_browsers(self) -> None:
+        plain = argparse.Namespace(workers=MAX_WORKERS, render_js=False)
+        assert scan._scan_worker_count(plain) == MAX_WORKERS
+        render = argparse.Namespace(workers=16, render_js=True)
+        assert scan._scan_worker_count(render) == 8
+        assert scan._scan_worker_count(argparse.Namespace(workers=4, render_js=True)) == 4
+
+    def test_crawl_clamps_programmatic_workers(self, tmp_path: Path) -> None:
+        html = b"<html><body>ok</body></html>"
+        with patch.object(core, "fetch", return_value=(html, "text/html")):
+            args = crawler_app.build_parser().parse_args(
+                ["--url", "https://example.com", "--out", str(tmp_path), "--list-only"]
+            )
+            args.workers = MAX_WORKERS + 36  # 绕过 CLI 校验的编程调用
+            assert crawler_app.crawl(args) == 0
+        assert args.workers == MAX_WORKERS
+
+    def test_cli_rejects_workers_over_limit(self) -> None:
+        with pytest.raises(SystemExit) as excinfo:
+            crawler_app.build_parser().parse_args(
+                ["--url", "https://example.com", "--workers", str(MAX_WORKERS + 1)]
+            )
+        assert excinfo.value.code == 2
 
 
 # ── 并发扫描管线：worker 结果 / 取消 / 限速 / 续跑一致性 ──────────────

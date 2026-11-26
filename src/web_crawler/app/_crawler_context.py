@@ -46,7 +46,23 @@ _log = logging.getLogger("crawler")
 
 DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; ResourceCrawler/3.0)"
 DEFAULT_WORKERS = 8
+# 并发硬上限：每个 worker 线程持有一条独立连接池；--render-js 时还各持有一个
+# Chromium 进程。无上限的 --workers 会把线程/句柄/内存直接放大到用户输入值
+# （实测 8 worker ≈ 10 线程、9 个 fetcher），因此与 Web UI 的输入上限对齐到 64。
+MAX_WORKERS = 64
+# 渲染页扫描的浏览器并发上限：Chromium 单实例常驻数百 MB，8 个已是默认配置的
+# 上限；超出的 worker 仍可用于下载（下载不渲染），但页面扫描按此值封顶。
+MAX_RENDER_WORKERS = 8
 CRAWL_STATE_FILE = ".crawl_state.json"
+
+
+def clamp_workers(value: object) -> int:
+    """把 ``--workers`` 收敛到 [1, MAX_WORKERS]（非法/缺失回退默认值）。"""
+    try:
+        workers = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return DEFAULT_WORKERS
+    return min(max(1, workers), MAX_WORKERS)
 
 
 def reserve_page_path(path: Path, page_url: str, used_paths: set[str]) -> Path:

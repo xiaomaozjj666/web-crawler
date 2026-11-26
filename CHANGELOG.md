@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   产物按主机/路径存 `extracted_markdown/*.md`，与 `--extract-text` 相互独立。
   Web UI 同步新增「正文 Markdown」开关，配置导出/导入与任务重试均可往返；
   未开正文提取时「页面提取」用 Markdown 原文兜底展示。
+- **并发硬上限**：`--workers` 收敛到 1–64（CLI 超限按参数错误退出；编程/UI
+  调用钳制并 warning），使线程数、每线程连接池与 `--render-js` 的浏览器
+  进程数保持在可控范围；渲染页扫描额外封顶 8 个 Chromium，下载阶段不受影响。
 - **子资源与 WebSocket 的 SSRF 门禁**：导航守卫此前只校验 document 请求，
   页面脚本可用 fetch/XHR/WebSocket 直达内网与云元数据地址。现在子资源与
   ws/wss 同样过门禁：与已放行文档同 host 的直接放行，跨 host 按 host 缓存

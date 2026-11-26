@@ -19,6 +19,7 @@ patch 的模块全局名（``cr.fetch`` / ``cr.should_stop`` /
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 import re
@@ -510,10 +511,30 @@ def _save_scan_state_if_due(
         _log.warning("failed to save crawl state: %s", exc)
 
 
+def _scan_worker_count(args: argparse.Namespace) -> int:
+    """页面扫描并发数：全局线程上限 + ``--render-js`` 的浏览器进程上限。
+
+    ``--render-js`` 下每个 worker 线程各持有一个 Chromium（线程本地缓存，
+    不可跨线程复用），进程数等价于并发数；超出上限的部分只减少扫描并发，
+    下载阶段仍按用户配置的 workers 执行（下载不渲染）。
+    """
+    workers = ctx_mod.clamp_workers(getattr(args, "workers", 1))
+    if getattr(args, "render_js", False) and workers > ctx_mod.MAX_RENDER_WORKERS:
+        _log.warning(
+            "--render-js uses one Chromium per worker; capping page-scan workers "
+            "%d -> %d (downloads still use %d)",
+            workers,
+            ctx_mod.MAX_RENDER_WORKERS,
+            workers,
+        )
+        return ctx_mod.MAX_RENDER_WORKERS
+    return workers
+
+
 async def _scan_pages_async(ctx: _CrawlContext, seed_url: str, saved_paths: set[str]) -> bool:
     """并发扫描调度：填满并发槽位 → 等任一完成 → 并入结果 → 状态节流保存。"""
     args = ctx.args
-    workers = max(1, int(getattr(args, "workers", 1) or 1))
+    workers = _scan_worker_count(args)
     loop = asyncio.get_running_loop()
     pending: dict[asyncio.Future[_PageOutcome], str] = {}
     cancelled = False

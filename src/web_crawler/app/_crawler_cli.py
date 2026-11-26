@@ -15,7 +15,12 @@ import re
 
 from web_crawler import __version__
 from web_crawler._cli import add_output_arguments
-from web_crawler.app._crawler_context import DEFAULT_USER_AGENT, DEFAULT_WORKERS
+from web_crawler.app._crawler_context import (
+    DEFAULT_USER_AGENT,
+    DEFAULT_WORKERS,
+    MAX_RENDER_WORKERS,
+    MAX_WORKERS,
+)
 
 
 def _positive_int(value: str) -> int:
@@ -26,6 +31,17 @@ def _positive_int(value: str) -> int:
         raise argparse.ArgumentTypeError(f"需要整数，收到 {value!r}") from exc
     if number < 1:
         raise argparse.ArgumentTypeError(f"需要 >= 1 的整数，收到 {number}")
+    return number
+
+
+def _worker_count(value: str) -> int:
+    """argparse 类型：1..MAX_WORKERS 的整数（线程/连接池/浏览器进程随其线性增长）。"""
+    number = _positive_int(value)
+    if number > MAX_WORKERS:
+        raise argparse.ArgumentTypeError(
+            f"并发数上限为 {MAX_WORKERS}，收到 {number}（每个 worker 一条连接池；"
+            "--render-js 还会各起一个 Chromium）"
+        )
     return number
 
 
@@ -163,9 +179,13 @@ Examples:
     )
     parser.add_argument(
         "--workers",
-        type=_positive_int,
+        type=_worker_count,
         default=DEFAULT_WORKERS,
-        help="Number of concurrent page-scan and download threads.",
+        help=(
+            f"Concurrent page-scan/download threads (1-{MAX_WORKERS}). "
+            "Each thread keeps its own connection pool; --render-js starts one "
+            f"Chromium per worker (page scan capped at {MAX_RENDER_WORKERS})."
+        ),
     )
     parser.add_argument(
         "--max-bytes",

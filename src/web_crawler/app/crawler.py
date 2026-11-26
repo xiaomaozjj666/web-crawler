@@ -66,7 +66,9 @@ from web_crawler.app._crawler_context import (  # noqa: F401
     CRAWL_STATE_FILE,
     DEFAULT_USER_AGENT,
     DEFAULT_WORKERS,
+    MAX_WORKERS,
     _CrawlContext,
+    clamp_workers,
     clear_crawl_state,
     load_config_from_file,
     load_crawl_state,
@@ -206,6 +208,17 @@ def _redact_proxy(value: object) -> object:
 
 def _crawl(args: argparse.Namespace) -> int:
     """应用层爬取主流程：页面扫描 → 资源过滤 → 并发下载 → 后处理与报告。"""
+    # 并发硬上限：进程内的线程数、每线程连接池与（--render-js）浏览器进程数
+    # 都随 workers 线性增长；超限时收敛而不是把资源压给操作系统。
+    requested_workers = getattr(args, "workers", DEFAULT_WORKERS)
+    args.workers = clamp_workers(requested_workers)
+    if args.workers != requested_workers:
+        _log.warning(
+            "--workers %s exceeds safety limit %d; clamping to %d",
+            requested_workers,
+            MAX_WORKERS,
+            args.workers,
+        )
     crawl_start_time = time.time()
     report_config: dict[str, object] = {
         "url": getattr(args, "url", ""),
