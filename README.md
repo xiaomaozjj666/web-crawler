@@ -469,9 +469,16 @@ py -m web_crawler.app.ui --host 0.0.0.0 --port 8765 --allow-remote
 PYTHONPATH=src python -m web_crawler.app.ui --open
 ```
 
-> 仓库根目录的 `启动爬虫-满血版.cmd` 是个人可信环境用的启动器：它会设置
-> `WEB_CRAWLER_POWER_MODE=1`（解锁内网/云元数据目标），**不要**在有真实
-> 凭据的机器上随意运行。常规使用请按上面的 `web-crawler` / `crawler-ui` 启动。
+> **本机启动器与 Power Mode**：仓库分发的启动方式就是上面的
+> `python -m web_crawler.app.ui --open`，默认走**安全模式**（拒绝私网 / 环回 /
+> 云元数据目标）。部分同学本机根目录会有 `启动爬虫-满血版.cmd`，它现在同样
+> **默认安全**：只有显式 `启动爬虫-满血版.cmd --power` 才会设置
+> `WEB_CRAWLER_POWER_MODE=1`，并先打印醒目警告、3 秒倒计时后才启动。
+> 该脚本**不适合入库**——它是个人机器上的便捷封装（含本机 Python 版本探测与
+> Power Mode 开关），随仓库分发会让使用者在不知情时获得内网访问能力；仓库统一
+> 以 `-m web_crawler.app.ui` 为入口，Power Mode 始终是使用者的显式选择。本地
+> 运行产物（`crawler_data.db`、`.research/` 等）的保留与清理策略见
+> [本地运行产物与数据保留](docs/guides/maintenance.md)。
 
 ### 一次抓取 API：`/v1/scrape`
 

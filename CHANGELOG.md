@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **本地运行产物的保留与安全清理**：新增 `db.prune_finished_tasks(older_than_days=90)`
+  ——只删除 `success` / `error` / `cancelled` 终态任务并级联清结果，
+  `running` / `paused` / `cancelling` 永不进入删除范围，UI 跑任务时清理不会
+  影响在途记录；`vacuum=True` 可选回收空间（需空闲）。新增
+  `docs/guides/maintenance.md` 明确 `crawler_data.db` 的保留期与「不要手工删
+  `.db`/`-wal`/`-shm`」边界，以及 `.research/` 等本地产物的归档策略（超 30 天
+  或 20 MB 压缩为 zip + MANIFEST，保留 1 年）。本机 `.research/` 已完成归档：
+  223 个文件 18.49 MB → 3.59 MB，SHA-256 写入清单。本机启动器
+  `启动爬虫-满血版.cmd` 改为**默认安全模式**，Power Mode 需显式 `--power`
+  并先打印醒目警告（该文件不入库，仓库入口仍是 `-m web_crawler.app.ui`）。
+
 - **`--extract-markdown` 结构化 Markdown 输出**（对标 GitHub 趋势榜
   firecrawl 的「网页 → Markdown」核心卖点）：新增 `extract_markdown()` 与
   `--extract-markdown`，把正文容器渲染成保留语义标记的 Markdown——标题层级、

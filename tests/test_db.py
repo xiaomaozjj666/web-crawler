@@ -185,6 +185,64 @@ class TestDeleteTask:
         assert r["total"] == 0
 
 
+class TestPruneFinishedTasks:
+    """按保留期清理终态任务：在途任务必须毫发无伤。"""
+
+    @staticmethod
+    def _age_task(task_id: str, status: str, *, finished_days: float | None) -> None:
+        """把任务改成指定状态，并把结束时间（或创建时间）挪到 N 天前。"""
+        import time
+
+        db.update_task_status(task_id, status)
+        old = time.time() - (finished_days or 0) * 86400
+        conn = db._get_conn()
+        conn.execute(
+            "UPDATE tasks SET created_at = ?, finished_at = ? WHERE id = ?",
+            (old, old if finished_days is not None else None, task_id),
+        )
+        conn.commit()
+
+    def test_prune_only_old_terminal_tasks(self) -> None:
+        """只删超期的 success/error/cancelled；在途与近期任务保留。"""
+        for task_id in ("old-ok", "old-fail", "old-cancel", "new-ok", "run-old", "paused-old"):
+            db.create_task(task_id, "https://x.com", {}, "/tmp")
+        self._age_task("old-ok", "success", finished_days=120)
+        self._age_task("old-fail", "error", finished_days=200)
+        self._age_task("old-cancel", "cancelled", finished_days=91)
+        self._age_task("new-ok", "success", finished_days=1)
+        self._age_task("run-old", "running", finished_days=120)
+        self._age_task("paused-old", "paused", finished_days=120)
+
+        assert db.prune_finished_tasks(90) == 3
+        remaining = {t["id"] for t in db.list_tasks()["tasks"]}
+        assert remaining == {"new-ok", "run-old", "paused-old"}
+
+    def test_prune_cascades_results_and_vacuum(self, tmp_path: Path) -> None:
+        """删除任务时级联清结果；vacuum=True 回收空间后库仍可用。"""
+        jsonl = tmp_path / "resources_manifest.jsonl"
+        jsonl.write_text(
+            json.dumps({"url": "https://x.com/a.png", "bytes": 10, "status": "ok"}) + "\n",
+            encoding="utf-8",
+        )
+        db.create_task("old", "https://x.com", {}, str(tmp_path))
+        db.import_results("old", str(tmp_path))
+        assert db.get_results("old")["total"] > 0
+        self._age_task("old", "success", finished_days=120)
+
+        assert db.prune_finished_tasks(90, vacuum=True) == 1
+        assert db.get_results("old")["total"] == 0
+        # VACUUM 后同一连接仍能正常读写
+        db.create_task("after", "https://y.com", {}, "/tmp")
+        assert db.get_task("after") is not None
+
+    def test_prune_invalid_retention_rejected(self) -> None:
+        """保留天数必须为正，避免误删全部历史。"""
+        with pytest.raises(ValueError):
+            db.prune_finished_tasks(0)
+        with pytest.raises(ValueError):
+            db.prune_finished_tasks(-1)
+
+
 class TestImportResults:
     def test_import_from_jsonl(self, tmp_path: Path) -> None:
         """从 JSONL 导入任务。"""

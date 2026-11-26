@@ -63,6 +63,7 @@ nav:
       - Spider 爬虫框架: guides/spider.md
       - 隐身与网络: guides/stealth.md
       - AI 能力: guides/ai.md
+      - 本地运行产物与数据保留: guides/maintenance.md
   - 架构说明: architecture.md
   - JS 逆向 Agent: reverse-agent.md
   - 更新日志: https://github.com/xiaomaozjj666/web-crawler/blob/master/CHANGELOG.md

@@ -498,6 +498,53 @@ def delete_task(task_id: str) -> bool:
         return cur.rowcount > 0
 
 
+#: 可被批量清理的任务状态：只含终态。running / paused / cancelling 的任务
+#: 可能仍有 worker 在写结果、等待恢复或正在取消，任何情况下都不清理。
+_PRUNEABLE_TASK_STATUSES = ("success", "error", "cancelled")
+
+
+def prune_finished_tasks(older_than_days: float = 90.0, *, vacuum: bool = False) -> int:
+    """按保留期清理**已结束**任务，返回删除的任务数。
+
+    只删除 ``success`` / ``error`` / ``cancelled`` 三种终态任务，
+    ``running`` / ``paused`` / ``cancelling`` 永不进入删除范围——即使
+    清理时 UI 正在跑任务也不会删掉在途记录。判定时间取
+    ``finished_at``，缺失时回退 ``created_at``。任务的结果、页面提取与
+    资源关系由 ``ON DELETE CASCADE`` 一并删除（连接已开启
+    ``PRAGMA foreign_keys=ON``）。
+
+    Parameters
+    ----------
+    older_than_days:
+        保留天数（> 0）。结束时间早于该窗口的终态任务被删除。
+    vacuum:
+        是否在删除后 ``VACUUM`` 回收文件空间。``VACUUM`` 需要独占访问，
+        与正在写库的 UI/worker 并发时会等待 ``busy_timeout`` 后报
+        ``database is locked``——只在 UI 已停止或确认空闲时开启；日常清理
+        只做 ``DELETE`` 即可（页空间会被后续写入复用）。
+
+    安全边界：本函数只做库内 ``DELETE``，**不会**删除 ``crawler_data.db``
+    及其 ``-wal`` / ``-shm`` 文件；运行中的进程持有连接，手工删文件会让
+    写入落到不可见 inode（POSIX）或因文件被占用失败（Windows）。
+    """
+    if older_than_days <= 0:
+        raise ValueError(f"older_than_days must be > 0, got {older_than_days!r}")
+    cutoff = time.time() - older_than_days * 86400
+    placeholders = ", ".join("?" * len(_PRUNEABLE_TASK_STATUSES))
+    with _write_lock:
+        conn = _get_conn()
+        cur = conn.execute(
+            f"DELETE FROM tasks WHERE status IN ({placeholders}) "
+            "AND COALESCE(finished_at, created_at) < ?",
+            (*_PRUNEABLE_TASK_STATUSES, cutoff),
+        )
+        conn.commit()
+        deleted = cur.rowcount
+        if vacuum and deleted:
+            conn.execute("VACUUM")
+        return deleted
+
+
 def get_results(
     task_id: str,
     page: int = 1,
