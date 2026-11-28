@@ -75,3 +75,6 @@ report/
 /_*.json
 # 根目录下的本地临时目录（如批量脚本的中间产物）
 /.tmp_*/
+
+# 本地编译生成的 Windows 桌面应用产物（通过 scripts/build-desktop.ps1 生成）
+desktop-app/

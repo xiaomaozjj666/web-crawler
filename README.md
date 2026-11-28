@@ -6,6 +6,7 @@
   <img src="https://img.shields.io/badge/lxml-adaptive%20selector-8CA1B6" alt="lxml 自适应选择器" />
   <img src="https://img.shields.io/badge/TLS-impersonation-0F6B9E" alt="TLS 指纹隐身" />
   <img src="https://github.com/xiaomaozjj666/web-crawler/actions/workflows/ci.yml/badge.svg" alt="CI" />
+  <img src="https://img.shields.io/badge/tests-4529%20cases-brightgreen" alt="4529 项自动化测试" />
   <a href="https://codecov.io/gh/xiaomaozjj666/web-crawler"><img src="https://codecov.io/gh/xiaomaozjj666/web-crawler/branch/master/graph/badge.svg" alt="Codecov 实时覆盖率" /></a>
   <a href="https://xiaomaozjj666.github.io/web-crawler/"><img src="https://img.shields.io/badge/docs-online-brightgreen" alt="文档站" /></a>
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" />
@@ -21,6 +22,8 @@ Scrapling 风格的隐身网页爬虫库：**自适应选择器**、**TLS 指纹
 pip install "stealth-web-crawler[all]"    # 核心 + TLS 隐身 + JS 渲染；源码安装见「安装与运行」
 python -m web_crawler.app.ui --open       # 本地控制台：http://127.0.0.1:8765
 ```
+
+**Windows 原生桌面程序（推荐，无需开黑框或浏览器）**：在源码目录执行 `.\scripts\build-desktop.ps1` 编译 `desktop-app\Web Crawler.exe`（基于 Windows 内置 WebView2，默认以安全模式启动并保留 SSRF 防护，关闭窗口自动停止本地服务；加 `-DesktopShortcut` 可同步创建桌面快捷方式；仅限授权内网测试时支持命令行显式传入 `--power`）。
 
 写代码时导入名是 `web_crawler`（发行名是 `stealth-web-crawler`）；抓取 / 解析 / Spider 三段示例见 [快速开始](#快速开始)，Docker 与 MCP 接入见 [安装与运行](#安装与运行)。
 
@@ -54,9 +57,13 @@ flowchart TB
 
 本地 Web UI（`python -m web_crawler.app.ui`，默认 http://127.0.0.1:8765）：网页采集（图片/JS/视频/文件下载、并发与断点续传）、JS 逆向 Agent、任务历史三个入口，SSE 实时推送进度与日志。表单顶部提供「常用预设」（单页资源 / 整站镜像 / 正文转 Markdown / 视频资源清单），一键勾好一组选项后仍可微调；勾选「只生成清单，不下载文件」后，仅下载阶段生效的选项会置灰并标注「当前不生效」，但不会禁用控件、也不改变提交的字段。
 
-| 网页采集控制台 · 本地 Web UI |
-| :---: |
-| <img src="docs/screenshots/ui-console.png" alt="Web Crawler 控制台" width="820" /> |
+| 网页采集控制台 · 双栏配置与实时日志 | JS 逆向 Agent · Hook 捕获与执行轨迹 |
+| :---: | :---: |
+| <img src="docs/screenshots/ui-console.png" alt="Web Crawler 网页采集控制台" width="100%" /> | <img src="docs/screenshots/ui-reverse.png" alt="JS 逆向 Agent 面板" width="100%" /> |
+| 验证码识别 · 页面挑战与图片 OCR | 任务历史 · SQLite 持久化与结果回溯 |
+| <img src="docs/screenshots/ui-captcha.png" alt="验证码识别面板" width="100%" /> | <img src="docs/screenshots/ui-history.png" alt="任务历史列表" width="100%" /> |
+
+> 以上截图可通过 `python scripts/capture_screenshots.py` 一键刷新（使用临时 SQLite 数据库，不污染本地 `crawler_data.db`）。
 
 控制台顶部显示网页采集、验证码识别和 JS 逆向的运行状态。网页采集勾选「智能数据提取」「正文提取」或「正文 Markdown」后，可在任务详情的「页面提取」查看内容（未开启正文提取时，该面板展示 Markdown 原文），并从页面筛选其来源资源。每次任务保存自己的提取结果，复用输出目录后仍可查阅旧任务。磁盘上的正文按主机和页面路径保存到 `extracted_text/`，避免不同页面的同名文件互相覆盖；Markdown 保存到 `extracted_markdown/`。
 
