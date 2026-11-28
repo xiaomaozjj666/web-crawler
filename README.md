@@ -57,13 +57,13 @@ flowchart TB
 
 本地 Web UI（`python -m web_crawler.app.ui`，默认 http://127.0.0.1:8765）：网页采集（图片/JS/视频/文件下载、并发与断点续传）、JS 逆向 Agent、任务历史三个入口，SSE 实时推送进度与日志。表单顶部提供「常用预设」（单页资源 / 整站镜像 / 正文转 Markdown / 视频资源清单），一键勾好一组选项后仍可微调；勾选「只生成清单，不下载文件」后，仅下载阶段生效的选项会置灰并标注「当前不生效」，但不会禁用控件、也不改变提交的字段。
 
-| 网页采集控制台 · 双栏配置与实时日志 | JS 逆向 Agent · Hook 捕获与执行轨迹 |
+| 网页采集控制台 · 多页抓取与实时运行日志 | 任务详情 · 离线验收与 CSS 字段规则验证 |
 | :---: | :---: |
-| <img src="docs/screenshots/ui-console.png" alt="Web Crawler 网页采集控制台" width="100%" /> | <img src="docs/screenshots/ui-reverse.png" alt="JS 逆向 Agent 面板" width="100%" /> |
-| 验证码识别 · 页面挑战与图片 OCR | 任务历史 · SQLite 持久化与结果回溯 |
-| <img src="docs/screenshots/ui-captcha.png" alt="验证码识别面板" width="100%" /> | <img src="docs/screenshots/ui-history.png" alt="任务历史列表" width="100%" /> |
+| <img src="docs/screenshots/ui-console.png" alt="Web Crawler 网页采集控制台与实时日志" width="100%" /> | <img src="docs/screenshots/ui-history.png" alt="采集详情离线验收与 CSS 字段规则验证" width="100%" /> |
+| 验证码识别 · 本地 `ddddocr` 图片 OCR 实测 | JS 逆向 Agent · 预设模板与监控面板 |
+| <img src="docs/screenshots/ui-captcha.png" alt="验证码识别与本地 ddddocr 实测" width="100%" /> | <img src="docs/screenshots/ui-reverse.png" alt="JS 逆向 Agent 预设模板与监控面板" width="100%" /> |
 
-> 以上截图可通过 `python scripts/capture_screenshots.py` 一键刷新（使用临时 SQLite 数据库，不污染本地 `crawler_data.db`）。
+> 以上截图可通过 `python scripts/capture_screenshots.py` 一键刷新（自动拉起本机临时演示站完成真实多页抓取、离线验收、CSS 规则验证与本地 `ddddocr` 识别，不污染本地 `crawler_data.db`）。
 
 控制台顶部显示网页采集、验证码识别和 JS 逆向的运行状态。网页采集勾选「智能数据提取」「正文提取」或「正文 Markdown」后，可在任务详情的「页面提取」查看内容（未开启正文提取时，该面板展示 Markdown 原文），并从页面筛选其来源资源。每次任务保存自己的提取结果，复用输出目录后仍可查阅旧任务。磁盘上的正文按主机和页面路径保存到 `extracted_text/`，避免不同页面的同名文件互相覆盖；Markdown 保存到 `extracted_markdown/`。
 
