@@ -23,7 +23,7 @@ pip install "stealth-web-crawler[all]"    # 核心 + TLS 隐身 + JS 渲染；�
 python -m web_crawler.app.ui --open       # 本地控制台：http://127.0.0.1:8765
 ```
 
-**Windows 原生桌面程序（推荐，无需开黑框或浏览器）**：在源码目录执行 `.\scripts\build-desktop.ps1` 编译 `desktop-app\Web Crawler.exe`（基于 Windows 内置 WebView2，默认以安全模式启动并保留 SSRF 防护，关闭窗口自动停止本地服务；加 `-DesktopShortcut` 可同步创建桌面快捷方式；仅限授权内网测试时支持命令行显式传入 `--power`）。
+**Windows 原生桌面程序（推荐，无需开黑框或浏览器）**：在源码目录执行 `.\scripts\build-desktop.ps1` 编译 `desktop-app\Web Crawler.exe`（基于 Windows 内置 WebView2，默认以安全模式启动并保留 SSRF 防护，关闭窗口自动停止本地服务；加 `-DesktopShortcut` 可同步创建桌面快捷方式；仅限个人可信/授权内网环境时支持命令行传入 `--power`，或本机编译时加 `-PowerMode` 设为默认满血模式，运行时仍可用 `--safe` 临时回退安全模式）。
 
 写代码时导入名是 `web_crawler`（发行名是 `stealth-web-crawler`）；抓取 / 解析 / Spider 三段示例见 [快速开始](#快速开始)，Docker 与 MCP 接入见 [安装与运行](#安装与运行)。
 

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     编译 Web Crawler 原生 Windows 桌面程序（基于系统内置 WebView2，无黑框、无浏览器标签页）。
 .DESCRIPTION
@@ -6,9 +6,12 @@
     desktop-app\Web Crawler.exe。关闭窗口时自动通过 Windows Job Object 清理后台本地服务进程。
 .PARAMETER DesktopShortcut
     同时在当前用户桌面创建快捷方式。
+.PARAMETER PowerMode
+    将本机编译的桌面程序默认设为满血模式（WEB_CRAWLER_POWER_MODE=1，仅限个人可信/授权测试环境；运行时可传 --safe 临时回退安全模式）。
 #>
 param(
-    [switch]$DesktopShortcut
+    [switch]$DesktopShortcut,
+    [switch]$PowerMode
 )
 
 $ErrorActionPreference = "Stop"
@@ -76,6 +79,10 @@ $CscArgs = @(
 )
 if (Test-Path -LiteralPath $IconFile) {
     $CscArgs += "/win32icon:$IconFile"
+}
+if ($PowerMode) {
+    $CscArgs += "/define:DEFAULT_POWER_MODE"
+    Write-Host "[Desktop] 本机编译已启用默认满血模式（WEB_CRAWLER_POWER_MODE=1，可用 --safe 回退安全模式）" -ForegroundColor Yellow
 }
 $CscArgs += $SourceFile
 

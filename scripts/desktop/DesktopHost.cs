@@ -368,7 +368,7 @@ namespace DesktopHost
 
             _statusLabel = new Label
             {
-                Text = AppSpec.Subtitle,
+                Text = GetStartupSubtitle(),
                 ForeColor = Color.FromArgb(203, 213, 225),
                 Font = new Font("Microsoft YaHei UI", 10.5f, FontStyle.Regular),
                 AutoSize = true,
@@ -589,16 +589,26 @@ namespace DesktopHost
             _statusLabel.Text = text;
         }
 
+        private string GetStartupSubtitle()
+        {
+            if (_powerMode && AppSpec.StripPowerModeByDefault)
+            {
+                return "正在以满血模式（WEB_CRAWLER_POWER_MODE=1）启动本地采集控制台，关闭窗口将自动停止服务…";
+            }
+            return AppSpec.Subtitle;
+        }
+
         private void WriteSmokeResult(bool ok, string message)
         {
             if (string.IsNullOrEmpty(_smokeOutputPath)) return;
             try
             {
                 string payload = string.Format(
-                    "{{\"ok\":{0},\"app\":\"{1}\",\"origin\":\"{2}\",\"message\":\"{3}\"}}",
+                    "{{\"ok\":{0},\"app\":\"{1}\",\"origin\":\"{2}\",\"powerMode\":{3},\"message\":\"{4}\"}}",
                     ok ? "true" : "false",
                     EscapeJson(AppSpec.AppSlug),
                     EscapeJson(_localOrigin),
+                    _powerMode ? "true" : "false",
                     EscapeJson(message));
                 File.WriteAllText(_smokeOutputPath, payload, Encoding.UTF8);
             }
@@ -621,7 +631,7 @@ namespace DesktopHost
             _errorBox.Visible = false;
             _actionPanel.Visible = false;
             _statusLabel.ForeColor = Color.FromArgb(203, 213, 225);
-            _statusLabel.Text = AppSpec.Subtitle;
+            _statusLabel.Text = GetStartupSubtitle();
 
             if (AppSpec.RequireDotEnv)
             {
@@ -920,7 +930,11 @@ namespace DesktopHost
                 try { SetProcessDPIAware(); } catch { }
             }
 
+#if DEFAULT_POWER_MODE
+            bool powerMode = true;
+#else
             bool powerMode = false;
+#endif
             bool smokeTest = false;
             string smokeOutput = null;
 
@@ -930,6 +944,10 @@ namespace DesktopHost
                 if (string.Equals(a, "--power", StringComparison.OrdinalIgnoreCase))
                 {
                     powerMode = true;
+                }
+                else if (string.Equals(a, "--safe", StringComparison.OrdinalIgnoreCase))
+                {
+                    powerMode = false;
                 }
                 else if (string.Equals(a, "--smoke-test", StringComparison.OrdinalIgnoreCase))
                 {
